@@ -1,0 +1,12 @@
+{
+  "schema": "dev-artifacts-v1",
+  "modules": {
+    "example": {
+      "status": "draft",
+      "artifacts": {
+        "prd": "docs/prd/example.md",
+        "verification": "docs/test/example/coverage-matrix.md"
+      }
+    }
+  }
+}
