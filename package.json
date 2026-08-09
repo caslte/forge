@@ -1,0 +1,24 @@
+{
+  "name": "forge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "forge 桌面项目工作台（npm workspaces 根）",
+  "type": "module",
+  "workspaces": [
+    "packages/forge-core",
+    "packages/forge-desktop",
+    "packages/forge-ui",
+    "packages/forge-extensions"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

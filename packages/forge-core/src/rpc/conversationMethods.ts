@@ -1,0 +1,201 @@
+/**
+ * 对话与消息 RPC 方法层（wu-03-rpc）。
+ *
+ * 职责：把 ConversationService 的业务方法包装为传输无关的方法映射（method -> handler），
+ * 统一返回 `{ code, message, data }` 信封（docs/api/index.md 响应格式），供任意传输
+ * 层（Electron IPC / headless HTTP）直接调用。本模块是纯 Node，不 import
+ * Electron / Vue / pi。
+ *
+ * 设计决策：
+ * 1. 信封格式：成功 `{ code: 0, message: "success", data }`；失败 `{ code, message,
+ *    data: null }`。错误码与 docs/api/03_conversation.md §5 一致：1001 参数错误 /
+ *    1002 会话不存在 / 1004 provider 未配置 / 5000 内部错误。
+ * 2. 参数校验：每个 handler 先校验 params（sessionId/content 必须为非空字符串），
+ *    非法输入直接返回 1001，不进入服务层。
+ * 3. 异常隔离：服务层意外抛错（如 adapter 异常）被捕获并返回 5000，不向调用方
+ *    泄漏异常细节；错误日志用英文 + `[方法名]` 前缀（docs/specs/common/coding-style.md）。
+ * 4. 事件：conversation.statusChanged 在 sendMessage 成功后发射（取服务层当前状态）；
+ *    conversation.delta / conversation.message / conversation.error 由本层公开方法
+ *    pushDelta / emitMessage / emitError 驱动 —— v1 无真实流式来源，UI 层 / 后续模块
+ *    直接调用这些公开方法模拟流式推送（文档化流式接缝）。事件汇（EventSink）为
+ *    EventEmitter 兼容接口（仅需 emit），默认使用 node:events EventEmitter；调用方
+ *    可注入自定义汇（如跨进程转发）。
+ * 5. 异步方法统一经 call 包装，返回 Promise<RpcResult>；方法映射签名兼容同步/异步
+ *    handler。
+ */
+
+import { EventEmitter } from 'node:events';
+import type { RpcResult, EventSink } from './projectMethods.ts';
+import type {
+  ConversationService,
+  ConversationResult,
+  ConversationStatus,
+  ConversationMessage,
+  ConversationDelta,
+} from '../conversation/conversationService.ts';
+
+/** 构造成功信封 */
+function ok<T>(data: T): RpcResult<T> {
+  return { code: 0, message: 'success', data };
+}
+
+/** 构造失败信封（data 恒为 null） */
+function fail(code: number, message: string): RpcResult<null> {
+  return { code, message, data: null };
+}
+
+/** 类型守卫：params 是否为普通对象 */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * 从 params 中取非空字符串参数。
+ * @param params 请求参数（未知类型，来自传输层）
+ * @param key 参数名
+ * @returns 非空字符串；缺失/非字符串/空白返回 null
+ */
+function requireString(params: unknown, key: string): string | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+  const value = params[key];
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+  return value;
+}
+
+/**
+ * 对话与消息 RPC 方法层：方法映射 + 事件发射。
+ * @param service ConversationService 业务实例
+ * @param events 事件汇（默认新建 EventEmitter；可注入自定义汇）
+ */
+export class ConversationApi {
+  /** 方法映射：方法名 -> handler(params) -> 统一信封（可同步/异步） */
+  readonly methods: Record<string, (params: unknown) => RpcResult | Promise<RpcResult>>;
+  /** 事件汇：conversation.statusChanged / conversation.delta / conversation.message / conversation.error 在此发射 */
+  readonly events: EventSink;
+  private readonly service: ConversationService;
+
+  constructor(service: ConversationService, events?: EventSink) {
+    this.service = service;
+    this.events = events ?? new EventEmitter();
+    this.methods = {
+      'conversation/sendMessage': (params) => this.sendMessage(params),
+      'conversation/cancelStream': (params) => this.cancelStream(params),
+      'conversation/queryHistory': (params) => this.queryHistory(params),
+    };
+  }
+
+  /**
+   * 通用调用包装：执行服务方法并映射为信封；意外异常捕获为 5000。
+   * @param method 方法名（日志前缀）
+   * @param fn 服务调用（同步或异步）
+   * @returns 统一信封
+   */
+  private async call<T>(
+    method: string,
+    fn: () => ConversationResult<T> | Promise<ConversationResult<T>>,
+  ): Promise<RpcResult> {
+    try {
+      const result = await fn();
+      if (result.ok) {
+        return ok(result.data);
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error(`[${method}] internal error`, err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /** conversation/sendMessage：发送消息（CV-S01），成功后发射 conversation.statusChanged */
+  private async sendMessage(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return fail(1001, '参数错误：sessionId 必须为非空字符串');
+    }
+    const content = requireString(params, 'content');
+    if (content === null) {
+      return fail(1001, '参数错误：content 必须为非空字符串');
+    }
+    const result = await this.call('sendMessage', () => this.service.sendMessage(sessionId, content));
+    if (result.code === 0) {
+      this.pushStatus(sessionId, this.service.getStatus(sessionId));
+    }
+    return result;
+  }
+
+  /** conversation/cancelStream：取消当前处理（CV-S04），幂等 */
+  private cancelStream(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+    }
+    return this.call('cancelStream', () => this.service.cancelStream(sessionId));
+  }
+
+  /** conversation/queryHistory：查询消息历史（CV-S05），按 ts 升序 */
+  private queryHistory(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+    }
+    return this.call('queryHistory', () => this.service.queryHistory(sessionId));
+  }
+
+  /**
+   * 会话状态驱动（非 RPC 方法）：发射 conversation.statusChanged。
+   * 供 sendMessage 成功后自动调用，也供 UI 层 / 测试直接驱动状态流转。
+   * @param sessionId 会话 ID
+   * @param status 目标状态（idle/streaming/done/canceled/error）
+   * @returns 无返回值；触发事件 conversation.statusChanged { sessionId, status }
+   */
+  pushStatus(sessionId: string, status: ConversationStatus): void {
+    this.events.emit('conversation.statusChanged', { sessionId, status });
+  }
+
+  /**
+   * 流式增量推送（非 RPC 方法）：发射 conversation.delta。
+   * v1 无真实流式来源，由 UI 层 / 后续模块直接驱动以模拟流式推送。
+   * @param sessionId 会话 ID
+   * @param text 增量文本
+   * @returns 无返回值；触发事件 conversation.delta { sessionId, delta: { text, kind: 'text' } }
+   */
+  pushDelta(sessionId: string, text: string): void {
+    const delta: ConversationDelta = { text, kind: 'text' };
+    this.events.emit('conversation.delta', { sessionId, delta });
+  }
+
+  /**
+   * 完整消息推送（非 RPC 方法）：发射 conversation.message。
+   * @param sessionId 会话 ID
+   * @param message 完整消息（assistant 或 user）
+   * @returns 无返回值；触发事件 conversation.message { sessionId, message }
+   */
+  emitMessage(sessionId: string, message: ConversationMessage): void {
+    this.events.emit('conversation.message', { sessionId, message });
+  }
+
+  /**
+   * 错误推送（非 RPC 方法）：发射 conversation.error。
+   * @param sessionId 会话 ID
+   * @param code 错误码（如 5000）
+   * @param message 错误信息
+   * @returns 无返回值；触发事件 conversation.error { sessionId, code, message }
+   */
+  emitError(sessionId: string, code: number, message: string): void {
+    this.events.emit('conversation.error', { sessionId, code, message });
+  }
+}
+
+/**
+ * 创建 ConversationApi 实例（工厂）。
+ * @param service 对话与消息业务服务
+ * @param events 事件汇（可选，默认新建 EventEmitter）
+ * @returns ConversationApi 实例
+ */
+export function createConversationApi(service: ConversationService, events?: EventSink): ConversationApi {
+  return new ConversationApi(service, events);
+}

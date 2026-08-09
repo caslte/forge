@@ -1,0 +1,17 @@
+{
+  "run_id": "forge-v1-01",
+  "stage": "setup",
+  "runtime": {
+    "node": "v24.12.0",
+    "npm": "11.6.2"
+  },
+  "workspaces": [
+    "packages/forge-core",
+    "packages/forge-desktop",
+    "packages/forge-ui",
+    "packages/forge-extensions"
+  ],
+  "typescript": "^5.8.0",
+  "test_runner": "node:test（Node 24 原生 TS 类型剥离，无需 tsx）",
+  "notes": "骨架配置，无任何密钥/令牌。forge-core 纯 Node，不引入 Electron/Vue/pi 依赖。"
+}

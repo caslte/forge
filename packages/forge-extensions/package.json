@@ -1,0 +1,16 @@
+{
+  "name": "@forge/extensions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "forge 业务能力：pi 扩展承载（TS，jiti 加载）（骨架，仅占位）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

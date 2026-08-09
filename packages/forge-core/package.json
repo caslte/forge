@@ -1,0 +1,29 @@
+{
+  "name": "@forge/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "forge 引擎层：纯 Node，传输无关接口（方法+事件），项目/会话树组织（骨架）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  }
+}

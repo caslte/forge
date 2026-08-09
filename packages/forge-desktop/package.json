@@ -1,0 +1,16 @@
+{
+  "name": "@forge/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "forge 桌面壳：Electron 窗口/托盘/单例/原生对话框/通知/自动更新（骨架，后续工作单元实现）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
