@@ -136,15 +136,17 @@ pi 文档的 Docker：
 
 ---
 
-## 6. 一份核心两宿主（forge-core REST/SSE 接缝复用，v2+ 可选）
+## 6. 一份核心两宿主（forge-core 传输无关接口，v2+ 可选）
+
+> **v1.7 修正**：原方案"桌面端也走 HTTP/SSE"有本地攻击面（同机其他进程可打 HTTP 端口借 AgentSession 执行任意操作）。已改为：forge-core 暴露**传输无关接口**（方法+事件），桌面端走 **Electron IPC**（堵攻击面），headless 走 **HTTP/SSE**。接缝从"HTTP 服务"升级为"传输无关接口"，更干净也更安全。下方原 REST/SSE 表述保留为讨论脉络。
 
 ### 为什么能复用：一个"接缝"
 
-forge 桌面里，Vue 前端**本来就用 HTTP+SSE 跟 forge-core 通信**（为少改 ai-coding 前端）。这个 HTTP 接口是道**干净的接缝**：
-- 纯 Node HTTP 服务（express/hono），**不绑 Electron**。
-- 换个壳就能跑：桌面壳=Electron，无头壳=薄 Node 进程。
+forge-core 对外暴露**传输无关接口**（一组方法 + 事件流），不绑任何传输：
+- 桌面壳（Electron）包一层 **IPC 适配**给 Vue 前端（不走 HTTP，堵本地攻击面）；前端 fetch/SSE 经适配层转 IPC。
+- 无头壳（薄 Node 进程）包一层 **HTTP/SSE 适配**，给业务系统网络调用（v2+）。
 
-**同一份 forge-core + 同一套 REST/SSE 接口，两个宿主。**
+**同一份 forge-core + 同一套传输无关接口，两个宿主各包自己的传输适配。**
 
 ### 架构图
 
@@ -244,6 +246,6 @@ ai-coding 前端本就是 fetch+SSE 写的，去掉 HTTP = 重写整个前端数
 - **v1 不做嵌入式**（桌面工作台先行）。
 - 嵌入式形态（SDK/无头服务/CLI）= v2+，**架构已不堵死**：
   - raw 嵌入 -> 用 pi 直接。
-  - forge 即服务 -> forge-core 无头（REST/SSE 接缝复用）。
+  - forge 即服务 -> forge-core 无头（传输无关接口复用）。
 - **架构纪律**（v1 就要遵守，为 v2 铺路）：forge-core 保持纯 Node，Electron 专有逻辑放 forge-desktop。
 - 待 v2 立项时再定：是否做 forge-core 无头服务、是否容器化、鉴权方案。

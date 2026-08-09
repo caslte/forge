@@ -225,7 +225,7 @@
       <li>每个会话是<b>独立窗口</b>，有标题栏/边框/阴影</li>
       <li>拖标题栏可<b>独立移动</b>，互不影响</li>
       <li>点「网格排列」一键排成 2×2；「打散」模拟手动摆</li>
-      <li>窗口可拖到不同屏幕（跨屏观察）</li>
+      <li>应用内画布（单窗口内模拟多窗口），不支持跨屏</li>
       <li>tradeoff：窗口间有 OS 边框，不如分屏紧凑</li>
     </ul>
   </div>
@@ -263,8 +263,8 @@ const SESSIONS = {
   b1:{ pj:'pi-ext', pjKey:'B', name:'权限审批扩展', blocks:[
     {t:'user', x:'给 forge 加个 opt-in 的 per-tool 审批扩展，沿用 pi 扩展机制'},
     {t:'ai',   x:'先查 pi 扩展 API，看工具调用前的拦截钩子怎么挂。'},
-    {t:'tool', n:'read', arg:'pi docs/extensions.md', res:'找到 beforeToolCall 钩子'},
-    {t:'tool', n:'grep', arg:'beforeToolCall in pi/src', res:'定义在 ExtensionAPI.ts:204'},
+    {t:'tool', n:'read', arg:'pi docs/extensions.md', res:'找到 tool_call 事件(可阻断)'},
+    {t:'tool', n:'grep', arg:'tool_call in pi/src', res:'extensions.md 定义,可返回 block:true'},
     {t:'ai',   x:'扩展点确认：实现 beforeToolCall 返回 pending 决策，forge-core 把它映射成 Vue 弹窗。正在写扩展骨架…'},
     {t:'tool', n:'write', arg:'extensions/permission-gate/index.ts', res:'新建 · 48 行'},
   ]},

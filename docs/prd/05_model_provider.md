@@ -77,7 +77,7 @@ forge 对接 pi 的 provider / model 系统。pi 通过 `~/.pi/agent/models.json
 - **业务规则**：
   - 表单填：provider 类型（OpenAI / Anthropic / OpenRouter / 自定义）、baseUrl（默认官方，可改代理）、apiKey、models 列表。
   - forge 生成/更新 pi models.json。
-  - apiKey 用 `!command`（OS keychain）或 `$ENV_VAR` 引用，不明文写入 models.json（TD-MP-01）。
+  - apiKey 用 `!command` 引用 **forge 自带的跨 OS keychain 读取命令**（如 `!forge-secret get <provider>`，forge 负责 macOS keychain / Windows DPAPI / Linux libsecret 适配），或 `$ENV_VAR`，不明文写入 models.json（TD-MP-01）。
   - 复用 pi models.json，不自造（TD-MP-03）。
 - **业务数据**：provider 配置（models.json providers 段）。
 - **交互与反馈**：设置页表单填写 -> 保存 -> 写 models.json -> 提示成功。

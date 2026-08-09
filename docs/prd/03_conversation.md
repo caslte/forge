@@ -28,7 +28,7 @@
 ### 1.4 已确认业务决策
 
 - 消息复用 pi session JSONL 存储，forge 不重造消息存储（对齐模块 02）。
-- 流式响应：pi 事件经 forge-core 映射为 `CanonicalEvent`，通过 SSE 推送前端增量渲染。
+- 流式响应：pi 事件经 forge-core 映射为 `CanonicalEvent`，经传输无关接口增量推送前端（桌面 IPC 事件 / headless SSE）。
 - 富文本渲染复用 ai-coding 前端（marked / prismjs / mermaid）。
 - 取消 = 停止 `AgentSession` 当前处理，保留已生成内容（跟 pi abort 语义一致）。
 
@@ -36,7 +36,7 @@
 
 | 决策 ID | 影响场景 | 关键理由 | 备选方案 | 推荐方案 | 确认结果 |
 |---|---|---|---|---|---|
-| TD-CV-01 | CV-S02 | 流式传输方式决定时延/状态架构与事件映射方向 | A: pi 事件 -> CanonicalEvent -> SSE 增量推送前端；B: 整体生成后返回 | A（流式增量） | 已确认 |
+| TD-CV-01 | CV-S02 | 流式传输方式决定时延/状态架构与事件映射方向 | A: pi 事件 -> CanonicalEvent -> 增量推送前端（桌面 IPC 事件 / headless SSE）；B: 整体生成后返回 | A（流式增量） | 已确认 |
 | TD-CV-02 | CV-S03 | Markdown 渲染安全性影响 XSS 风险 | A: 白名单渲染（禁原生 HTML，转义危险内容）；B: 允许原生 HTML | A（白名单安全渲染） | 已确认 |
 | TD-CV-03 | CV-S04 | 取消语义影响状态一致性与不可逆性 | A: 停止当前处理 + 保留已生成内容；B: 停止 + 丢弃已生成 | A（停止 + 保留） | 已确认 |
 | TD-CV-04 | CV-S05 | 历史消息加载策略影响性能与容量 | A: 全量加载 pi session 消息（v1 会话消息量可控）；B: 分页/懒加载 | A（全量加载，v1 简单） | 已确认 |
@@ -98,7 +98,7 @@
 
 - **目标**：实时显示 AI 回复。
 - **前置条件**：消息已发送，AgentSession 处理中。
-- **业务规则**：token 增量流式渲染（TD-CV-01 A）；pi 事件 -> CanonicalEvent -> SSE -> 前端增量 DOM 更新；不阻塞 UI。
+- **业务规则**：token 增量流式渲染（TD-CV-01 A）；pi 事件 -> CanonicalEvent -> 增量事件推送（桌面 IPC 事件 / headless SSE）-> 前端增量 DOM 更新；不阻塞 UI。
 - **业务数据**：assistant 消息增量内容。
 - **交互与反馈**：流式 token 逐字显示在对话区；运行中显示"运行中"状态。
 - **权限边界**：无。

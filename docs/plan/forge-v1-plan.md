@@ -27,7 +27,7 @@
 | 1 | **pi 集成 = 进程内 SDK**（Node 内嵌 `AgentSession`，非子进程 RPC） | 扩展 in-process 拿完整 `ExtensionAPI`；抛弃 ai-coding 子进程思路；pi 作 npm 库升级最简 |
 | 2 | **UI 形态 = web GUI**（复用 ai-coding Vue；TUI 留作以后可选） | 好看/富交互；ai-coding 前端现成可复用 |
 | 3 | **桌面壳 = Electron**（壳+大脑同进程） | 一体性优先于体积；自动更新生态成熟（electron-updater） |
-| 4 | **forge-core 为纯 Node 模块**（v1 架构纪律） | Electron 专有逻辑（托盘/原生对话框/自动更新/安装器）放 `forge-desktop`，绝不进 `forge-core`。REST/SSE 服务层是干净接缝，为 v2+ 可选复用为无头"forge 即服务"铺路。业务系统 raw 嵌入用 pi 直接，不经 forge（详见 `embedded-agent-discussion.md`） |
+| 4 | **forge-core 纯 Node + 传输无关接口**（v1 架构纪律） | Electron 专有逻辑（托盘/原生对话框/自动更新/安装器）放 `forge-desktop`，绝不进 `forge-core`。forge-core 暴露**传输无关接口**（方法+事件），由 `forge-desktop` 包 **Electron IPC 适配**给 Vue 前端、由无头宿主包 **HTTP/SSE 适配**（v2+）。**桌面端不走 HTTP**——避免本地 HTTP 端口被同机其他进程攻击（本地提权）。业务系统 raw 嵌入用 pi 直接，不经 forge（详见 `embedded-agent-discussion.md`） |
 | 5 | **业务能力 = pi 扩展**（非 fork） | pi 可独立 `npm update`；不侵入 pi 源码 |
 | 6 | **权限跟 pi 一致** | 继承 pi 项目信任（白捡）；不做自定义 per-tool 审批层；需要时用 opt-in pi 扩展（`permission-gate` 模式） |
 | 7 | **存储复用 pi** | session 用 pi JSONL（`~/.pi/agent/sessions`）；forge 只加项目/会话树组织层；不重造消息存储 |
@@ -111,3 +111,15 @@
 - forge-extensions v1 具体有哪些业务扩展（待 PRD）
 - ai-coding 前端改造的工作量与边界
 - forge-core 的 REST/SSE 契约与 ai-coding 原契约的差异点
+
+### 待办改动项：gen-doc-test-cases skill 加强（跨项目）
+> 背景：审核 forge 测试矩阵发现“按需展开”太软（生成方与首审都未充分展开）+ 门禁只看覆盖率不看深度。需加强 skill，使设计产出可執行、可自动化。
+
+1. **扩张触发客观化**：命中任一即必须展开对应文档（不再靠主观判断）——mock 事件序列/时序（流式/SSE/断流/取消）→ e2e.md；fixture 数据（Diff old/new、大文件、恶意 HTML/XSS）→ unit/e2e.md；mock 外部系统（keychain/pi 事件/OS/provider）→ 对应文档；>3 状态或多步状态流转 → unit.md；并发/并行 → unit+e2e.md；跨模块数据流且需断言对端 → 跨模块集成文档。
+2. **加“深度门禁”**：每个用例必答三要素（前置数据/操作步骤/断言含负向）；矩阵一行装不下则必须展开；复杂用例禁止只留一行空壳。
+3. **定义“必测场景”**：明确口径=P0+写入/删除/审批/状态流转/权限/幂等/数据一致性；矩阵加“必测”标记列，index.md 据此报可审计覆盖率。
+4. **澄清 P0+manual**：P0 断言必须由自动化用例（unit/api）覆盖；manual 仅补充且须注明原因+替代自动方案；index.md “P0 无 manual” 改为“P0 断言 100% 自动覆盖，manual 仅补充”。
+5. **新增“一眼可见问题”维度（4 维 + 2 加强）**：当前 10 风险维度全是功能正确性，缺“打开页面有没有一眼可见毛病”。新增：①页面健康（无 console error/无未声明 4xx·5xx/不崩/不空白）；②视觉布局完整性（无重叠/溢出/错位/元素缺失 + 主流分辨率响应式断点不破）；③状态渲染（每视图空态/加载态/错误态，不只 happy flow）；④明显内容（UI 文案正确/无占位符/调试残留）。加强：断言强度加“每条 E2E 必含无未声明 console error + 关键元素可见无重叠”断言；每视图必有一条 P0 加载冒烟基线（加载无错+关键元素在+无红错）。目标：AI 按矩阵跑完后，一眼可见的功能性/视觉低级问题不再到人眼前。
+
+> 落地：改 `C:\Users\Admin\.pi\agent\skills\gen-doc-test-cases\SKILL.md` + `references/test-design-contract.md`（改前先读 contract）。影响所有项目。
+6. **后端“一眼可见问题”维度（forge-core）**：第 5 条偏前端，后端同样有一眼可见毛病（根因在后端但用户一眼看到）。新增后端维度：①后端健康（无未捕获异常/无进程崩/无吞错返回 success/无静默失败）；②pi 集成完整性（pi 事件->CanonicalEvent 映射无丢/无错/无乱序；AgentSession 创建/停止/删除/释放生命周期正确）--最大后端盲区，必须集成测试不只 mock；③契约完整性（每 IPC 方法响应结构对/错误码对/合法输入不 500/成功须有数据落地+副作用）；④并发隔离（多 AgentSession 输出流/事件总线/扩展实例不串扰；无竞态写 forge-store）；⑤资源生命周期（AgentSession dispose/文件句柄/内存无泄漏）；⑥持久化完整性（重启保留/无并发写损坏/读写一致）。

@@ -18,14 +18,14 @@
 3. **复用 ai-coding 前端**：桌面 UI 复用 ai-coding 的 Vue 3 SPA，在 API 边界对接 forge-core。
 4. **跟 pi 一致**：权限/信任/沙箱策略与 pi 一致，不另造（继承项目信任，无 per-tool 审批，无沙箱）。
 5. **v1 聚焦 MVP**：核心先行，终端/发送队列/子代理等后续迭代。
-6. **forge-core 纯 Node**：Electron 专有逻辑放 forge-desktop，forge-core 保持纯 Node（为 v2+ 无头复用铺路，详见 `plan/embedded-agent-discussion.md`）。
+6. **forge-core 纯 Node + 传输无关**：Electron 专有逻辑放 forge-desktop，forge-core 保持纯 Node 且不绑传输（暴露方法+事件）；桌面端走 IPC（不走 HTTP，堵本地攻击面），headless 走 HTTP/SSE（v2+）。详见 `plan/embedded-agent-discussion.md`。
 
 ## 三、技术栈与运行环境
 
 - **引擎**：Node.js ≥22 + TypeScript；pi（`@earendil-works/pi-coding-agent` 等）作 npm 依赖，进程内 SDK（`AgentSession`）
 - **桌面壳**：Electron + electron-builder + electron-updater
 - **前端**：Vue 3 + Vite + TS（复用 ai-coding），marked / prismjs / mermaid
-- **通信**：HTTP REST + SSE（ai-coding 前端契约，pi 事件映射到 `CanonicalEvent`）
+- **通信**：forge-core 传输无关接口（方法+事件）；桌面端 Electron IPC（不走 HTTP，避免本地端口攻击面），headless HTTP/SSE（v2+）；pi 事件映射到 `CanonicalEvent`
 - **扩展**：pi 扩展（TS，jiti 加载）
 - **存储**：pi session JSONL（`~/.pi/agent/sessions`）+ forge 项目组织层
 - **构建**：npm workspaces，tsc/tsgo
@@ -34,7 +34,7 @@
 
 | 层 | 职责 |
 |---|---|
-| forge-core | 引擎层：pi SDK 集成、扩展加载、事件→CanonicalEvent 映射、REST/SSE 服务、项目/会话树组织、模型/provider 对接。**纯 Node** |
+| forge-core | 引擎层：pi SDK 集成、扩展加载、事件→CanonicalEvent 映射、传输无关接口（方法+事件）、项目/会话树组织、模型/provider 对接。**纯 Node** |
 | forge-desktop | Electron 壳：窗口/托盘/单例/原生对话框/通知/自动更新/安装器 |
 | forge-ui | Vue 前端：复用 ai-coding，改造适配 Electron + pi |
 | forge-extensions | 业务能力：pi 扩展承载 |
@@ -51,6 +51,14 @@
 | 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转 | prd/04_tool_execution.md | PRD 已确认 |
 | 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择 | prd/05_model_provider.md | PRD 已确认 |
 
+### 配套设计文档
+
+| 类型 | 路径 | 状态 |
+|---|---|---|
+| DB（forge 自有存储） | db/forge-store/schema.md | 规划中（待确认） |
+| API（forge-core 接口契约） | api/index.md + api/01~05_*.md | 规划中（待确认） |
+| 测试设计 | [test/index.md](test/index.md) + 各模块 coverage-matrix.md | 规划中（待确认） |
+
 ## 六、核心业务流程
 
 ```
@@ -61,16 +69,16 @@
 
 ## 七、MVP 范围
 
-**做**：项目管理、多会话（并行执行）、对话（Markdown/Mermaid）、工具执行卡片/Diff、模型配置、项目信任（pi 自带）、多窗口观察（多会话跨项目并排，Aero Snap 吸附）。
+**做**：项目管理、多会话（并行执行）、对话（Markdown/Mermaid）、工具执行卡片/Diff、模型配置、项目信任（pi 自带）、多窗口观察（多会话跨项目并排，窗口吸附）。
 
 **不做（后续迭代）**：嵌入式终端、发送队列、子代理面板、复杂 ToolProfile CRUD、图片附件、per-tool 审批扩展、嵌入式 agent（v2+）、TUI 形态。
 
 ## 八、当前状态
 
-- 已完成：立项与架构决策（见 `plan/forge-v1-plan.md`），docs 初始化，5 个 PRD 模块（01-05）全部确认。
-- 进行中：无（PRD 全部确认，待确认点 2 整体确认后进入 DB/API/测试设计）。
+- 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB（`db/forge-store/schema.md`）、API（IPC 传输无关契约）、测试设计（5 模块 coverage-matrix + 复杂场景展开 02/03/04 e2e + 05 api + 跨模块 `test/integration/pi-core.md`）生成并审核、`docs/artifacts.json` 登记、gen-doc-test-cases skill 加强（C1-C7）落地。
+- 进行中：无（**文档全部就绪，可进入 `dev` 开发阶段**）。
 - 阻塞项：无。
-- 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量、pi 事件->CanonicalEvent 映射可行性、pi 多 AgentSession 并发可行性、pi 信任事件拦截可行性（待开发验证）。
+- 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）。
 ## 九、AI 开发约束
 
 - **允许改动**：forge 自有代码（forge-core/desktop/ui/extensions）；docs/。

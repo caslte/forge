@@ -1,0 +1,55 @@
+{
+  "schema": "dev-artifacts-v1",
+  "modules": {
+    "01_project": {
+      "status": "draft",
+      "artifacts": {
+        "prd": { "path": "docs/prd/01_project_management.md", "status": "approved" },
+        "verification": { "path": "docs/test/01_project/coverage-matrix.md", "status": "draft" },
+        "api": { "path": "docs/api/01_project.md", "status": "draft" },
+        "db": { "path": "docs/db/forge-store/schema.md", "status": "draft" }
+      }
+    },
+    "02_session": {
+      "status": "draft",
+      "artifacts": {
+        "prd": { "path": "docs/prd/02_session_management.md", "status": "approved" },
+        "verification": { "path": "docs/test/02_session/coverage-matrix.md", "status": "draft" },
+        "api": { "path": "docs/api/02_session.md", "status": "draft" },
+        "db": { "path": "docs/db/forge-store/schema.md", "status": "draft" },
+        "test-e2e": { "path": "docs/test/02_session/e2e.md", "status": "draft" },
+        "integration": { "path": "docs/test/integration/pi-core.md", "status": "draft" }
+      }
+    },
+    "03_conversation": {
+      "status": "draft",
+      "artifacts": {
+        "prd": { "path": "docs/prd/03_conversation.md", "status": "approved" },
+        "verification": { "path": "docs/test/03_conversation/coverage-matrix.md", "status": "draft" },
+        "api": { "path": "docs/api/03_conversation.md", "status": "draft" },
+        "test-e2e": { "path": "docs/test/03_conversation/e2e.md", "status": "draft" },
+        "integration": { "path": "docs/test/integration/pi-core.md", "status": "draft" }
+      }
+    },
+    "04_tool": {
+      "status": "draft",
+      "artifacts": {
+        "prd": { "path": "docs/prd/04_tool_execution.md", "status": "approved" },
+        "verification": { "path": "docs/test/04_tool/coverage-matrix.md", "status": "draft" },
+        "api": { "path": "docs/api/04_tool.md", "status": "draft" },
+        "test-e2e": { "path": "docs/test/04_tool/e2e.md", "status": "draft" },
+        "integration": { "path": "docs/test/integration/pi-core.md", "status": "draft" }
+      }
+    },
+    "05_model": {
+      "status": "draft",
+      "artifacts": {
+        "prd": { "path": "docs/prd/05_model_provider.md", "status": "approved" },
+        "verification": { "path": "docs/test/05_model/coverage-matrix.md", "status": "draft" },
+        "api": { "path": "docs/api/05_model.md", "status": "draft" },
+        "db": { "path": "docs/db/forge-store/schema.md", "status": "draft" },
+        "test-api": { "path": "docs/test/05_model/api.md", "status": "draft" }
+      }
+    }
+  }
+}

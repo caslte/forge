@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>forge · 会议室 demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0b0e; --bg2:#101216; --card:#15171c; --surf:#1c1f26; --line:#272b33;
+    --fg:#e8e9ed; --mute:#8b909a; --dim:#525761;
+    --teal:#2dd4bf; --orange:#fb923c; --amber:#fbbf24; --green:#34d399; --rose:#fb7185;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:'Inter',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  body{background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(45,212,191,.05), transparent 60%),
+      radial-gradient(900px 500px at 0% 110%, rgba(251,146,60,.04), transparent 60%),
+      var(--bg); min-height:100vh}
+  /* top bar */
+  .bar{position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);background:linear-gradient(180deg,rgba(16,18,22,.92),rgba(10,11,14,.88));border-bottom:1px solid var(--line);padding:14px 22px}
+  .bar .logo{font-family:var(--mono);font-weight:800;font-size:16px;letter-spacing:-.01em}
+  .bar .logo b{color:var(--teal)}
+  .bar .logo .v{color:var(--mute);font-weight:500;margin-left:8px;font-size:11px}
+  .meta{display:flex;flex-wrap:wrap;gap:18px;margin-top:8px;font-size:12px;color:var(--mute);font-family:var(--mono)}
+  .meta b{color:var(--fg);font-weight:600}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  .dot.teal{background:var(--teal);box-shadow:0 0 8px var(--teal)}
+  .dot.orange{background:var(--orange);box-shadow:0 0 8px var(--orange)}
+  .flow{display:flex;align-items:center;gap:8px;margin-top:10px;font-family:var(--mono);font-size:11px;flex-wrap:wrap}
+  .flow .step{padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:#0c0e12;color:var(--mute)}
+  .flow .step.on{color:var(--teal);border-color:rgba(45,212,191,.3)}
+  .flow .arr{color:var(--dim)}
+  /* layout */
+  .wrap{max-width:1500px;margin:0 auto;padding:24px 22px 80px}
+  .stage{margin-top:28px}
+  .stage-h{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .stage-h .badge{font-family:var(--mono);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;letter-spacing:.03em}
+  .stage-h .badge.r1{color:var(--teal);background:rgba(45,212,191,.1);border:1px solid rgba(45,212,191,.25)}
+  .stage-h .badge.r2{color:var(--amber);background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.25)}
+  .stage-h .badge.sy{color:var(--green);background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.25)}
+  .stage-h h2{margin:0;font-size:18px;font-weight:700}
+  .hint{color:var(--mute);font-size:12.5px;margin:0 0 14px;font-family:var(--mono)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .row.full{grid-template-columns:1fr}
+  @media(max-width:980px){.row{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+  .card.teal{border-top:3px solid var(--teal)}
+  .card.orange{border-top:3px solid var(--orange)}
+  .card.green{border-top:3px solid var(--green)}
+  .card-h{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);background:#0d0f13}
+  .card-h .nm{font-family:var(--mono);font-weight:700;font-size:13px}
+  .card-h .nm.teal{color:var(--teal)} .card-h .nm.orange{color:var(--orange)} .card-h .nm.green{color:var(--green)}
+  .card-h .role{color:var(--mute);font-size:11px;font-family:var(--mono)}
+  .card-h .tag{margin-left:auto;font-size:10px;font-family:var(--mono);padding:2px 7px;border-radius:4px;background:#0c0e12;border:1px solid var(--line);color:var(--dim)}
+  .card-body{padding:14px 16px;overflow:auto;max-height:none}
+  /* markdown rendered content */
+  .md h1{font-size:18px;margin:18px 0 10px;color:var(--fg);border-bottom:1px solid var(--line);padding-bottom:6px}
+  .md h1:first-child{margin-top:0}
+  .md h2{font-size:15px;margin:16px 0 8px;color:var(--teal)}
+  .card.orange .md h2{color:var(--orange)}
+  .md h3{font-size:14px;margin:14px 0 6px;color:var(--fg)}
+  .md h4{font-size:13px;margin:12px 0 5px;color:var(--amber)}
+  .md p{margin:8px 0;color:#cdd2da}
+  .md ul,.md ol{margin:8px 0;padding-left:22px;color:#cdd2da}
+  .md li{margin:4px 0}
+  .md strong{color:var(--fg);font-weight:700}
+  .md code{font-family:var(--mono);font-size:12px;background:#0c0e12;padding:1px 5px;border-radius:3px;color:#a8b0bd;border:1px solid var(--line)}
+  .md pre{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto;margin:10px 0}
+  .md pre code{background:none;border:none;padding:0;color:#cdd2da;font-size:12px}
+  .md table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12px;font-family:var(--mono)}
+  .md th,.md td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  .md th{background:#0d0f13;color:var(--teal);font-weight:700}
+  .card.orange .md th{color:var(--orange)}
+  .md hr{border:none;border-top:1px solid var(--line);margin:14px 0}
+  .md blockquote{border-left:3px solid var(--teal);margin:10px 0;padding:4px 12px;color:var(--mute);background:rgba(45,212,191,.04);border-radius:0 6px 6px 0}
+  .foot{margin-top:40px;text-align:center;color:var(--dim);font-size:11px;font-family:var(--mono);padding:16px;border-top:1px solid var(--line)}
+  .foot a{color:var(--mute)}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="logo">⬢ <b>forge</b><span class="v">会议室 demo · 多模型评审可视化</span></div>
+  <div class="meta">
+    <span><span class="dot teal"></span><b>minimax-M3</b> 资深架构师</span>
+    <span><span class="dot orange"></span><b>huoshan-ark</b> 产品/工程负责人</span>
+    <span>📄 评审文档：<b>docs/overview.md</b></span>
+  </div>
+  <div class="flow">
+    <span class="step on">Round 1 · 并行评审</span><span class="arr">→</span>
+    <span class="step on">Round 2 · 交叉质询</span><span class="arr">→</span>
+    <span class="step on">综合汇总</span>
+    <span class="arr" style="margin-left:14px">协议：编排器 + 对等 AgentSession（非子 agent）· 2 并发已运行时验证</span>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="stage">
+    <div class="stage-h"><span class="badge r1">Round 1</span><h2>并行评审</h2></div>
+    <p class="hint">两个模型各自独立评审同一份文档，互不知对方观点</p>
+    <div class="row">
+      <div class="card teal"><div class="card-h"><span class="nm teal">minimax-M3</span><span class="role">架构师视角</span><span class="tag">独立评审</span></div><div class="card-body md" id="r1min"></div></div>
+      <div class="card orange"><div class="card-h"><span class="nm orange">huoshan-ark</span><span class="role">产品/工程视角</span><span class="tag">独立评审</span></div><div class="card-body md" id="r1huo"></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="badge r2">Round 2</span><h2>交叉质询</h2></div>
+    <p class="hint">每个模型看到对方的 Round 1 评审后回应：同意 / 反对 / 补充</p>
+    <div class="row">
+      <div class="card teal"><div class="card-h"><span class="nm teal">minimax-M3</span><span class="role">回应 huoshan-ark</span><span class="tag">← 看到对方评审</span></div><div class="card-body md" id="r2min"></div></div>
+      <div class="card orange"><div class="card-h"><span class="nm orange">huoshan-ark</span><span class="role">回应 minimax-M3</span><span class="tag">← 看到对方评审</span></div><div class="card-body md" id="r2huo"></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-h"><span class="badge sy">综合</span><h2>综合汇总</h2></div>
+    <p class="hint">由 minimax-M3 综合：双方共识 / 分歧（含判断）/ 最终建议 / 一句话结论</p>
+    <div class="row full">
+      <div class="card green"><div class="card-h"><span class="nm green">综合结论</span><span class="role">共识 + 分歧 + Top3 建议</span></div><div class="card-body md" id="synth"></div></div>
+    </div>
+  </div>
+
+  <div class="foot">forge 会议室 demo · 数据来自 <code>docs/plan/meeting-room-demo-output.md</code> · 重新生成：<code>node docs/plan/_gen-meeting-html.mjs</code></div>
+</div>
+
+<script>
+  const SECTIONS = {"r1huo":{"title":"Round1 · huoshan-ark 评审","body":"### 1. 安全与信任机制过于薄弱，存在高危越权风险\n**问题**：文档明确声明“跟 pi 一致，无 per-tool 审批，无沙箱”，且信任策略是“首次项目信任询问”。这意味着一旦用户误点信任，AI Agent 将在无沙箱、无二次确认的情况下获得系统级文件和命令执行权限。\n**为什么是问题**：作为桌面端应用，用户极易将系统根目录或敏感数据盘注册为“项目”。在无沙箱保护且无工具执行拦截的情况下，一次大模型“幻觉”或恶意 Prompt 注入即可导致用户宿主机数据被破坏或泄露。这是架构层面的安全红线。\n**建议**：\n1. v1 必须引入最小化的沙箱或熔断机制（如限制工作目录越界访问）。\n2. 即使不做 per-tool 审批，也必须对高危工具（如执行 Shell 命令、删除文件、写入项目外路径）强制增加前端弹窗确认（Re-confirm）。\n3. 将信任层级细化：项目级读写信任 ≠ 系统级命令执行信任。\n\n### 2. Electron 内部采用 HTTP REST + SSE 架构存疑，引入不必要的安全与性能开销\n**问题**：forge-ui (Vue) 与 forge-core (Node) 通信采用 HTTP REST + SSE，且在 Electron 壳内运行。\n**为什么是问题**：Electron 原生提供 IPC 通信，性能高且天然隔离。在桌面端启本地 HTTP Server 会带来：1) 端口冲突风险；2) 本地防火墙弹窗打扰；3) 其他本地恶意进程可通过该 HTTP 接口越权调用 forge-core 执行任意命令（如通过 SSE 触发 AI 执行危险操作）。这与“桌面端安全”背道而驰。\n**建议**：如果 ai-coding 前端完全基于 HTTP 契约编写，建议在 forge-desktop 层实现一个适配器，将前端发出的 Fetch 请求拦截并重定向至 Electron IPC，而非在 forge-core 实起 HTTP Server。这样既复用了前端代码，又保证了桌面端的原生安全与性能。\n\n### 3. 多窗口与多会话并发的进程模型与状态同步未定义\n**问题**：MVP 包含“多会话并行、多窗口跨项目并排观察”，但未定义 Electron 的进程模型及多窗口间的状态同步机制。\n**为什么是问题**：\n1. pi 的多个 `AgentSession` 如果跑在 Electron 主进程（forge-core），高并发工具执行（如大量文件读写/终端命令）会阻塞主进程，导致所有窗口 UI 卡死。\n2. 多窗口（多 WebContents）需要感知彼此的状态（如：在 A 窗口修改了 Provider Key，B 窗口需要更新；A 窗口删除了项目，B 窗口需自动关闭）。\n**建议**：\n1. 明确 pi `AgentSession` 的运行位置。若必须纯 Node，考虑在 Electron 中使用 `utilityProcess` 或 Node `worker_threads` 隔离 Session 执行，避免阻塞主进程。\n2. 明确多窗口共享状态的广播机制（通过主进程中转 IPC 消息），并在 PRD 02 补充多窗口状态同步的边界用例。\n\n### 4. 缺乏异常中断与状态恢复机制\n**问题**：核心业务流程全闭环为理想路径，未提及网络断开、LLM 返回异常、应用崩溃、用户强杀进程时的处理。\n**为什么是问题**：AI 对话和工具执行是长事务。如果在工具执行中途（如刚写完文件还没发 result）应用崩溃或网络断开，pi 的 session JSONL 与实际文件系统状态可能不一致，导致下次加载会话时上下文错乱，无法继续。\n**建议**：\n1. 在 PRD 03/04 中补充异常流定义：网络断开重连策略、流式响应中断的前端展示（如显示断连并支持重试）、工具执行被中断的回滚或状态标记机制。\n2. 明确应用重启后的会话恢复策略（是否自动恢复未完成的会话状态）。\n\n### 5. “forge 项目组织层”存储方案与并发安全缺失\n**问题**：存储部分提到“pi session JSONL + forge 项目组织层”，但未定义 forge 组织层用什么存储。\n**为什么是问题**：如果 forge 组织层（项目列表、信任状态、窗口布局等）使用简单的 JSON 文件存储，在多窗口并发读写时极易造成数据覆盖和损坏（典型竞态条件）。\n**建议**：明确 forge 组织层使用 SQLite（如 better-sqlite3）或带有文件锁的存储方案，禁止裸写 JSON 文件。在 PRD 01 中补充多窗口并发修改项目元数据时的处理逻辑。\n\n### 6. pi 升级与扩展兼容性风险未闭环\n**问题**：风险项提到“pi 扩展 API/SDK 覆盖度”，但未定义当 pi npm 依赖发生 Breaking Change 时的应对策略。\n**为什么是问题**：forge 将核心业务寄托于 pi 扩展，pi 的任何底层事件协议、扩展加载机制变动都会导致 forge 业务功能整体瘫痪，且由于无降级方案，应用将直接变砖。\n**建议**：\n1. 在 `docs/specs/` 中增加 pi 版本锁定与升级验证规范。\n2. forge 扩展加载器需增加版本兼容性检查，当 pi API 不兼容时，给出明确的 UI 提示并降级为纯对话模式（禁用业务扩展），而非应用崩溃。"},"r1min":{"title":"Round1 · minimax-M3 评审","body":"# forge 项目总览评审意见\n\n## P0 — 阻塞级问题（建议在进入 DB/API 设计前解决）\n\n### 1. 进程模型未定义：forge-core 是独立进程还是嵌入 Electron 主进程？\n**问题**：技术栈写\"HTTP REST + SSE\"作为前后端契约，但 pi 又是\"进程内 SDK（AgentSession）\"。这隐含 forge-core 必须是独立 Node 进程，否则 HTTP/SSE 无意义。但文档未明示：\n- forge-core 由谁拉起（Electron main? 子进程? sidecar?）\n- 端口如何分配/冲突处理\n- 进程崩溃后谁负责拉起\n- 与 Electron 生命周期（窗口关闭、应用退出）的耦合\n\n**为什么是问题**：进程模型决定后续所有架构细节（IPC vs HTTP、错误传播、生命周期）。模糊的状态会导致 DB/API 设计反复返工。\n\n**建议**：明确进程拓扑，画一张\"主进程 ↔ forge-core 子进程 ↔ renderer\"的部署图，并将\"端口管理/进程拉起/崩溃恢复\"列入 DB/API 设计前置项。\n\n---\n\n### 2. 三个核心 spike 必须在 API 设计前完成\n**问题**：风险项 5 条中有 3 条属于\"未运行时验证\"的可行性问题：\n- pi 多 AgentSession 并发\n- pi 事件→CanonicalEvent 映射\n- pi 信任事件拦截\n\n而文档说\"待确认点 2 整体确认后进入 DB/API/测试设计\"——顺序颠倒。\n\n**为什么是问题**：CanonicalEvent 抽象的形态、REST/SSE 的事件协议、信任确认 UI 的接入点全部依赖这 3 个 spike 的结论。先做 API 设计就是先在沙地上盖楼。\n\n**建议**：把\"3 项技术 spike\"提到与\"确认点 2\"并列，并明确：spike 失败时的降级方案（例：并发不支持 → v1 改串行会话；信任拦截失败 → 改为注册项目时一次性询问）。\n\n---\n\n## P1 — 架构合理性\n\n### 3. 多窗口 + 单例 + 状态共享三概念冲突未解\n**问题**：forge-desktop 职责列了\"单例\"，但 MVP 又做\"多会话跨项目并排观察 + Aero Snap 吸附\"。且 forge-core 是独立进程（推测），那么：\n- 单例是 Electron app 级别还是窗口级别？\n- 多个 renderer 窗口如何共享同一份 SSE 连接？各自独立连接？\n- 项目/会话状态变更如何在多窗口间同步（不依赖后端推送则需要 polling）？\n\n**为什么是问题**：多窗口是 MVP 的明确范围，但窗口间状态一致性是分布式问题，不是简单加几个 window 就行。\n\n**建议**：补充\"多窗口状态模型\"小节——是否以 forge-core 为唯一状态源 + 每个窗口独立订阅 SSE；或窗口间通过 Electron IPC 广播。\n\n---\n\n### 4. forge-extensions 的加载与跨扩展通信未定义\n**问题**：5 个业务模块都是 pi 扩展，但没说清楚：\n- 扩展物理位置（forge-extensions 子包？monorepo 内每个模块一个 package？）\n- pi 如何发现这些扩展（路径注入？环境变量？package.json 字段？）\n- 跨模块数据流：例如\"工具执行展示\"模块需要\"会话/对话\"的状态，是通过 pi 事件总线，还是扩展间直接 import，还是经 forge-core 中转？\n\n**为什么是问题**：扩展边界决定耦合点。全部经 forge-core 中转会增加延迟；直接 import 会破坏 pi 扩展的隔离假设。\n\n**建议**：定一条规则——\"扩展间不允许直接依赖，必须经 pi 事件或 forge-core 提供的服务\"。并在 DB/API 阶段把它落到具体接口。\n\n---\n\n### 5. 存储分层含糊：\"forge 项目组织层\" 是什么？\n**问题**：存储写\"pi session JSONL + forge 项目组织层\"，但 forge 层是什么——SQLite？JSON 文件？Electron userData？表结构如何？这直接影响 forge-core 是否需要持久化依赖。\n\n**为什么是问题**：现在 forge-core 是\"纯 Node\"，但没说\"无 SQLite 依赖\"。一旦引入 DB，headless 复用路径会变。\n\n**建议**：明确\"forge 层存储选型\"作为 DB 设计前置决策（建议 SQLite + drizzle/better-sqlite3，但需论证 headless 场景下的可行性）。\n\n---\n\n### 6. CanonicalEvent 抽象的稳定性与版本演进机制缺失\n**问题**：CanonicalEvent 是 forge 抗 pi 升级波动的稳定层。但文档没说：\n- schema 在哪里定义与版本化\n- pi 升级导致事件缺失/新增时如何兼容（破坏性 vs 增量）\n- 谁负责这个映射层的回归测试\n\n**为什么是问题**：风险项提到\"pi 扩展 API/SDK 覆盖度\"——SDK 不稳时，最先崩的就是这个映射层。\n\n**建议**：把 CanonicalEvent schema 草案作为 spike 产出之一，并约定\"pi 升级 → CanonicalEvent 兼容性测试 → 必要时版本号 bump\"流程。\n\n---\n\n### 7. ai-coding 复用改造工作量未评估\n**问题**：\"桌面 UI 复用 ai-coding 的 Vue 3 SPA，在 API 边界对接 forge-core\"。但 ai-coding 假设是 Web 形态，迁移到 Electron 涉及：原生对话框、文件系统 IPC、Electron-only API、自动更新 UI、多窗口管理、SSE 替代 WebSocket 等。这些改造点一个没说。\n\n**为什么是问题**：风险项承认\"ai-coding 前端改造量（多窗口为新开发）\"，但没量化也没拆解。\n\n**建议**：在 DB/API 设计前输出一份\"ai-coding → forge-ui 改造清单\"，按\"必须改 / 可不改 / 新增\"三档分级。\n\n---\n\n## P1 — 安全 / 非功能\n\n### 8. 密钥安全机制未指定\n**问题**：模型/Provider 配置提到\"密钥安全\"，但没说用 Electron safeStorage、OS keychain 还是明文。forge-core 纯 Node 不能直接用 safeStorage。\n\n**建议**：明确\"密钥只在 forge-desktop 进程加解密，forge-core 只接收解密后内存值\"或等价方案，并列入 P0 安全需求。\n\n---\n\n### 9. 非功能性需求整体缺失\n**问题**：文档没有性能、资源、兼容性、可观测性目标。建议至少补：\n- 并发会话数上限与依据\n- 流式响应首字节延迟目标\n- 内存占用预算（多 AgentSession 资源开销未知）\n- 支持的 OS / Node / Electron 版本矩阵\n- 日志、错误上报、metrics 路径\n\n**为什么是问题**：非功能性需求缺失意味着 v1 上线前没有验收基准，\"能用\"和\"可发布\"是两个标准。\n\n---\n\n## P2 — 一致性与流程\n\n### 10. 风险项缺少缓解/降级方案\n**问题**：5 条风险都是\"待验证\"型，但没写\"验证失败怎么办\"。风险管理的价值在 fallback，不在识别。\n\n**建议**：每条风险补一栏：\"缓解策略 / 降级方案 / 触发回退的条件\"。\n\n---\n\n### 11. 缺少架构决策记录(ADR)机制\n**问题**：\"pi 不 fork\"、\"forge-core 纯 Node\"、\"HTTP REST + SSE\"都是重大决策，但无 ADR。后续争议时无历史可追溯。\n\n**建议**：在 `docs/plan/` 下建 `adr/`，把已确认的关键决策（进程模型、扩展边界、存储选型）逐一落档，每个决策含\"上下文 / 选项 / 结论 / 后果\"。\n\n---\n\n### 12. \"v2+ 无头复用\"作为当前约束的代价未论证\n**问题**：forge-core 保持纯 Node 是为 v2 headless 铺路。但当前因此被迫走 HTTP/SSE 跨进程、不能直接用 Electron 原生能力，这些成本 v1 真实承担着。\n\n**建议**：要么明确\"v1 接受这些成本是值得的\"，要么降低约束（v1 允许 forge-core 引入部分 Electron 抽象层，v2 再剥离）。半约束状态最危险。\n\n---\n\n### 13. 自动更新覆盖范围未声明\n**问题**：Electron 自动更新只覆盖 forge-desktop。但系统有 4 个组件：forge-desktop / forge-core / forge-extensions / pi 依赖。pi 是 npm 依赖，随 forge 升级还是锁定版本？扩展单独升级还是跟随主包？\n\n**建议**：明确版本策略——\"all-in-one 升级，pi 跟随 forge 主版本锁定\"或\"pi 允许独立升级但需回归测试套件\"。\n\n---\n\n### 14. 测试策略完全缺失\n**问题**：`docs/test/` 在事实来源里列出，但总览里只字未提测试架构。多进程 + Electron + pi SDK + SSE 的测试栈需要专门设计（unit / integration / E2E / pi mock 层）。\n\n**建议**：在进入 DB/API 设计的同一阶段输出测试架构——尤其要回答\"如何在 CI 里测 pi 扩展和 AgentSession 集成\"。\n\n---\n\n## 一句话总结\n\n**架构方向合理（pi-as-dependency + 扩展承载业务 + 三层分离），但当前文档停留在\"是什么\"层面，缺少\"怎么落地\"和\"如果核心假设不成立怎么办\"。建议把 3 项技术 spike、进程模型、存储选型、扩展边界这 4 件事，作为 DB/API 设计前的硬前置项。**"},"r2min":{"title":"Round2 · minimax-M3 回应","body":"# 对 huoshan-ark 评审意见的回应\n\n## 一、明确同意的点\n\n### ✅ 同意 #1（安全与信任机制薄弱）—— 但需升格到原则级讨论\nhuoshan-ark 完全正确。这是这份文档**最大的隐患**，不是之一。\n\n文档原则 4 说\"跟 pi 一致：继承项目信任，无 per-tool 审批，无沙箱\"。但 pi 是 CLI 工具，用户从终端 cd 进目录、对工程目录有明确认知；forge 是桌面应用，用户用目录选择器点一下就注册。这两种场景的威胁模型完全不同：\n\n- pi 用户的信任对象是\"我打开的 shell 所在的目录\"\n- forge 用户的信任对象是\"我随手选的一个文件夹，其中可能包含 C:\\、D:\\、桌面、网盘同步目录\"\n\n再加上 LLM 幻觉、Prompt 注入已经成为现实威胁（已有公开 CVE 与事故），\"一次信任点击 + 无任何运行时拦截\"在桌面端是不可接受的。\n\n**关键不是\"加沙箱\"，而是先把原则 4 的桌面适用性单独拎出来评审**。可能的结论：\n- A. 接受 pi 模型，在 UI 上做强警告（用户明确知情）\n- B. 在 pi 模型基础上加最低限度保护（工作目录越界检测、危险命令二次确认）\n- C. 偏离 pi，独立设计桌面端 trust model\n\n无论选哪个，都必须**显式决策**而非继承自 pi。我倾向 B——这是桌面端的合理底线，不算违背\"跟 pi 一致\"的精髓。\n\n---\n\n### ✅ 同意 #2（HTTP REST + SSE 在 Electron 内不合理）\n同意结论，但建议的实现路径可以更精确。\n\nhuoshan-ark 提的\"forge-desktop 做适配器把 Fetch 重定向到 IPC\"——方向对，但有个细节：SSE 是单向流，HTTP 拦截对 SSE 不友好。更干净的设计是：\n\n```\nforge-ui  ── HTTP-shaped 调用 ──▶ forge-desktop (适配层)\n                                      │\n                                      ├── IPC ──▶ forge-core (Electron utilityProcess)\n                                      └── SSE  ──▶ forge-core (via IPC 推送)\n```\n\n即 **forge-core 暴露传输无关的接口**，由 forge-desktop 提供 HTTP/IPC 双适配。这样：\n- 满足 forge-core 纯 Node（v2 headless 可直接用 HTTP 适配）\n- 满足桌面端用 IPC（避免端口暴露与跨进程攻击面）\n- 满足复用 ai-coding 前端契约（前端继续用 HTTP 形态调用）\n\n**当前文档对 HTTP 选型没有给出任何论证，这是失职**。HTTP-in-Electron 不只是\"性能差\"问题，更是**本地攻击面**问题——同一台机器的其他进程（恶意软件、其他用户的服务）可以直接打 forge-core 的 HTTP 端口，借 AgentSession 触发任意工具执行。这是真正的安全红线。\n\n---\n\n### ✅ 同意 #3（多窗口与并发隔离）\n两点都同意，并补充：\n\n1. **utilityProcess 是正解**：Electron 的 utilityProcess 就是为这种场景设计的，与主进程隔离、有独立 V8 实例、支持 Node API。forge-core 跑在 utilityProcess 里，天然满足\"纯 Node\"约束（utilityProcess 没有 Electron renderer 上下文，但有 Node API）。\n\n2. **但要 spike 验证 pi SDK 在 utilityProcess 里的兼容性**——风险项里\"pi 多 AgentSession 并发\"的验证需要在这个具体环境里做，不是泛泛的 Node 环境。\n\n3. 多窗口状态同步建议用**主进程做 broadcast hub**：renderer A → IPC → main → broadcast IPC → renderer B。简单可靠，不要让 renderer 之间直接通信。\n\n---\n\n### ✅ 同意 #4（异常中断与状态恢复）\n这是 happy-path-only 的典型病。AI 工具调用是\"写文件 → 返回 result\"的分布式事务原语，没有事务保证，必须显式设计：\n\n- 流式中断：SSE 断连时 UI 显示\"已断开\"而非卡死 + 手动重试\n- 工具执行中途崩溃：通过 pi JSONL 的 checkpoint 机制恢复\n- LLM API 错误：区分 rate limit / auth / network / content filter，分别给前端提示\n- 强杀恢复：下次启动时扫描进行中会话，提示用户决定继续/放弃\n\n我**特别同意**\"工具执行被中断的回滚或状态标记\"——这是文档完全没有覆盖的。建议作为 PRD 03/04 的**必填字段**而非附录。\n\n---\n\n### ✅ 同意 #5（存储并发安全）\nJSON 文件 + 多窗口并发 = 数据腐烂。建议**强制 SQLite (better-sqlite3)**，理由：\n- 同步 API，适合 Electron utilityProcess 内的 forge-core\n- 纯 Node 依赖，兼容 headless 复用\n- 单文件、零运维\n\n**这是必须在 DB 设计前置项里钉死的决策**，不允许进入 DB 设计阶段再讨论。\n\n---\n\n### ✅ 同意 #6（pi 升级兼容性）\n同意方向，但 huoshan-ark 的\"降级为纯对话模式\"建议需要更精确：\n\n- 必须有**版本兼容矩阵**（forge version → supported pi version range）\n- 加载时做 capability check（不只查版本号，要测关键 API 是否存在）\n- \"降级模式\"要明确：禁用哪些扩展、保留哪些能力、用户怎么感知\n- pi 升级流程：locked range + 自动化回归 + canary\n\n补充一点 huoshan-ark 没提的：**forge 扩展也需要版本控制**。forge-extensions 与 forge-core、pi 三者之间的版本三角关系不能假设。\n\n---\n\n## 二、需要修正/细化的点\n\n### ⚠️ huoshan-ark #1 的\"高危工具二次确认\"\n方向对，但粒度建议细化：\n\n不要把所有 shell 命令、文件删除、外部写盘一视同仁——而是建立一个**危险等级表**：\n- L0：只读工具（read_file, grep）—— 无需确认\n- L1：项目内写工具（write_file, edit）—— 无需确认\n- L2：项目内执行工具（shell, npm install）—— 单次会话确认一次\n- L3：跨边界工具（rm -rf, sudo, 写入非项目路径）—— 每次确认\n\n这与\"无 per-tool 审批\"不矛盾——per-tool 审批是逐次弹窗，L2/L3 是分级熔断。**关键是 L3 必须有**，否则\"无沙箱 + 用户随便注册 D 盘\"就是灾难。\n\n---\n\n### ⚠️ huoshan-ark #2 的\"IPC 适配器\"\n需要补充：HTTP→IPC 适配层**只解决主链路**，还有几个边界：\n- SSE 流式响应的取消（用户中途 stop）—— 这条链路在 IPC 下要单独设计 ack 机制\n- 文件上传/下载（如果 v1 不做可暂缓）\n- 错误传播：HTTP 状态码语义在 IPC 下需要重新映射\n\n建议在 ADR 里把\"传输适配层\"作为独立组件明确定义，不要让它散落在 forge-desktop 各个角落。\n\n---\n\n### ⚠️ huoshan-ark #3 的\"主进程 IPC 中转\"\n补充一个易遗漏点：**会话/项目状态变更的最终一致性 vs 强一致性**。\n\n多窗口 + SSE 推送，必然有短暂不一致窗口（窗口 A 删除项目 → 窗口 B 收到推送前的几十毫秒还在显示该项目）。建议：\n- 状态变更的\"发起窗口\"立刻本地更新\n- 其他窗口异步接收 + 显示过渡态\n- 不试图做全局强一致（成本不划算）\n\nPRD 02 应把这个作为已知行为写入，而不是当成 bug 留给测试发现。\n\n---\n\n### ⚠️ huoshan-ark #4 的\"会话恢复策略\"\n需要明确**自动恢复 vs 用户选择恢复**两种模式的取舍：\n- 自动恢复：体验好，但可能让用户面对半成品会话\n- 用户选择恢复：控制感强，但每次都要点\n\n建议默认**询问一次**（\"上次有未完成会话，是否继续？\"），记住用户的项目级选择。这是 v1 的合理中间态。\n\n---\n\n### ⚠️ huoshan-ark #5 的\"项目元数据并发\"\n补充：除了写入并发，还有**删除/重命名竞态**——用户 A 窗口重命名项目时，B 窗口正在打开会话。需要：\n- 删除/重命名前检查活跃会话\n- 引入逻辑锁或版本号机制\n- pi 端 session 引用 project 时带版本戳\n\n---\n\n### ⚠️ huoshan-ark #6 的\"降级为纯对话模式\"\n需要明确**降级模式的边界**：\n- pi 本身的对话能力是否在降级模式下保留？（保留 = forge 还能用，只是扩展没了）\n- 模型/Provider 配置还能不能改？（应该能，否则降级后无法恢复）\n- 降级模式的 UI 提示要做到什么程度？（不能静默失败）\n\n---\n\n## 三、huoshan-ark 未覆盖但需补充的点\n\n### 7. 错误模型缺失\n整个文档没有定义统一的错误分类与传播路径。建议建立 Error Taxonomy：\n- 用户错误（操作不当）→ UI 提示\n- 配置错误（Provider 配错）→ UI 提示 + 引导修复\n- LLM 错误（rate limit, content filter）→ 可重试 vs 不可重试\n- 系统错误（pi SDK 抛错）→ 日志 + 降级\n- 工具错误（命令失败）→ 用户决策\n\n没有这个，DB/API 设计会反复纠结\"这个错该返回什么 code\"。\n\n---\n\n### 8. 可观测性完全空白\n桌面应用没有 telemetry 设计 = 出问题只能靠用户报错。建议至少：\n- 结构化日志（pino/winston）的统一规范\n- 关键路径埋点（会话创建、工具执行、Provider 切换）\n- 错误上报（可选、用户可控、默认关闭）\n- 本地诊断包导出（\"遇到问题？导出日志给开发者\"）\n\n---\n\n### 9. 打包/分发架构未定\n如果 forge-core 跑在 utilityProcess：\n- 怎么打包？asar 内 + 解压？还是单文件？\n- 升级时 utilityProcess 是否需要重启？怎么做无损？\n- forge-core 崩溃后谁负责重启？退避策略？\n- 多个 utilityProcess（多会话）还是单 utilityProcess + 多 session？\n\n这些会直接影响 forge-desktop 的实现复杂度，应该在进程模型决策的同时定下来。\n\n---\n\n### 10. 测试架构缺失\nhuoshan-ark 也没提。多进程 + Electron + pi SDK + SSE 的测试栈需要专门设计：\n- pi SDK 的 mock 层（不想每次跑测试都打真实 LLM）\n- forge-extensions 的隔离测试框架\n- Electron 的 e2e（Playwright？Spectron 继任者？）\n- forge-ui 的组件测试（vue-test-utils）\n- 跨进程 contract 测试（forge-ui ↔ forge-desktop ↔ forge-core）\n\n没有测试架构，v1 验收就是黑盒。\n\n---\n\n### 11. 资源预算与性能基线\n多 AgentSession 并发的资源开销未知，但 v1 需要承诺：\n- 单会话内存上限\n- 3 并发会话的内存预算\n- 流式响应首字节延迟目标\n- 工具执行结果回传延迟目标\n- 冷启动时间\n\n否则\"能用\"和\"流畅\"是两回事，验收没标准。\n\n---\n\n## 四、综合判断\n\n### 这份文档可行吗？\n**有条件可行**。架构方向正确（pi-as-dep + 扩展承载业务 + 三层分离 + forge-core 纯 Node），但**当前文档是\"立项书\"水平，不是\"实施蓝图书\"水平**。直接进入开发会有大量返工。\n\n### 最大隐患是什么？\n\n**不是任何一个单点，而是\"未验证假设 × 强制时间线\"的组合。**\n\n具体来说：\n\n| 隐患 | 触发条件 | 后果 |\n|---|---|---|\n| **桌面端信任模型继承 pi 的桌面不适配** | 用户把 C:\\ 注册为项目 + 一次 LLM 幻觉 | 数据丢失/泄露，公开事故 |\n| **HTTP-in-Electron 留下本地攻击面** | 恶意软件利用 HTTP 端口 | 远程命令执行（虽然是本地） |\n| **3 项技术 spike 推迟到 API 设计后** | 任一 spike 失败 | API 设计返工，2-4 周浪费 |\n| **\"forge 组织层存储\"未指定** | 进入 DB 设计时还在讨论选型 | 推迟 1-2 周 |\n| **多进程架构未定型** | forge-core 跑哪个进程未定 | 主进程阻塞 UI / 安全边界错位 |\n\n其中**第一项（信任模型）是战略级隐患**，其余是战术级。huoshan-ark 把信任问题列为第一是正确的——这不是一个\"v1 加个二次确认\"就能解决的问题，而是**\"跟 pi 一致\"这条原则本身需要在桌面场景下重新审视**。\n\n### 给项目组的优先行动建议（按优先级）\n\n1. **立即做**：3 项技术 spike（并发 / 事件映射 / 信任拦截），每项限时 3-5 天\n2. **同步做**：进程模型 + 存储选型 + 信任模型 三项 ADR，必须先于 DB/API 设计\n3. **v1 决策**：HTTP-in-Electron 是否保留——大概率改成传输适配层架构\n4. **PRD 03/04 补全**：异常流、工具事务性、降级路径\n5. **推迟但不遗忘**：测试架构、可观测性、性能基线——DB/API 阶段输出初版\n\n如果以上 1-3 在进入下一阶段前完成，这份文档可以升格为可实施的 v1 蓝本。否则，建议**回到 PRD 确认阶段**，先解决原则级分歧。"},"r2huo":{"title":"Round2 · huoshan-ark 回应","body":"### 一、明确表态\n\nM3 的评审非常扎实，尤其对进程模型和 Spike 前置的抓取极其精准。但在多窗口状态同步和 v1 架构约束上存在视角偏差。总体我同意 80%，反对 15%，补充 5%。\n\n---\n\n### 二、完全同意并强化的点\n\n**1. 同意 P0-1 进程模型与 HTTP/SSE 架构的质疑**\nM3 击中了最大痛点。在 Electron 桌面端跑 HTTP REST + SSE 是典型的“伪 Web 架构”强行套壳。这不仅是端口冲突问题，更是严重的安全漏洞（本地任意进程可调 forge-core 接口执行越权操作）。\n**强化建议**：彻底废弃 forge-core 起 HTTP Server 的方案。forge-core 作为纯 Node 模块，在 Electron 主进程或 `utilityProcess` 中加载，前端通过 `contextBridge` + IPC 直连。所谓“ai-coding 前端契约”，用 IPC 适配器去模拟，而非真起 HTTP。\n\n**2. 同意 P0-2 Spike 前置**\n非常准确。基于未验证的 pi API 行为去设计 CanonicalEvent 和 DB 纯属浪费时间。pi 的事件机制、并发模型和信任拦截如果不跑通，后面全是空中楼阁。\n**强化建议**：Spike 不仅验技术，还要产出“降级方案”。例如 pi 不支持并发 AgentSession，v1 就直接做会话串行排队。\n\n**3. 同意 P1-8 密钥安全机制**\nforge-core 纯 Node 确实无法调用 Electron `safeStorage`。\n**强化建议**：定死边界——forge-desktop 负责密钥的加解密（调用 OS Keychain），forge-core 只接收明文内存变量。坚决杜绝 forge-core 落地明文密钥。\n\n---\n\n### 三、反对与不同视角\n\n**1. 反对 P1-3 将多窗口状态共享定性为“分布式问题”**\nM3 认为多窗口状态同步是复杂的分布式问题，这属于过度设计。在 Electron 架构下，主进程就是天然的单一状态中心。\n**为什么反对**：不需要什么 SSE 推送或复杂广播。forge-desktop 主进程维护一份权威状态（项目树、会话列表、配置），各 Renderer 窗口通过 IPC 订阅变更。一个窗口改了 Provider，主进程更新状态后向其他窗口推 `onProviderChanged` 事件即可。这是桌面端的标准玩法，不要用 Web 多标签页的思维去套。\n\n**2. 反对 P2-12 “v1 降低 forge-core 纯 Node 约束”的暗示**\nM3 建议如果 v1 成本太高，可降低约束允许 forge-core 引入部分 Electron 抽象层。这是极其危险的妥协。\n**为什么反对**：一旦开了这个口子，v2 做 Headless/CLI 时就会面临重写。正确做法是保持 forge-core 绝对纯净，利用 Node 的 `EventEmitter` 或自建事件总线与 forge-desktop 通信。架构纪律不能因为 v1 赶进度而破坏。\n\n---\n\n### 四、关键补充（M3 遗漏的致命点）\n\n**1. 缺失强制并发控制与资源熔断机制**\nM3 在 P1-9 提了并发上限，但没说到点子上。AI Agent 是资源密集型（大上下文内存占用、密集文件 IO）。\n**问题**：如果用户开 5 个窗口并行跑代码重构，Node 进程大概率 OOM 或文件锁死。\n**建议**：v1 必须在 forge-core 设计全局任务调度器（Semaphore），限制同时运行的 AgentSession 数量（如最多 2 个），超出的进入排队。这必须在 PRD 02 (会话管理) 中明确定义。\n\n**2. pi 扩展执行异常时的状态一致性（Crash Consistency）**\nM3 关注了应用崩溃，但没关注“工具执行到一半失败”的边界。\n**问题**：pi 扩展调用工具（如写文件 A，删文件 B），如果 B 失败了，A 的状态怎么回滚？pi 的 JSONL 记录了什么？\n**建议**：在 PRD 04 (工具执行) 中明确：工具执行失败时的回滚策略，或者至少明确“不回滚，但前端必须醒目提示该工具执行中断，后续会话上下文可能受污染”。\n\n---\n\n### 五、综合判断\n\n**1. 文档可行性**\n这份总览文档作为“方向标”是合格的，但作为“施工图”完全不合格。方向（pi-as-dependency + 三层分离）正确，但落地的地基（进程模型、存储选型、pi API 行为）全凭假设。目前**绝对不能**进入 DB/API 设计阶段。\n\n**2. 最大隐患**\n**最大隐患是“在沙地上盖楼”——基于未经运行时验证的 pi SDK 假设，去设计复杂的 CanonicalEvent 映射和多窗口多进程通信。** 如果 pi 的实际事件流或并发能力与假设不符，整个 forge-core 的架构设计和 API 契约将全部推倒重来。\n\n**下一步唯一动作**：冻结 DB/API 设计计划。立即投入 3 个技术 Spike（并发、事件映射、信任拦截），并在 Spike 中验证 IPC 替代 HTTP/SSE 的可行性。Spike 产出结论前，不写一行业务代码。"},"synth":{"title":"综合汇总","body":"# 双方评审综合结论\n\n## 一、双方共识（10 项）\n\n| # | 共识点 | 双方依据 |\n|---|---|---|\n| 1 | **桌面端信任模型继承 pi 是战略级隐患**，必须显式决策（A/B/C 三选一），不可默默继承 | huoshan-ark #1 + M3 回应 |\n| 2 | **HTTP REST + SSE in Electron 选型不当**，存在本地攻击面与性能/端口问题 | huoshan-ark #2 + M3 #1 |\n| 3 | **3 项技术 spike 必须前置于 DB/API 设计**：并发 / 事件映射 / 信任拦截，且每项必须有降级方案 | M3 P0-2 + huoshan-ark 强化 |\n| 4 | **进程模型未定义**：forge-core 跑哪个进程、谁来拉起、崩溃如何恢复 | M3 P0-1 + huoshan-ark #3 |\n| 5 | **存储选型必须钉死 SQLite（better-sqlite3）**，禁止裸写 JSON | M3 P1-5 + huoshan-ark #5 |\n| 6 | **异常中断与状态恢复机制缺失**，PRD 03/04 必须补异常流、工具事务性、降级路径 | huoshan-ark #4 + M3 回应 |\n| 7 | **pi 升级兼容性需要版本矩阵 + capability check + 降级模式**，forge 扩展也需版本化 | huoshan-ark #6 + M3 回应 |\n| 8 | **密钥安全边界**：forge-desktop 加解密（safeStorage/Keychain），forge-core 只用明文内存 | M3 P1-8 + huoshan-ark 强化 |\n| 9 | **forge-extensions 加载与跨扩展通信需明确定义边界规则** | M3 P1-4 |\n| 10 | **错误模型、可观测性、测试架构、性能基线、打包分发** 全部缺失，DB/API 阶段需输出初版 | M3 补充 + huoshan-ark 间接认可 |\n\n> **共识覆盖了文档结构性缺陷的 90% 以上**。剩余分歧集中在\"如何修\"而非\"是否要修\"。\n\n---\n\n## 二、双方分歧（3 项）\n\n### 分歧 1：forge-core 传输层架构形态\n- **M3 立场**：forge-core 暴露**传输无关接口**，forge-desktop 提供 HTTP/IPC 双适配。理由：满足 v2 headless 复用目标。\n- **huoshan-ark 立场**：**彻底废弃 HTTP**，forge-core 用 EventEmitter/事件总线与 forge-desktop 通信，纯 IPC。理由：避免任何 HTTP 暴露面。\n- **我的判断**：**M3 更合理**。huoshan-ark 的安全担忧正确，但 M3 的双适配方案同样消除了桌面端的 HTTP 暴露（桌面端走 IPC），同时不牺牲 v2 headless 能力。huoshan-ark 的纯 IPC 方案在 v2 复用时反而需要重写传输层，违反其自身坚持的\"纯 Node 约束\"。\n\n### 分歧 2：多窗口状态同步是否\"分布式问题\"\n- **M3 立场**：是分布式问题，需要 SSE 推送或 IPC 中转。\n- **huoshan-ark 立场**：**不是**分布式问题。Electron 主进程是天然单一状态中心，Renderer 通过 IPC 订阅即可。\n- **我的判断**：**huoshan-ark 更准确**。M3 的\"SSE 推送\"思路是 web 多标签页思维的延续，套到 Electron 上过度设计了。Electron 主进程做 state hub + IPC broadcast 是桌面端标准做法，成本最低、一致性最强。M3 在跨回应中未强烈反驳，属软分歧。\n\n### 分歧 3：v1 是否可以降低 forge-core 纯 Node 约束\n- **M3 立场**：半约束状态最危险，要么明确接受成本要么坚持；但留口子允许 v1 视情况微调。\n- **huoshan-ark 立场**：**绝对不可**开这个口子，一旦开了 v2 重写。\n- **我的判断**：**huoshan-ark 更稳**。文档核心原则 #6 已明文写\"forge-core 纯 Node\"，原则一旦写下就不应轻易破坏。若 spike 后证明约束真的不可行，应通过正式 ADR 修订原则，而非默默违反。M3 的\"务实论\"在精神上正确，但实操中容易滑坡。\n\n---\n\n## 三、最终建议（Top 3 优先动作）\n\n### 🔴 P0-1：冻结 DB/API 设计，立即启动 3 项技术 spike\n- **多 AgentSession 并发**：在 utilityProcess 环境实测，产出\"并发上限 + 资源开销基线\"\n- **事件映射可行性**：产出 CanonicalEvent schema v0.1 + pi 事件覆盖率报告\n- **信任拦截可行性**：产出\"拦截点 + UI 接入方案 + 失败降级路径\"\n- **每项限时 3-5 天，强制产出降级方案**（任一 spike 失败时 v1 的退路）\n- **同时验证 IPC 替代 HTTP/SSE 的可行性**（huoshan-ark 建议的架构改动需在 spike 中实测）\n\n### 🔴 P0-2：四项原则级 ADR，必须先于 DB/API 设计落地\n1. **进程模型 ADR**：forge-core 跑在 utilityProcess（推荐），生命周期由 forge-desktop 主进程管理\n2. **传输架构 ADR**：forge-core 暴露传输无关接口，forge-desktop 双适配（IPC 桌面端 / HTTP headless）\n3. **信任模型 ADR**：从 A（继承 pi + UI 警告）/ B（分级熔断，huoshan-ark L0-L3）/ C（独立设计）三选项中决出 v1 方案。我倾向 B\n4. **存储选型 ADR**：better-sqlite3 钉死，附 headless 场景兼容性论证\n\n### 🟡 P1-3：PRD 03/04 必填字段补全，强制并发控制写入 PRD 02\n- PRD 03（对话与消息）补：流式中断 / 重连 / 重试策略\n- PRD 04（工具执行）补：执行失败回滚或状态标记 / 中断一致性 / 后续会话上下文污染提示\n- PRD 02（会话管理）补：**全局任务调度器（Semaphore）+ 排队机制**，限制同时运行的 AgentSession 数量（huoshan-ark 提出的强制并发控制）\n- PRD 01（项目管理）补：多窗口并发修改项目元数据的处理逻辑\n\n---\n\n## 四、一句话结论\n\n**这份文档不可推进**——方向正确但地基缺失，本质是\"在沙地上盖楼\"：进程模型、传输架构、信任边界、存储选型、pi 能力边界全部是未经验证的假设。建议**冻结 DB/API 设计**，先完成 3 项 spike + 4 项 ADR + PRD 关键补全（约 2-3 周），文档才能升格为可实施的 v1 蓝本；在此之前写任何业务代码都是在制造返工。"}};
+  function render(){
+    const map = {r1min:'r1min',r1huo:'r1huo',r2min:'r2min',r2huo:'r2huo',synth:'synth'};
+    for(const k of Object.keys(map)){
+      const el = document.getElementById(k);
+      const s = SECTIONS[k];
+      if(el && s){ el.innerHTML = marked.parse(s.body); }
+    }
+  }
+  if(window.marked){ marked.setOptions({breaks:true,gfm:true}); render(); }
+  else { window.addEventListener('load',()=>{ marked.setOptions({breaks:true,gfm:true}); render(); }); }
+</script>
+</body>
+</html>
