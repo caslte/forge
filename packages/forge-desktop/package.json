@@ -4,13 +4,21 @@
   "private": true,
   "description": "forge 桌面壳：Electron 窗口/托盘/单例/原生对话框/通知/自动更新（骨架，后续工作单元实现）",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/main.js",
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "@forge/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^40.9.3"
   }
 }
