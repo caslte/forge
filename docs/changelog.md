@@ -1,5 +1,11 @@
 # 变更日志
 
+## v2.2 (DB/API/测试设计三档确认)
+
+- DB schema（`db/forge-store/schema.md` + `db/README.md`）、API 契约（`api/index.md` + 01~05）、测试设计（`test/index.md` + 5 模块 coverage-matrix + 02/03/04 e2e + 05 api + `test/integration/pi-core.md`）状态由"规划中"确认置为"已确认"。
+- `docs/artifacts.json` 各模块与 per-artifact 状态同步为 `approved`。
+- `overview.md` §5 配套设计文档、§8 当前状态同步：文档全部冻结，可进入 `dev` 开发阶段。
+
 ## v2.1 (测试设计改进 F1-F6)
 
 - F1：`test/index.md` 修自洽缺口：必测场景口径定义 + “P0 断言 100% 自动覆盖，manual 仅补充”（纠正误标“P0 无 manual”）。

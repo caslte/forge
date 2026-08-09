@@ -2,7 +2,7 @@
 
 > 模块编号：02
 > 来源：PRD 02（docs/prd/02_session_management.md）
-> 状态：规划中
+> 状态：已确认
 > 传输：Electron IPC（forge-ui -> forge-core）；headless 同契约（v2+）
 
 ---

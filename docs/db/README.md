@@ -16,7 +16,7 @@ forge 是 Electron 桌面应用，**无 MySQL / ClickHouse 等传统数据库**�
 
 | 编号 | 存储域 | 路径 | 状态 | 对应 PRD |
 |---|---|---|---|---|
-| forge-store | forge 自有存储 | db/forge-store/schema.md | 规划中 | 01/02/05 |
+| forge-store | forge 自有存储 | db/forge-store/schema.md | 已确认 | 01/02/05 |
 
 ## 更新规则
 

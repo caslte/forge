@@ -2,7 +2,7 @@
 
 > 模块：03 对话与消息
 > 来源：`coverage-matrix.md` + PRD 03
-> 状态：规划中
+> 状态：已确认
 > 触发：流式 mock 事件序列/时序、XSS fixtures、断流/取消时序复杂，按 contract §D 客观触发展开。
 
 ---

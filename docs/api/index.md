@@ -34,11 +34,11 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 
 | 编号 | 模块 | 接口文档 | 状态 | 对应 PRD |
 |---|---|---|---|---|
-| 01 | 项目管理 | api/01_project.md | 规划中 | 01 |
-| 02 | 会话管理 | api/02_session.md | 规划中 | 02 |
-| 03 | 对话与消息 | api/03_conversation.md | 规划中 | 03 |
-| 04 | 工具执行 | api/04_tool.md | 规划中 | 04 |
-| 05 | 模型与 Provider | api/05_model.md | 规划中 | 05 |
+| 01 | 项目管理 | api/01_project.md | 已确认 | 01 |
+| 02 | 会话管理 | api/02_session.md | 已确认 | 02 |
+| 03 | 对话与消息 | api/03_conversation.md | 已确认 | 03 |
+| 04 | 工具执行 | api/04_tool.md | 已确认 | 04 |
+| 05 | 模型与 Provider | api/05_model.md | 已确认 | 05 |
 
 ## 更新规则
 

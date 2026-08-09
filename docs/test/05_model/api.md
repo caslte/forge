@@ -2,7 +2,7 @@
 
 > 模块：05 模型与 Provider 配置
 > 来源：`coverage-matrix.md` + PRD 05
-> 状态：规划中
+> 状态：已确认
 > 触发：keychain mock、models.json `!command`/`$ENV_VAR` 断言、无 keychain 降级路径复杂，按 contract §D 客观触发展开。
 
 ---

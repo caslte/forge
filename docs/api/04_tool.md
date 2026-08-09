@@ -2,7 +2,7 @@
 
 > 模块编号：04
 > 来源：PRD 04（docs/prd/04_tool_execution.md）
-> 状态：规划中
+> 状态：已确认
 > 传输：Electron IPC（事件推送为主）；headless 同契约（v2+）
 
 ---

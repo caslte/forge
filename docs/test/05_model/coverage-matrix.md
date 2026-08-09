@@ -2,7 +2,7 @@
 
 > 模块：05 模型与 Provider 配置
 > 来源：PRD 05（docs/prd/05_model_provider.md）
-> 状态：规划中
+> 状态：已确认
 > 层级映射：unit=配置校验/密钥存储逻辑；API=IPC 方法 + models.json 对接；E2E=设置页表单
 
 ---

@@ -2,7 +2,7 @@
 
 > 模块：02 会话管理
 > 来源：PRD 02（docs/prd/02_session_management.md）
-> 状态：规划中
+> 状态：已确认
 > 层级映射：unit=forge-core 纯逻辑；API=IPC 方法契约 + pi session 对接 + forge-core 输出流管理；E2E=Electron 桌面 UI（含多窗口画布）
 
 ---

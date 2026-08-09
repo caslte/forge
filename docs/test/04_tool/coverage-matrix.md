@@ -2,7 +2,7 @@
 
 > 模块：04 工具执行展示
 > 来源：PRD 04（docs/prd/04_tool_execution.md）
-> 状态：规划中
+> 状态：已确认
 > 层级映射：unit=事件映射/状态流/长结果折叠逻辑；API=CanonicalEvent 工具事件（工具信息透传）；E2E=对话内工具卡片 UI
 
 ---

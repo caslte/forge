@@ -2,7 +2,7 @@
 
 > 模块：04 工具执行展示
 > 来源：`coverage-matrix.md` + PRD 04
-> 状态：规划中
+> 状态：已确认
 > 触发：Diff 数据准备（old/new fixtures、大文件）、状态机、XSS fixtures 复杂，按 contract §D 客观触发展开。
 
 ---

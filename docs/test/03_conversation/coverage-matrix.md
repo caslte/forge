@@ -2,7 +2,7 @@
 
 > 模块：03 对话与消息
 > 来源：PRD 03（docs/prd/03_conversation.md）
-> 状态：规划中
+> 状态：已确认
 > 层级映射：unit=纯渲染/校验逻辑；API=IPC 方法 + CanonicalEvent 流式事件契约；E2E=对话区 UI + 渲染
 
 ---

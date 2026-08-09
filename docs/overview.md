@@ -55,9 +55,9 @@
 
 | 类型 | 路径 | 状态 |
 |---|---|---|
-| DB（forge 自有存储） | db/forge-store/schema.md | 规划中（待确认） |
-| API（forge-core 接口契约） | api/index.md + api/01~05_*.md | 规划中（待确认） |
-| 测试设计 | [test/index.md](test/index.md) + 各模块 coverage-matrix.md | 规划中（待确认） |
+| DB（forge 自有存储） | db/forge-store/schema.md | 已确认 |
+| API（forge-core 接口契约） | api/index.md + api/01~05_*.md | 已确认 |
+| 测试设计 | [test/index.md](test/index.md) + 各模块 coverage-matrix.md | 已确认 |
 
 ## 六、核心业务流程
 
@@ -75,8 +75,8 @@
 
 ## 八、当前状态
 
-- 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB（`db/forge-store/schema.md`）、API（IPC 传输无关契约）、测试设计（5 模块 coverage-matrix + 复杂场景展开 02/03/04 e2e + 05 api + 跨模块 `test/integration/pi-core.md`）生成并审核、`docs/artifacts.json` 登记、gen-doc-test-cases skill 加强（C1-C7）落地。
-- 进行中：无（**文档全部就绪，可进入 `dev` 开发阶段**）。
+- 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB（`db/forge-store/schema.md`）、API（IPC 传输无关契约）、测试设计（5 模块 coverage-matrix + 复杂场景展开 02/03/04 e2e + 05 api + 跨模块 `test/integration/pi-core.md`）生成并审核、`docs/artifacts.json` 登记（全模块 approved）、gen-doc-test-cases skill 加强（C1-C7）落地；**DB/API/测试设计三档已确认置为"已确认"，文档全部冻结**。
+- 进行中：无（**文档全部就绪且已确认，可进入 `dev` 开发阶段**）。
 - 阻塞项：无。
 - 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）。
 ## 九、AI 开发约束

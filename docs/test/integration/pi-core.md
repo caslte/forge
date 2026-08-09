@@ -1,7 +1,7 @@
 # pi-core 集成测试设计（跨模块）
 
 > 模块：forge-core（跨 02/03/04 的 pi 集成层）
-> 状态：规划中
+> 状态：已确认
 > 触发：contract §B2 集成完整性——pi 事件→CanonicalEvent 映射、AgentSession 生命周期、真实并发，不得只用 mock 冒充。
 > 说明：本设计覆盖各模块 coverage-matrix 里"pi 事件契约"的**真实映射层**（矩阵多把 pi 当 mock，本文件补真实集成）。矩阵 A-* 积案仍保留作契约层用例。
 

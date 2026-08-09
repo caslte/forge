@@ -1,7 +1,7 @@
 # forge 自有存储设计（forge-store）
 
 > 模块编号：forge-store
-> 状态：规划中（PRD 01/02/05 已确认，本设计待确认）
+> 状态：已确认（PRD 01/02/05 已确认，本设计已确认）
 > 存储介质：本地 JSON 文件（路径由 forge-desktop 传入，落在本机 userData 目录下；forge-core 纯 Node 不调 Electron API，单文件 `forge-store.json`）
 
 ---
@@ -35,7 +35,7 @@ forge 管理的项目注册信息。用户源码目录不在本项目内复制�
 - 索引：`lastOpenedAt`（项目列表按最近打开排序）
 - 关联：该项目的会话元数据在 `session` 表按 `projectPath` 关联
 - seed 数据：无
-- 状态：规划中
+- 状态：已确认
 
 ### 设计说明
 
@@ -62,7 +62,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 - 索引：`projectPath`、`lastActiveAt`
 - 关联：`projectPath` 指向 `project.path`；pi session 由其自身存储承载
 - seed 数据：无
-- 状态：规划中
+- 状态：已确认
 
 ### 设计说明
 
@@ -86,7 +86,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 - seed 数据（首次创建时写入）：
   - `key='defaultModel'`，`value=null`（全局默认模型，未配置为 null）
   - `key='schemaVersion'`，`value=1`
-- 状态：规划中
+- 状态：已确认
 
 ### 设计说明
 

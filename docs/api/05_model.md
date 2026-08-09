@@ -2,7 +2,7 @@
 
 > 模块编号：05
 > 来源：PRD 05（docs/prd/05_model_provider.md）
-> 状态：规划中
+> 状态：已确认
 > 传输：Electron IPC；headless 同契约（v2+）
 
 ---

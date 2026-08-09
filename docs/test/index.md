@@ -6,17 +6,17 @@
 
 | 编号 | 模块 | 覆盖矩阵 | 状态 | 展开文档 | 对应 PRD |
 |---|---|---|---|---|---|
-| 01 | 项目管理 | test/01_project/coverage-matrix.md | 规划中 | unit/api/e2e 内嵌矩阵 | 01 |
-| 02 | 会话管理 | test/02_session/coverage-matrix.md | 规划中 | e2e.md（多窗口）| 02 |
-| 03 | 对话与消息 | test/03_conversation/coverage-matrix.md | 规划中 | e2e.md（流式/XSS）| 03 |
-| 04 | 工具执行展示 | test/04_tool/coverage-matrix.md | 规划中 | e2e.md（Diff）| 04 |
-| 05 | 模型与 Provider | test/05_model/coverage-matrix.md | 规划中 | api.md（keychain）| 05 |
+| 01 | 项目管理 | test/01_project/coverage-matrix.md | 已确认 | unit/api/e2e 内嵌矩阵 | 01 |
+| 02 | 会话管理 | test/02_session/coverage-matrix.md | 已确认 | e2e.md（多窗口）| 02 |
+| 03 | 对话与消息 | test/03_conversation/coverage-matrix.md | 已确认 | e2e.md（流式/XSS）| 03 |
+| 04 | 工具执行展示 | test/04_tool/coverage-matrix.md | 已确认 | e2e.md（Diff）| 04 |
+| 05 | 模型与 Provider | test/05_model/coverage-matrix.md | 已确认 | api.md（keychain）| 05 |
 
 ## 跨模块集成（forge-core）
 
 | 覆盖域 | 路径 | 状态 | 说明 |
 |---|---|---|---|
-| pi 集成（事件映射/生命周期/真实并发/后端健康） | test/integration/pi-core.md | 规划中 | 跨 02/03/04，补矩阵 mock 之下的真实映射层；PIC-001~004 |
+| pi 集成（事件映射/生命周期/真实并发/后端健康） | test/integration/pi-core.md | 已确认 | 跨 02/03/04，补矩阵 mock 之下的真实映射层；PIC-001~004 |
 
 ## 覆盖率汇总
 

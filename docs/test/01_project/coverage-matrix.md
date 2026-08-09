@@ -2,7 +2,7 @@
 
 > 模块：01 项目管理
 > 来源：PRD 01（docs/prd/01_project_management.md）
-> 状态：规划中
+> 状态：已确认
 > 层级映射：unit=forge-core 纯逻辑；API=IPC 方法契约 + forge-store 持久化；E2E=Electron 桌面 UI
 
 ---

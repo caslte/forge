@@ -2,7 +2,7 @@
 
 > 模块编号：03
 > 来源：PRD 03（docs/prd/03_conversation.md）
-> 状态：规划中
+> 状态：已确认
 > 传输：Electron IPC（方法 + 事件）；headless 同契约（v2+）
 
 ---
