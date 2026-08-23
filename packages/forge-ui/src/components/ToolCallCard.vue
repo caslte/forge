@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { ToolEvent } from '../types';
 
 const props = defineProps<{
   event: ToolEvent;
 }>();
+
+const open = ref(false);
 
 const isRunning = computed(() => props.event.status === 'started');
 const isError = computed(() => props.event.status === 'error');
@@ -21,121 +23,143 @@ const toolLabel = computed(() => props.event.toolName ?? '工具');
 </script>
 
 <template>
-  <div :class="['tool-card', `tool-${event.status}`]">
-    <div class="tool-head">
-      <div class="tool-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-        </svg>
-      </div>
-      <span class="tool-name">{{ toolLabel }}</span>
-      <span :class="['tool-status', `status-${event.status}`]">
-        <span v-if="isRunning" class="spinner"></span>
-        {{ statusLabel }}
+  <div :class="['tool-calls', `tool-${event.status}`, { open }]">
+    <button class="tool-calls-head" @click="open = !open">
+      <svg class="tc-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 6 15 12 9 18" />
+      </svg>
+      <span class="tc-title">{{ toolLabel }}</span>
+      <span class="tc-count">
+        <span v-if="isRunning" class="mini-badge live">{{ statusLabel }}</span>
+        <span v-else-if="isError" class="mini-badge danger">{{ statusLabel }}</span>
+        <span v-else class="mini-badge success">{{ statusLabel }}</span>
       </span>
+    </button>
+    <div v-if="event.summary" class="tool-item-body">
+      <pre class="tool-summary">{{ event.summary }}</pre>
     </div>
-    <div v-if="event.summary" class="tool-summary">{{ event.summary }}</div>
   </div>
 </template>
 
 <style scoped>
-.tool-card {
+.tool-calls {
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: 12px;
   background: var(--card);
-  padding: 10px 12px;
-  margin: 6px 0;
-  max-width: 85%;
-  font-size: 12.5px;
-  animation: fadeIn 0.2s ease-out;
+  overflow: hidden;
+  align-self: flex-start;
+  max-width: 94%;
+  min-width: 260px;
 }
 
-.tool-card.tool-started {
+.tool-calls.tool-started {
   border-color: color-mix(in oklab, var(--warning) 40%, var(--border));
-  background: color-mix(in oklab, var(--warning) 5%, var(--card));
 }
 
-.tool-card.tool-error {
+.tool-calls.tool-error {
   border-color: color-mix(in oklab, var(--destructive) 40%, var(--border));
-  background: color-mix(in oklab, var(--destructive) 5%, var(--card));
 }
 
-.tool-card.tool-completed {
+.tool-calls.tool-completed {
   border-color: color-mix(in oklab, var(--success) 30%, var(--border));
 }
 
-.tool-head {
+.tool-calls-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  user-select: none;
 }
 
-.tool-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--muted-foreground);
+.tool-calls-head:hover {
+  background: var(--muted);
+}
+
+.tc-toggle {
+  transition: transform 150ms ease;
+  width: 13px;
+  height: 13px;
   flex-shrink: 0;
 }
 
-.tool-icon svg {
-  width: 100%;
-  height: 100%;
+.tool-calls.open .tc-toggle {
+  transform: rotate(90deg);
 }
 
-.tool-name {
-  font-weight: 600;
+.tc-title {
+  font-weight: 500;
+  color: var(--foreground);
   font-family: var(--font-mono);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
 }
 
-.tool-status {
+.tc-count {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.mini-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
   padding: 2px 8px;
   border-radius: 999px;
-  font-weight: 500;
+  font-size: 11px;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
-.tool-status.status-started {
-  background: color-mix(in oklab, var(--warning) 15%, transparent);
-  color: var(--warning);
-}
-
-.tool-status.status-error {
-  background: color-mix(in oklab, var(--destructive) 15%, transparent);
-  color: var(--destructive);
-}
-
-.tool-status.status-completed {
-  background: color-mix(in oklab, var(--success) 15%, transparent);
+.mini-badge.success {
   color: var(--success);
+  border-color: color-mix(in oklab, var(--success) 30%, var(--border));
+  background: color-mix(in oklab, var(--success) 8%, transparent);
 }
 
-.spinner {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+.mini-badge.danger {
+  color: var(--destructive);
+  border-color: color-mix(in oklab, var(--destructive) 30%, var(--border));
+  background: color-mix(in oklab, var(--destructive) 8%, transparent);
+}
+
+.mini-badge.live {
+  color: var(--warning);
+  border-color: color-mix(in oklab, var(--warning) 30%, var(--border));
+  background: color-mix(in oklab, var(--warning) 8%, transparent);
+}
+
+.tool-item-body {
+  display: none;
+  padding: 0 12px 12px 32px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.tool-calls.open .tool-item-body {
+  display: block;
 }
 
 .tool-summary {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: color-mix(in oklab, var(--foreground) 4%, transparent);
-  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--muted-foreground);
+  font-size: 12px;
+  color: var(--foreground);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 120px;
+  line-height: 1.6;
+  max-height: 180px;
   overflow-y: auto;
 }
 </style>

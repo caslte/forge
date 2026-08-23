@@ -55,8 +55,6 @@ export interface ProviderItem {
 
 export type ThemeMode = 'light' | 'dark';
 
-export type PermissionLevel = 'default' | 'auto' | 'full-access';
-
 /** 子 Agent（占位，forge-core 未实现，UI 预留） */
 export interface Subagent {
   agentId: string;

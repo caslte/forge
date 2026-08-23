@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { call, subscribe } from './bridge';
-import type { ProjectItem, SessionItem, ThemeMode, PermissionLevel } from './types';
+import type { ProjectItem, SessionItem, ThemeMode } from './types';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
 import TitleBar from './components/TitleBar.vue';
@@ -28,34 +28,10 @@ const showExitDialog = ref(false);
 // 设置
 const { themeMode, setTheme } = useTheme();
 const { message: toastMessage, type: toastType, show: showToast, clear: clearToast } = useToast();
-const permissionLevel = ref<PermissionLevel>('auto');
 
 // 模型列表与会话模型（ConversationView 消费）
 const models = ref<string[]>([]);
 const currentSessionModel = ref<string | null>(null);
-
-// 权限级别持久化（前端 only，后端未实现权限拦截）
-const PERMISSION_KEY = 'forge:permission-level';
-function loadPermission(): void {
-  try {
-    const saved = localStorage.getItem(PERMISSION_KEY);
-    if (saved === 'default' || saved === 'auto' || saved === 'full-access') {
-      permissionLevel.value = saved;
-    }
-  } catch {
-    // ignore
-  }
-}
-loadPermission();
-
-function onPermissionChange(level: PermissionLevel): void {
-  permissionLevel.value = level;
-  try {
-    localStorage.setItem(PERMISSION_KEY, level);
-  } catch {
-    // ignore
-  }
-}
 
 const currentProject = computed(() =>
   projects.value.find((p) => p.path === currentProjectPath.value) ?? null,
@@ -337,12 +313,29 @@ onUnmounted(() => {
           {{ sessionError }}
         </div>
 
+        <div v-if="activeView !== 'settings'" class="app-toolbar">
+          <button
+            class="app-toolbar-btn"
+            data-tooltip="新建会话"
+            :disabled="!currentProject"
+            @click="onCreateSession"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span>新会话</span>
+          </button>
+          <span class="app-toolbar-space"></span>
+          <span v-if="currentProject" class="app-toolbar-path" :title="currentProject.path">
+            {{ currentProject.path }}
+          </span>
+        </div>
+
         <section v-if="activeView === 'settings'" class="settings-stage">
           <SettingsPanel
             :theme-mode="themeMode"
-            :permission-level="permissionLevel"
             @theme-change="setTheme"
-            @permission-change="onPermissionChange"
             @close="closeSettings"
           />
         </section>
@@ -353,11 +346,9 @@ onUnmounted(() => {
               :session-id="currentSessionId!"
               :project="currentProject"
               :session="currentSession"
-              :permission-level="permissionLevel"
               :models="models"
               :current-model="currentSessionModel"
               @model-change="onModelChange"
-              @permission-change="onPermissionChange"
             />
           </div>
           <div v-else-if="currentProject" class="no-session">
@@ -445,13 +436,12 @@ onUnmounted(() => {
 .sidebar::before {
   content: '';
   position: absolute;
-  inset: -50%;
+  inset: -40%;
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 80% 60% at 20% 30%, color-mix(in oklab, var(--brand) 8%, transparent) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 60% at 20% 30%, color-mix(in oklab, var(--muted-foreground) 10%, transparent) 0%, transparent 60%),
     radial-gradient(ellipse 70% 50% at 80% 70%, color-mix(in oklab, var(--muted) 30%, transparent) 0%, transparent 55%);
-  animation: sidebar-bg-drift 20s ease-in-out infinite alternate;
 }
 
 .sidebar > * {
@@ -466,12 +456,6 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-@keyframes sidebar-bg-drift {
-  0% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(2%, 2%) scale(1.03); }
-  100% { transform: translate(-2%, 1%) scale(1.02); }
-}
-
 .workspace-header {
   display: flex;
   align-items: center;
@@ -483,19 +467,18 @@ onUnmounted(() => {
   font-family: var(--font-mono);
   font-size: 22px;
   letter-spacing: 0.14em;
-  font-weight: 700;
-  background: linear-gradient(90deg, var(--logo-gradient-base) 0%, var(--logo-gradient-accent) 50%, var(--logo-gradient-base) 100%);
+  background: linear-gradient(90deg, var(--logo-gradient-base) 0%, var(--logo-gradient-accent) 25%, var(--logo-gradient-base) 50%, var(--logo-gradient-accent) 75%, var(--logo-gradient-base) 100%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: logo-gradient-shift 3s linear infinite;
-  margin-left: 8px;
+  margin-left: 15px;
 }
 
 @keyframes logo-gradient-shift {
   0% { background-position: 0% 0%; }
-  100% { background-position: 200% 0%; }
+  100% { background-position: 100% 0%; }
 }
 
 .tree-panel {
@@ -507,7 +490,7 @@ onUnmounted(() => {
 }
 
 .sidebar-top {
-  padding: 10px 18px 6px;
+  padding: 10px 18px 4px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -515,7 +498,7 @@ onUnmounted(() => {
 
 .sidebar-top-label {
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -527,7 +510,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   background: var(--background);
   border: 1px solid var(--border);
   color: var(--muted-foreground);
@@ -541,12 +524,10 @@ onUnmounted(() => {
 .add-project-btn:hover {
   border-color: var(--brand);
   color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 6%, var(--background));
 }
 
 .sidebar-footer {
-  padding: 12px 18px 16px;
-  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  padding: 10px 12px 14px 28px;
 }
 
 .sidebar-link {
@@ -583,11 +564,63 @@ onUnmounted(() => {
   background: var(--background);
   overflow: hidden;
   border-left: 1px solid var(--border);
-  padding: 16px 16px 16px 20px;
 }
 
 .content.settings-mode {
   padding: 16px 18px;
+}
+
+.app-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 8%, var(--background));
+  flex-shrink: 0;
+}
+
+.app-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.app-toolbar-btn:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.app-toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app-toolbar-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.app-toolbar-space {
+  flex: 1;
+}
+
+.app-toolbar-path {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-stage {

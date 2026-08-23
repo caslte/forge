@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe } from '../bridge';
-import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, ToolEvent, PermissionLevel } from '../types';
+import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, ToolEvent } from '../types';
 import MessageCard from './MessageCard.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import InstructionInput from './InstructionInput.vue';
@@ -23,14 +23,12 @@ const props = defineProps<{
   sessionId: string;
   project: ProjectItem;
   session: SessionItem;
-  permissionLevel: PermissionLevel;
   models: string[];
   currentModel: string | null;
 }>();
 
 const emit = defineEmits<{
   (e: 'model-change', model: string): void;
-  (e: 'permission-change', level: PermissionLevel): void;
 }>();
 
 const messages = ref<ConversationMessage[]>([]);
@@ -50,7 +48,6 @@ const sessionStatus = computed<SessionStatus>(() =>
 );
 
 const projectDisplayName = computed(() => props.project.alias ?? basename(props.project.path));
-const sessionDisplayName = computed(() => props.session.alias ?? `会话 ${props.sessionId.slice(-6)}`);
 
 function basename(p: string): string {
   const parts = p.replace(/\\/g, '/').split('/');
@@ -133,14 +130,6 @@ async function onCancel(): Promise<void> {
 
 function onModelChange(model: string): void {
   emit('model-change', model);
-}
-
-function onPermissionChange(level: PermissionLevel): void {
-  emit('permission-change', level);
-}
-
-function focusInput(): void {
-  inputRef.value?.focus();
 }
 
 // ===== 事件处理 =====
@@ -276,26 +265,6 @@ watch(
 
 <template>
   <div class="conv-view">
-    <header class="conv-header">
-      <div class="conv-header-info">
-        <h2 class="conv-session-name">{{ sessionDisplayName }}</h2>
-        <div class="conv-header-meta">
-          <span class="conv-project" :title="project.path">{{ projectDisplayName }}</span>
-          <span v-if="currentModel" class="conv-model-chip">{{ currentModel }}</span>
-        </div>
-      </div>
-      <button
-        class="conv-focus-input"
-        data-tooltip="聚焦输入框"
-        aria-label="聚焦输入框"
-        @click="focusInput"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-        </svg>
-      </button>
-    </header>
-
     <div ref="scrollRef" class="conv-messages">
       <div class="conv-messages-inner">
         <!-- 加载态 -->
@@ -355,11 +324,9 @@ watch(
         :session-status="sessionStatus"
         :models="models"
         :current-model="currentModel"
-        :permission-level="permissionLevel"
         @send="onSend"
         @cancel="onCancel"
         @model-change="onModelChange"
-        @permission-change="onPermissionChange"
       />
     </div>
   </div>
@@ -374,98 +341,19 @@ watch(
   background: var(--background);
 }
 
-.conv-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 4px 14px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.conv-header-info {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.conv-session-name {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--foreground);
-  letter-spacing: -0.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conv-header-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-
-.conv-project {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 280px;
-}
-
-.conv-model-chip {
-  flex-shrink: 0;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--info) 10%, transparent);
-  color: var(--info);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.conv-focus-input {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: var(--radius-md);
-  color: var(--muted-foreground);
-}
-
-.conv-focus-input svg {
-  width: 17px;
-  height: 17px;
-}
-
-.conv-focus-input:hover {
-  background: var(--muted);
-  border-color: var(--border);
-  color: var(--foreground);
-}
-
-/* 消息流 */
+/* 消息流：全宽 thread，与原型对齐 */
 .conv-messages {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 0 8px;
+  padding: 18px 22px;
   scroll-behavior: smooth;
 }
 
 .conv-messages-inner {
-  max-width: 820px;
-  margin: 0 auto;
-  padding: 0 24px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 /* 加载态 */
@@ -574,10 +462,6 @@ watch(
 /* 输入区 */
 .conv-input-wrap {
   flex-shrink: 0;
-  padding: 12px 24px 18px;
-  max-width: 820px;
-  width: 100%;
-  margin: 0 auto;
-  box-sizing: border-box;
+  padding: 12px 22px 18px;
 }
 </style>

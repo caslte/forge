@@ -42,137 +42,51 @@ const timeLabel = computed(() => {
 
 <template>
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
-    <div class="msg-avatar">
-      <svg v-if="isUser" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-        <circle cx="12" cy="7" r="4" />
-      </svg>
-      <svg v-else-if="isAssistant" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M12 1v6m0 10v6M4.22 4.22l4.24 4.24m7.08 7.08l4.24 4.24M1 12h6m10 0h6M4.22 19.78l4.24-4.24m7.08-7.08l4.24-4.24" />
-      </svg>
-      <svg v-else-if="isTool" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-      </svg>
-      <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <line x1="12" y1="16" x2="12" y2="12" />
-        <line x1="12" y1="8" x2="12.01" y2="8" />
-      </svg>
-    </div>
-    <div class="msg-body">
-      <div class="msg-head">
-        <span class="msg-role">{{ isUser ? '你' : isAssistant ? '助手' : isTool ? '工具' : '系统' }}</span>
-        <span v-if="timeLabel" class="msg-time">{{ timeLabel }}</span>
-      </div>
-      <div class="msg-content" v-html="renderedContent"></div>
-      <div v-if="streaming" class="msg-cursor"></div>
-    </div>
+    <div class="msg-content" v-html="renderedContent"></div>
+    <div v-if="streaming" class="msg-cursor"></div>
   </div>
 </template>
 
 <style scoped>
 .msg {
-  display: flex;
-  gap: 10px;
-  max-width: 85%;
-  animation: fadeIn 0.2s ease-out;
+  border: none;
+  padding: 2px 4px;
+  background: transparent;
+  animation: rise 0.3s ease both;
+  max-width: 100%;
 }
 
 .msg-user {
-  flex-direction: row-reverse;
   align-self: flex-end;
+  margin-left: auto;
+  max-width: 86%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--muted) 55%, var(--background));
 }
 
-.msg-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  background: var(--muted);
-  color: var(--muted-foreground);
+.msg-assistant {
+  max-width: 94%;
 }
 
-.msg-avatar svg {
-  width: 16px;
-  height: 16px;
-}
-
-.msg-user .msg-avatar {
-  background: var(--brand);
-  color: var(--brand-foreground);
-}
-
-.msg-assistant .msg-avatar {
-  background: color-mix(in oklab, var(--info) 15%, var(--background));
-  color: var(--info);
-}
-
-.msg-tool .msg-avatar {
-  background: color-mix(in oklab, var(--warning) 15%, var(--background));
-  color: var(--warning);
-}
-
-.msg-body {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.msg-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--muted-foreground);
-}
-
-.msg-user .msg-head {
-  flex-direction: row-reverse;
-}
-
-.msg-role {
-  font-weight: 600;
+.msg-system {
+  max-width: 94%;
 }
 
 .msg-content {
-  padding: 10px 14px;
-  border-radius: var(--radius-lg);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.65;
+  color: var(--foreground);
+  white-space: pre-wrap;
   word-break: break-word;
-  white-space: normal;
-}
-
-.msg-user .msg-content {
-  background: var(--brand);
-  color: var(--brand-foreground);
-  border-bottom-right-radius: var(--radius-sm);
-}
-
-.msg-assistant .msg-content,
-.msg-tool .msg-content,
-.msg-system .msg-content {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-bottom-left-radius: var(--radius-sm);
-}
-
-.msg-tool .msg-content {
-  background: color-mix(in oklab, var(--warning) 5%, var(--card));
-  font-family: var(--font-mono);
-  font-size: 12.5px;
 }
 
 .msg-system .msg-content {
-  font-style: italic;
   color: var(--muted-foreground);
+  font-style: italic;
 }
 
+/* 内联/块级 Markdown */
 .msg-content :deep(.md-code-block) {
   background: color-mix(in oklab, var(--foreground) 8%, var(--background));
   border: 1px solid var(--border);
@@ -185,21 +99,13 @@ const timeLabel = computed(() => {
   line-height: 1.5;
 }
 
-.msg-user .msg-content :deep(.md-code-block) {
-  background: color-mix(in oklab, var(--brand-foreground) 12%, var(--brand));
-  border-color: color-mix(in oklab, var(--brand-foreground) 20%, transparent);
-}
-
 .msg-content :deep(.md-inline-code) {
-  background: color-mix(in oklab, var(--foreground) 8%, transparent);
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
+  background: var(--muted);
+  color: var(--foreground);
+  padding: 1px 6px;
+  border-radius: 6px;
   font-family: var(--font-mono);
-  font-size: 0.92em;
-}
-
-.msg-user .msg-content :deep(.md-inline-code) {
-  background: color-mix(in oklab, var(--brand-foreground) 15%, transparent);
+  font-size: 12px;
 }
 
 .msg-cursor {
@@ -217,7 +123,8 @@ const timeLabel = computed(() => {
   51%, 100% { opacity: 0; }
 }
 
-.msg.streaming .msg-content {
-  border-color: var(--brand);
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 </style>

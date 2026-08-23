@@ -14,8 +14,8 @@ body,
 
 body {
   background:
-    radial-gradient(circle at top, color-mix(in oklab, var(--brand) 7%, transparent) 0, transparent 32%),
-    linear-gradient(180deg, color-mix(in oklab, var(--muted) 20%, var(--background)) 0%, var(--background) 42%);
+    radial-gradient(circle at top, color-mix(in oklab, var(--brand) 5%, transparent) 0, transparent 30%),
+    linear-gradient(180deg, color-mix(in oklab, var(--muted) 25%, var(--background)) 0%, var(--background) 45%);
   color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 14px;

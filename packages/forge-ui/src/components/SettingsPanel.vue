@@ -1,23 +1,21 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { call, subscribe } from '../bridge';
-import type { ThemeMode, PermissionLevel, ProviderItem } from '../types';
+import type { ThemeMode, ProviderItem } from '../types';
 
 /**
  * 设置面板。
- * 参考 ai-coding SettingsPanel 分区结构：外观 / 模型 Provider / 权限 / 关于。
+ * 参考 ai-coding SettingsPanel 分区结构：外观 / 模型 Provider / 关于。
  * Provider CRUD 直接走 bridge（model/queryProviderList、saveProvider、deleteProvider、
  * queryModels、setDefault），操作后后端发 model.providersChanged 事件，App.vue 监听
  * 该事件刷新会话侧模型列表，解耦。
  */
 const props = defineProps<{
   themeMode: ThemeMode;
-  permissionLevel: PermissionLevel;
 }>();
 
 const emit = defineEmits<{
   (e: 'theme-change', mode: ThemeMode): void;
-  (e: 'permission-change', level: PermissionLevel): void;
   (e: 'close'): void;
 }>();
 
@@ -41,18 +39,6 @@ const formError = ref<string | null>(null);
 // 删除两阶段确认
 const deleteConfirmId = ref<string | null>(null);
 let deleteTimer: ReturnType<typeof setTimeout> | null = null;
-
-const permissionLabels: Record<PermissionLevel, string> = {
-  'default': '默认',
-  'auto': '自动批准',
-  'full-access': '完全访问',
-};
-
-const permissionDescs: Record<PermissionLevel, string> = {
-  'default': '每次工具调用都需确认',
-  'auto': '安全操作自动批准，危险操作仍需确认',
-  'full-access': '所有操作自动执行，无需确认',
-};
 
 const themeSwatches: { mode: ThemeMode; label: string; color: string }[] = [
   { mode: 'light', label: '浅色', color: 'oklch(1 0 0)' },
@@ -179,10 +165,6 @@ function onClearDefault(): void {
 
 function selectTheme(mode: ThemeMode): void {
   emit('theme-change', mode);
-}
-
-function selectPermission(level: PermissionLevel): void {
-  emit('permission-change', level);
 }
 
 let unsubProviders: (() => void) | null = null;
@@ -348,29 +330,6 @@ onUnmounted(() => {
             </select>
           </label>
           <button v-if="defaultModel" class="ghost small" @click="onClearDefault">清除</button>
-        </div>
-      </section>
-
-      <!-- 权限 -->
-      <section class="settings-section">
-        <h2 class="section-title">权限级别</h2>
-        <p class="section-desc">控制工具调用的自动批准范围（当前为前端状态，后端尚未实现权限拦截）</p>
-        <div class="permission-options">
-          <button
-            v-for="lvl in (['default','auto','full-access'] as PermissionLevel[])"
-            :key="lvl"
-            class="permission-option"
-            :class="{ active: permissionLevel === lvl }"
-            @click="selectPermission(lvl)"
-          >
-            <span class="permission-radio">
-              <span v-if="permissionLevel === lvl" class="permission-radio-dot"></span>
-            </span>
-            <span class="permission-text">
-              <span class="permission-label">{{ permissionLabels[lvl] }}</span>
-              <span class="permission-desc">{{ permissionDescs[lvl] }}</span>
-            </span>
-          </button>
         </div>
       </section>
 
@@ -808,77 +767,6 @@ onUnmounted(() => {
 button.small {
   padding: 4px 12px;
   font-size: 12px;
-}
-
-/* 权限 */
-.permission-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.permission-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
-  cursor: pointer;
-  text-align: left;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
-}
-
-.permission-option:hover {
-  border-color: color-mix(in oklab, var(--brand) 30%, var(--border));
-}
-
-.permission-option.active {
-  border-color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 5%, var(--card));
-}
-
-.permission-radio {
-  width: 18px;
-  height: 18px;
-  border: 2px solid var(--border);
-  border-radius: 999px;
-  flex-shrink: 0;
-  margin-top: 1px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: border-color var(--transition-fast);
-}
-
-.permission-option.active .permission-radio {
-  border-color: var(--brand);
-}
-
-.permission-radio-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: var(--brand);
-}
-
-.permission-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.permission-label {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-.permission-desc {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  line-height: 1.45;
 }
 
 /* 关于 */
