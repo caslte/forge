@@ -1,7 +1,7 @@
 # pi 真实接入开发进度
 
 > 更新时间：2026-08-24  
-> 范围：P0 真实 pi 会话与对话闭环  
+> 范围：pi 真实接入与 MVP 剩余开发（P0–P3）  
 > 结论：P0 完成约 35%，已具备 pi 适配层与会话工厂基础，但 UI 到真实对话的端到端链路尚未打通。
 
 ## 已完成
@@ -24,7 +24,13 @@
 - `packages/forge-desktop/test/pi/piConversationAdapter.test.ts`
 - `packages/forge-desktop/test/pi/createPiAgentSessionFactory.test.ts`
 
-## 未完成
+## 未完成总览
+
+详细拆分见：
+
+- `docs/plan/pi-integration-p0.md`
+- `docs/plan/pi-integration-roadmap.md`
+- `docs/plan/pi-integration-parallel.md`
 
 | 编号 | 工作项 | 当前状态 | 阻塞点 | 优先级 |
 |---|---|---|---|---|
@@ -32,6 +38,18 @@
 | P0-B | 对话状态与消息闭环 | 未开始 | pi 发送前后未稳定驱动 `streaming/done/error` 和完整消息事件 | P0 |
 | P0-C | 历史读取接 pi JSONL | 未开始 | `loadHistory()` 只返回内存中的当前助手消息，未读取持久化历史 | P0 |
 | P0-D | 模型选择传入 pi runtime | 未开始 | 全局默认与会话覆盖仍是 forge 元数据，未映射为 pi 可用模型 | P0 |
+| P1-A | 工具事件真实映射 | 未开始 | 依赖真实对话事件流稳定 | P1 |
+| P1-B | edit 工具并排 Diff | 未开始 | 依赖工具事件入参透传 | P1 |
+| P1-C | 模型选择真实生效验证 | 未开始 | 依赖 P0-D 的模型对象转换和请求链路 | P1 |
+| P1-D | 多会话并行与历史隔离 | 未开始 | 需要真实多 AgentSession 集成测试 | P1 |
+| P2-A | 项目信任机制接 pi | 未开始 | 当前信任状态机只操作 forge 缓存，未加载 pi 项目资源 | P2 |
+| P2-B | Markdown 安全渲染与代码高亮 | 未开始 | 当前为正则渲染，无 sanitizer 和高亮 | P2 |
+| P2-C | Mermaid 渲染 | 未开始 | 依赖安全 Markdown 渲染重构 | P2 |
+| P2-D | 异常、状态一致性与恢复 | 部分 UI 已有 | session 文件损坏、重启恢复、删除运行中会话未验收 | P2 |
+| P3-A | 上下文用量与压缩入口 | 未开始 | 后端尚未提供 context usage 事件 | P3 |
+| P3-B | 附件输入 | 未开始 | 输入框入口已禁用占位 | P3 |
+| P3-C | 多窗口布局打磨 | 部分完成 | 布局持久化、异常恢复和 E2E 缺失 | P3 |
+| P3-D | 密钥安全增强 | 部分完成 | 目前只有环境变量降级方案，非完整系统 keychain | P3 |
 
 ## 关键风险
 
