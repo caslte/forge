@@ -409,6 +409,23 @@ input, textarea { font: inherit; }
 .prov-row b { font-size: 13px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prov-row .del { width: 24px; height: 24px; display: grid; place-items: center; color: var(--muted-foreground); border-radius: 6px; }
 .prov-row .del:hover { color: var(--destructive); background: var(--muted); }
+/* 模型列表（对齐代码 SettingsPanel：一条模型一行的直白形态） */
+.prov-row.mod { flex-wrap: wrap; }
+.prov-row.mod b { flex: none; max-width: 40%; }
+.prov-row.mod.is-default { border-color: var(--brand); background: color-mix(in oklab, var(--brand) 5%, var(--background)); }
+.prov-row .prov-cfg { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); margin-left: auto; }
+.prov-row.mod.is-default .prov-cfg { margin-left: 0; }
+.prov-row .prov-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.prov-row .link-btn { background: transparent; border: none; color: var(--muted-foreground); font-size: 12px; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+.prov-row .link-btn:hover { color: var(--foreground); background: var(--muted); }
+.default-model-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in oklab, var(--muted) 30%, var(--background)); margin-bottom: 4px; }
+.dm-label { font-size: 12px; color: var(--muted-foreground); }
+.dm-value { font-family: var(--font-mono); font-size: 12px; color: var(--foreground); font-weight: 500; }
+/* API Key 眼睛切换 */
+.api-key-wrap { position: relative; width: 100%; }
+.api-key-wrap .api-key-input { padding-right: 32px; }
+.api-key-toggle { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 26px; height: 26px; padding: 0; display: grid; place-items: center; background: transparent; border: none; color: var(--muted-foreground); cursor: pointer; border-radius: 6px; }
+.api-key-toggle:hover { color: var(--foreground); background: var(--muted); }
 
 /* 多窗口画布（参考 plan/window-mode-mockup.html：重叠可拖动窗口 + 吸附预览） */
 .mw-layout { display: flex; gap: 14px; min-height: 480px; }
@@ -429,14 +446,17 @@ input, textarea { font: inherit; }
 .lights { display: flex; gap: 6px; }
 .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
 .lights .r { background: #ff5f57; cursor: pointer; } .lights .y { background: #febc2e; } .lights .g { background: #28c840; }
-.mw-win .mw-title { font-size: 11px; color: var(--muted-foreground); font-weight: 500; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mw-win .mw-title b { color: var(--foreground); font-weight: 600; }
+.mw-win .mw-title { font-size: 11px; color: var(--muted-foreground); font-weight: 500; flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.mw-win .mw-title b { color: var(--foreground); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mw-win .mw-title .mw-proj { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 400; color: var(--muted-foreground); padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in oklab, var(--muted) 30%, transparent); }
 .mw-win .mw-title .sep { color: var(--muted-foreground); margin: 0 4px; opacity: .7; }
 .mw-win .mw-status { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted-foreground); }
 .st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); animation: st-pulse 1.6s infinite; }
 .st-dot.idle { background: var(--muted-foreground); animation: none; }
 .st-dot.done { background: var(--success); animation: none; }
 @keyframes st-pulse { 0%{box-shadow:0 0 0 0 color-mix(in oklab,var(--brand) 50%,transparent)} 70%{box-shadow:0 0 0 6px transparent} 100%{box-shadow:0 0 0 0 transparent} }
+.mw-win .mw-eye { width: 22px; height: 22px; padding: 0; display: grid; place-items: center; background: transparent; border: none; color: var(--muted-foreground); cursor: pointer; border-radius: 6px; }
+.mw-win .mw-eye:hover { color: var(--brand); background: var(--muted); }
 .mw-win .mw-body { flex: 1; overflow: auto; padding: 10px 12px; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .mw-win .mw-body .msg { padding: 0; font-size: 12.5px; }
 .mw-win .mw-body .msg.user { padding: 6px 10px; border-radius: 10px; font-size: 12px; }
@@ -774,15 +794,15 @@ input, textarea { font: inherit; }
       <button class="feat-tab" data-feat="room">会议室 · 多模型互审</button>
       <button class="feat-tab" data-feat="tool">工具调用 · Diff</button>
       <button class="feat-tab" data-feat="ctx">上下文用量</button>
-      <button class="feat-tab" data-feat="provider">多 Provider 管理</button>
+      <button class="feat-tab" data-feat="provider">模型配置</button>
     </div>
 
     <!-- 多窗口观察 -->
     <div class="feat-panel active" data-feat="window">
       <div class="panel-cap">
         <h3>多窗口观察（应用内画布）</h3>
-        <p>把多个会话以<b>独立可拖动窗口</b>叠放在画布上：拖标题栏移动并自动吸附（左/右/上/下/四角，拖动时显示吸附预览框）；点红点关闭回会话池；拖会话池项到画布开窗。</p>
-        <div class="tags"><span class="mini-badge">SM-S05 多窗口观察</span><span class="mini-badge">窗口吸附 · 拖拽看预览</span><span class="mini-badge">4 窗格排布</span><span class="mini-badge">会话池开窗</span></div>
+        <p>把多个会话以<b>独立可拖动窗口</b>叠放在画布上：拖标题栏移动并自动吸附（左/右/上/下/四角，拖动时显示吸附预览框）；点红点关闭回会话池；拖会话池项到画布开窗；点标题栏<b>眼睛</b>在单视图打开该会话，布局保留可随时返回多窗口。</p>
+        <div class="tags"><span class="mini-badge">SM-S05 多窗口观察</span><span class="mini-badge">窗口吸附 · 拖拽看预览</span><span class="mini-badge">自动布局 · 按个数铺满</span><span class="mini-badge">单视图 ↔ 返回多窗口</span></div>
       </div>
       <div class="mw-layout">
         <div class="mw-pool" id="mw-pool">
@@ -793,9 +813,8 @@ input, textarea { font: inherit; }
             <div class="snap-preview" id="snap-preview"></div>
           </div>
           <div class="mw-toolbar">
-            <button class="primary-btn" id="mw-4pane">4 窗格排列</button>
-            <button class="outline-btn" id="mw-scatter">打散</button>
-            <span class="mw-hints">拖标题栏到边缘看<b>吸附预览</b> · 点红点关窗 · 拖右下角调大小</span>
+            <button class="primary-btn" id="mw-4pane">自动布局</button>
+            <span class="mw-hints">拖标题栏到边缘看<b>吸附预览</b> · 点红点关窗 · 拖右下角调大小 · 点<b>眼睛</b>单视图打开并返回多窗口</span>
           </div>
         </div>
       </div>
@@ -891,28 +910,29 @@ input, textarea { font: inherit; }
     <!-- 多 Provider -->
     <div class="feat-panel" data-feat="provider">
       <div class="panel-cap">
-        <h3>多 Provider / 模型管理</h3>
-        <p>集中维护 Provider（baseUrl / API Key / 主、Sonnet、Opus、Haiku），保存为可切换档案。</p>
+        <h3>模型配置</h3>
+        <p>每个模型单独一条。选中的「主会话模型」用于当前对话；API Key 默认隐藏，可用眼睛切换明文查看。</p>
         <div class="tags"><span class="mini-badge">queryProviderList</span><span class="mini-badge">saveProvider</span><span class="mini-badge">deleteProvider</span></div>
       </div>
       <div class="demo-shell">
         <div class="demo-frame" style="flex:0 0 360px">
-          <div class="df-title"><b>Provider 列表</b></div>
+          <div class="df-title"><b>模型列表</b></div>
           <div class="df-body" id="prov-list">
-            <div class="prov-row"><b>DeepSeek</b><span class="mini-badge brand">默认</span><button class="del" title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>
-            <div class="prov-row"><b>OpenAI</b><button class="del" title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>
-            <div class="prov-row"><b>Anthropic</b><button class="del" title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>
-            <button class="outline-btn" id="prov-add" style="margin-top:4px">＋ 添加 Provider</button>
+            <div class="default-model-row"><span class="dm-label">当前主会话模型：</span><span class="dm-value">deepseek-v4-flash</span><button class="ghost-btn" id="prov-clear" title="清除" style="padding:2px 8px">清除</button></div>
+            <div class="prov-row mod is-default"><b>DeepSeek</b><span class="mini-badge brand">主会话模型</span><span class="prov-cfg">deepseek-v4-flash</span><span class="prov-actions"><button class="link-btn">编辑</button><button class="del" title="删除">×</button></span></div>
+            <div class="prov-row mod"><b>OpenAI</b><span class="prov-cfg">gpt-4o</span><span class="prov-actions"><button class="link-btn">编辑</button><button class="link-btn">设为主会话</button><button class="del" title="删除">×</button></span></div>
+            <div class="prov-row mod"><b>Anthropic</b><span class="prov-cfg">claude-4</span><span class="prov-actions"><button class="link-btn">编辑</button><button class="link-btn">设为主会话</button><button class="del" title="删除">×</button></span></div>
+            <button class="outline-btn" id="prov-add" style="margin-top:4px">＋ 添加模型</button>
           </div>
         </div>
         <div class="demo-frame">
-          <div class="df-title"><b>当前 Provider 配置</b></div>
+          <div class="df-title"><b>模型配置</b></div>
           <div class="df-body">
-            <div class="field full"><label>Provider 名称</label><input id="prov-name" type="text" value="DeepSeek"></div>
-            <div class="field full"><label>Base URL</label><input type="text" value="https://api.deepseek.com/anthropic"></div>
-            <div class="field"><label>主模型</label><input type="text" value="deepseek-v4-flash"></div>
-            <div class="field"><label>Opus 模型</label><input type="text" value="deepseek-v4-pro"></div>
-            <div class="settings-actions"><button class="ghost-btn" id="prov-save">保存</button><button class="primary-btn" id="prov-set">设为默认</button></div>
+            <div class="field full"><label>名称</label><input id="prov-name" type="text" value="DeepSeek"></div>
+            <div class="field full"><label>API 地址</label><input id="prov-url" type="text" value="https://api.deepseek.com/v1"></div>
+            <div class="field full"><label>API Key</label><div class="api-key-wrap"><input id="prov-key" type="password" value="sk-xxxxxxxxxxxxxxxx" class="api-key-input"><button type="button" class="api-key-toggle" id="prov-eye" title="显示/隐藏密钥"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
+            <div class="field full"><label>模型 ID</label><input id="prov-model" type="text" value="deepseek-v4-flash"></div>
+            <div class="settings-actions"><button class="ghost-btn" id="prov-save">保存</button><button class="primary-btn" id="prov-set">设为主会话</button></div>
           </div>
         </div>
       </div>
@@ -1203,23 +1223,23 @@ document.querySelectorAll('#feat-tabs .feat-tab').forEach(t=>t.addEventListener(
 
 // ============ 多窗口（参考 window-mode-mockup.html：拖动 + 吸附预览） ============
 const MW_SESSIONS = [
-  { key:'a1', name:'代码审查', status:'done', blocks:[
+  { key:'a1', name:'代码审查', proj:'forge', status:'done', blocks:[
     {t:'user', x:'把重复工具调用抽成公共函数'},
     {t:'tool', n:'read', arg:'src/cli.py', st:'done'},
     {t:'tool', n:'Edit', arg:'src/cli.py · run_tool()', st:'done'},
     {t:'ai',   x:'已抽取 run_tool() 并补齐单测。'},
   ]},
-  { key:'a2', name:'修 SSE 断流', status:'run', blocks:[
+  { key:'a2', name:'修 SSE 断流', proj:'forge', status:'run', blocks:[
     {t:'user', x:'SSE 重连后丢消息'},
     {t:'tool', n:'read', arg:'services/sse.ts', st:'done'},
     {t:'tool', n:'run', arg:'vitest sse.test.ts', st:'run'},
     {t:'ai',   x:'已加 Last-Event-ID 续传…'},
   ]},
-  { key:'b1', name:'规格回看', status:'idle', blocks:[
+  { key:'b1', name:'规格回看', proj:'ai-coding', status:'idle', blocks:[
     {t:'user', x:'回顾接口签名'},
     {t:'ai',   x:'createSession(projectPath, type, permission)…'},
   ]},
-  { key:'b2', name:'模型调研', status:'idle', blocks:[
+  { key:'b2', name:'模型调研', proj:'ai-coding', status:'idle', blocks:[
     {t:'user', x:'对比两个模型'},
     {t:'ai',   x:'我找几个场景对比成本与质量。'},
   ]},
@@ -1227,7 +1247,7 @@ const MW_SESSIONS = [
 const mwCanvas = document.getElementById('mw-canvas');
 const mwPool = document.getElementById('mw-pool');
 const mwWins = [];
-const G = 6, ZMAX = 60;
+const G = 4, ZMAX = 60;
 function escM(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function mwBodyHTML(s){
   let h='';
@@ -1239,7 +1259,7 @@ function mwBodyHTML(s){
   return h;
 }
 function mwWinHTML(s){
-  return '<div class="mw-bar"><div class="lights"><i class="r" title="关闭窗口"></i><i class="y"></i><i class="g"></i></div><div class="mw-title"><b>'+escM(s.name)+'</b><span class="sep">·</span>'+s.key+'</div><span class="mw-status"><span class="st-dot '+(s.status==='done'?'done':s.status==='idle'?'idle':'')+'"></span></span></div><div class="mw-body">'+mwBodyHTML(s)+'</div>';
+  return '<div class="mw-bar"><div class="lights"><i class="r" title="关闭窗口"></i><i class="y"></i><i class="g"></i></div><div class="mw-title"><b>'+escM(s.name)+'</b><span class="mw-proj">'+escM(s.proj||'')+'</span><span class="sep">·</span>'+s.key+'</div><span class="mw-status"><span class="st-dot '+(s.status==='done'?'done':s.status==='idle'?'idle':'')+'"></span></span></div><div class="mw-body">'+mwBodyHTML(s)+'</div>';
 }
 function createMwWin(s, left, top){
   const w=document.createElement('div'); w.className='mw-win'; w.dataset.k=s.key;
@@ -1325,9 +1345,19 @@ function mwScatter(){
   const r=mwCanvas.getBoundingClientRect();
   mwWins.forEach((w,i)=>{ const ww=w.offsetWidth,hh=w.offsetHeight; const x=Math.random()*(r.width-ww-20)+10, y=Math.random()*(r.height-hh-20)+10; Object.assign(w.style,{left:x+'px',top:y+'px'}); });
 }
-document.getElementById('mw-4pane').addEventListener('click',()=>mwArrange(4));
-document.getElementById('mw-scatter').addEventListener('click',()=>{ mwScatter(); toast('已打散窗口'); });
-window.addEventListener('resize',()=>{ if(document.getElementById('features').classList.contains('active')) mwArrange(4); });
+// 自动布局：按窗口个数铺满，间距与手动贴边（G）统一
+function mwArrangeAuto(){
+  const vis=mwWins.filter(w=>w.style.display!=='none'); if(!vis.length) return;
+  const r=mwCanvas.getBoundingClientRect(); const n=vis.length;
+  const hw=(r.width-G*3)/2, hh=(r.height-G*3)/2, FH=r.height-G*2;
+  const L=G,R=G*2+hw,T=G,B=G*2+hh;
+  const rects = n<=2 ? [[L,T,hw,FH],[R,T,hw,FH]]
+    : [[L,T,hw,hh],[R,T,hw,hh],[L,B,hw,hh],[R,B,hw,hh]];
+  if(n>4){ for(let i=4;i<n;i++){ rects.push([Math.round((r.width-hw)/2)+((i-4)%3)*18, Math.round((r.height-hh)/2)+Math.floor((i-4)/3)*14, hw, hh]); } }
+  vis.forEach((w,i)=>{ if(rects[i]) Object.assign(w.style,{left:rects[i][0]+'px',top:rects[i][1]+'px',width:rects[i][2]+'px',height:rects[i][3]+'px'}); });
+}
+document.getElementById('mw-4pane').addEventListener('click',()=>mwArrangeAuto());
+window.addEventListener('resize',()=>{ if(document.getElementById('features').classList.contains('active')) mwArrangeAuto(); });
 
 // 初始布局
 createMwWin(MW_SESSIONS[0], G, G);
@@ -1368,17 +1398,31 @@ function setCtx(p){ ctxPct=Math.max(0,Math.min(100,p)); document.getElementById(
 document.getElementById('ctx-sim').addEventListener('click',()=>{ setCtx(ctxPct+9); toast('上下文占用已上涨','info'); });
 document.getElementById('ctx-compact').addEventListener('click',()=>{ setCtx(34); toast('上下文已压缩','info'); });
 
-// Provider
-let provPool=['Anthropic'];
+// 模型配置
+let provPool=['MiniMax','Grok'];
 document.getElementById('prov-add').addEventListener('click',()=>{
   const name=provPool.shift(); if(!name){ toast('演示列表已到上限','error'); return; }
-  const list=document.getElementById('prov-list'); const row=document.createElement('div'); row.className='prov-row';
-  row.innerHTML='<b>'+name+'</b><button class="del" title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>';
-  row.querySelector('.del').addEventListener('click',()=>{ row.remove(); toast('已移除 Provider '+name); });
-  list.insertBefore(row,list.querySelector('#prov-add')); toast('已添加 Provider '+name);
+  const list=document.getElementById('prov-list'); const row=document.createElement('div'); row.className='prov-row mod';
+  row.innerHTML='<b>'+name+'</b><span class="prov-cfg">grok-4.5</span><span class="prov-actions"><button class="link-btn">编辑</button><button class="link-btn set">设为主会话</button><button class="del" title="删除">×</button></span>';
+  row.querySelector('.del').addEventListener('click',()=>{ row.remove(); toast('已移除模型 '+name); });
+  row.querySelector('.set').addEventListener('click',()=>{ markDefault(row,name); });
+  list.insertBefore(row,list.querySelector('#prov-add')); toast('已添加模型 '+name);
 });
-document.getElementById('prov-save').addEventListener('click',()=>toast('Provider 配置已保存'));
-document.getElementById('prov-set').addEventListener('click',()=>toast('已设为默认 Provider'));
+function markDefault(row,name){
+  document.querySelectorAll('#prov-list .prov-row.mod').forEach(r=>{ r.classList.remove('is-default'); const t=r.querySelector('.mini-badge'); if(t) t.remove(); const s=r.querySelector('.set'); if(s) s.textContent='设为主会话'; });
+  row.classList.add('is-default');
+  const b=document.createElement('span'); b.className='mini-badge brand'; b.textContent='主会话模型'; row.insertBefore(b,row.querySelector('.prov-cfg'));
+  const dm=document.querySelector('.dm-value'); if(dm) dm.textContent=row.querySelector('.prov-cfg').textContent;
+  toast('已设为主会话模型：'+name);
+}
+document.getElementById('prov-clear').addEventListener('click',()=>{ toast('已清除主会话模型','info'); const dm=document.querySelector('.dm-value'); if(dm) dm.textContent='—'; });
+document.getElementById('prov-save').addEventListener('click',()=>toast('模型配置已保存'));
+document.getElementById('prov-set').addEventListener('click',()=>{ const row=document.querySelector('#prov-list .prov-row.mod.is-default'); if(row) markDefault(row,row.querySelector('b').textContent); else toast('已设为主会话模型'); });
+// API Key 眼睛：明文 / 隐藏切换
+document.getElementById('prov-eye').addEventListener('click',()=>{
+  const inp=document.getElementById('prov-key'); const isPwd=inp.type==='password'; inp.type=isPwd?'text':'password';
+  document.getElementById('prov-eye').innerHTML= isPwd?'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><line x1="1" y1="1" x2="23" y2="23"/></svg>':'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+});
 
 // 弹窗
 document.querySelectorAll('[data-open-stack]').forEach(b=>b.addEventListener('click',()=>openOverlay(b.dataset.openStack)));
@@ -1546,10 +1590,11 @@ function acOpenWin(s){
   if(acWins.some(w=>w.dataset.k===s.key)){ toast('该窗口已打开，请点击标题栏切换','info'); return; }
   const w=document.createElement('div'); w.className='mw-win'; w.dataset.k=s.key;
   w.style.width='46%'; w.style.height='50%';
-  w.innerHTML='<div class="mw-bar"><div class="lights"><i class="r" title="关闭窗口"></i><i class="y"></i><i class="g"></i></div><div class="mw-title"><b>'+escM(s.name)+'</b><span class="sep">·</span>'+s.key+'</div><span class="mw-status"><span class="st-dot '+acDot(s)+'"></span></span></div><div class="mw-body">'+(s.type==='rm'?acRoomWinHTML(s):acChatHTML(s))+'</div>';
+  w.innerHTML='<div class="mw-bar"><div class="lights"><i class="r" title="关闭窗口"></i><i class="y"></i><i class="g"></i></div><div class="mw-title"><b>'+escM(s.name)+'</b><span class="sep">·</span>'+s.key+'</div><span class="mw-status"><span class="st-dot '+acDot(s)+'"></span></span><button class="mw-eye" title="在单视图打开 · 可返回多窗口"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></div><div class="mw-body">'+(s.type==='rm'?acRoomWinHTML(s):acChatHTML(s))+'</div>';
   const r=acCanvas.getBoundingClientRect(); w.style.left=(12+(acWins.length*18)%(r.width-240))+'px'; w.style.top=(16+(acWins.length*16)%(r.height-180))+'px';
   acCanvas.appendChild(w); acWins.push(w); w.style.zIndex=++acZ;
   w.querySelector('.lights .r').addEventListener('click',()=>{ w.remove(); acWins=acWins.filter(x=>x!==w); acRenderSide(); });
+  w.querySelector('.mw-eye').addEventListener('click',()=>toast('已在单视图打开「'+s.name+'」，可随时返回多窗口','info'));
   w.addEventListener('mousedown',()=>{ w.style.zIndex=++acZ; },true);
   conacDrag(w);
   acCanvas.querySelector('#ac-canvas-hint').style.display='none';

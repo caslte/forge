@@ -106,7 +106,10 @@ const bridge: ForgeBridge = {
           code: 0,
           message: 'ok',
           data: {
-            sessions: DB.sessions.filter((s) => s.projectPath === (params as { projectPath?: string }).projectPath),
+            sessions: DB.sessions.filter((s) => {
+              const pp = (params as { projectPath?: string }).projectPath;
+              return !pp || s.projectPath === pp;
+            }),
           },
         };
       case 'conversation/queryHistory':

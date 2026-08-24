@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed } from 'vue';
 import type { ConversationMessage } from '../types';
 
 const props = defineProps<{
@@ -11,6 +11,23 @@ const isUser = computed(() => props.message.role === 'user');
 const isAssistant = computed(() => props.message.role === 'assistant');
 const isTool = computed(() => props.message.role === 'tool');
 const isSystem = computed(() => props.message.role === 'system');
+
+const copied = ref(false);
+let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 复制消息内容到剪贴板 */
+async function copy(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(props.message.content);
+    copied.value = true;
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      copied.value = false;
+    }, 1400);
+  } catch {
+    copied.value = false;
+  }
+}
 
 /** 简单 Markdown 渲染：代码块、行内代码、加粗、换行。不引入依赖。 */
 const renderedContent = computed(() => {
@@ -44,6 +61,19 @@ const timeLabel = computed(() => {
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
     <div class="msg-content" v-html="renderedContent"></div>
     <div v-if="streaming" class="msg-cursor"></div>
+    <div class="msg-footer">
+      <span class="msg-time">{{ timeLabel }}</span>
+      <button class="msg-copy" :title="copied ? '已复制' : '复制'" @click="copy">
+        <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+        <span>{{ copied ? '已复制' : '' }}</span>
+      </button>
+    </div>
   </div>
 </template>
 
@@ -79,6 +109,50 @@ const timeLabel = computed(() => {
   color: var(--foreground);
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text; /* 对话内容允许鼠标选择 */
+}
+
+.msg-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start; /* 助手/系统回复：复制+时间靠左 */
+  gap: 10px;
+  margin-top: 8px;
+  opacity: 0.6;
+  transition: opacity var(--transition-fast);
+  user-select: none;
+}
+.msg-user .msg-footer {
+  justify-content: flex-end; /* 用户回复：复制+时间靠右 */
+}
+.msg:hover .msg-footer {
+  opacity: 1;
+}
+.msg-time {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1;
+}
+.msg-copy:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.msg-copy svg {
+  width: 13px;
+  height: 13px;
 }
 
 .msg-system .msg-content {

@@ -7,6 +7,7 @@ import { useToast } from './composables/useToast';
 import TitleBar from './components/TitleBar.vue';
 import ProjectTree from './components/ProjectTree.vue';
 import ConversationView from './components/ConversationView.vue';
+import MultiWindowCanvas from './components/MultiWindowCanvas.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import ProjectPickerDialog from './components/ProjectPickerDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
@@ -24,6 +25,12 @@ const activeView = ref<View>('sessions');
 const sidebarCollapsed = ref(false);
 const showProjectPicker = ref(false);
 const showExitDialog = ref(false);
+/** 多窗口画布模式（单会话视图 ↔ 多窗口画布 切换） */
+const multiWindow = ref(false);
+/** 已在多窗口画布上打开的会话 id 列表（供会话池标记灰态） */
+const openedSessionIds = ref<string[]>([]);
+/** 多窗口模式下聚焦查看的会话 id（非空时在画布上方叠加单会话视图，布局保留） */
+const focusedSessionForWin = ref<string | null>(null);
 
 // 设置
 const { themeMode, setTheme } = useTheme();
@@ -75,14 +82,10 @@ async function selectProject(path: string): Promise<void> {
 }
 
 async function loadSessions(): Promise<void> {
-  if (currentProjectPath.value === null) {
-    sessions.value = [];
-    return;
-  }
+  // 全量加载所有项目的会话（querySessionList 不传 projectPath 时返回全部），
+  // 这样会话树里每个项目都能正确显示自己的会话，而非只显示当前项目。
   try {
-    const res = await call<{ sessions: SessionItem[] }>('session/querySessionList', {
-      projectPath: currentProjectPath.value,
-    });
+    const res = await call<{ sessions: SessionItem[] }>('session/querySessionList', {});
     sessions.value = res.sessions;
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
@@ -106,9 +109,9 @@ async function onRemoveProject(path: string): Promise<void> {
     if (currentProjectPath.value === path) {
       currentProjectPath.value = null;
       currentSessionId.value = null;
-      sessions.value = [];
     }
     await loadProjects();
+    await loadSessions();
     showToast('项目已移除', 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
@@ -195,6 +198,7 @@ async function onModelChange(model: string): Promise<void> {
   try {
     await call('model/setSessionModel', { sessionId: currentSessionId.value, model });
     currentSessionModel.value = model;
+    showToast(`已切换模型：${model}`, 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -202,10 +206,38 @@ async function onModelChange(model: string): Promise<void> {
 
 function openSettings(): void {
   activeView.value = 'settings';
+  multiWindow.value = false;
+  focusedSessionForWin.value = null;
 }
 
 function closeSettings(): void {
   activeView.value = 'sessions';
+}
+
+/** 切换单会话视图 / 多窗口画布 */
+function toggleMultiWindow(): void {
+  multiWindow.value = !multiWindow.value;
+  // 主动退出（或重新进入）多窗口时，清掉窗口单会话聚焦层
+  focusedSessionForWin.value = null;
+}
+
+/**
+ * 多窗口画布中点击窗口"单视图"：不退出多窗口，改为在画布上方叠加单个会话视图，
+ * 保留画布上的窗口布局，可随时返回。
+ */
+function onMultiWindowFocus(sessionId: string): void {
+  currentSessionId.value = sessionId;
+  focusedSessionForWin.value = sessionId;
+}
+
+/** 从窗口单会话聚焦层返回多窗口画布 */
+function closeWinFocus(): void {
+  focusedSessionForWin.value = null;
+}
+
+/** 多窗口画布开窗集合变化：同步给会话池标记灰态 */
+function onOpenedChange(sessionIds: string[]): void {
+  openedSessionIds.value = sessionIds;
 }
 
 function requestExit(): void {
@@ -289,6 +321,7 @@ onUnmounted(() => {
             :sessions="sessions"
             :current-project-path="currentProjectPath"
             :current-session-id="currentSessionId"
+            :opened-session-ids="openedSessionIds"
             @select-project="selectProject"
             @remove-project="onRemoveProject"
             @rename-project="onRenameProject"
@@ -327,10 +360,21 @@ onUnmounted(() => {
             </svg>
             <span>新会话</span>
           </button>
+          <button
+            class="app-toolbar-btn"
+            :class="{ 'is-active': multiWindow }"
+            data-tooltip="多窗口画布：会话并排观察"
+            @click="toggleMultiWindow"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="8" height="8" rx="1.5" />
+              <rect x="13" y="3" width="8" height="8" rx="1.5" />
+              <rect x="3" y="13" width="8" height="8" rx="1.5" />
+              <rect x="13" y="13" width="8" height="8" rx="1.5" />
+            </svg>
+            <span>多窗口</span>
+          </button>
           <span class="app-toolbar-space"></span>
-          <span v-if="currentProject" class="app-toolbar-path" :title="currentProject.path">
-            {{ currentProject.path }}
-          </span>
         </div>
 
         <section v-if="activeView === 'settings'" class="settings-stage">
@@ -342,7 +386,43 @@ onUnmounted(() => {
         </section>
 
         <template v-else>
-          <div v-if="currentProject && currentSession" class="session-stage">
+          <!-- 多窗口画布模式 -->
+          <div v-if="multiWindow" class="session-stage">
+            <!-- 多窗口画布始终挂载，保留窗口布局 -->
+            <MultiWindowCanvas
+              :sessions="sessions"
+              :models="models"
+              @close="multiWindow = false"
+              @focus-session="onMultiWindowFocus"
+              @opened-change="onOpenedChange"
+            />
+            <!-- 窗口单会话聚焦层：不卸载画布，可返回多窗口 -->
+            <div
+              v-if="focusedSessionForWin && currentProject && currentSession"
+              class="win-focus-overlay"
+            >
+              <div class="win-focus-bar">
+                <button class="win-focus-back" @click="closeWinFocus">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                  </svg>
+                  <span>返回多窗口</span>
+                </button>
+                <span class="win-focus-title">
+                  {{ currentSession.alias || '会话 ' + currentSession.sessionId.slice(-6) }}
+                </span>
+              </div>
+              <ConversationView
+                :session-id="currentSessionId!"
+                :project="currentProject"
+                :session="currentSession"
+                :models="models"
+                :current-model="currentSessionModel"
+                @model-change="onModelChange"
+              />
+            </div>
+          </div>
+          <div v-else-if="currentProject && currentSession" class="session-stage">
             <ConversationView
               :session-id="currentSessionId!"
               :project="currentProject"
@@ -600,6 +680,12 @@ onUnmounted(() => {
   color: var(--brand);
 }
 
+.app-toolbar-btn.is-active {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 8%, var(--background));
+  color: var(--brand);
+}
+
 .app-toolbar-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -614,21 +700,58 @@ onUnmounted(() => {
   flex: 1;
 }
 
-.app-toolbar-path {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .session-stage {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+.win-focus-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: var(--background);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.win-focus-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 8%, var(--background));
+}
+.win-focus-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.win-focus-back:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.win-focus-back svg {
+  width: 13px;
+  height: 13px;
+}
+.win-focus-title {
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 
 .no-session {

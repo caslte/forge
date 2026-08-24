@@ -123,6 +123,18 @@ async function onCancel(): Promise<void> {
 
 function onModelChange(model: string): void {
   emit('model-change', model);
+  showSwitchBanner(model);
+}
+
+/** 在对话流底部临时显示"已切换模型"横幅，方便多窗口分辨是哪个窗口切换 */
+const switchBanner = ref<string | null>(null);
+let switchBannerTimer: ReturnType<typeof setTimeout> | null = null;
+function showSwitchBanner(model: string): void {
+  switchBanner.value = `已切换模型 ${model}`;
+  if (switchBannerTimer) clearTimeout(switchBannerTimer);
+  switchBannerTimer = setTimeout(() => {
+    switchBanner.value = null;
+  }, 2600);
 }
 
 // ===== 事件处理 =====
@@ -244,6 +256,7 @@ onMounted(() => {
 onUnmounted(() => {
   unsubs.forEach((u) => u?.());
   unsubs = [];
+  if (switchBannerTimer) clearTimeout(switchBannerTimer);
 });
 
 // 会话切换
@@ -296,6 +309,13 @@ watch(
             <span class="thinking-text">助手正在思考</span>
           </div>
         </template>
+
+        <!-- 模型切换横幅（临时显示在对话流底部） -->
+        <div v-if="switchBanner" class="conv-switch-banner">
+          <span class="csb-line"></span>
+          <span class="csb-text">{{ switchBanner }}</span>
+          <span class="csb-line"></span>
+        </div>
 
         <!-- 错误提示 -->
         <div v-if="errorMsg" class="conv-error">
@@ -421,6 +441,27 @@ watch(
   font-size: 18px;
   font-weight: 600;
   color: var(--foreground);
+}
+
+/* 模型切换横幅：带左右横线的居中提示 */
+.conv-switch-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px;
+  color: var(--muted-foreground);
+  user-select: none;
+  animation: fadeIn 0.2s ease-out;
+}
+.csb-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+}
+.csb-text {
+  font-size: 11.5px;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 /* 错误提示 */

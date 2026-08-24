@@ -15,6 +15,8 @@ const props = defineProps<{
   models: string[];
   /** 当前会话模型（来自 model/getSessionModel），null 表示用默认 */
   currentModel: string | null;
+  /** 紧凑模式（多窗口用）：更小的默认高度，可用鼠标拖拽调整 */
+  compact?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -25,6 +27,7 @@ const emit = defineEmits<{
 
 const text = ref('');
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const inputBoxRef = ref<HTMLElement | null>(null);
 const attachRowRef = ref<HTMLElement | null>(null);
 const focused = ref(false);
 const modelMenuOpen = ref(false);
@@ -34,18 +37,64 @@ const canSend = computed(() => text.value.trim().length > 0 && !isStreaming.valu
 const charCount = computed(() => text.value.length);
 const MAX_CHARS = 8000;
 
-/** textarea 自适应高度，上限 200px */
+/** textarea 自适应高度上限：与拖拽盒子上限(320)对齐（320 − 上内边距12 − 底部预留58），之后交给滚动条 */
+const GROW_MAX = 250;
+
+/**
+ * textarea 自适应高度——只增长、不收缩覆盖手动拖拽的高度：
+ * 输入字数变多时自动增高，直到与拖拽上限一致的上限后，剩余内容交给 textarea 滚动条。
+ */
 function autoGrow(): void {
   const el = textareaRef.value;
   if (!el) return;
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+  const desired = Math.min(el.scrollHeight, GROW_MAX);
+  const cur = parseFloat(el.style.height) || 0;
+  if (desired > cur) el.style.height = desired + 'px';
 }
 
 function onInput(): void {
   autoGrow();
   if (text.value.length > MAX_CHARS) {
     text.value = text.value.slice(0, MAX_CHARS);
+  }
+}
+
+// ===== 上边沿拖拽调整输入框高度（单窗口 / 多窗口通用） =====
+// 上限：避免把消息区挤没 / 输入框挤出屏幕
+const RESIZE_MAX = 320;
+let rsStartY = 0;
+let rsStartH = 0;
+let rsFloor = 0;
+
+function onResizeDown(e: PointerEvent): void {
+  const el = inputBoxRef.value;
+  if (!el) return;
+  e.preventDefault();
+  // 稳定底线＝上内边距 + 输入区最小高度 + 底部预留：保证钉在底部的操作行始终可见、不移动
+  const cs = getComputedStyle(el);
+  const pt = parseFloat(cs.paddingTop) || 0;
+  const pb = parseFloat(cs.paddingBottom) || 0;
+  const ta = textareaRef.value;
+  const taMin = ta ? parseFloat(getComputedStyle(ta).minHeight) || 0 : 0;
+  rsFloor = Math.max(64, pt + taMin + pb - 2);
+  rsStartY = e.clientY;
+  rsStartH = el.offsetHeight;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function onResizeMove(e: PointerEvent): void {
+  if (rsStartH === 0) return;
+  const el = inputBoxRef.value;
+  if (!el) return;
+  const dh = rsStartY - e.clientY;
+  const h = Math.min(RESIZE_MAX, Math.max(rsFloor, rsStartH + dh));
+  el.style.height = h + 'px';
+}
+function onResizeUp(e: PointerEvent): void {
+  rsStartH = 0;
+  try {
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+  } catch {
+    // 忽略
   }
 }
 
@@ -115,7 +164,15 @@ watch(
 </script>
 
 <template>
-  <div class="compose-box" :class="{ streaming: isStreaming, focused }">
+  <div ref="inputBoxRef" class="compose-box" :class="{ streaming: isStreaming, focused, compact }">
+    <!-- 上边沿：透明拖拽带，悬停显示 row-resize，可拖拽调整整个输入框高度 -->
+    <div
+      class="cb-resize"
+      title="拖动调整输入框高度"
+      @pointerdown="onResizeDown"
+      @pointermove="onResizeMove"
+      @pointerup="onResizeUp"
+    ></div>
     <!-- 附件待发区（预留，后端接入后展示） -->
     <div ref="attachRowRef" class="attach-row"></div>
 
@@ -208,11 +265,25 @@ watch(
 <style scoped>
 .compose-box {
   position: relative;
-  padding: 12px 14px 10px;
+  padding: 12px 14px 58px; /* 底部预留：给钉在底部的操作行留空间 */
   border-radius: 16px;
   border: 1px solid var(--input);
   background: var(--background);
+  display: flex;
+  flex-direction: column;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* 上边沿调整带：把命中区对准输入框外层 border 的顶部边沿（不再画内层线） */
+.cb-resize {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: 2;
 }
 
 .compose-box:focus-within {
@@ -223,6 +294,8 @@ watch(
 .compose-box.streaming {
   border-color: color-mix(in oklab, var(--warning) 50%, var(--input));
 }
+
+/* 紧凑模式（多窗口）：与单窗口输入框高度规则保持一致（可拖拽调整） */
 
 /* 附件待发区 */
 .attach-row {
@@ -246,9 +319,10 @@ watch(
   font-size: 14px;
   line-height: 1.6;
   font-family: var(--font-sans);
+  flex: 1 1 auto;
   min-height: 68px;
   max-height: 360px;
-  resize: vertical;
+  resize: none; /* 去掉右下角缩放手柄，高度统一由上边沿拖拽控制 */
   user-select: text;
 }
 
@@ -268,13 +342,16 @@ watch(
   box-shadow: none;
 }
 
-/* 底部操作条 */
+/* 底部操作条：钉在输入框最底部，无论盒子高度如何都不再移动 */
 .compose-bar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-top: 10px;
 }
 
 .compose-links {

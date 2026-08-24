@@ -8,6 +8,8 @@ const props = defineProps<{
   sessions: SessionItem[];
   currentProjectPath: string | null;
   currentSessionId: string | null;
+  /** 已在多窗口画布上打开的会话 id 列表（用于标记灰态，不可重复拖入） */
+  openedSessionIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -254,6 +256,19 @@ function onProjectDragStart(p: ProjectItem): void {
   draggedPath.value = p.path;
 }
 
+/** 会话是否已在多窗口画布上（标记灰态，不可再拖入） */
+function isOnCanvas(session: SessionItem): boolean {
+  return props.openedSessionIds?.includes(session.sessionId) ?? false;
+}
+
+/** 会话拖拽到多窗口画布：在 dataTransfer 记录 sessionId */
+function onSessionDragStart(e: DragEvent, s: SessionItem): void {
+  if (e.dataTransfer) {
+    e.dataTransfer.setData('text/forge-session', s.sessionId);
+    e.dataTransfer.effectAllowed = 'copy';
+  }
+}
+
 function onProjectDragOver(ev: DragEvent, p: ProjectItem): void {
   if (!draggedPath.value) return;
   ev.preventDefault();
@@ -411,8 +426,14 @@ onUnmounted(() => {
               v-for="session in visibleSessions(project.path)"
               :key="session.sessionId"
               class="tree-session"
-              :class="{ active: currentSessionId === session.sessionId }"
+              :class="{
+                active: currentSessionId === session.sessionId,
+                'on-canvas': isOnCanvas(session),
+                'non-draggable': isOnCanvas(session),
+              }"
+              :draggable="!isOnCanvas(session)"
               @click="selectSession(session.sessionId)"
+              @dragstart="onSessionDragStart($event, session)"
             >
               <span
                 class="tree-session-status-dot"
@@ -441,6 +462,7 @@ onUnmounted(() => {
                   :title="sessionDisplayName(session)"
                   @dblclick.stop="startRenameSession(session)"
                 >{{ sessionDisplayName(session) }}</div>
+                <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">已开窗</span>
               </div>
 
               <div class="tree-node-actions">
@@ -756,6 +778,24 @@ onUnmounted(() => {
   color: var(--foreground);
   transition: background var(--transition-fast);
   min-width: 0;
+}
+
+/* 已在多窗口画布上：置灰、去交互 */
+.tree-session.on-canvas {
+  opacity: 0.45;
+  cursor: default;
+}
+.tree-session.on-canvas:hover {
+  background: transparent;
+}
+.session-oncanvas-tag {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 1px 6px;
 }
 
 .tree-session:hover {
