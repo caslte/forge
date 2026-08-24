@@ -25,6 +25,8 @@ import {
   type KeychainAdapter,
 } from '@forge/core';
 import { MockPiSessionAdapter, MockPiConversationAdapter } from './mock/mockAdapters.ts';
+import { PiConversationAdapter, type PiAgentSessionFactory } from './pi/piConversationAdapter.ts';
+import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 
@@ -45,6 +47,8 @@ export interface ForgeCoreDeps {
   keychain?: KeychainAdapter;
   /** pi models.json 路径（默认 ~/.pi/agent/models.json） */
   piModelsPath?: string;
+  /** 可注入 pi 会话工厂；缺省时仍使用 mock 对话适配器 */
+  piAgentSessionFactory?: PiAgentSessionFactory;
 }
 
 /**
@@ -67,7 +71,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // conversation（03）：先声明 conversationApi 以便 onStatusChange 闭包引用，
   // createConversationApi 返回后赋值（闭包执行时已初始化）
   let conversationApi: ReturnType<typeof createConversationApi>;
-  const conversationAdapter = new MockPiConversationAdapter();
+  let conversationAdapter: MockPiConversationAdapter | PiConversationAdapter =
+    new MockPiConversationAdapter();
+  if (deps.piAgentSessionFactory) {
+    const piAgentSessionFactory =
+      deps.piAgentSessionFactory ?? createPiAgentSessionFactory();
+    conversationAdapter = new PiConversationAdapter(piAgentSessionFactory);
+  }
   const conversationService = new ConversationService(conversationAdapter, {
     sessionExists: (id) => store.getSession(id) !== undefined,
     providerReady: () => true,
@@ -76,10 +86,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   });
   conversationApi = createConversationApi(conversationService, eventBus);
   // mock 异步回复驱动状态流转与 assistant 消息事件
-  conversationAdapter.onReply = (sid, msg) => {
-    conversationService.setStatus(sid, 'done');
-    conversationApi.emitMessage(sid, msg);
-  };
+  if (conversationAdapter instanceof MockPiConversationAdapter) {
+    conversationAdapter.onReply = (sid, msg) => {
+      conversationService.setStatus(sid, 'done');
+      conversationApi.emitMessage(sid, msg);
+    };
+  }
 
   // tool（04）
   const toolApi = createToolApi(eventBus);
