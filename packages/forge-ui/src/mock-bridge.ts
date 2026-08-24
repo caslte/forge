@@ -146,6 +146,9 @@ const bridge: ForgeBridge = {
 
 /** 仅浏览器 dev 且无真实 bridge 时注入 */
 export function ensureDevBridge(): void {
+  if (window.location.origin !== import.meta.env.FORGE_DEV_SERVER_ORIGIN) {
+    return;
+  }
   if (!window.forge) {
     window.forge = bridge;
   }

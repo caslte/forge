@@ -59,10 +59,11 @@ const timeLabel = computed(() => {
 
 <template>
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
-    <div class="msg-content" v-html="renderedContent"></div>
-    <div v-if="streaming" class="msg-cursor"></div>
+    <div class="msg-bubble">
+      <div class="msg-content" v-html="renderedContent"></div>
+      <div v-if="streaming" class="msg-cursor"></div>
+    </div>
     <div class="msg-footer">
-      <span class="msg-time">{{ timeLabel }}</span>
       <button class="msg-copy" :title="copied ? '已复制' : '复制'" @click="copy">
         <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="20 6 9 17 4 12" />
@@ -73,6 +74,7 @@ const timeLabel = computed(() => {
         </svg>
         <span>{{ copied ? '已复制' : '' }}</span>
       </button>
+      <span class="msg-time">{{ timeLabel }}</span>
     </div>
   </div>
 </template>
@@ -86,10 +88,19 @@ const timeLabel = computed(() => {
   max-width: 100%;
 }
 
+.msg-bubble {
+  min-width: 0;
+}
+
 .msg-user {
   align-self: flex-end;
   margin-left: auto;
-  max-width: 86%;
+}
+
+.msg-user .msg-bubble {
+  width: fit-content;
+  margin-left: auto;
+  max-width: 100%;
   padding: 10px 14px;
   border-radius: 16px;
   background: color-mix(in oklab, var(--muted) 55%, var(--background));

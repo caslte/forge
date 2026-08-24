@@ -94,6 +94,11 @@ app.whenReady().then(() => {
   const win = createWindow();
   const devUrl = process.env.FORGE_DEV_SERVER_URL;
   if (devUrl) {
+    const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;
+    const loadedUrl = new URL(devUrl);
+    if (!expectedOrigin || loadedUrl.origin !== expectedOrigin) {
+      throw new Error(`FORGE_DEV_SERVER_URL origin mismatch: ${loadedUrl.origin}`);
+    }
     win.loadURL(devUrl);
   } else {
     // prod：UI 在 @forge/ui/dist，从本包 dist 回退两级再进 forge-ui/dist

@@ -14,7 +14,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DEV_URL = 'http://localhost:5173';
+const DEV_PORT = 51731;
+const DEV_URL = `http://localhost:${DEV_PORT}`;
 const isWindows = process.platform === 'win32';
 const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,7 +28,7 @@ function waitForDevServer(maxAttempts = 30) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
     const probe = () => {
-      const req = http.get(DEV_URL, (res) => {
+  const req = http.get(DEV_URL, (res) => {
         if (res.statusCode !== undefined && res.statusCode < 500) {
           resolve();
         } else {
@@ -63,6 +64,7 @@ async function main() {
   const vite = spawn(npmCmd, ['run', 'dev', '-w', '@forge/ui'], {
     stdio: 'inherit',
     shell: isWindows,
+    env: { ...process.env, FORGE_VITE_PORT: String(DEV_PORT), FORGE_DEV_SERVER_ORIGIN: DEV_URL },
   });
   vite.on('error', (err) => {
     console.error('[dev] vite 启动失败', err);
@@ -80,7 +82,11 @@ async function main() {
   console.log('[dev] 4/4 启动 electron（加载', DEV_URL, '）');
   const electron = spawn('node', [electronCli, mainPath], {
     stdio: 'inherit',
-    env: { ...process.env, FORGE_DEV_SERVER_URL: DEV_URL },
+    env: {
+      ...process.env,
+      FORGE_DEV_SERVER_URL: DEV_URL,
+      FORGE_DEV_SERVER_ORIGIN: DEV_URL,
+    },
   });
   electron.on('close', (code) => {
     vite.kill();

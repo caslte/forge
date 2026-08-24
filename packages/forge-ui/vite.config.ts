@@ -6,6 +6,11 @@ import vue from '@vitejs/plugin-vue';
  * base: './' 让打包产物用相对路径，供 Electron loadFile 加载。
  */
 export default defineConfig({
+  define: {
+    'import.meta.env.FORGE_DEV_SERVER_ORIGIN': JSON.stringify(
+      process.env.FORGE_DEV_SERVER_ORIGIN ?? '',
+    ),
+  },
   plugins: [vue()],
   base: './',
   build: {
@@ -13,6 +18,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5173,
+    port: Number(process.env.FORGE_VITE_PORT ?? 5173),
+    strictPort: true,
   },
 });
