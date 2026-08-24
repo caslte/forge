@@ -14,6 +14,7 @@ import {
   IPC_WINDOW_MAXIMIZE,
   IPC_WINDOW_CLOSE,
   IPC_WINDOW_IS_MAXIMIZED,
+  IPC_DIALOG_OPEN_DIRECTORY,
   type ForgeMethod,
   type ForgeEvent,
 } from './ipc-contract.ts';
@@ -34,6 +35,13 @@ const windowControl = {
   },
 };
 
+/** window.forge.dialog 原生对话框实现 */
+const dialogControl = {
+  async selectDirectory(): Promise<string | null> {
+    return ipcRenderer.invoke(IPC_DIALOG_OPEN_DIRECTORY) as Promise<string | null>;
+  },
+};
+
 /** window.forge 桥实现 */
 const forgeBridge = {
   invoke(method: ForgeMethod, params?: Record<string, unknown>) {
@@ -51,6 +59,7 @@ const forgeBridge = {
     };
   },
   window: windowControl,
+  dialog: dialogControl,
 };
 
 contextBridge.exposeInMainWorld('forge', forgeBridge);

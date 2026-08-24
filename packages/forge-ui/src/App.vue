@@ -69,6 +69,8 @@ async function loadProjects(): Promise<void> {
 async function selectProject(path: string): Promise<void> {
   currentProjectPath.value = path;
   currentSessionId.value = null;
+  // 设置在设置页时，点击项目应关闭设置并回到会话视图
+  if (activeView.value === 'settings') activeView.value = 'sessions';
   await loadSessions();
 }
 
@@ -137,6 +139,8 @@ async function onCreateSession(): Promise<void> {
 
 async function onSelectSession(id: string): Promise<void> {
   currentSessionId.value = id;
+  // 设置在设置页时，点击会话应关闭设置并回到会话视图
+  if (activeView.value === 'settings') activeView.value = 'sessions';
   try {
     await call('session/attachSessionWindow', { sessionId: id });
   } catch {
@@ -258,10 +262,7 @@ onUnmounted(() => {
   <div class="app-container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <TitleBar
       :sidebar-collapsed="sidebarCollapsed"
-      :theme-mode="themeMode"
       @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed"
-      @toggle-theme="setTheme(themeMode === 'light' ? 'dark' : 'light')"
-      @open-settings="openSettings"
       @request-exit="requestExit"
     />
 

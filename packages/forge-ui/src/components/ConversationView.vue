@@ -47,13 +47,6 @@ const sessionStatus = computed<SessionStatus>(() =>
   isStreaming.value ? 'streaming' : props.session.status,
 );
 
-const projectDisplayName = computed(() => props.project.alias ?? basename(props.project.path));
-
-function basename(p: string): string {
-  const parts = p.replace(/\\/g, '/').split('/');
-  return parts[parts.length - 1] || p;
-}
-
 /** 加载历史消息 */
 async function loadHistory(): Promise<void> {
   loadingHistory.value = true;
@@ -283,8 +276,6 @@ watch(
             </svg>
           </div>
           <h3 class="welcome-title">开始新的对话</h3>
-          <p class="welcome-project">{{ projectDisplayName }}</p>
-          <p class="welcome-hint">在下方输入框输入指令，Enter 发送</p>
         </div>
 
         <!-- 消息流 -->
@@ -345,6 +336,8 @@ watch(
 .conv-messages {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: 18px 22px;
   scroll-behavior: smooth;
@@ -354,6 +347,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 16px;
+  flex: 1;
 }
 
 /* 加载态 */
@@ -397,13 +391,15 @@ watch(
   margin-left: 6px;
 }
 
-/* 空会话欢迎页 */
+/* 空会话欢迎页：占满整个内容区可视高度并水平/垂直居中 */
 .conv-welcome {
+  flex: 1;
   text-align: center;
-  padding: 60px 24px 40px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   animation: fadeIn 0.3s ease-out;
 }
@@ -425,18 +421,6 @@ watch(
   font-size: 18px;
   font-weight: 600;
   color: var(--foreground);
-}
-
-.welcome-project {
-  font-size: 13px;
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-}
-
-.welcome-hint {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  margin-top: 4px;
 }
 
 /* 错误提示 */

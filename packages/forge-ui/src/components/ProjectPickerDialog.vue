@@ -52,6 +52,16 @@ function onPickRecent(p: string): void {
   path.value = p;
 }
 
+// 打开系统目录选择，把选中路径填入输入框
+async function onBrowse(): Promise<void> {
+  try {
+    const dir = await window.forge.dialog.selectDirectory();
+    if (dir) path.value = dir;
+  } catch (e) {
+    // 忽略取消/失败，保持当前输入
+  }
+}
+
 onMounted(loadRecent);
 </script>
 
@@ -77,10 +87,10 @@ onMounted(loadRecent);
             autofocus
             @keydown.enter.prevent="onConfirm"
           />
-          <!-- forge-core 未提供目录浏览，禁用并提示手动输入 -->
-          <button class="browse-btn" disabled title="forge-core 未提供目录浏览">浏览</button>
+          <!-- 系统原生目录选择 -->
+          <button class="browse-btn" type="button" title="打开系统目录选择" @click="onBrowse">浏览…</button>
         </div>
-        <p class="hint">提示：请手动输入项目路径</p>
+        <p class="hint">可点击「浏览…」选择目录，或手动输入路径</p>
 
         <div v-if="recentPaths.length" class="recent">
           <span class="recent-label">最近：</span>

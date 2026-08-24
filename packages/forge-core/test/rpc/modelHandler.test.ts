@@ -141,7 +141,7 @@ function validInput(overrides: Partial<SaveProviderInput> = {}): SaveProviderInp
   };
 }
 
-test('queryProviderList：返回 providers，apiKey 引用不明文泄漏（A-MP-002）', async () => {
+test('queryProviderList：返回 providers，保留 apiKey 供前端回显（回显设计）', async () => {
   const { api, modelsFile } = makeApi();
   // 适配器返回含 apiKey 引用的记录（ProviderFileRecord）
   modelsFile.providers = [
@@ -162,10 +162,8 @@ test('queryProviderList：返回 providers，apiKey 引用不明文泄漏（A-MP
     const providers = (result.data as { providers: ProviderConfig[] }).providers;
     assert.equal(providers.length, 1);
     assert.equal(providers[0]?.id, 'openai');
-    // 响应 JSON 不得含密钥引用或明文
-    const text = JSON.stringify(result.data);
-    assert.ok(!text.includes('!forge-secret'), 'apiKey 引用不得出现在响应中');
-    assert.ok(!text.includes('sk-secret'), '明文 key 不得出现在响应中');
+    // 按用户「回显已存密钥」选择，apiKey 应被保留返回
+    assert.equal(providers[0]?.apiKey, '!forge-secret get openai', 'apiKey 应回显');
   }
 });
 
@@ -178,13 +176,14 @@ test('saveProvider：合法配置 → code 0 data null，写库并发射 provide
   assert.equal(result.data, null);
   assert.equal(modelsFile.providers.length, 1);
   assert.equal(modelsFile.providers[0]?.id, 'openai');
-  // 事件发射一次，载荷含更新后的 provider 列表且不含密钥引用
+  // 事件发射一次，载荷含更新后的 provider 列表且保留 apiKey 回显
   assert.equal(changed.length, 1);
   if (changed[0] !== undefined) {
     const payload = changed[0] as { providers: ProviderConfig[] };
     assert.equal(payload.providers.length, 1);
     assert.equal(payload.providers[0]?.id, 'openai');
-    assert.ok(!JSON.stringify(payload).includes('!forge-secret'), '事件载荷不得含密钥引用');
+    // 按「回显已存密钥」选择，apiKey 引用在事件载荷中保留
+    assert.ok(typeof payload.providers[0]?.apiKey === 'string', '事件载荷保留 apiKey 回显');
   }
 });
 

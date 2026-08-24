@@ -5,10 +5,11 @@ import type { ThemeMode, ProviderItem } from '../types';
 
 /**
  * 设置面板。
- * 参考 ai-coding SettingsPanel 分区结构：外观 / 模型 Provider / 关于。
- * Provider CRUD 直接走 bridge（model/queryProviderList、saveProvider、deleteProvider、
- * queryModels、setDefault），操作后后端发 model.providersChanged 事件，App.vue 监听
- * 该事件刷新会话侧模型列表，解耦。
+ * 模型配置采用「一条配置 = 一个模型」的直白形态：
+ * - 每个 provider（底层仍是 provider，兼容 pi）只展示一个模型
+ * - 字段：名称 / API 地址 / API Key / 模型 ID
+ * - 「主会话模型」单选项：复用 setDefault，全局唯一
+ * 底层 forge-core 契约不变（saveProvider 的 type 固定 openai-completions，models 传单元素数组）。
  */
 const props = defineProps<{
   themeMode: ThemeMode;
@@ -26,15 +27,16 @@ const defaultModel = ref<string | null>(null);
 const loadingModels = ref(false);
 const providerError = ref<string | null>(null);
 
-// 添加 provider 表单
+// 添加/编辑配置表单
 const showAddForm = ref(false);
+const editingId = ref<string | null>(null);
 const formName = ref('');
-const formType = ref('openai');
 const formBaseUrl = ref('');
 const formApiKey = ref('');
-const formModels = ref('');
+const formModel = ref('');
 const saving = ref(false);
 const formError = ref<string | null>(null);
+const apiKeyVisible = ref(false);
 
 // 删除两阶段确认
 const deleteConfirmId = ref<string | null>(null);
@@ -45,20 +47,14 @@ const themeSwatches: { mode: ThemeMode; label: string; color: string }[] = [
   { mode: 'dark', label: '深色', color: 'oklch(0.24 0.01 286.3)' },
 ];
 
-const formModelsList = computed(() =>
-  formModels.value
-    .split(/[,，\n]/)
-    .map((m) => m.trim())
-    .filter((m) => m.length > 0),
-);
-
-const canSubmitForm = computed(
-  () =>
+const canSubmitForm = computed(() => {
+  return (
     formName.value.trim().length > 0 &&
-    formType.value.trim().length > 0 &&
-    formModelsList.value.length > 0 &&
-    !saving.value,
-);
+    formBaseUrl.value.trim().length > 0 &&
+    formModel.value.trim().length > 0 &&
+    !saving.value
+  );
+});
 
 async function loadProviders(): Promise<void> {
   try {
@@ -77,7 +73,6 @@ async function loadModels(): Promise<void> {
     models.value = res.models;
     defaultModel.value = res.defaultModel;
   } catch (e) {
-    // 静默，模型列表非关键
     models.value = [];
     defaultModel.value = null;
   } finally {
@@ -90,14 +85,15 @@ async function onSaveProvider(): Promise<void> {
   saving.value = true;
   formError.value = null;
   try {
+    // 固定 openai-completions 协议（与 pi models.json 一致），小白无需理解「类型」
     await call('model/saveProvider', {
+      id: editingId.value ?? undefined,
       name: formName.value.trim(),
-      type: formType.value.trim(),
+      type: 'openai-completions',
       baseUrl: formBaseUrl.value.trim() || null,
       apiKey: formApiKey.value.trim() || undefined,
-      models: formModelsList.value,
+      models: [formModel.value.trim()],
     });
-    // 后端会发 providersChanged 事件，这里也主动刷新兜底
     await loadProviders();
     await loadModels();
     resetForm();
@@ -109,17 +105,41 @@ async function onSaveProvider(): Promise<void> {
   }
 }
 
+/** 点击列表「编辑」：回填表单进入编辑态 */
+function onEdit(p: ProviderItem): void {
+  editingId.value = p.id;
+  formName.value = p.name;
+  formBaseUrl.value = p.baseUrl ?? '';
+  formApiKey.value = p.apiKey ?? '';
+  formModel.value = p.models[0] ?? '';
+  formError.value = null;
+  apiKeyVisible.value = false;
+  showAddForm.value = true;
+}
+
+/** 打开新建表单 / 取消 */
+function toggleForm(): void {
+  if (showAddForm.value) {
+    resetForm();
+    showAddForm.value = false;
+  } else {
+    editingId.value = null;
+    resetForm();
+    showAddForm.value = true;
+  }
+}
+
 function resetForm(): void {
+  editingId.value = null;
   formName.value = '';
-  formType.value = 'openai';
   formBaseUrl.value = '';
   formApiKey.value = '';
-  formModels.value = '';
+  formModel.value = '';
   formError.value = null;
+  apiKeyVisible.value = false;
 }
 
 async function onDeleteProvider(id: string): Promise<void> {
-  // 两阶段确认
   if (deleteConfirmId.value !== id) {
     deleteConfirmId.value = id;
     if (deleteTimer) clearTimeout(deleteTimer);
@@ -128,7 +148,6 @@ async function onDeleteProvider(id: string): Promise<void> {
     }, 3000);
     return;
   }
-  // 确认删除
   if (deleteTimer) {
     clearTimeout(deleteTimer);
     deleteTimer = null;
@@ -143,13 +162,15 @@ async function onDeleteProvider(id: string): Promise<void> {
   }
 }
 
-async function onSetDefault(model: string): Promise<void> {
-  try {
-    await call('model/setDefault', { model });
-    await loadModels();
-  } catch (e) {
-    providerError.value = e instanceof Error ? e.message : String(e);
-  }
+function onSetDefault(model: string): void {
+  void (async () => {
+    try {
+      await call('model/setDefault', { model });
+      await loadModels();
+    } catch (e) {
+      providerError.value = e instanceof Error ? e.message : String(e);
+    }
+  })();
 }
 
 function onClearDefault(): void {
@@ -163,6 +184,10 @@ function onClearDefault(): void {
   })();
 }
 
+function isDefault(model: string): boolean {
+  return defaultModel.value === model;
+}
+
 function selectTheme(mode: ThemeMode): void {
   emit('theme-change', mode);
 }
@@ -174,7 +199,6 @@ onMounted(() => {
   void loadModels();
   unsubProviders = subscribe('model.providersChanged', () => {
     void loadProviders();
-    void loadModels();
   });
 });
 
@@ -189,7 +213,7 @@ onUnmounted(() => {
     <header class="settings-header">
       <div>
         <h1 class="settings-title">设置</h1>
-        <p class="settings-subtitle">管理模型 Provider、界面外观与权限</p>
+        <p class="settings-subtitle">管理模型、界面外观</p>
       </div>
       <button class="ghost settings-close" aria-label="关闭设置" @click="emit('close')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -199,10 +223,137 @@ onUnmounted(() => {
     </header>
 
     <div class="settings-body">
+      <!-- 模型配置 -->
+      <section class="settings-section main">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">模型配置</h2>
+            <p class="section-desc">每个模型单独一条。选中的「主会话模型」用于当前对话。</p>
+          </div>
+          <button class="section-action" @click="toggleForm">
+            <svg v-if="!showAddForm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+            {{ showAddForm ? '取消' : '添加模型' }}
+          </button>
+        </div>
+
+        <!-- 当前主会话模型（置于列表上方，模型多时不遮挡） -->
+        <div v-if="defaultModel" class="default-model-row">
+          <span class="default-model-label">当前主会话模型：</span>
+          <span class="default-model-value">{{ defaultModel }}</span>
+          <button class="ghost small" @click="onClearDefault">清除</button>
+        </div>
+
+        <!-- 添加/编辑表单 -->
+        <div v-if="showAddForm" class="provider-form">
+          <div class="form-head">
+            <span class="form-head-title">{{ editingId ? '编辑模型' : '添加模型' }}</span>
+          </div>
+          <label class="form-field">
+            <span class="form-label">名称</span>
+            <input v-model="formName" type="text" placeholder="如 Grok、GPT、MiniMax" />
+          </label>
+          <label class="form-field">
+            <span class="form-label">API 地址</span>
+            <input v-model="formBaseUrl" type="text" placeholder="https://api.xxx.com/v1" />
+          </label>
+          <label class="form-field">
+            <span class="form-label">API Key</span>
+            <div class="api-key-wrap">
+              <input
+                v-model="formApiKey"
+                :type="apiKeyVisible ? 'text' : 'password'"
+                class="api-key-input"
+                placeholder="sk-…（存入系统密钥链，不明文保存）"
+              />
+              <button
+                type="button"
+                class="api-key-toggle"
+                :aria-label="apiKeyVisible ? '隐藏密钥' : '显示密钥'"
+                :data-tooltip="apiKeyVisible ? '隐藏密钥' : '显示密钥'"
+                @click="apiKeyVisible = !apiKeyVisible"
+              >
+                <svg v-if="apiKeyVisible" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
+          </label>
+          <label class="form-field">
+            <span class="form-label">模型 ID</span>
+            <input v-model="formModel" type="text" placeholder="如 gpt-4o、grok-4.5" />
+          </label>
+          <div v-if="formError" class="form-error">{{ formError }}</div>
+          <div class="form-actions">
+            <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
+              {{ saving ? '保存中…' : (editingId ? '保存修改' : '添加模型') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 模型列表 -->
+        <div v-if="providerError" class="section-error">{{ providerError }}</div>
+        <div v-if="providers.length === 0 && !loadingModels" class="empty-state">
+          还没有模型，点击「添加模型」配置第一个
+        </div>
+        <div v-else-if="providers.length" class="provider-list">
+          <div v-for="p in providers" :key="p.id" class="provider-item"
+            :class="{ 'is-default': p.models[0] && isDefault(p.models[0]) }">
+            <div class="provider-info">
+              <div class="provider-name-row">
+                <span class="provider-name">{{ p.name }}</span>
+                <span v-if="p.models[0] && isDefault(p.models[0])" class="default-tag">主会话模型</span>
+                <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">异常</span>
+              </div>
+              <div class="provider-meta">
+                <span v-if="p.baseUrl" class="provider-baseurl">{{ p.baseUrl }}</span>
+                <span v-else class="provider-baseurl muted">本地默认</span>
+                <span class="provider-models-count">{{ p.models[0] ?? '—' }}</span>
+              </div>
+            </div>
+            <div class="provider-actions">
+              <button
+                class="provider-default-btn"
+                data-tooltip="编辑模型配置"
+                @click="onEdit(p)"
+              >编辑</button>
+              <button
+                v-if="p.models[0] && !isDefault(p.models[0])"
+                class="provider-default-btn"
+                data-tooltip="设为主会话模型"
+                @click="onSetDefault(p.models[0])"
+              >设为主会话</button>
+              <button
+                class="provider-delete"
+                :class="{ confirming: deleteConfirmId === p.id }"
+                :data-tooltip="deleteConfirmId === p.id ? '再次点击确认删除' : '删除'"
+                @click="onDeleteProvider(p.id)"
+              >
+                {{ deleteConfirmId === p.id ? '确认删除' : '' }}
+                <svg v-if="deleteConfirmId !== p.id" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- 外观 -->
-      <section class="settings-section">
+      <section class="settings-section aside">
         <h2 class="section-title">外观</h2>
-        <p class="section-desc">切换浅色 / 深色主题，所有窗口立即生效</p>
+        <p class="section-desc">切换浅色 / 深色主题</p>
         <div class="theme-swatches">
           <button
             v-for="t in themeSwatches"
@@ -219,128 +370,6 @@ onUnmounted(() => {
             <span class="swatch-label">{{ t.label }}</span>
           </button>
         </div>
-      </section>
-
-      <!-- 模型 Provider -->
-      <section class="settings-section">
-        <div class="section-head">
-          <div>
-            <h2 class="section-title">模型 Provider</h2>
-            <p class="section-desc">配置 API Provider 与可用模型，密钥安全存储于系统密钥链</p>
-          </div>
-          <button
-            class="section-action"
-            @click="showAddForm = !showAddForm; if (!showAddForm) resetForm()"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            {{ showAddForm ? '取消' : '添加' }}
-          </button>
-        </div>
-
-        <!-- 添加表单 -->
-        <div v-if="showAddForm" class="provider-form">
-          <div class="form-row">
-            <label class="form-field">
-              <span class="form-label">名称 *</span>
-              <input v-model="formName" type="text" placeholder="如 OpenAI" />
-            </label>
-            <label class="form-field">
-              <span class="form-label">类型 *</span>
-              <input v-model="formType" type="text" placeholder="如 openai / anthropic" />
-            </label>
-          </div>
-          <label class="form-field">
-            <span class="form-label">Base URL</span>
-            <input v-model="formBaseUrl" type="text" placeholder="https://api.openai.com/v1（留空为本地默认）" />
-          </label>
-          <label class="form-field">
-            <span class="form-label">API Key</span>
-            <input v-model="formApiKey" type="password" placeholder="sk-...（存入系统密钥链，不明文落盘）" />
-          </label>
-          <label class="form-field">
-            <span class="form-label">模型列表 * <span class="form-hint">（逗号或换行分隔）</span></span>
-            <textarea
-              v-model="formModels"
-              rows="2"
-              placeholder="gpt-4o, gpt-4o-mini, gpt-3.5-turbo"
-            ></textarea>
-          </label>
-          <div v-if="formModelsList.length" class="form-models-preview">
-            <span v-for="m in formModelsList" :key="m" class="model-chip">{{ m }}</span>
-          </div>
-          <div v-if="formError" class="form-error">{{ formError }}</div>
-          <div class="form-actions">
-            <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
-              {{ saving ? '保存中…' : '保存 Provider' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- provider 列表 -->
-        <div v-if="providerError" class="section-error">{{ providerError }}</div>
-        <div v-if="providers.length === 0 && !loadingModels" class="empty-state">
-          暂无 Provider，点击「添加」配置第一个
-        </div>
-        <div v-else class="provider-list">
-          <div v-for="p in providers" :key="p.id" class="provider-item">
-            <div class="provider-info">
-              <div class="provider-name-row">
-                <span class="provider-name">{{ p.name }}</span>
-                <span class="provider-type">{{ p.type }}</span>
-                <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">异常</span>
-              </div>
-              <div class="provider-meta">
-                <span v-if="p.baseUrl" class="provider-baseurl">{{ p.baseUrl }}</span>
-                <span v-else class="provider-baseurl muted">本地默认</span>
-                <span class="provider-models-count">{{ p.models.length }} 个模型</span>
-              </div>
-              <div class="provider-models">
-                <span v-for="m in p.models" :key="m" class="model-chip small">{{ m }}</span>
-              </div>
-            </div>
-            <button
-              class="provider-delete"
-              :class="{ confirming: deleteConfirmId === p.id }"
-              :data-tooltip="deleteConfirmId === p.id ? '再次点击确认删除' : '删除 Provider'"
-              @click="onDeleteProvider(p.id)"
-            >
-              {{ deleteConfirmId === p.id ? '确认' : '' }}
-              <svg v-if="deleteConfirmId !== p.id" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- 默认模型 -->
-        <div class="default-model-row">
-          <label class="form-field inline">
-            <span class="form-label">全局默认模型</span>
-            <select
-              class="default-model-select"
-              :value="defaultModel ?? ''"
-              @change="onSetDefault(($event.target as HTMLSelectElement).value)"
-            >
-              <option value="" disabled>未设置</option>
-              <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
-            </select>
-          </label>
-          <button v-if="defaultModel" class="ghost small" @click="onClearDefault">清除</button>
-        </div>
-      </section>
-
-      <!-- 关于 -->
-      <section class="settings-section about">
-        <h2 class="section-title">关于</h2>
-        <dl class="about-list">
-          <div class="about-row"><dt>应用</dt><dd>Forge</dd></div>
-          <div class="about-row"><dt>运行时</dt><dd>Electron + Vue 3 + Vite</dd></div>
-          <div class="about-row"><dt>内核</dt><dd>forge-core（mock pi 适配器）</dd></div>
-        </dl>
       </section>
     </div>
   </div>
@@ -391,21 +420,26 @@ onUnmounted(() => {
   height: 17px;
 }
 
+/* 两栏布局：模型配置为主区，外观为右侧窄栏，减少留白 */
 .settings-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding-right: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 26px;
-  max-width: 720px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 24px;
+  align-items: start;
 }
 
 .settings-section {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.settings-section.aside {
+  gap: 12px;
 }
 
 .section-head {
@@ -476,12 +510,16 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+.settings-section.aside .theme-swatches {
+  flex-direction: column;
+  gap: 8px;
+}
+
 .theme-swatch {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 10px;
+  gap: 10px;
+  padding: 8px;
   border: 2px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--card);
@@ -499,8 +537,9 @@ onUnmounted(() => {
 }
 
 .swatch-color {
-  width: 56px;
-  height: 40px;
+  width: 40px;
+  height: 28px;
+  flex-shrink: 0;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   display: flex;
@@ -510,8 +549,8 @@ onUnmounted(() => {
 }
 
 .swatch-check {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   color: var(--brand);
   filter: drop-shadow(0 0 3px rgba(255,255,255,0.6));
 }
@@ -526,7 +565,7 @@ onUnmounted(() => {
   color: var(--foreground);
 }
 
-/* provider 表单 */
+/* 模型配置表单 */
 .provider-form {
   display: flex;
   flex-direction: column;
@@ -537,15 +576,6 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
 }
 
-.form-row {
-  display: flex;
-  gap: 12px;
-}
-
-.form-row .form-field {
-  flex: 1;
-}
-
 .form-field {
   display: flex;
   flex-direction: column;
@@ -553,10 +583,15 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.form-field.inline {
-  flex-direction: row;
+.form-head {
+  display: flex;
   align-items: center;
-  gap: 10px;
+}
+
+.form-head-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
 }
 
 .form-label {
@@ -571,45 +606,49 @@ onUnmounted(() => {
   opacity: 0.7;
 }
 
-.form-field input,
-.form-field textarea {
+.form-field input {
   width: 100%;
   font-size: 13px;
   font-family: var(--font-sans);
 }
 
-.form-field textarea {
-  resize: vertical;
-  min-height: 44px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+/* API Key：右侧眼睛切换明文/隐藏 */
+.api-key-wrap {
+  position: relative;
+  width: 100%;
 }
 
-.form-models-preview {
+.api-key-wrap input {
+  padding-right: 34px;
+}
+
+.api-key-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  padding: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: -4px;
-}
-
-.model-chip {
-  display: inline-flex;
   align-items: center;
-  padding: 2px 9px;
-  background: color-mix(in oklab, var(--brand) 8%, var(--background));
-  border: 1px solid color-mix(in oklab, var(--brand) 18%, transparent);
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-family: var(--font-mono);
-  color: var(--foreground);
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  cursor: pointer;
 }
 
-.model-chip.small {
-  padding: 1px 7px;
-  font-size: 11px;
+.api-key-toggle:hover {
   background: var(--muted);
-  border-color: var(--border);
-  color: var(--muted-foreground);
+  color: var(--foreground);
+  border-color: transparent;
+}
+
+.api-key-toggle svg {
+  width: 16px;
+  height: 16px;
 }
 
 .form-error {
@@ -626,7 +665,7 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-/* provider 列表 */
+/* 模型列表 */
 .provider-list {
   display: flex;
   flex-direction: column;
@@ -635,8 +674,8 @@ onUnmounted(() => {
 
 .provider-item {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -646,6 +685,11 @@ onUnmounted(() => {
 
 .provider-item:hover {
   border-color: color-mix(in oklab, var(--brand) 30%, var(--border));
+}
+
+.provider-item.is-default {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 4%, var(--card));
 }
 
 .provider-info {
@@ -668,13 +712,13 @@ onUnmounted(() => {
   color: var(--foreground);
 }
 
-.provider-type {
+.default-tag {
   padding: 1px 8px;
   border-radius: 999px;
-  background: color-mix(in oklab, var(--info) 12%, transparent);
-  color: var(--info);
+  background: color-mix(in oklab, var(--brand) 12%, transparent);
+  color: var(--brand);
   font-size: 11px;
-  font-family: var(--font-mono);
+  font-weight: 600;
 }
 
 .provider-error-tag {
@@ -698,21 +742,42 @@ onUnmounted(() => {
   font-style: italic;
 }
 
-.provider-models {
+.provider-models-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.provider-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.provider-default-btn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: var(--brand);
+  color: var(--brand-foreground);
+  border: 1px solid var(--brand);
+}
+
+.provider-default-btn:hover {
+  background: var(--brand-hover);
+  color: var(--brand-foreground);
+  border-color: var(--brand-hover);
 }
 
 .provider-delete {
   flex-shrink: 0;
-  width: 30px;
   height: 30px;
-  padding: 0;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 4px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--background);
@@ -736,63 +801,39 @@ onUnmounted(() => {
   background: var(--destructive);
   color: #fff;
   border-color: var(--destructive);
-  width: auto;
-  padding: 0 10px;
 }
 
 .provider-delete.confirming:hover {
   background: color-mix(in oklab, var(--destructive) 85%, black);
+  color: #fff;
 }
 
-/* 默认模型 */
+/* 当前主会话模型 */
 .default-model-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 10px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: color-mix(in oklab, var(--muted) 20%, var(--card));
   margin-top: 4px;
 }
 
-.default-model-row .form-field.inline {
-  flex: 1;
+.default-model-label {
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 
-.default-model-select {
-  min-width: 200px;
+.default-model-value {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--foreground);
+  font-weight: 500;
 }
 
 button.small {
   padding: 4px 12px;
   font-size: 12px;
-}
-
-/* 关于 */
-.about-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.about-row {
-  display: flex;
-  gap: 16px;
-  padding: 8px 0;
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
-}
-
-.about-row dt {
-  width: 80px;
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--muted-foreground);
-}
-
-.about-row dd {
-  font-size: 13px;
-  color: var(--foreground);
-  font-family: var(--font-mono);
 }
 </style>

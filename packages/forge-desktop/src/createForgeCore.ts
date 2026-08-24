@@ -21,9 +21,12 @@ import {
   ModelService,
   createModelApi,
   type RpcResult,
+  type ModelsFileAdapter,
+  type KeychainAdapter,
 } from '@forge/core';
 import { MockPiSessionAdapter, MockPiConversationAdapter } from './mock/mockAdapters.ts';
-import { MockModelsFileAdapter, MockKeychainAdapter } from './mock/modelAdapters.ts';
+import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
+import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
 export type MethodTable = Record<string, (params: unknown) => RpcResult | Promise<RpcResult>>;
@@ -36,12 +39,21 @@ export interface ForgeCoreBundle {
   eventBus: EventEmitter;
 }
 
+/** 可选注入依赖（测试可传 mock；缺省走真实 pi 对接） */
+export interface ForgeCoreDeps {
+  modelsFile?: ModelsFileAdapter;
+  keychain?: KeychainAdapter;
+  /** pi models.json 路径（默认 ~/.pi/agent/models.json） */
+  piModelsPath?: string;
+}
+
 /**
- * 组装 forge-core 内核 + mock 适配器。
+ * 组装 forge-core 内核 + 适配器。
  * @param storePath forge-store.json 文件路径（主进程传 userData 目录下路径）
+ * @param deps 可选注入依赖（测试传 mock；缺省走真实 pi models.json + env keychain 对接）
  * @returns 方法表 + 事件汇
  */
-export function createForgeCore(storePath: string): ForgeCoreBundle {
+export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): ForgeCoreBundle {
   const store = new ForgeStore(storePath);
   const eventBus = new EventEmitter();
 
@@ -72,11 +84,11 @@ export function createForgeCore(storePath: string): ForgeCoreBundle {
   // tool（04）
   const toolApi = createToolApi(eventBus);
 
-  // model（05）
+  // model（05）：默认走真实 pi models.json 双向同步；测试可注入 mock
   const modelApi = createModelApi(
     new ModelService({
-      modelsFile: new MockModelsFileAdapter(),
-      keychain: new MockKeychainAdapter(),
+      modelsFile: deps.modelsFile ?? new PiModelsFileAdapter(deps.piModelsPath ?? defaultPiModelsPath()),
+      keychain: deps.keychain ?? new EnvVarKeychainAdapter(),
       store,
     }),
     eventBus,

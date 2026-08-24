@@ -217,7 +217,7 @@ watch(
 
 .compose-box:focus-within {
   border-color: var(--brand);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand) 10%, transparent);
+  /* 仅保留外圈边框；去掉内圈 3px 光环 */
 }
 
 .compose-box.streaming {
@@ -259,6 +259,13 @@ watch(
 .compose-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.compose-input:focus {
+  /* 内圈文本区无需任何焦点边框/光环，仅由外圈 .compose-box 边框表达聚焦 */
+  border: none;
+  outline: none;
+  box-shadow: none;
 }
 
 /* 底部操作条 */

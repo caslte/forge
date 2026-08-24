@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createForgeCore, invoke } from '../src/createForgeCore.ts';
+import { MockModelsFileAdapter, MockKeychainAdapter } from '../src/mock/modelAdapters.ts';
 
 /** 等待 mock 异步回复（replyDelayMs 默认 300） */
 function waitForReply(): Promise<void> {
@@ -29,10 +30,15 @@ function makeTempProject(): { root: string; storeFile: string; projectDir: strin
   return { root, storeFile, projectDir };
 }
 
+/** mock 依赖：测试隔离，不读真实 pi models.json */
+function mockDeps() {
+  return { modelsFile: new MockModelsFileAdapter(), keychain: new MockKeychainAdapter() };
+}
+
 test('createForgeCore 全流程：project → session → conversation → tool → model 可跑通', async () => {
   const { root, storeFile, projectDir } = makeTempProject();
   try {
-    const { methodTable, eventBus } = createForgeCore(storeFile);
+    const { methodTable, eventBus } = createForgeCore(storeFile, mockDeps());
 
     // 监听 conversation.statusChanged 事件
     const statusEvents: { sessionId: string; status: string }[] = [];
@@ -99,7 +105,7 @@ test('createForgeCore 全流程：project → session → conversation → tool 
 test('invoke 未知方法返回 404 信封', async () => {
   const { root, storeFile } = makeTempProject();
   try {
-    const { methodTable } = createForgeCore(storeFile);
+    const { methodTable } = createForgeCore(storeFile, mockDeps());
     const res = await invoke(methodTable, 'unknown/method', {});
     assert.equal(res.code, 404);
     assert.equal(res.data, null);
@@ -119,8 +125,8 @@ test('createForgeCore 跨实例隔离：两个 store 文件互不干扰', async 
     fs.mkdirSync(proj1, { recursive: true });
     fs.mkdirSync(proj2, { recursive: true });
 
-    const a = createForgeCore(store1);
-    const b = createForgeCore(store2);
+    const a = createForgeCore(store1, mockDeps());
+    const b = createForgeCore(store2, mockDeps());
     await invoke(a.methodTable, 'project/addProject', { path: proj1 });
     await invoke(b.methodTable, 'project/addProject', { path: proj2 });
 

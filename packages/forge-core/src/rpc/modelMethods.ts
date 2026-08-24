@@ -68,11 +68,10 @@ function requireString(params: unknown, key: string): string | null {
 }
 
 /**
- * 剥离 apiKey 安全引用：返回文档公开形状的 provider（docs/api/05_model.md §1）。
- * 服务层返回的 ProviderConfig 在运行时可能携带 apiKey 引用（ProviderFileRecord），
- * 此处重建对象只保留公开字段，确保响应与事件载荷不含密钥引用。
- * @param provider 服务层返回的 provider（可能含 apiKey）
- * @returns 不含 apiKey 的安全 provider 对象
+ * 归一化 provider 响应形状（docs/api/05_model.md §1）。
+ * 默认保留 apiKey 字段用于前端回显（用户选择「回显已存密钥」）。
+ * @param provider 服务层返回的 provider
+ * @returns 统一形状的 provider 对象（含 apiKey 回显）
  */
 function toSafeProvider(provider: ProviderConfig): ProviderConfig {
   return {
@@ -82,6 +81,7 @@ function toSafeProvider(provider: ProviderConfig): ProviderConfig {
     baseUrl: provider.baseUrl,
     models: provider.models,
     lastError: provider.lastError,
+    ...(provider.apiKey !== undefined ? { apiKey: provider.apiKey } : {}),
   };
 }
 

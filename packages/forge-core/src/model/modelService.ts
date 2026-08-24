@@ -31,7 +31,7 @@
 
 import type { SessionRecord, StoreKey } from '../types/forge-store.ts';
 
-/** Provider 配置（docs/api/05_model.md §1 响应项；不含 apiKey，密钥引用不对外暴露） */
+/** Provider 配置（docs/api/05_model.md §1 响应项） */
 export interface ProviderConfig {
   id: string;
   name: string;
@@ -39,6 +39,8 @@ export interface ProviderConfig {
   baseUrl: string | null;
   models: string[];
   lastError: string | null;
+  /** apiKey 安全引用（如 !command / $ENV_VAR / 原值）。默认不返回，仅回显需求时可选携带 */
+  apiKey?: string;
 }
 
 /** models.json 落盘记录（ProviderConfig + 可选 apiKey 安全引用，不明文） */

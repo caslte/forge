@@ -135,6 +135,10 @@ const bridge: ForgeBridge = {
     close: () => {},
     isMaximized: async () => false,
   },
+  dialog: {
+    // 浏览器 dev 下无原生对话框，返回默认示例路径（可直接回车创建）
+    selectDirectory: async () => 'D:/work/aiwork',
+  },
 };
 
 /** 仅浏览器 dev 且无真实 bridge 时注入 */

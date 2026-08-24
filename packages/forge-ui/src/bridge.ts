@@ -64,6 +64,9 @@ export interface ForgeBridge {
     close(): void;
     isMaximized(): Promise<boolean>;
   };
+  dialog: {
+    selectDirectory(): Promise<string | null>;
+  };
 }
 
 /**

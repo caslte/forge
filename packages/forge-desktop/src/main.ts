@@ -10,11 +10,11 @@
  *
  * 单窗口（v1 MVP）；多窗口多会话为后续迭代。
  */
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -70,6 +70,20 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
   });
   ipcMain.on(IPC_WINDOW_CLOSE, () => mainWindow?.close());
   ipcMain.handle(IPC_WINDOW_IS_MAXIMIZED, () => mainWindow?.isMaximized() ?? false);
+  // 原生目录选择：返回选中的目录绝对路径；取消/失败返回 null
+  ipcMain.handle(IPC_DIALOG_OPEN_DIRECTORY, async () => {
+    const options = {
+      title: '选择项目目录',
+      properties: ['openDirectory', 'createDirectory'],
+    } as Electron.OpenDialogOptions;
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (res.canceled || res.filePaths.length === 0) {
+      return null;
+    }
+    return res.filePaths[0] ?? null;
+  });
 }
 
 app.whenReady().then(() => {

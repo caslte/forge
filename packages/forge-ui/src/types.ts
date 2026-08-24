@@ -51,6 +51,8 @@ export interface ProviderItem {
   baseUrl: string | null;
   models: string[];
   lastError: string | null;
+  /** apiKey 安全引用/原值（回显用途，可能为空） */
+  apiKey?: string;
 }
 
 export type ThemeMode = 'light' | 'dark';

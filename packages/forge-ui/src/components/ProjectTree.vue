@@ -486,35 +486,37 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 项目操作菜单（fixed 定位） -->
-    <div
-      v-if="menuOpenPath"
-      ref="menuRef"
-      class="project-action-menu"
-      :style="{ left: menuX + 'px', top: menuY + 'px' }"
-      @click.stop
-      @contextmenu.prevent
-    >
-      <button type="button" class="project-action-menu-item" @click="onMenuRename">
-        <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 20h9" />
-          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-        </svg>
-        重命名
-      </button>
-      <button
-        type="button"
-        class="project-action-menu-item danger"
-        :class="{ confirming: projectDeleteConfirmPath === menuOpenPath }"
-        @click="onMenuDelete"
+    <!-- 项目操作菜单：Teleport 到 body，避免被 sidebar overflow/stacking 裁剪遮挡 -->
+    <Teleport to="body">
+      <div
+        v-if="menuOpenPath"
+        ref="menuRef"
+        class="project-action-menu"
+        :style="{ left: menuX + 'px', top: menuY + 'px' }"
+        @click.stop
+        @contextmenu.prevent
       >
-        <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-        </svg>
-        {{ projectDeleteConfirmPath === menuOpenPath ? '确认删除' : '删除项目' }}
-      </button>
-    </div>
+        <button type="button" class="project-action-menu-item" @click="onMenuRename">
+          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+          </svg>
+          重命名
+        </button>
+        <button
+          type="button"
+          class="project-action-menu-item danger"
+          :class="{ confirming: projectDeleteConfirmPath === menuOpenPath }"
+          @click="onMenuDelete"
+        >
+          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+          {{ projectDeleteConfirmPath === menuOpenPath ? '确认删除' : '删除项目' }}
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -558,6 +560,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin: 0 8px;
   padding: 10px 12px;
   border-radius: var(--radius-lg);
   cursor: pointer;
@@ -724,7 +727,7 @@ onUnmounted(() => {
 }
 
 .tree-session-group {
-  margin-left: 12px;
+  margin: 2px 8px 0 12px;
   display: grid;
   grid-template-rows: 1fr;
   transition: grid-template-rows var(--transition-base);
@@ -747,7 +750,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px 8px 24px;
+  padding: 4px 12px 4px 24px;
   border-radius: var(--radius-md);
   cursor: pointer;
   color: var(--foreground);

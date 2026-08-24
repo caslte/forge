@@ -50,6 +50,9 @@ export const IPC_WINDOW_MAXIMIZE = 'forge:window:maximize';
 export const IPC_WINDOW_CLOSE = 'forge:window:close';
 export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
 
+/** preload ↔ main 原生对话框通道 */
+export const IPC_DIALOG_OPEN_DIRECTORY = 'forge:dialog:openDirectory';
+
 /** 全部事件名（与 forge-core 各 Api events.emit 的 channel 一致） */
 export type ForgeEvent =
   | 'project.opened'
@@ -111,6 +114,17 @@ export interface ForgeBridge {
    * - model.providersChanged: { providers }
    */
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
+  /** 原生对话框（目录选择等） */
+  dialog: ForgeDialog;
+}
+
+/** window.forge.dialog 原生对话框能力 */
+export interface ForgeDialog {
+  /**
+   * 打开系统目录选择框。
+   * @returns 用户选中的目录绝对路径；取消/失败返回 null。
+   */
+  selectDirectory(): Promise<string | null>;
 }
 
 /** IPC invoke 的返回信封（透传 forge-core RpcResult） */
