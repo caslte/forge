@@ -15,10 +15,9 @@
  *      setSessionModel 未知会话。
  *    - 1004 provider 未配置：setDefault 的模型不在可用模型列表中。
  *    - 5000 内部错误：adapter 读写异常（models.json 写失败等）捕获为 5000 错误联合。
- * 2. 密钥安全（TD-MP-01，硬约束）：apiKey 明文仅传给 KeychainAdapter.storeKey，
- *    models.json 中只落 `!command`（keychain 可用）或 `$ENV_VAR`（keychain 不可用
- *    降级）引用，绝不明文写入；queryProviderList 对引用形式 apiKey 经 keychain.readKey
- *    解析为明文返回（供编辑回显），keychain 不支持时保留引用。
+ * 2. 密钥存储（v1 临时，TD-MP-01 放宽）：apiKey 明文直接写入 models.json，与 pi 原生
+ *    明文形式一致，不经 KeychainAdapter 安全引用；queryProviderList 仍兼容读取
+ *    旧 `$ENV_VAR`/`!command` 引用（经 keychain.readKey 解析），便于存量占位符平滑过渡。
  * 3. 幂等（MP-S01）：saveProvider 以 id 为键 upsert —— 同 id 重复保存覆盖更新；
  *    id 缺省时由 name 生成 slug 作为 id；未提供新 apiKey 时保留内存中已存的引用。
  * 4. 删除联动（docs/api/05_model.md §3）：deleteProvider 删除 provider 后，若全局
@@ -32,6 +31,20 @@
 
 import type { SessionRecord, StoreKey } from '../types/forge-store.ts';
 
+/** 思考级别枚举（docs/api/05_model.md §8/§9，同 pi thinkingLevelMap 级别，顺序固定） */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** 思考级别全量列表（顺序固定：off→minimal→low→medium→high→xhigh→max） */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+
 /** Provider 配置（docs/api/05_model.md §1 响应项） */
 export interface ProviderConfig {
   id: string;
@@ -40,6 +53,14 @@ export interface ProviderConfig {
   baseUrl: string | null;
   models: string[];
   lastError: string | null;
+  /** contextWindow 首个模型的上下文窗口（MP-S06；未配置为 null，v1 仅首模型透出） */
+  contextWindow?: number | null;
+  /**
+   * 首模型是否支持图片输入（多模态）：对应 models.json 该模型记录的
+   * `input` 数组含 "image"。true=支持（写 input:["text","image"]），
+   * false/缺省=不支持（移除 input 字段，回退 pi 默认纯文本）。
+   */
+  vision?: boolean;
   /** apiKey 安全引用（如 !command / $ENV_VAR / 原值）。默认不返回，仅回显需求时可选携带 */
   apiKey?: string;
 }
@@ -72,6 +93,13 @@ export interface SaveProviderInput {
   models: string[];
   /** 可选；提供时必须非空，不明文写入 models.json */
   apiKey?: string;
+  /** 可选；首个模型上下文窗口（MP-S06）：正数写入，null 移除字段，缺省保留原值 */
+  contextWindow?: number | null;
+  /**
+   * 可选；首模型是否支持图片输入（多模态）：true 写模型记录 input:["text","image"]，
+   * false 移除字段，缺省保留原值。仅接受布尔值。
+   */
+  vision?: boolean;
 }
 
 /**
@@ -115,6 +143,16 @@ export interface ModelStorePort {
 }
 
 /**
+ * 思考级别端口（可注入 mock）。
+ * 查询某模型支持的思考级别列表（docs/api/05_model.md §8 MP-S05），能力来源为
+ * pi SDK `getSupportedThinkingLevels`（reasoning + thinkingLevelMap 共同决定）。
+ * @param getSupportedThinkingLevels 返回级别列表；null 表示该模型不可用/未配置
+ */
+export interface ThinkLevelsPort {
+  getSupportedThinkingLevels(model: string): Promise<string[] | null>;
+}
+
+/**
  * 审计日志回调（P3-D）：配置变更记审计日志；payload 只含 provider id / 动作标识，
  * 绝不含 apiKey 明文或引用。
  */
@@ -136,6 +174,8 @@ export interface ModelServiceDeps {
    * 供上层刷新模型运行时缓存（使新 API Key 立即生效）；异常不阻断主流程。
    */
   onConfigChanged?: () => void | Promise<void>;
+  /** 思考级别端口（MP-S05；可选，缺省时 getModelThinkingLevels 返回 5000「能力未配置」） */
+  thinkLevels?: ThinkLevelsPort;
 }
 
 /**
@@ -188,6 +228,11 @@ function normalizeBaseUrl(baseUrl: string | null | undefined): string | null {
 /** 提取异常消息（5000 错误联合用） */
 function toMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** 判断值是否为合法思考级别枚举（docs/api/05_model.md §8） */
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === 'string' && (THINKING_LEVELS as readonly string[]).includes(value);
 }
 
 /**
@@ -263,19 +308,43 @@ export class ModelService {
     if (input.apiKey !== undefined && input.apiKey.trim() === '') {
       return { ok: false, code: 1001, message: 'apiKey 不能为空' };
     }
+    // contextWindow：提供时须为正数或 null（MP-S06）；负数/字符串/0 判 1001 不写
+    if (
+      input.contextWindow !== undefined &&
+      input.contextWindow !== null &&
+      (typeof input.contextWindow !== 'number' ||
+        !Number.isFinite(input.contextWindow) ||
+        input.contextWindow <= 0)
+    ) {
+      return { ok: false, code: 1001, message: 'contextWindow 必须为正数或 null' };
+    }
+    // vision：提供时须为布尔值；非法值判 1001 不写
+    if (input.vision !== undefined && typeof input.vision !== 'boolean') {
+      return { ok: false, code: 1001, message: 'vision 必须为布尔值' };
+    }
     const id =
       input.id !== undefined && input.id.trim() !== '' ? input.id.trim() : slugify(name);
     const baseUrl = normalizeBaseUrl(input.baseUrl);
 
-    // 密钥处理：提供新 key 时经 keychain 存引用（不可用降级 $ENV_VAR）；
-    // 未提供时保留现有引用——内存缓存未命中（进程重启后为空）则回读
-    // models.json 现有记录继承（否则留空保存会把已有 apiKey 引用丢掉）
+    // v1 明文直写：apiKey 明文落盘，与 pi 原生一致
+    // 未提供新 key 时保留现有（内存缓存未命中则回读 models.json）
     let apiKeyRef: string | undefined = this.apiKeyRefs.get(id);
     if (apiKeyRef === undefined) {
       try {
         const existing = await this.deps.modelsFile.readProviders();
         apiKeyRef = existing.find((p) => p.id === id)?.apiKey;
         if (apiKeyRef !== undefined) {
+          // 存量占位符平滑迁移：若旧值为 $ENV_VAR/!command 且 keychain 可解析为明文，则转为明文
+          if (KEY_REF_PREFIX.test(apiKeyRef) && this.deps.keychain.readKey !== undefined) {
+            try {
+              const plain = await this.deps.keychain.readKey(id);
+              if (plain !== null && plain !== '') {
+                apiKeyRef = plain;
+              }
+            } catch {
+              // 解析失败保留原引用
+            }
+          }
           this.apiKeyRefs.set(id, apiKeyRef);
         }
       } catch {
@@ -283,22 +352,15 @@ export class ModelService {
       }
     }
     if (input.apiKey !== undefined) {
-      let available = false;
-      try {
-        available = await this.deps.keychain.isAvailable();
-      } catch {
-        available = false;
-      }
-      if (available) {
-        try {
-          apiKeyRef = await this.deps.keychain.storeKey(id, input.apiKey.trim());
-        } catch (err) {
-          return { ok: false, code: 5000, message: `密钥存储失败: ${toMessage(err)}` };
-        }
+      const trimmedKey = input.apiKey.trim();
+      // v1 明文直写：与 pi 原生 models.json 一致，不经 keychain 安全引用
+      // 保留对旧占位符输入的防御：若前端误把 "$FORGE_..." 引用当新值传入，视为未提供
+      if (trimmedKey !== '' && KEY_REF_PREFIX.test(trimmedKey)) {
+        // 引用形式：保持现有 apiKeyRef 不变（由上方回读的旧值决定，含可能的迁移后明文）
       } else {
-        apiKeyRef = `$${envVarName(id)}`;
+        apiKeyRef = trimmedKey;
+        this.apiKeyRefs.set(id, apiKeyRef);
       }
-      this.apiKeyRefs.set(id, apiKeyRef);
     }
 
     const record: ProviderFileRecord = {
@@ -311,6 +373,14 @@ export class ModelService {
     };
     if (apiKeyRef !== undefined) {
       record.apiKey = apiKeyRef;
+    }
+    // contextWindow：仅显式提供时携带（正数或 null；缺省原样保留不篡改）
+    if (input.contextWindow !== undefined) {
+      record.contextWindow = input.contextWindow;
+    }
+    // vision：仅显式提供时携带（布尔；缺省保留原值，见 piModelsFileAdapter 落盘映射）
+    if (input.vision !== undefined) {
+      record.vision = input.vision;
     }
 
     try {
@@ -460,6 +530,92 @@ export class ModelService {
       return { ok: false, code: 1002, message: `会话不存在: ${sid}` };
     }
     this.deps.store.saveSession({ ...session, modelOverride: model === null ? null : model.trim() });
+    return { ok: true, data: null };
+  }
+
+  /**
+   * 查询指定模型支持的思考级别列表（MP-S05，docs/api/05_model.md §8）。
+   * 能力来源为注入的 ThinkLevelsPort（pi `getSupportedThinkingLevels`）。
+   * @param model 模型 ID
+   * @returns 成功返回 { levels }；参数空返回 1001；模型不可用（port 返回 null）返回 1004；
+   *          能力端口未配置返回 5000
+   */
+  async getModelThinkingLevels(model: string): Promise<ModelResult<{ levels: string[] }>> {
+    if (typeof model !== 'string' || model.trim() === '') {
+      return { ok: false, code: 1001, message: '模型 ID 不能为空' };
+    }
+    const port = this.deps.thinkLevels;
+    if (port === undefined) {
+      return { ok: false, code: 5000, message: '思考级别能力未配置' };
+    }
+    try {
+      const levels = await port.getSupportedThinkingLevels(model.trim());
+      if (levels === null) {
+        return { ok: false, code: 1004, message: `模型未配置: ${model}` };
+      }
+      return { ok: true, data: { levels } };
+    } catch (err) {
+      return { ok: false, code: 5000, message: `查询思考级别失败: ${toMessage(err)}` };
+    }
+  }
+
+  /**
+   * 查询会话当前生效思考级别（MP-S05，docs/api/05_model.md §9）：优先会话覆盖，
+   * 否则继承全局默认（settings.thinkingLevel）。
+   * @param sessionId 会话 ID
+   * @returns 成功返回 { level, effective }；会话不存在返回 1002
+   */
+  async getSessionThinkingLevel(
+    sessionId: string,
+  ): Promise<ModelResult<{ level: ThinkingLevel | null; effective: 'session' | 'global' }>> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    const session = this.deps.store.getSession(sessionId.trim());
+    if (session === undefined) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (session.thinkingLevel !== null) {
+      return {
+        ok: true,
+        data: { level: session.thinkingLevel as ThinkingLevel, effective: 'session' },
+      };
+    }
+    const global = this.deps.store.getSetting('thinkingLevel');
+    // 旧数据缺失该键（getSetting 返回 null/非法值）时按 'off' 兜底（schema.md settings 表）
+    return {
+      ok: true,
+      data: { level: isThinkingLevel(global) ? global : 'off', effective: 'global' },
+    };
+  }
+
+  /**
+   * 设置会话思考级别（MP-S05，docs/api/05_model.md §9）：写该会话 thinkingLevel 覆盖
+   * 并同步全局默认（settings.thinkingLevel）；null 仅清除会话覆盖，不动全局默认。
+   * @param sessionId 会话 ID
+   * @param level 思考级别枚举；null 表示清除覆盖回全局默认
+   * @returns 成功返回 null；会话不存在返回 1002；level 非法返回 1001
+   */
+  async setSessionThinkingLevel(
+    sessionId: string,
+    level: ThinkingLevel | null,
+  ): Promise<ModelResult<null>> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    if (level !== null && !isThinkingLevel(level)) {
+      return { ok: false, code: 1001, message: '非法思考级别' };
+    }
+    const sid = sessionId.trim();
+    const session = this.deps.store.getSession(sid);
+    if (session === undefined) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sid}` };
+    }
+    this.deps.store.saveSession({ ...session, thinkingLevel: level });
+    // 同步全局默认（新会话创建时快照全局默认，故已存在会话互不影响）
+    if (level !== null) {
+      this.deps.store.setSetting('thinkingLevel', level);
+    }
     return { ok: true, data: null };
   }
 }

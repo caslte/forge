@@ -35,6 +35,10 @@ const formName = ref('');
 const formBaseUrl = ref('');
 const formApiKey = ref('');
 const formModel = ref('');
+/** MP-S06：上下文窗口 1M 勾选（勾选写 1000000，未勾选移除字段） */
+const formContext1M = ref(false);
+/** 多模态勾选：勾选写模型记录 input:["text","image"]，未勾选移除字段（回退 pi 默认纯文本） */
+const formVision = ref(false);
 const saving = ref(false);
 const formError = ref<string | null>(null);
 const apiKeyVisible = ref(false);
@@ -96,6 +100,10 @@ async function onSaveProvider(): Promise<void> {
       baseUrl: formBaseUrl.value.trim() || null,
       apiKey: formApiKey.value.trim() || undefined,
       models: [formModel.value.trim()],
+      // 一律按勾选覆盖：勾选写 1000000，未勾选传 null（服务层移除字段，MP-S06）
+      contextWindow: formContext1M.value ? 1000000 : null,
+      // 多模态：一律按勾选覆盖（服务层写/移除 input 字段）
+      vision: formVision.value,
     });
     await loadProviders();
     await loadModels();
@@ -114,8 +122,15 @@ function onEdit(p: ProviderItem): void {
   editingId.value = p.id;
   formName.value = p.name;
   formBaseUrl.value = p.baseUrl ?? '';
-  formApiKey.value = p.apiKey ?? '';
+  // 防御：若服务层未解析成功仍返回引用形式（$ENV / !command），不回填占位符
+  // 避免用户无改动保存时把占位符当新明文存入 vault（MiniMax-M3 回归）
+  const rawKey = p.apiKey ?? '';
+  formApiKey.value = rawKey !== '' && /^[!$]/.test(rawKey) ? '' : rawKey;
   formModel.value = p.models[0] ?? '';
+  // MP-S06 回显：仅严格等于 1000000 时勾选；缺失/非数字/其他值一律未勾选
+  formContext1M.value = p.contextWindow === 1000000;
+  // 多模态回显：首模型 input 含 "image" 即勾选
+  formVision.value = p.vision === true;
   formError.value = null;
   apiKeyVisible.value = false;
   showAddForm.value = true;
@@ -139,6 +154,8 @@ function resetForm(): void {
   formBaseUrl.value = '';
   formApiKey.value = '';
   formModel.value = '';
+  formContext1M.value = false;
+  formVision.value = false;
   formError.value = null;
   apiKeyVisible.value = false;
 }
@@ -297,6 +314,16 @@ onUnmounted(() => {
             <span class="form-label">模型 ID</span>
             <input v-model="formModel" type="text" placeholder="如 gpt-4o、grok-4.5" />
           </label>
+          <!-- MP-S06：上下文窗口 1M 单档勾选（勾选写 1000000，未勾选移除字段） -->
+          <label class="form-field context-check context-1m">
+            <input v-model="formContext1M" type="checkbox" />
+            <span class="form-label">上下文窗口 1M（100 万 tokens）</span>
+          </label>
+          <!-- 多模态：勾选写模型 input:["text","image"]（能发图片给模型），未勾选移除 -->
+          <label class="form-field context-check context-vision">
+            <input v-model="formVision" type="checkbox" />
+            <span class="form-label">支持图片输入（多模态）</span>
+          </label>
           <div v-if="formError" class="form-error">{{ formError }}</div>
           <div class="form-actions">
             <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
@@ -323,6 +350,7 @@ onUnmounted(() => {
                 <span v-if="p.baseUrl" class="provider-baseurl">{{ p.baseUrl }}</span>
                 <span v-else class="provider-baseurl muted">本地默认</span>
                 <span class="provider-models-count">{{ p.models[0] ?? '—' }}</span>
+                <span v-if="p.vision === true" class="vision-tag">多模态</span>
               </div>
             </div>
             <div class="provider-actions">
@@ -616,6 +644,21 @@ onUnmounted(() => {
   font-family: var(--font-sans);
 }
 
+/* MP-S06：上下文 1M 单档勾选（原生 checkbox 横向排布） */
+.context-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.context-check input[type='checkbox'] {
+  width: auto;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
 /* API Key：右侧眼睛切换明文/隐藏 */
 .api-key-wrap {
   position: relative;
@@ -749,6 +792,16 @@ onUnmounted(() => {
 .provider-models-count {
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+/* 多模态标签：模型支持图片输入时在列表项展示 */
+.vision-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--brand) 9%, transparent);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .provider-actions {

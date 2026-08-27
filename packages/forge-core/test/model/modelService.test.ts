@@ -3,9 +3,9 @@
  *
  * 覆盖 docs/test/05_model/coverage-matrix.md 本 WU 用例：
  * - U-MP-001：非法 baseUrl / 空 apiKey / 空 models 校验失败，不写文件（AC-MP-003）
- * - U-MP-002：apiKey 不明文落盘，models.json 只含安全引用（AC-MP-002）
+ * - U-MP-002：v1 明文落盘，models.json 直接含 apiKey 明文（AC-MP-002 放宽）
  * 以及本 WU 契约：幂等覆盖更新、删除联动重置默认、setDefault 校验、会话模型
- * 优先级与隔离、keychain 不可用降级 $ENV_VAR。
+ * 优先级与隔离。keychain 安全引用为后续迭代保留，v1 不启用。
  *
  * 使用 node:test + Node 24 原生 TS 类型剥离；models.json / keychain / store 均注入
  * mock（服务不 import fs / pi / OS keychain）。
@@ -19,6 +19,7 @@ import type {
   ModelsFileAdapter,
   ProviderFileRecord,
   SaveProviderInput,
+  ThinkLevelsPort,
 } from '../../src/model/modelService.ts';
 import type { SessionRecord, StoreKey } from '../../src/types/forge-store.ts';
 
@@ -140,23 +141,23 @@ function validInput(overrides: Partial<SaveProviderInput> = {}): SaveProviderInp
   };
 }
 
-test('saveProvider：合法配置写入，apiKey 不明文落盘（U-MP-002/AC-MP-002）', async () => {
+test('saveProvider：合法配置写入，apiKey 明文落盘（v1，与 pi 原生一致 U-MP-002/AC-MP-002）', async () => {
   const { service, modelsFile, keychain } = makeService();
   const result = await service.saveProvider(validInput());
   assert.ok(result.ok);
   assert.equal(modelsFile.providers.length, 1);
   const written = modelsFile.writeSnapshots[0]?.[0];
   assert.ok(written !== undefined);
-  assert.equal(written.apiKey, '!forge-secret get openai');
+  // v1 明文直写
+  assert.equal(written.apiKey, 'sk-secret-123');
   assert.equal(written.name, 'OpenAI');
   assert.equal(written.baseUrl, 'https://api.openai.com/v1');
   assert.deepEqual(written.models, ['gpt-4o', 'gpt-4o-mini']);
-  // 文件内容不含明文 key
+  // 文件内容即明文
   const fileText = JSON.stringify(modelsFile.writeSnapshots);
-  assert.ok(!fileText.includes('sk-secret-123'));
-  // keychain 收到明文
-  assert.equal(keychain.stored.length, 1);
-  assert.equal(keychain.stored[0]?.apiKey, 'sk-secret-123');
+  assert.ok(fileText.includes('sk-secret-123'));
+  // v1 不经 keychain
+  assert.equal(keychain.stored.length, 0);
 });
 
 test('saveProvider：非法 baseUrl 返回 1001，不写入（U-MP-001/AC-MP-003）', async () => {
@@ -206,15 +207,15 @@ test('saveProvider：同 id 重复保存覆盖更新，幂等（AC-MP-001 幂等
   assert.deepEqual(modelsFile.providers[0]?.models, ['gpt-4o', 'gpt-4o-mini']);
 });
 
-test('saveProvider：keychain 不可用降级 $ENV_VAR 引用，仍保存（AC-MP-004）', async () => {
+test('saveProvider：v1 明文不受 keychain 可用性影响，仍明文落盘', async () => {
   const { service, modelsFile, keychain } = makeService();
   keychain.available = false;
   const result = await service.saveProvider(validInput());
   assert.ok(result.ok);
   const written = modelsFile.writeSnapshots[0]?.[0];
   assert.ok(written !== undefined);
-  assert.equal(written.apiKey, '$FORGE_OPENAI_API_KEY');
-  assert.ok(!JSON.stringify(modelsFile.writeSnapshots).includes('sk-secret-123'));
+  assert.equal(written.apiKey, 'sk-secret-123');
+  assert.ok(JSON.stringify(modelsFile.writeSnapshots).includes('sk-secret-123'));
   assert.equal(keychain.stored.length, 0);
 });
 
@@ -439,4 +440,262 @@ test('P3-D：未注入审计回调时配置变更不报错', async () => {
   const saved = await service.saveProvider(validInput({ id: 'no-audit', models: ['m1'] }));
   assert.equal(saved.ok, true);
   assert.equal((await service.deleteProvider('no-audit')).ok, true);
+});
+
+// ===== MP-S06：contextWindow 上下文窗口 =====
+
+test('saveProvider：contextWindow=1000000 透传到 writeProviders 记录（AC-MP-015）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'openai', models: ['gpt-4o'], contextWindow: 1000000 }),
+  );
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.contextWindow, 1000000);
+});
+
+test('saveProvider：contextWindow=null 透传移除字段（AC-MP-016/017）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'openai', models: ['gpt-4o'], contextWindow: null }),
+  );
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.contextWindow, null);
+});
+
+test('saveProvider：非法 contextWindow（负数/字符串/0）返回 1001，不写入', async () => {
+  const { service, modelsFile } = makeService();
+  const negative = await service.saveProvider(validInput({ id: 'a', contextWindow: -1 }));
+  assert.ok(!negative.ok);
+  if (!negative.ok) {
+    assert.equal(negative.code, 1001);
+  }
+  const str = await service.saveProvider(
+    validInput({ id: 'b', models: ['m'], contextWindow: '1000000' as unknown as number }),
+  );
+  assert.ok(!str.ok);
+  if (!str.ok) {
+    assert.equal(str.code, 1001);
+  }
+  const zero = await service.saveProvider(validInput({ id: 'c', contextWindow: 0 }));
+  assert.ok(!zero.ok);
+  if (!zero.ok) {
+    assert.equal(zero.code, 1001);
+  }
+  assert.equal(modelsFile.writeSnapshots.length, 0);
+});
+
+test('saveProvider：未提供 contextWindow 时记录不携带该字段（缺省保留不篡改）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(validInput({ id: 'openai', models: ['gpt-4o'] }));
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.ok(!('contextWindow' in written), '缺省不应携带 contextWindow 字段');
+});
+
+test('queryProviderList：透出 contextWindow 原值（1000000 与 null，AC-MP-018）', async () => {
+  const { service, modelsFile } = makeService();
+  modelsFile.providers = [
+    { id: 'a', name: 'A', type: 'openai', baseUrl: null, models: ['gpt-4o'], lastError: null, contextWindow: 1000000 },
+    { id: 'b', name: 'B', type: 'openai', baseUrl: null, models: ['claude'], lastError: null, contextWindow: null },
+  ];
+  const list = await service.queryProviderList();
+  assert.ok(list.ok);
+  if (list.ok) {
+    assert.equal(list.data.providers[0]?.contextWindow, 1000000);
+    assert.equal(list.data.providers[1]?.contextWindow, null);
+  }
+});
+
+// ===== MP-S05：思考级别端口与方法 =====
+
+/** 思考级别端口 mock：model -> 级别列表；缺省视为模型未配置（返回 null → 1004） */
+class MockThinkLevelsPort implements ThinkLevelsPort {
+  partial: Record<string, string[] | null> = {};
+
+  async getSupportedThinkingLevels(model: string): Promise<string[] | null> {
+    return this.partial[model] === undefined ? null : this.partial[model];
+  }
+}
+
+/** 构造注入 ThinkLevelsPort 的服务 */
+function makeServiceWithThinkLevels(): {
+  service: ModelService;
+  modelsFile: MockModelsFileAdapter;
+  keychain: MockKeychainAdapter;
+  store: MockModelStore;
+  thinkLevels: MockThinkLevelsPort;
+} {
+  const base = makeService();
+  const thinkLevels = new MockThinkLevelsPort();
+  const service = new ModelService({
+    modelsFile: base.modelsFile,
+    keychain: base.keychain,
+    store: base.store,
+    thinkLevels,
+  });
+  return { service, modelsFile: base.modelsFile, keychain: base.keychain, store: base.store, thinkLevels };
+}
+
+test('getModelThinkingLevels：成功返回级别列表；模型未配置返回 1004（AC-MP-010）', async () => {
+  const { service, thinkLevels } = makeServiceWithThinkLevels();
+  thinkLevels.partial['gpt-4o'] = ['off', 'low', 'medium', 'high'];
+  const ok = await service.getModelThinkingLevels('gpt-4o');
+  assert.ok(ok.ok);
+  if (ok.ok) {
+    assert.deepEqual(ok.data.levels, ['off', 'low', 'medium', 'high']);
+  }
+  const unconfigured = await service.getModelThinkingLevels('unknown-model');
+  assert.ok(!unconfigured.ok);
+  if (!unconfigured.ok) {
+    assert.equal(unconfigured.code, 1004);
+  }
+});
+
+test('getModelThinkingLevels：参数为空返回 1001；能力端口未注入返回 5000', async () => {
+  const { service } = makeServiceWithThinkLevels();
+  const empty = await service.getModelThinkingLevels('  ');
+  assert.ok(!empty.ok);
+  if (!empty.ok) {
+    assert.equal(empty.code, 1001);
+  }
+  const noPort = makeService();
+  const portless = await noPort.service.getModelThinkingLevels('gpt-4o');
+  assert.ok(!portless.ok);
+  if (!portless.ok) {
+    assert.equal(portless.code, 5000);
+  }
+});
+
+test('getSessionThinkingLevel：会话覆盖优先，无覆盖回退全局（effective 正确，AC-MP-012）', async () => {
+  const { service, store } = makeService();
+  store.setSetting('thinkingLevel', 'off');
+  store.sessions.set('sess-1', { ...makeSession('sess-1'), thinkingLevel: 'high' });
+  store.sessions.set('sess-2', { ...makeSession('sess-2'), thinkingLevel: null });
+  const s1 = await service.getSessionThinkingLevel('sess-1');
+  assert.ok(s1.ok);
+  if (s1.ok) {
+    assert.equal(s1.data.level, 'high');
+    assert.equal(s1.data.effective, 'session');
+  }
+  const s2 = await service.getSessionThinkingLevel('sess-2');
+  assert.ok(s2.ok);
+  if (s2.ok) {
+    assert.equal(s2.data.level, 'off');
+    assert.equal(s2.data.effective, 'global');
+  }
+});
+
+test('getSessionThinkingLevel：未知会话返回 1002', async () => {
+  const { service } = makeService();
+  const result = await service.getSessionThinkingLevel('nope');
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1002);
+  }
+});
+
+test('getSessionThinkingLevel：settings 缺失 thinkingLevel（旧数据兜底）按 off 处理', async () => {
+  const { service, store } = makeService();
+  // 不写入 thinkingLevel —— 模拟旧数据缺失该键
+  store.sessions.set('sess-1', { ...makeSession('sess-1'), thinkingLevel: null });
+  const res = await service.getSessionThinkingLevel('sess-1');
+  assert.ok(res.ok);
+  if (res.ok) {
+    assert.equal(res.data.level, 'off');
+    assert.equal(res.data.effective, 'global');
+  }
+});
+
+test('setSessionThinkingLevel：合法级别写会话并同步全局，其他会话不受污染（AC-MP-012）', async () => {
+  const { service, store } = makeService();
+  store.sessions.set('sess-1', { ...makeSession('sess-1'), thinkingLevel: null });
+  store.sessions.set('sess-2', { ...makeSession('sess-2'), thinkingLevel: null });
+  store.setSetting('thinkingLevel', 'off');
+  const result = await service.setSessionThinkingLevel('sess-1', 'high');
+  assert.ok(result.ok);
+  assert.equal(store.sessions.get('sess-1')?.thinkingLevel, 'high');
+  assert.equal(store.sessions.get('sess-2')?.thinkingLevel, null);
+  assert.equal(store.getSetting('thinkingLevel'), 'high');
+});
+
+test('setSessionThinkingLevel：null 清除会话覆盖，不动全局默认（AC-MP-012）', async () => {
+  const { service, store } = makeService();
+  store.sessions.set('sess-1', { ...makeSession('sess-1'), thinkingLevel: 'high' });
+  store.setSetting('thinkingLevel', 'high');
+  const result = await service.setSessionThinkingLevel('sess-1', null);
+  assert.ok(result.ok);
+  assert.equal(store.sessions.get('sess-1')?.thinkingLevel, null);
+  assert.equal(store.getSetting('thinkingLevel'), 'high');
+});
+
+test('setSessionThinkingLevel：非法级别返回 1001 不写入会话与全局（AC-MP-012）', async () => {
+  const { service, store } = makeService();
+  store.sessions.set('sess-1', { ...makeSession('sess-1'), thinkingLevel: null });
+  store.setSetting('thinkingLevel', 'off');
+  const bad = await service.setSessionThinkingLevel('sess-1', 'ultra');
+  assert.ok(!bad.ok);
+  if (!bad.ok) {
+    assert.equal(bad.code, 1001);
+  }
+  assert.equal(store.sessions.get('sess-1')?.thinkingLevel, null);
+  assert.equal(store.getSetting('thinkingLevel'), 'off');
+});
+
+test('setSessionThinkingLevel：未知会话返回 1002', async () => {
+  const { service } = makeService();
+  const result = await service.setSessionThinkingLevel('nope', 'high');
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1002);
+  }
+});
+
+// ===== 多模态：vision 勾选（input 能力字段） =====
+
+test('saveProvider：vision=true 透传到 writeProviders 记录（写 input:["text","image"] 由 adapter 落盘）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'minimax', models: ['MiniMax-M3'], vision: true }),
+  );
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.vision, true);
+});
+
+test('saveProvider：vision=false 透传移除语义（adapter 移除 input 字段）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'text-only', models: ['plain'], vision: false }),
+  );
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.vision, false);
+});
+
+test('saveProvider：非法 vision（非布尔）返回 1001，不写入', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'a', models: ['m'], vision: 'yes' as unknown as boolean }),
+  );
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1001);
+  }
+  assert.equal(modelsFile.writeSnapshots.length, 0);
+});
+
+test('saveProvider：vision 缺省不携带字段（保留原值，不覆盖手工 input 能力）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(validInput({ id: 'b', models: ['m'] }));
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.vision, undefined);
 });

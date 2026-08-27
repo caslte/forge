@@ -137,16 +137,28 @@ export class PiModelsFileAdapter {
 
   async readProviders(): Promise<ProviderConfig[]> {
     const file = this.readFile();
-    return Object.entries(file.providers).map(([name, p]) => ({
-      id: name,
-      name,
-      type: p.api ?? 'openai-completions',
-      baseUrl: p.baseUrl ?? null,
-      models: (p.models ?? []).map((m) => m.id),
-      lastError: null,
-      // 回显已存 apiKey（pi 文件里的引用或原值），供前端展示
-      ...(p.apiKey !== undefined ? { apiKey: p.apiKey } : {}),
-    }));
+    return Object.entries(file.providers).map(([name, p]) => {
+      // MP-S06：contextWindow 取首个模型的上下文窗口（v1 表单「一条配置 = 一个模型」，
+      // 多模型配置仅首模型透出；缺失/null/非数字 -> null，回退 pi 默认）
+      const firstModel = (p.models ?? [])[0];
+      const contextWindow =
+        typeof firstModel?.contextWindow === 'number' ? firstModel.contextWindow : null;
+      // 多模态：首模型 input 数组含 "image" 视为支持图片输入（未声明视为不支持）
+      const vision =
+        Array.isArray(firstModel?.input) && (firstModel.input as unknown[]).includes('image');
+      return {
+        id: name,
+        name,
+        type: p.api ?? 'openai-completions',
+        baseUrl: p.baseUrl ?? null,
+        models: (p.models ?? []).map((m) => m.id),
+        contextWindow,
+        vision,
+        lastError: null,
+        // 回显已存 apiKey（pi 文件里的引用或原值），供前端展示
+        ...(p.apiKey !== undefined ? { apiKey: p.apiKey } : {}),
+      };
+    });
   }
 
   async writeProviders(providers: ProviderFileRecord[]): Promise<void> {
@@ -159,6 +171,32 @@ export class PiModelsFileAdapter {
         const prev = prevModels.find((m) => m.id === id);
         return { ...(prev ?? {}), id };
       });
+      // MP-S06：contextWindow 仅作用于首个模型记录——
+      // number -> 写该值；null -> 移除该字段；undefined -> 不触碰（保留原值）。
+      // 其余 pi 字段（reasoning/thinkingLevelMap/compat 等）一律保留不覆盖。
+      const firstModel = nextModels[0];
+      if (firstModel !== undefined) {
+        if (typeof p.contextWindow === 'number') {
+          nextModels[0] = { ...firstModel, contextWindow: p.contextWindow };
+        } else if (p.contextWindow === null) {
+          const withoutCw = { ...firstModel };
+          delete withoutCw.contextWindow;
+          nextModels[0] = withoutCw;
+        }
+        // 多模态：同样仅作用于首模型（与 contextWindow 一致）——
+        // true -> 写 input:["text","image"]；false -> 移除 input 字段（回退 pi 默认纯文本）；
+        // undefined -> 不触碰（保留原值，避免覆盖用户手工配置的复杂能力声明）。
+        if (typeof p.vision === 'boolean') {
+          const cur = nextModels[0] ?? firstModel;
+          if (p.vision) {
+            nextModels[0] = { ...cur, input: ['text', 'image'] };
+          } else {
+            const withoutInput = { ...cur };
+            delete withoutInput.input;
+            nextModels[0] = withoutInput;
+          }
+        }
+      }
       next[p.name] = {
         ...(existing ?? {}),
         baseUrl: p.baseUrl ?? undefined,

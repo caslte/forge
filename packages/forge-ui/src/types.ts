@@ -31,6 +31,8 @@ export interface ConversationMessage {
   id?: string;
   /** 消息附带图片（P3-B：用户粘贴截图/上传图片，base64 数据） */
   images?: Array<{ data: string; mimeType: string }>;
+  /** 前端本地标记：该用户消息的图片因当前模型不支持图片输入而未发送（多模态门控） */
+  imageSkipped?: boolean;
   /** 工具调用附带（role=tool 时） */
   toolName?: string;
   toolEventId?: string;
@@ -56,9 +58,27 @@ export interface ProviderItem {
   type: string;
   baseUrl: string | null;
   models: string[];
+  /** 首个模型的上下文窗口（token 数，MP-S06）；未配置为 null（回退 pi 默认） */
+  contextWindow?: number | null;
+  /** 首模型是否支持图片输入（多模态） */
+  vision?: boolean;
   lastError: string | null;
   /** apiKey 安全引用/原值（回显用途，可能为空） */
   apiKey?: string;
+}
+
+/** 模型思考级别（模块 05 MP-S05；顺序固定 off→minimal→low→medium→high→xhigh→max） */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** 思考级别切换器候选级别（空/缺省时 UI 隐藏切换入口） */
+export interface ModelThinkingLevels {
+  levels: ThinkingLevel[];
+}
+
+/** 会话思考级别查询返回（AC-MP-010，UI 切换器回显） */
+export interface SessionThinkingLevel {
+  level: ThinkingLevel;
+  effective: 'session' | 'global';
 }
 
 export type ThemeMode = 'light' | 'dark';

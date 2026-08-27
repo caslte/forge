@@ -28,6 +28,8 @@ import type {
   ProviderConfig,
   ProviderFileRecord,
   SaveProviderInput,
+  ThinkingLevel,
+  ThinkLevelsPort,
 } from '../../src/model/modelService.ts';
 import type { SessionRecord, StoreKey } from '../../src/types/forge-store.ts';
 
@@ -101,7 +103,11 @@ class MockModelStore implements ModelStorePort {
 }
 
 /** 构造会话记录（默认无覆盖） */
-function makeSession(sessionId: string, modelOverride: string | null = null): SessionRecord {
+function makeSession(
+  sessionId: string,
+  modelOverride: string | null = null,
+  thinkingLevel: string | null = null,
+): SessionRecord {
   return {
     sessionId,
     projectPath: 'C:/demo/proj',
@@ -109,24 +115,42 @@ function makeSession(sessionId: string, modelOverride: string | null = null): Se
     lastActiveAt: '2026-01-01T00:00:00.000Z',
     createdAt: '2026-01-01T00:00:00.000Z',
     modelOverride,
+    thinkingLevel,
   };
 }
 
-/** 构造 api + 真实服务 + 三个 mock 依赖 + 事件汇 */
+/** 思考级别端口 mock：model -> 级别列表（null 表示模型不可用） */
+class MockThinkLevelsPort implements ThinkLevelsPort {
+  levelsByModel = new Map<string, string[] | null>();
+
+  async getSupportedThinkingLevels(model: string): Promise<string[] | null> {
+    return this.levelsByModel.get(model) ?? null;
+  }
+}
+
+/** 服务方法调用记录（setSessionThinkingLevel 同步全局默认语义验证） */
+interface CallRecord {
+  sessionId: string;
+  level: ThinkingLevel | null;
+}
+
+/** 构造 api + 真实服务 + mock 依赖 + 思考级别端口 + 事件汇 */
 function makeApi(): {
   api: ModelApi;
   modelsFile: MockModelsFileAdapter;
   keychain: MockKeychainAdapter;
   store: MockModelStore;
+  thinkLevels: MockThinkLevelsPort;
   events: EventEmitter;
 } {
   const modelsFile = new MockModelsFileAdapter();
   const keychain = new MockKeychainAdapter();
   const store = new MockModelStore();
-  const service = new ModelService({ modelsFile, keychain, store });
+  const thinkLevels = new MockThinkLevelsPort();
+  const service = new ModelService({ modelsFile, keychain, store, thinkLevels });
   const events = new EventEmitter();
   const api = new ModelApi(service, events);
-  return { api, modelsFile, keychain, store, events };
+  return { api, modelsFile, keychain, store, thinkLevels, events };
 }
 
 /** 合法保存参数（可覆盖） */
@@ -338,4 +362,216 @@ test('信封恒为 { code, message, data }，失败 data 为 null', async () => 
   const envelope = ok as RpcResult;
   assert.equal(typeof envelope.code, 'number');
   assert.equal(typeof envelope.message, 'string');
+});
+
+test('saveProvider：contextWindow=1000000 写库；null 移除；非法类型 → 1001（A-MP-009）', async () => {
+  const { api, modelsFile } = makeApi();
+  const ok = await api.methods['model/saveProvider'](validInput({ contextWindow: 1000000 }));
+  assert.equal(ok.code, 0);
+  // mock service 层断言入参写到 models.json（首模型 contextWindow）
+  assert.equal(modelsFile.providers.length, 1);
+  assert.equal(modelsFile.providers[0]?.contextWindow, 1000000);
+  const snap = modelsFile.writeSnapshots[0];
+  assert.ok(snap && snap[0]?.contextWindow === 1000000, '写库记录应含 contextWindow=1000000');
+
+  // contextWindow=null → 字段移除
+  const cleared = await api.methods['model/saveProvider'](
+    validInput({ id: 'openai', contextWindow: null }),
+  );
+  assert.equal(cleared.code, 0);
+  assert.equal(modelsFile.providers[0]?.contextWindow, null);
+
+  // 非法类型（字符串）→ 1001，无写库
+  const before = modelsFile.writeSnapshots.length;
+  const bad = await api.methods['model/saveProvider'](
+    validInput({ contextWindow: 'huge' as unknown as number }),
+  );
+  assert.equal(bad.code, 1001);
+  assert.equal(bad.data, null);
+  assert.equal(modelsFile.writeSnapshots.length, before, '非法 contextWindow 不写库');
+
+  // 非法数值（负数）由服务层判 1001
+  const neg = await api.methods['model/saveProvider'](validInput({ contextWindow: -1 }));
+  assert.equal(neg.code, 1001);
+});
+
+test('queryProviderList：contextWindow 回显（1000000 与缺失 null）（A-MP-011）', async () => {
+  const { api, modelsFile } = makeApi();
+  modelsFile.providers = [
+    {
+      id: 'openai',
+      name: 'OpenAI',
+      type: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      models: ['gpt-4o'],
+      lastError: null,
+      contextWindow: 1000000,
+      apiKey: 'sk-secret-123',
+    },
+    {
+      id: 'local',
+      name: 'Local',
+      type: 'openai',
+      baseUrl: null,
+      models: ['local-model'],
+      lastError: null,
+    },
+  ];
+  const result = await api.methods['model/queryProviderList']({});
+  assert.equal(result.code, 0);
+  assert.ok(result.data !== null);
+  if (result.data !== null) {
+    const providers = (result.data as { providers: ProviderConfig[] }).providers;
+    assert.equal(providers[0]?.contextWindow, 1000000, '配置 1M 的 provider 回显 1000000');
+    assert.equal(providers[1]?.contextWindow, null, '未配置的 provider 回显 null');
+  }
+});
+
+test('queryProviderList：vision 回显（true 多模态 / false 纯文本）', async () => {
+  const { api, modelsFile } = makeApi();
+  modelsFile.providers = [
+    {
+      id: 'mini',
+      name: 'MiniMax',
+      type: 'openai',
+      baseUrl: null,
+      models: ['minimax-m3'],
+      lastError: null,
+      vision: true,
+    },
+    {
+      id: 'plain',
+      name: 'Plain',
+      type: 'openai',
+      baseUrl: null,
+      models: ['plain-model'],
+      lastError: null,
+      vision: false,
+    },
+  ];
+  const result = await api.methods['model/queryProviderList']({});
+  assert.equal(result.code, 0);
+  assert.ok(result.data !== null);
+  if (result.data !== null) {
+    const providers = (result.data as { providers: ProviderConfig[] }).providers;
+    assert.equal(providers[0]?.vision, true, '多模态 provider 回显 vision=true');
+    assert.equal(providers[1]?.vision, false, '纯文本 provider 回显 vision=false');
+  }
+});
+
+test('saveProvider：勾选多模态后 providersChanged 载荷保留 vision（表单回显前置）', async () => {
+  const { api, events } = makeApi();
+  const changed: unknown[] = [];
+  events.on('model.providersChanged', (payload) => changed.push(payload));
+  const input = validInput({
+    name: 'MiniMax',
+    type: 'openai',
+    models: ['minimax-m3'],
+    vision: true,
+  });
+  const result = await api.methods['model/saveProvider'](input);
+  assert.equal(result.code, 0);
+  assert.equal(changed.length, 1);
+  if (changed[0] !== undefined) {
+    const payload = changed[0] as { providers: ProviderConfig[] };
+    assert.equal(payload.providers[0]?.vision, true, '事件载荷保留 vision=true');
+  }
+});
+
+test('getModelThinkingLevels：返回结构/顺序固定；未知模型 → 1004（A-MP-012）', async () => {
+  const { api, thinkLevels } = makeApi();
+  const full = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  thinkLevels.levelsByModel.set('gpt-4o', full);
+  thinkLevels.levelsByModel.set('gpt-4o-mini', ['off']);
+  const reasoning = await api.methods['model/getModelThinkingLevels']({ model: 'gpt-4o' });
+  assert.equal(reasoning.code, 0);
+  assert.ok(reasoning.data !== null);
+  if (reasoning.data !== null) {
+    const data = reasoning.data as { levels: string[] };
+    assert.deepEqual(data.levels, full, '推理模型返回全量级别且顺序固定');
+  }
+  const nonReasoning = await api.methods['model/getModelThinkingLevels']({ model: 'gpt-4o-mini' });
+  assert.equal(nonReasoning.code, 0);
+  if (nonReasoning.data !== null) {
+    assert.deepEqual((nonReasoning.data as { levels: string[] }).levels, ['off']);
+  }
+  // 未知模型 → 1004（判别联合错误码）
+  const unknown = await api.methods['model/getModelThinkingLevels']({ model: 'nope' });
+  assert.equal(unknown.code, 1004);
+  assert.equal(unknown.data, null);
+  // 参数校验：model 缺失 → 1001
+  assert.equal((await api.methods['model/getModelThinkingLevels']({})).code, 1001);
+});
+
+test('getSessionThinkingLevel：会话覆盖生效；无覆盖继承全局；未知会话 → 1002（A-MP-013）', async () => {
+  const { api, store } = makeApi();
+  store.sessions.set('sess-1', makeSession('sess-1', null, 'high'));
+  store.sessions.set('sess-2', makeSession('sess-2', null, null));
+  store.settings.set('thinkingLevel', 'medium');
+  const overridden = await api.methods['model/getSessionThinkingLevel']({ sessionId: 'sess-1' });
+  assert.equal(overridden.code, 0);
+  assert.ok(overridden.data !== null);
+  if (overridden.data !== null) {
+    const info = overridden.data as { level: string | null; effective: 'session' | 'global' };
+    assert.equal(info.level, 'high');
+    assert.equal(info.effective, 'session');
+  }
+  const inherited = await api.methods['model/getSessionThinkingLevel']({ sessionId: 'sess-2' });
+  assert.equal(inherited.code, 0);
+  assert.ok(inherited.data !== null);
+  if (inherited.data !== null) {
+    const info = inherited.data as { level: string | null; effective: 'session' | 'global' };
+    assert.equal(info.level, 'medium');
+    assert.equal(info.effective, 'global');
+  }
+  const unknown = await api.methods['model/getSessionThinkingLevel']({ sessionId: 'nope' });
+  assert.equal(unknown.code, 1002);
+  assert.equal(unknown.data, null);
+  assert.equal((await api.methods['model/getSessionThinkingLevel']({})).code, 1001);
+});
+
+test('setSessionThinkingLevel：写会话并同步全局默认；其他会话不变；错误码 1001/1002（A-MP-014）', async () => {
+  const { api, store } = makeApi();
+  store.sessions.set('sess-1', makeSession('sess-1', null, null));
+  store.sessions.set('sess-2', makeSession('sess-2', null, null));
+  const ok = await api.methods['model/setSessionThinkingLevel']({
+    sessionId: 'sess-1',
+    level: 'high',
+  });
+  assert.equal(ok.code, 0);
+  assert.equal(ok.data, null);
+  // mock service 层语义：写会话1 + 同步全局默认 ThinkLevel
+  assert.equal(store.sessions.get('sess-1')?.thinkingLevel, 'high');
+  assert.equal(store.getSetting('thinkingLevel'), 'high', 'setSessionThinkingLevel 应同步全局默认');
+  assert.equal(
+    store.sessions.get('sess-2')?.thinkingLevel,
+    null,
+    '其他会话不受影响',
+  );
+  // level=null 仅清除会话覆盖，不动全局默认
+  const beforeClear = store.getSetting('thinkingLevel');
+  const cleared = await api.methods['model/setSessionThinkingLevel']({
+    sessionId: 'sess-1',
+    level: null,
+  });
+  assert.equal(cleared.code, 0);
+  assert.equal(store.sessions.get('sess-1')?.thinkingLevel, null);
+  assert.equal(store.getSetting('thinkingLevel'), beforeClear, 'null 仅清覆盖不改全局默认');
+  // 非法 level → 1001；未知会话 → 1002
+  const badLevel = await api.methods['model/setSessionThinkingLevel']({
+    sessionId: 'sess-1',
+    level: 'ultra',
+  });
+  assert.equal(badLevel.code, 1001);
+  const unknown = await api.methods['model/setSessionThinkingLevel']({
+    sessionId: 'nope',
+    level: 'high',
+  });
+  assert.equal(unknown.code, 1002);
+  // 参数校验：sessionId 缺失 / level 非字符串 → 1001
+  assert.equal((await api.methods['model/setSessionThinkingLevel']({})).code, 1001);
+  assert.equal(
+    (await api.methods['model/setSessionThinkingLevel']({ sessionId: 'sess-1', level: 1 })).code,
+    1001,
+  );
 });

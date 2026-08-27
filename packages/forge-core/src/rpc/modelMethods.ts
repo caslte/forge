@@ -33,6 +33,7 @@ import type {
   ModelResult,
   ProviderConfig,
   SaveProviderInput,
+  ThinkingLevel,
 } from '../model/modelService.ts';
 
 /** 构造成功信封 */
@@ -69,7 +70,8 @@ function requireString(params: unknown, key: string): string | null {
 
 /**
  * 归一化 provider 响应形状（docs/api/05_model.md §1）。
- * 默认保留 apiKey 字段用于前端回显（用户选择「回显已存密钥」）。
+ * 默认保留 apiKey 字段用于前端回显（用户选择「回显已存密钥」）；
+ * contextWindow 原样透出（MP-S06；未配置统一回显 null，docs/api/05_model.md §1，转发不回丢）。
  * @param provider 服务层返回的 provider
  * @returns 统一形状的 provider 对象（含 apiKey 回显）
  */
@@ -81,14 +83,18 @@ function toSafeProvider(provider: ProviderConfig): ProviderConfig {
     baseUrl: provider.baseUrl,
     models: provider.models,
     lastError: provider.lastError,
+    contextWindow: provider.contextWindow ?? null,
     ...(provider.apiKey !== undefined ? { apiKey: provider.apiKey } : {}),
+    // 多模态回显：布尔值透传（未配置省略，前端按 === true 勾选）
+    ...(provider.vision !== undefined ? { vision: provider.vision } : {}),
   };
 }
 
 /**
  * 解析并校验 saveProvider 请求参数。
  * @param params 请求参数（未知类型，来自传输层）
- * @returns 合法输入；name/type 缺失或空白、models 非数组/为空/含非字符串返回 null
+ * @returns 合法输入；name/type 缺失或空白、models 非数组/为空/含非字符串、
+ *          contextWindow 非法类型返回 null（→ 1001）
  */
 function parseSaveInput(params: unknown): SaveProviderInput | null {
   if (!isRecord(params)) {
@@ -118,6 +124,20 @@ function parseSaveInput(params: unknown): SaveProviderInput | null {
   if (typeof params.apiKey === 'string') {
     input.apiKey = params.apiKey;
   }
+  // contextWindow（MP-S06）：可选；必须为 number 或 null；非法类型判 1001 不进入服务层
+  if (params.contextWindow !== undefined) {
+    if (params.contextWindow !== null && typeof params.contextWindow !== 'number') {
+      return null;
+    }
+    input.contextWindow = params.contextWindow as number | null;
+  }
+  // vision（多模态）：可选；必须为布尔值（true/false 均显式传递，缺省保留原值）；非法类型判 1001 不进入服务层
+  if (params.vision !== undefined) {
+    if (typeof params.vision !== 'boolean') {
+      return null;
+    }
+    input.vision = params.vision;
+  }
   return input;
 }
 
@@ -144,6 +164,9 @@ export class ModelApi {
       'model/setDefault': (params) => this.setDefault(params),
       'model/getSessionModel': (params) => this.getSessionModel(params),
       'model/setSessionModel': (params) => this.setSessionModel(params),
+      'model/getModelThinkingLevels': (params) => this.getModelThinkingLevels(params),
+      'model/getSessionThinkingLevel': (params) => this.getSessionThinkingLevel(params),
+      'model/setSessionThinkingLevel': (params) => this.setSessionThinkingLevel(params),
     };
   }
 
@@ -262,6 +285,44 @@ export class ModelApi {
     }
     return this.call('setSessionModel', () =>
       this.service.setSessionModel(sessionId, model === null ? null : model.trim()),
+    );
+  }
+
+  /** model/getModelThinkingLevels：查询模型可用思考级别列表（MP-S05），未知模型由服务层返回 1004 */
+  private getModelThinkingLevels(params: unknown): Promise<RpcResult> {
+    const model = requireString(params, 'model');
+    if (model === null) {
+      return Promise.resolve(fail(1001, '参数错误：model 必须为非空字符串'));
+    }
+    return this.call('getModelThinkingLevels', () => this.service.getModelThinkingLevels(model));
+  }
+
+  /** model/getSessionThinkingLevel：查询会话当前生效思考级别（MP-S05），未知会话由服务层返回 1002 */
+  private getSessionThinkingLevel(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+    }
+    return this.call('getSessionThinkingLevel', () =>
+      this.service.getSessionThinkingLevel(sessionId),
+    );
+  }
+
+  /** model/setSessionThinkingLevel：设置会话思考级别（MP-S05），非法 level 由服务层返回 1001 */
+  private setSessionThinkingLevel(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+    }
+    if (!isRecord(params)) {
+      return Promise.resolve(fail(1001, '参数错误：level 必须为思考级别字符串或 null'));
+    }
+    const level = params.level;
+    if (level !== null && typeof level !== 'string') {
+      return Promise.resolve(fail(1001, '参数错误：level 必须为思考级别字符串或 null'));
+    }
+    return this.call('setSessionThinkingLevel', () =>
+      this.service.setSessionThinkingLevel(sessionId, level as ThinkingLevel | null),
     );
   }
 }

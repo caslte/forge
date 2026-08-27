@@ -119,8 +119,14 @@ export interface ConversationServiceOptions {
   resolveSendOptions?: (
     sessionId: string,
   ) => Promise<ConversationRuntimeOptions>;
-  /** 第一条用户消息发送后触发：基于首条问题自动设置会话别名 */
+  /** 首条用户消息发送后触发：基于首条问题自动设置会话别名 */
   onFirstUserMessage?: (sessionId: string, firstUserContent: string) => void;
+  /**
+   * 模型图片能力判定（多模态门控）：返回某模型是否支持图片输入。
+   * 发送消息携带图片附件时调用；返回 false 则跳过图片仅发送文字（避免 pi 降级
+   * 为占位文本或对方 API 报错）。未注入时不做门控（维持 pi 默认行为）。
+   */
+  modelSupportsImages?: (model: string) => boolean | Promise<boolean>;
 }
 
 /** 提取异常消息（5000 错误联合用） */
@@ -165,7 +171,7 @@ export class ConversationService {
     sessionId: string,
     content: string,
     runtimeOptions: ConversationRuntimeOptions = {},
-  ): Promise<ConversationResult<null>> {
+  ): Promise<ConversationResult<{ skippedImages: number } | null>> {
     if (typeof content !== 'string' || content.trim() === '') {
       return { ok: false, code: 1001, message: '消息不能为空' };
     }
@@ -196,11 +202,36 @@ export class ConversationService {
     ) {
       this.options.onFirstUserMessage(sessionId, content);
     }
+    // 多模态门控：模型不支持图片时跳过图片附件，仅发送文字并追加说明，
+    // 让模型理解图片被跳过（避免 pi 降级占位文本或对方 API 报错的不友好体验）
+    const imageCount = (resolvedOptions.attachments ?? []).filter((a) => a.kind === 'image').length;
+    let sendContent = content;
+    let sendOptions = resolvedOptions;
+    let skippedImages = 0;
+    if (
+      imageCount > 0 &&
+      typeof resolvedOptions.model === 'string' &&
+      this.options.modelSupportsImages !== undefined
+    ) {
+      const supports = await this.options.modelSupportsImages(resolvedOptions.model);
+      if (!supports) {
+        skippedImages = imageCount;
+        const textOnly = (resolvedOptions.attachments ?? []).filter((a) => a.kind !== 'image');
+        sendOptions = { ...resolvedOptions, attachments: textOnly.length > 0 ? textOnly : undefined };
+        sendContent = `${content}\n\n（用户附带了一张图片，但当前模型不支持图片输入，已跳过图片，仅发送文字。）`;
+      }
+    }
     // 新流开始：发送前先进入 streaming（真实 pi 适配器 await 完整轮次，
     // 完成后由事件接线驱动 done / error，不能在 await 之后覆盖状态）
     this.setStatus(sessionId, 'streaming', { lastDeltaText: undefined });
-    await this.adapter.sendMessage(sessionId, content, resolvedOptions);
-    return { ok: true, data: null };
+    try {
+      await this.adapter.sendMessage(sessionId, sendContent, sendOptions);
+    } catch (err) {
+      const message = toMessage(err);
+      this.setStatus(sessionId, 'error');
+      return { ok: false, code: 5000, message };
+    }
+    return { ok: true, data: skippedImages > 0 ? { skippedImages } : null };
   }
 
   /**

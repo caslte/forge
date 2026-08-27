@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { ConversationService } from '../../src/conversation/conversationService.ts';
 import type {
   ConversationMessage,
+  ConversationRuntimeOptions,
   ConversationServiceOptions,
   ConversationStatus,
   PiConversationAdapter,
@@ -25,14 +26,17 @@ import type {
 /** 可注入的 pi 会话适配器 mock：记录调用、可配置历史与抛错 */
 class MockPiConversationAdapter implements PiConversationAdapter {
   sendCalls: Array<{ sessionId: string; content: string }> = [];
+  /** 记录 sendMessage 的 options（多模态门控断言用） */
+  sendOptions: Array<ConversationRuntimeOptions | undefined> = [];
   cancelCalls: string[] = [];
   /** 会话历史（sessionId -> 消息列表），未设置返回空 */
   history: Map<string, ConversationMessage[]> = new Map();
   /** 置为非 null 时 loadHistory 抛出该异常（模拟历史加载失败） */
   loadError: Error | null = null;
 
-  async sendMessage(sessionId: string, content: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void> {
     this.sendCalls.push({ sessionId, content });
+    this.sendOptions.push(options);
   }
 
   async loadHistory(sessionId: string): Promise<ConversationMessage[]> {
@@ -210,6 +214,102 @@ test('多会话独立：10 会话交错状态流转互不干扰（状态隔离�
   assert.equal(service.getStreamState('sess-1').lastDeltaText, 'partial-sess-1');
   assert.equal(service.getStreamState('sess-9').lastDeltaText, 'partial-sess-9');
   assert.deepEqual(adapter.cancelCalls, ['sess-0', 'sess-2', 'sess-4', 'sess-6', 'sess-8']);
+});
+
+// ===== 多模态门控：模型不支持图片时跳过图片附件 + 友好提示 =====
+
+/** 构造带图片附件的发送 options */
+function imageOptions(model: string): ConversationRuntimeOptions {
+  return {
+    model,
+    attachments: [{ kind: 'image', name: 'a.png', mimeType: 'image/png', data: 'AAAA' }],
+  };
+}
+
+test('多模态门控：模型不支持图片 -> 附件去掉图片、内容追加说明、返回 skippedImages', async () => {
+  const { service, adapter } = makeService({
+    sessionExists: () => true,
+    providerReady: () => true,
+    modelSupportsImages: async (model: string) => model !== 'MiniMax-M3', // MiniMax-M3 声明为纯文本
+    resolveSendOptions: () => Promise.resolve({ cwd: undefined }),
+  });
+  const result = await service.sendMessage('sess-1', '看下这张图', imageOptions('MiniMax-M3'));
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data, { skippedImages: 1 });
+  }
+  const call = adapter.sendCalls[0];
+  assert.ok(call);
+  assert.match(call.content, /不支持图片输入，已跳过图片/);
+  const options = adapter.sendOptions[0];
+  assert.ok(options);
+  assert.equal(options.attachments, undefined, '图片附件应被移除');
+});
+
+test('多模态门控：文本附件不受影响（仅图片被过滤）', async () => {
+  const { service, adapter } = makeService({
+    sessionExists: () => true,
+    providerReady: () => true,
+    modelSupportsImages: async () => false,
+  });
+  const result = await service.sendMessage('sess-1', '处理附件', {
+    model: 'plain',
+    attachments: [
+      { kind: 'image', name: 'a.png', mimeType: 'image/png', data: 'AAAA' },
+      { kind: 'text', name: 'note.txt', content: 'hello' },
+    ],
+  });
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data, { skippedImages: 1 });
+  }
+  const options = adapter.sendOptions[0];
+  assert.ok(options);
+  assert.deepEqual(
+    options.attachments,
+    [{ kind: 'text', name: 'note.txt', content: 'hello' }],
+    '文本附件应保留，图片附件被移除',
+  );
+});
+
+test('多模态门控：模型支持图片 -> 附件原样透传，返回 data=null', async () => {
+  const { service, adapter } = makeService({
+    sessionExists: () => true,
+    providerReady: () => true,
+    modelSupportsImages: async () => true,
+  });
+  const result = await service.sendMessage('sess-1', '看下这张图', imageOptions('MultiModal-1'));
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.equal(result.data, null);
+  }
+  assert.equal(adapter.sendCalls[0]?.content, '看下这张图', '支持图片时内容不应被追加说明');
+  const options = adapter.sendOptions[0];
+  assert.ok(options);
+  assert.equal(options.attachments?.length, 1, '图片附件应原样透传');
+});
+
+test('多模态门控：无图片附件或未注入能力端口 -> 不做门控，data=null', async () => {
+  // 未注入 modelSupportsImages：维持原行为（无门控）
+  const { service: svcA, adapter: adpA } = makeService({ sessionExists: () => true });
+  const resA = await svcA.sendMessage('sess-1', '看下这张图', imageOptions('m'));
+  assert.ok(resA.ok);
+  if (resA.ok) {
+    assert.equal(resA.data, null);
+  }
+  assert.equal(adpA.sendOptions[0]?.attachments?.length, 1, '未注入门控时图片原样透传');
+
+  // 无图片附件：即使门控存在且返回 false 也不影响
+  const { service: svcB, adapter: adpB } = makeService({
+    sessionExists: () => true,
+    modelSupportsImages: async () => false,
+  });
+  const resB = await svcB.sendMessage('sess-1', '纯文字', { model: 'plain' });
+  assert.ok(resB.ok);
+  if (resB.ok) {
+    assert.equal(resB.data, null);
+  }
+  assert.equal(adpB.sendCalls[0]?.content, '纯文字', '无图片时内容不追加说明');
 });
 
 // ===== P3-A：上下文用量与压缩 =====

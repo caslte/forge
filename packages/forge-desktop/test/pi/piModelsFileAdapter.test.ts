@@ -121,3 +121,232 @@ test('文件不存在：按空配置返回，不抛错', async () => {
   const providers = await adapter.readProviders();
   assert.deepEqual(providers, []);
 });
+
+// ===== MP-S06 contextWindow 读写 =====
+
+/** 从临时 pi models.json 读取首模型记录 */
+function readFirstModel(file: string): { contextWindow?: number; reasoning?: boolean; compat?: unknown } {
+  const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+    providers: Record<string, { models: Array<Record<string, unknown>> }>;
+  };
+  const provider = Object.values(raw.providers)[0];
+  return provider?.models?.[0] as { contextWindow?: number; reasoning?: boolean; compat?: unknown };
+}
+
+test('U-MP-004：存量 contextWindow=200000 传 contextWindow=null -> 移除字段且保留其他字段', async () => {
+  const file = makePiFile({
+    providers: {
+      huo_shan: {
+        api: 'openai-completions',
+        models: [{ id: 'ark-code-latest', contextWindow: 200000, reasoning: true, compat: { preserve: true } }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  // 模拟 forge 未勾选 1M：contextWindow=null -> 移除该字段（回退 pi 默认）
+  await adapter.writeProviders([
+    {
+      id: 'huo_shan',
+      name: 'huo_shan',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['ark-code-latest'],
+      lastError: null,
+      contextWindow: null,
+    },
+  ]);
+
+  const first = readFirstModel(file);
+  assert.equal(first.contextWindow, undefined, 'contextWindow 字段应被移除');
+  assert.equal(first.reasoning, true, 'reasoning 字段应保留');
+  const compat = first.compat as { preserve: boolean } | undefined;
+  assert.deepEqual(compat, { preserve: true }, 'compat 等其他 pi 字段应保留');
+});
+
+test('U-MP-005：contextWindow=1000000 写库并 readProviders 回显；缺失回显 null', async () => {
+  const file = makePiFile({
+    providers: {
+      openai: {
+        api: 'openai-completions',
+        models: [{ id: 'gpt-1m' }, { id: 'gpt-plain' }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  // 勾选 1M：首模型写入 contextWindow=1000000
+  await adapter.writeProviders([
+    {
+      id: 'openai',
+      name: 'openai',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['gpt-1m', 'gpt-plain'],
+      lastError: null,
+      contextWindow: 1000000,
+    },
+  ]);
+
+  const first = readFirstModel(file);
+  assert.equal(first.contextWindow, 1000000, '首模型 contextWindow 应写为 1000000');
+
+  // readProviders 回显 1000000
+  const providers = await adapter.readProviders();
+  const openai = providers.find((p) => p.id === 'openai');
+  assert.ok(openai);
+  assert.equal(openai.contextWindow, 1000000, '首模型 contextWindow 应回显 1000000');
+
+  // 缺失/无 contextWindow 的 provider -> 回显 null
+  const fileNoCw = makePiFile({
+    providers: {
+      plain: { api: 'openai-completions', models: [{ id: 'm' }] },
+    },
+  });
+  const noCw = await new PiModelsFileAdapter(fileNoCw).readProviders();
+  assert.equal(noCw[0]?.contextWindow, null, '缺失 contextWindow 应回显 null');
+});
+
+test('U-MP-005：contextWindow undefined 传入时不触碰现有字段', async () => {
+  const file = makePiFile({
+    providers: {
+      openai: {
+        api: 'openai-completions',
+        models: [{ id: 'gpt-200k', contextWindow: 200000, reasoning: true }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  // 未传 contextWindow（undefined）：provider 内部缺省保留原值，不篡改
+  await adapter.writeProviders([
+    {
+      id: 'openai',
+      name: 'openai',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['gpt-200k'],
+      lastError: null,
+    },
+  ]);
+
+  const first = readFirstModel(file);
+  assert.equal(first.contextWindow, 200000, 'contextWindow 应保留原值 200000');
+  assert.equal(first.reasoning, true, 'reasoning 应保留');
+});
+
+// ===== 多模态：vision 勾选读写（input 能力字段） =====
+
+test('uid-x-001：vision=true 写首模型 input:["text","image"]，readProviders 回显 vision=true', async () => {
+  const file = makePiFile({
+    providers: {
+      minimax: {
+        api: 'openai-completions',
+        models: [{ id: 'MiniMax-M3', contextWindow: 1000000, reasoning: true }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  // 勾选多模态：首模型写 input:["text","image"]
+  await adapter.writeProviders([
+    {
+      id: 'minimax',
+      name: 'minimax',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['MiniMax-M3'],
+      lastError: null,
+      vision: true,
+    },
+  ]);
+
+  const first = readFirstModel(file) as { input?: string[]; contextWindow?: number; reasoning?: boolean };
+  assert.deepEqual(first.input, ['text', 'image'], '勾选后 input 应为 ["text","image"]');
+  assert.equal(first.contextWindow, 1000000, 'contextWindow 等其它字段应保留');
+  assert.equal(first.reasoning, true, 'reasoning 应保留');
+
+  // 回显：首模型 input 含 "image" -> vision=true
+  const providers = await adapter.readProviders();
+  const provider = providers.find((p) => p.id === 'minimax');
+  assert.ok(provider);
+  assert.equal(provider.vision, true, 'readProviders 应回显 vision=true');
+});
+
+test('uid-x-002：vision=false 移除 input 字段（回退 pi 默认纯文本），readProviders 回显 false', async () => {
+  const file = makePiFile({
+    providers: {
+      minimax: {
+        api: 'openai-completions',
+        models: [{ id: 'MiniMax-M3', input: ['text', 'image'], reasoning: true }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  // 取消勾选：移除 input 字段
+  await adapter.writeProviders([
+    {
+      id: 'minimax',
+      name: 'minimax',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['MiniMax-M3'],
+      lastError: null,
+      vision: false,
+    },
+  ]);
+
+  const first = readFirstModel(file) as { input?: string[]; reasoning?: boolean };
+  assert.equal(first.input, undefined, '取消勾选应移除 input 字段');
+  assert.equal(first.reasoning, true, 'reasoning 应保留');
+
+  // 回显：缺失 input -> vision=false
+  const providers = await adapter.readProviders();
+  const provider = providers.find((p) => p.id === 'minimax');
+  assert.ok(provider);
+  assert.equal(provider.vision, false, 'readProviders 应回显 vision=false');
+});
+
+test('uid-x-003：vision undefined 传入时不触碰手工 input 能力声明', async () => {
+  const file = makePiFile({
+    providers: {
+      multi: {
+        api: 'openai-completions',
+        models: [{ id: 'm-video', input: ['text', 'image', 'video'] }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  // 未传 vision：保留原 input（不覆盖用户手工声明的复杂能力）
+  await adapter.writeProviders([
+    {
+      id: 'multi',
+      name: 'multi',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['m-video'],
+      lastError: null,
+    },
+  ]);
+
+  const first = readFirstModel(file) as { input?: string[] };
+  assert.deepEqual(first.input, ['text', 'image', 'video'], '未传 vision 应保留原 input');
+});
+
+test('uid-x-004：readProviders 对 input 非数组/含 video 不误判；未声明 input 回显 false', async () => {
+  // 未声明 input -> false
+  const filePlain = makePiFile({
+    providers: { plain: { api: 'openai-completions', models: [{ id: 'm' }] } },
+  });
+  const plain = await new PiModelsFileAdapter(filePlain).readProviders();
+  assert.equal(plain[0]?.vision, false, '未声明 input 应回显 false');
+
+  // input 声明了 video 但无 image -> false（严格按含 "image" 判定）
+  const fileVideo = makePiFile({
+    providers: { video: { api: 'openai-completions', models: [{ id: 'm', input: ['text', 'video'] }] } },
+  });
+  const video = await new PiModelsFileAdapter(fileVideo).readProviders();
+  assert.equal(video[0]?.vision, false, '仅 text/video 不应判定为支持图片');
+});
