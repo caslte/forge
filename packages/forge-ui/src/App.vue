@@ -19,6 +19,12 @@ const projects = ref<ProjectItem[]>([]);
 const sessions = ref<SessionItem[]>([]);
 const currentProjectPath = ref<string | null>(null);
 const currentSessionId = ref<string | null>(null);
+/**
+ * 草稿输入态：点击「新会话」后尚未真正创建 pi session（未发送首条消息）。
+ * 发送首条消息时由 ConversationView 先创建会话（emit session-created），
+ * 待会话列表出现该会话（别名已由首条消息生成）后退出草稿态。
+ */
+const draftMode = ref(false);
 
 // 视图
 type View = 'sessions' | 'settings';
@@ -80,6 +86,7 @@ async function loadProjects(): Promise<void> {
 async function selectProject(path: string): Promise<void> {
   currentProjectPath.value = path;
   currentSessionId.value = null;
+  draftMode.value = false;
   // 设置在设置页时，点击项目应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
   await loadSessions();
@@ -127,7 +134,18 @@ async function loadSessions(): Promise<void> {
   // 这样会话树里每个项目都能正确显示自己的会话，而非只显示当前项目。
   try {
     const res = await call<{ sessions: SessionItem[] }>('session/querySessionList', {});
-    sessions.value = res.sessions;
+    // core 会话状态值域（idle/running/done/error）映射到 UI 值域（running→streaming），
+    // 保证会话树状态圆点 tone-* 样式类命中（后端运行时返回 'running'，宽化比较）
+    sessions.value = res.sessions.map((s) => ({
+      ...s,
+      status: ((s.status as string) === 'running' ? 'streaming' : s.status) as SessionItem['status'],
+    }));
+    // 草稿态会话已真实创建（首条消息后自动命名入树）→ 退出草稿态。
+    if (draftMode.value && currentSessionId.value !== null) {
+      if (sessions.value.some((s) => s.sessionId === currentSessionId.value)) {
+        draftMode.value = false;
+      }
+    }
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -168,21 +186,30 @@ async function onRenameProject(path: string, alias: string): Promise<void> {
   }
 }
 
-async function onCreateSession(): Promise<void> {
+/**
+ * 新建会话：仅进入草稿输入态，不真正创建 pi session。
+ * 发送首条消息时由 ConversationView 创建会话并 emit 'session-created'（见 onSessionCreated）。
+ */
+function onCreateSession(): void {
   if (currentProjectPath.value === null) return;
-  try {
-    const res = await call<{ session: { sessionId: string } }>('session/createSession', {
-      projectPath: currentProjectPath.value,
-    });
-    await loadSessions();
-    currentSessionId.value = res.session.sessionId;
-  } catch (e) {
-    showError(e instanceof Error ? e.message : String(e));
-  }
+  // 多窗口画布无独立输入区，新建先退回单会话视图
+  if (multiWindow.value) multiWindow.value = false;
+  currentSessionId.value = null;
+  draftMode.value = true;
+}
+
+/**
+ * ConversationView 草稿态发送首条消息时触发：会话已创建，绑定为当前会话。
+ * 会话树标签等该会话别名生成（forge-core 自动命名 + session.updated → loadSessions）后自然出现，
+ * 因此这里不主动刷新列表，保证左侧标签首次出现即带首条问题截取标题。
+ */
+function onSessionCreated(sessionId: string): void {
+  currentSessionId.value = sessionId;
 }
 
 async function onSelectSession(id: string): Promise<void> {
   currentSessionId.value = id;
+  draftMode.value = false;
   // 设置在设置页时，点击会话应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
   try {
@@ -211,11 +238,17 @@ async function onRenameSession(id: string, alias: string): Promise<void> {
   }
 }
 
+/** 全局默认模型（草稿态预览/未配置会话级覆盖时展示） */
+const defaultModel = ref<string | null>(null);
+
 // 加载可用模型列表（SettingsPanel 操作 provider 后由 providersChanged 事件刷新）
 async function loadModels(): Promise<void> {
   try {
     const res = await call<{ models: string[]; defaultModel: string | null }>('model/queryModels');
     models.value = res.models;
+    defaultModel.value = res.defaultModel;
+    // 无会话（含草稿输入态）时用全局默认模型做展示
+    if (currentSessionId.value === null) currentSessionModel.value = res.defaultModel;
   } catch {
     models.value = [];
   }
@@ -235,10 +268,15 @@ async function loadSessionModel(sid: string): Promise<void> {
 
 // 会话级模型切换（写 modelOverride，不影响全局默认）
 async function onModelChange(model: string): Promise<void> {
-  if (currentSessionId.value === null) return;
+  currentSessionModel.value = model;
+  // 草稿态（会话尚未创建）：仅本地回显预览；所选模型在创建会话时由
+  // ConversationView 写入会话覆盖（见其草稿发送分支），发送即生效
+  if (currentSessionId.value === null) {
+    showToast(`已切换模型：${model}`, 'success');
+    return;
+  }
   try {
     await call('model/setSessionModel', { sessionId: currentSessionId.value, model });
-    currentSessionModel.value = model;
     showToast(`已切换模型：${model}`, 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
@@ -297,13 +335,14 @@ function basename(p: string): string {
 
 let unsubSessionRemoved: (() => void) | null = null;
 let unsubSessionUpdated: (() => void) | null = null;
+let unsubSessionStatus: (() => void) | null = null;
 let unsubProjectRemoved: (() => void) | null = null;
 let unsubProvidersChanged: (() => void) | null = null;
 
-// 会话切换时加载该会话生效模型
+// 会话切换时加载该会话生效模型；无会话（含草稿态）时展示全局默认模型
 watch(currentSessionId, (sid) => {
   if (sid !== null) void loadSessionModel(sid);
-  else currentSessionModel.value = null;
+  else currentSessionModel.value = defaultModel.value;
 });
 
 onMounted(() => {
@@ -316,6 +355,10 @@ onMounted(() => {
   });
   // 会话别名更新（手动重命名或首条消息自动命名）：刷新列表保持 UI 同步
   unsubSessionUpdated = subscribe('session.updated', () => {
+    void loadSessions();
+  });
+  // 会话运行时状态变化（streaming/done/error）：刷新会话树状态圆点
+  unsubSessionStatus = subscribe('session.statusChanged', () => {
     void loadSessions();
   });
   unsubProjectRemoved = subscribe('project.removed', () => {
@@ -331,6 +374,7 @@ onMounted(() => {
 onUnmounted(() => {
   unsubSessionRemoved?.();
   unsubSessionUpdated?.();
+  unsubSessionStatus?.();
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
   if (errorTimer !== null) clearTimeout(errorTimer);
@@ -469,14 +513,15 @@ onUnmounted(() => {
               />
             </div>
           </div>
-          <div v-else-if="currentProject && currentSession" class="session-stage">
+          <div v-else-if="currentProject && (currentSession || draftMode)" class="session-stage">
             <ConversationView
-              :session-id="currentSessionId!"
+              :session-id="currentSessionId"
               :project="currentProject"
               :session="currentSession"
               :models="models"
               :current-model="currentSessionModel"
               @model-change="onModelChange"
+              @session-created="onSessionCreated"
             />
           </div>
           <div v-else-if="currentProject" class="no-session">

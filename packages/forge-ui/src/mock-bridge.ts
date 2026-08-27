@@ -41,6 +41,22 @@ const DB: { projects: Array<Record<string, unknown>>; sessions: MockSessionSeed[
       status: 'done',
       lastActiveAt: new Date().toISOString(),
     },
+    // 演示会话：运行中 = 黄色脉冲圆点
+    {
+      sessionId: 'sess-demo-pending',
+      projectPath: 'D:/work/aiwork/forge',
+      alias: '跑在途分析',
+      status: 'streaming',
+      lastActiveAt: new Date().toISOString(),
+    },
+    // 演示会话：已完成未打开 = 绿色圆点
+    {
+      sessionId: 'sess-demo-done',
+      projectPath: 'D:/work/aiwork/forge',
+      alias: '数据清洗已完成',
+      status: 'done',
+      lastActiveAt: new Date().toISOString(),
+    },
   ],
 };
 
@@ -144,6 +160,8 @@ interface MockControl {
   /** 注入查询会话列表/历史的种子覆盖 */
   setSessions(list: unknown[]): void;
   setHistory(sessionId: string, messages: unknown[]): void;
+  /** 读取当前会话列表（E2E 拿动态新建会话的 id） */
+  getSessions(): Array<Record<string, unknown>>;
   /** 等待中的发送脚本数（断言用） */
   pendingCount(): number;
 }
@@ -204,6 +222,23 @@ const bridge: ForgeBridge = {
       }
       case 'conversation/sendMessage': {
         const sessionId = (params as { sessionId?: string }).sessionId ?? '';
+        const content = (params as { content?: string }).content ?? '';
+        // 首条用户消息自动命名（与真实 forge-core onFirstUserMessage 一致）+ 状态 idle→streaming，广播刷新会话树
+        const sess = DB.sessions.find((s) => s.sessionId === sessionId);
+        let sessionTouched = false;
+        if (sess && !sess.alias && content.trim() !== '') {
+          sess.alias = generateMockTitle(content);
+          sessionTouched = true;
+        }
+        if (sess && sess.status === 'idle') {
+          sess.status = 'streaming';
+          sessionTouched = true;
+        }
+        if (sess && sessionTouched) {
+          emit('session.updated', { session: sess });
+        }
+        // 用户消息写入会话历史（与真实 pi 持久化一致，会话切换回显依赖）
+        (HISTORY[sessionId] ??= []).push({ role: 'user', content, ts: new Date().toISOString() });
         // 挂起：等待测试注入脚本后再执行（模拟真实运行时序）
         const scriptPromise = new Promise<void>((resolve) => {
           const tick = () => {
@@ -259,6 +294,18 @@ const bridge: ForgeBridge = {
 };
 
 /**
+ * 首条用户消息生成会话标题（与 forge-desktop generateSessionTitle 同规则的精简版）：
+ * 去换行空白 → 按首句截断 → 超 30 字符加省略号。
+ */
+function generateMockTitle(rawContent: string): string {
+  const cleaned = rawContent.replace(/\s+/g, ' ').trim();
+  if (cleaned.length === 0) return '新会话';
+  const m = cleaned.match(/^(.+?)[。！？!?.;；]/);
+  const first = m && m[1] !== undefined ? m[1].trim() : cleaned;
+  return first.length > 30 ? first.slice(0, 30) + '…' : first;
+}
+
+/**
  * 按脚本发射事件序列（流式时序：每个条目间隔 delayMs）。
  * delta/message 归 conversation.*，tool 归 tool.*；事件载荷拼 sessionId。
  */
@@ -271,10 +318,18 @@ async function runScript(sessionId: string, script: MockScriptItem[]): Promise<v
       emit('conversation.delta', { sessionId, delta: item.payload });
     } else if (item.type === 'message') {
       emit('conversation.message', { sessionId, message: item.payload });
+      // assistant 消息写入会话历史（会话切换回显依赖）
+      (HISTORY[sessionId] ??= []).push(item.payload);
     } else if (item.type === 'tool') {
       emit('tool.started', { sessionId, ...item.payload });
       emit('tool.completed', { sessionId, ...item.payload });
     }
+  }
+  // 流式结束：会话状态从 streaming 置 done，广播刷新会话树（未打开的完成会话显示绿点）
+  const doneSess = DB.sessions.find((s) => s.sessionId === sessionId);
+  if (doneSess && doneSess.status === 'streaming') {
+    doneSess.status = 'done';
+    emit('session.updated', { session: doneSess });
   }
 }
 
@@ -300,6 +355,9 @@ const mockControl: MockControl = {
   },
   setHistory(sessionId, messages) {
     HISTORY[sessionId] = [...messages] as unknown[];
+  },
+  getSessions() {
+    return DB.sessions.map((s) => ({ ...s }));
   },
   pendingCount() {
     return sendInFlight.size;

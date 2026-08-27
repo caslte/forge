@@ -36,7 +36,7 @@ import {
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
-import { getPiSupportedThinkingLevels } from './pi/piModelResolver.ts';
+import { getPiSupportedThinkingLevels, resolvePiModel } from './pi/piModelResolver.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 import { PiTrustStoreAdapter } from './pi/piTrustStoreAdapter.ts';
 
@@ -200,8 +200,26 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
         thinkingLevel,
       };
     },
-    onStatusChange: (sid, status) => conversationApi.pushStatus(sid, status),
+    onStatusChange: (sid, status) => {
+      conversationApi.pushStatus(sid, status);
+      // 会话树状态圆点数据源：conversation 状态流转同步到 session 运行时表
+      //（streaming→running，canceled/done→done），sessionApi 内部发射
+      // session.statusChanged 触发 UI 会话树实时刷新
+      const sessionStatus =
+        status === 'streaming' ? 'running' : status === 'error' ? 'error' : status === 'idle' ? 'idle' : 'done';
+      sessionApi.setSessionStatus(sid, sessionStatus);
+    },
     onDelta: (sid, delta) => conversationApi.pushDelta(sid, delta.text),
+    // 多模态门控：模型 input 能力含 "image" 才允许透传图片附件；解析失败按不支持
+    // 降级（跳过图片仅发送文字），避免 pi 占位文本或对方 API 报错的不友好体验
+    modelSupportsImages: async (model: string) => {
+      try {
+        const piModel = await resolvePiModel(model, deps.piModelsPath);
+        return Array.isArray(piModel.input) && (piModel.input as string[]).includes('image');
+      } catch {
+        return false;
+      }
+    },
     // 首条用户消息：从问题内容生成标题并写入会话 alias
     onFirstUserMessage: (sid: string, content: string) => {
       const alias = generateSessionTitle(content);

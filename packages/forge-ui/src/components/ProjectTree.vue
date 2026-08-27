@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
 
@@ -64,7 +64,15 @@ const statusTitleMap: Record<SessionStatus, string> = {
   done: '已完成',
 };
 
-type StatusTone = 'idle' | 'streaming' | 'error' | 'done' | 'unread';
+type StatusTone = 'streaming' | 'error' | 'done' | 'none';
+
+/** 已查看过完成结果的会话（完成后点击查看、或正查看时完成），绿点隐藏 */
+const doneReadSessions = ref<Set<string>>(new Set());
+
+function markDoneRead(sessionId: string): void {
+  if (doneReadSessions.value.has(sessionId)) return;
+  doneReadSessions.value = new Set(doneReadSessions.value).add(sessionId);
+}
 
 function projectDisplayName(p: ProjectItem): string {
   if (p.alias) return p.alias;
@@ -91,13 +99,26 @@ function hiddenSessionCount(path: string): number {
   return Math.max(0, sessionsOf(path).length - VISIBLE_SESSION_LIMIT);
 }
 
+function shouldShowDot(s: SessionItem, currentId: string | null): boolean {
+  // 当前选中的会话不显示圆点，已有高亮
+  if (currentId === s.sessionId) return false;
+  // 空闲不显示
+  if (s.status === 'idle') return false;
+  // 已完成：完成后未查看过才显示绿点；查看过一次即隐藏
+  //（发送前打开过会话不算已读——完成结果可能还没看过）
+  if (s.status === 'done') {
+    return !doneReadSessions.value.has(s.sessionId);
+  }
+  // 运行中/错误总是显示
+  return true;
+}
+
 function sessionTone(s: SessionItem): StatusTone {
-  if (s.unread) return 'unread';
-  return s.status;
+  return s.status as StatusTone;
 }
 
 function statusTitle(s: SessionItem): string {
-  return s.unread ? '有未读完成' : statusTitleMap[s.status];
+  return statusTitleMap[s.status];
 }
 
 function isExpanded(path: string): boolean {
@@ -123,8 +144,26 @@ function selectProject(path: string): void {
 }
 
 function selectSession(id: string): void {
+  // 点击已完成会话 → 标记完成结果已读，绿点消失
+  //（仅 done 状态标记：streaming 时点击不算，完成后仍会绿点提示）
+  const s = props.sessions.find((it) => it.sessionId === id);
+  if (s?.status === 'done') markDoneRead(id);
   emit('select-session', id);
 }
+
+// 正在查看的会话完成（streaming→done）视为已读：用户亲眼看过完成过程，
+// 切走后不再用绿点提示
+watch(
+  () => props.sessions,
+  (list) => {
+    for (const s of list) {
+      if (s.status === 'done' && props.currentSessionId === s.sessionId) {
+        markDoneRead(s.sessionId);
+      }
+    }
+  },
+  { deep: true, immediate: true },
+);
 
 // create-session 事件无 path 载荷，先 select-project 让父端知道目标项目，再展开本面板
 function onCreateSession(p: ProjectItem): void {
@@ -436,6 +475,7 @@ onUnmounted(() => {
               @dragstart="onSessionDragStart($event, session)"
             >
               <span
+                v-if="shouldShowDot(session, currentSessionId)"
                 class="tree-session-status-dot"
                 :class="`tone-${sessionTone(session)}`"
                 :title="statusTitle(session)"
@@ -811,31 +851,23 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: var(--muted-foreground);
 }
 
-.tree-session-status-dot.tone-idle {
-  background: var(--muted-foreground);
-}
-
+/* 运行中：黄色 + 呼吸脉冲 */
 .tree-session-status-dot.tone-streaming {
   background: var(--warning);
   --dot: var(--warning);
   animation: tree-status-pulse 1.6s ease-in-out infinite;
 }
 
+/* 出错：红色常显 */
 .tree-session-status-dot.tone-error {
   background: var(--destructive);
 }
 
+/* 已完成（未点击过）：绿色 */
 .tree-session-status-dot.tone-done {
   background: var(--success);
-}
-
-.tree-session-status-dot.tone-unread {
-  background: var(--success);
-  --dot: var(--success);
-  animation: tree-status-pulse 1.6s ease-in-out infinite;
 }
 
 @keyframes tree-status-pulse {

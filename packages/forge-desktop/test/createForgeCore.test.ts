@@ -268,6 +268,8 @@ test('sendMessage 将会话生效模型传入 pi runtime options', async () => {
     assert.equal(requested[0]?.sessionId, sessionId);
     assert.equal(requested[0]?.cwd, projectDir);
     assert.equal(requested[0]?.model, 'test-model');
+    // MP-S05：未设置任何思考级别时兜底 'off'（thinking 内容默认关闭）
+    assert.equal(requested[0]?.thinkingLevel, 'off');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -518,6 +520,54 @@ test('中间助手消息完成不提前结束会话流式状态', async () => {
   }
 });
 
+// 回归：会话树状态圆点数据源（createForgeCore onStatusChange → sessionApi.setSessionStatus）
+test('流式状态同步到 session 层：querySessionList 反映 running→done 且发射 session.statusChanged', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const sessions = new Map<string, DeferredPiSession>();
+    const factory: PiAgentSessionFactory<DeferredPiSession> = async (options) => {
+      const session = new DeferredPiSession();
+      sessions.set(options.sessionId ?? `auto-${sessions.size}`, session);
+      return { session, dispose: () => undefined };
+    };
+    const { methodTable, eventBus } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: factory,
+    });
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    const sessionStatuses: string[] = [];
+    eventBus.on('session.statusChanged', (p: unknown) => {
+      sessionStatuses.push((p as { sessionId: string; status: string }).status);
+    });
+
+    const listStatus = async (): Promise<string> => {
+      const res = await invoke(methodTable, 'session/querySessionList', { projectPath: projectDir });
+      const list = (res.data as { sessions: Array<{ sessionId: string; status: string }> }).sessions;
+      return list.find((s) => s.sessionId === sessionId)?.status ?? '(missing)';
+    };
+
+    // 发送后不 finish：流式进行中，会话应为 running（会话树黄色圆点数据源）
+    const sending = invoke(methodTable, 'conversation/sendMessage', { sessionId, content: '分析中' });
+    for (let i = 0; i < 50 && !sessions.has(sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(sessions.has(sessionId), 'pi 会话应已创建');
+    assert.equal(await listStatus(), 'running', '流式进行中 querySessionList 应为 running');
+    assert.ok(sessionStatuses.includes('running'), '应发射 session.statusChanged(running)');
+
+    // 完成后：会话应为 done（会话树绿色圆点数据源）
+    sessions.get(sessionId)!.finish('完成回答');
+    await sending;
+    assert.equal(await listStatus(), 'done', '流式完成后 querySessionList 应为 done');
+    assert.ok(sessionStatuses.includes('done'), '应发射 session.statusChanged(done)');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('createForgeCore 跨实例隔离：两个 store 文件互不干扰', async () => {
   const root1 = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-iso1-'));
   const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-iso2-'));
@@ -543,5 +593,109 @@ test('createForgeCore 跨实例隔离：两个 store 文件互不干扰', async 
   } finally {
     fs.rmSync(root1, { recursive: true, force: true });
     fs.rmSync(root2, { recursive: true, force: true });
+  }
+});
+
+// ===== MP-S05 / MP-S06：ThinkLevelsPort 注入与会话思考级别生效 =====
+
+test('ThinkLevelsPort 已注入：未知模型 getModelThinkingLevels 返回 1004（模型未配置）', async () => {
+  const { root, storeFile } = makeTempProject();
+  try {
+    const { methodTable } = createForgeCore(storeFile, mockDeps());
+    const res = await invoke(methodTable, 'model/getModelThinkingLevels', {
+      model: 'definitely-not-a-real-forge-model-xyz',
+    });
+    // 端口已注入（不再是 5000「能力未配置」）；模型解析失败 -> 1004
+    assert.equal(res.code, 1004, `应返回 1004，实际 code=${res.code} message=${res.message}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveSendOptions 携带会话生效思考级别：session 覆盖优先，经适配器应用到会话', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const appliedLevels: string[] = [];
+    const session = {
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      setThinkingLevel: async (level: string) => {
+        appliedLevels.push(level);
+      },
+    };
+    const factory: PiAgentSessionFactory<typeof session> = async () => ({
+      session,
+      dispose: () => undefined,
+    });
+    // seededModelDeps 提供非空模型，providerReady 通过，sendMessage 可走通
+    const { methodTable } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: factory,
+    });
+
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    // 未设置思考级别 -> 兜底 off 应用
+    await invoke(methodTable, 'conversation/sendMessage', { sessionId, content: '第一轮' });
+    assert.deepEqual(appliedLevels, ['off'], '未设置级别应兜底应用 off');
+
+    // 会话级设置 high（同时同步全局默认）-> 同一会话下一轮按 high 生效
+    const setRes = await invoke(methodTable, 'model/setSessionThinkingLevel', { sessionId, level: 'high' });
+    assert.equal(setRes.code, 0, `setSessionThinkingLevel 应成功，message: ${setRes.message}`);
+    await invoke(methodTable, 'conversation/sendMessage', { sessionId, content: '第二轮' });
+    assert.deepEqual(appliedLevels, ['off', 'high'], '会话级别覆盖应生效为 high');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('MP-QA-G01 回归：运行中全局默认切到 high 后新建会话发送应应用 high（非启动快照 off）', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const appliedLevels: string[] = [];
+    const session = {
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      setThinkingLevel: async (level: string) => {
+        appliedLevels.push(level);
+      },
+    };
+    const factory: PiAgentSessionFactory<typeof session> = async () => ({
+      session,
+      dispose: () => undefined,
+    });
+    // seededModelDeps 提供非空模型，providerReady 通过，sendMessage 可走通
+    const { methodTable } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: factory,
+    });
+
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const createdA = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sidA = (createdA.data as { session: { sessionId: string } }).session.sessionId;
+
+    // 启动时全局默认缺失 -> 兜底 off（等价初始快照 off）
+    await invoke(methodTable, 'conversation/sendMessage', { sessionId: sidA, content: '第一轮' });
+    assert.deepEqual(appliedLevels, ['off'], '启动初始兜底应为 off');
+
+    // 用户 setSessionThinkingLevel(high) 写当前会话并同步全局默认到 high
+    const setRes = await invoke(methodTable, 'model/setSessionThinkingLevel', { sessionId: sidA, level: 'high' });
+    assert.equal(setRes.code, 0, `setSessionThinkingLevel 应成功，message: ${setRes.message}`);
+    assert.deepEqual(appliedLevels, ['off'], '同步全局默认不应触发新一轮发送');
+
+    // 新建会话（无覆盖，继承全局默认）
+    const createdB = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sidB = (createdB.data as { session: { sessionId: string } }).session.sessionId;
+    await invoke(methodTable, 'conversation/sendMessage', { sessionId: sidB, content: '第二轮' });
+
+    // MP-QA-G01 修复前：启动快照会以初始 off 盖掉实时全局 high，新会话实际发送 off；
+    // 修复后应每次实时读取全局，新会话应用 high（而非初始 off）。
+    assert.deepEqual(appliedLevels, ['off', 'high'], '新会话应继承实时全局默认 high，而非启动快照 off');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
