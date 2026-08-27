@@ -45,6 +45,30 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'max',
 ];
 
+/**
+ * 思考等级配置表单的默认选中集（MP-S07）。
+ * 与 pi 原生默认一致：minimal/low/medium/high 缺省即可用，xhigh/max 需显式开启；
+ * off 不参与（写 null 隐藏，对话框切换器不出现关闭思考挡位）。
+ */
+export const DEFAULT_THINKING_LEVELS: readonly ThinkingLevel[] = ['minimal', 'low', 'medium', 'high'];
+
+/**
+ * 由选中级别集构建 thinkingLevelMap（MP-S07）。
+ * 全量 7 项显式写出：选中级别值取级别名（如 "high": "high"），未选中为 null（隐藏）。
+ * 与 pi getSupportedThinkingLevels 语义一致：null=隐藏；xhigh/max 必须显式非 null 才可用。
+ * off 未选中时为 null（对话框不出现「关闭思考」挡位）。
+ */
+export function buildThinkingLevelMap(
+  levels: readonly ThinkingLevel[],
+): Partial<Record<ThinkingLevel, string | null>> {
+  const selected = new Set(levels);
+  const map: Partial<Record<ThinkingLevel, string | null>> = {};
+  for (const l of THINKING_LEVELS) {
+    map[l] = selected.has(l) ? l : null;
+  }
+  return map;
+}
+
 /** Provider 配置（docs/api/05_model.md §1 响应项） */
 export interface ProviderConfig {
   id: string;
@@ -61,6 +85,10 @@ export interface ProviderConfig {
    * false/缺省=不支持（移除 input 字段，回退 pi 默认纯文本）。
    */
   vision?: boolean;
+  /** 首模型是否启用思考（MP-S07）：models.json 该模型记录 `reasoning: true` */
+  reasoning?: boolean;
+  /** 首模型启用的思考等级白名单（MP-S07）：由 thinkingLevelMap 非 null 项推导；写入侧可传 null 表示移除该字段 */
+  thinkingLevels?: ThinkingLevel[] | null;
   /** apiKey 安全引用（如 !command / $ENV_VAR / 原值）。默认不返回，仅回显需求时可选携带 */
   apiKey?: string;
 }
@@ -68,6 +96,8 @@ export interface ProviderConfig {
 /** models.json 落盘记录（ProviderConfig + 可选 apiKey 安全引用，不明文） */
 export interface ProviderFileRecord extends ProviderConfig {
   apiKey?: string;
+  /** 思考等级白名单（MP-S07）：数组=按构建器写 thinkingLevelMap；null=移除该字段；undefined=不触碰 */
+  thinkingLevels?: ThinkingLevel[] | null;
 }
 
 /** 模型注册表（docs/api/05_model.md §4 响应） */
@@ -100,6 +130,17 @@ export interface SaveProviderInput {
    * false 移除字段，缺省保留原值。仅接受布尔值。
    */
   vision?: boolean;
+  /**
+   * 可选；首模型是否启用思考（MP-S07）：true 写 reasoning:true，false 写 reasoning:false，
+   * 缺省保留原值。仅接受布尔值。
+   */
+  reasoning?: boolean;
+  /**
+   * 可选；首模型思考等级白名单（MP-S07）：选中级别集，由服务层经 buildThinkingLevelMap
+   * 写 thinkingLevelMap（选中=级别名，未选=null）；null 移除该字段；缺省保留原值。
+   * 仅接受 THINKING_LEVELS 内的去重串。
+   */
+  thinkingLevels?: ThinkingLevel[] | null;
 }
 
 /**
@@ -322,6 +363,21 @@ export class ModelService {
     if (input.vision !== undefined && typeof input.vision !== 'boolean') {
       return { ok: false, code: 1001, message: 'vision 必须为布尔值' };
     }
+    // reasoning：提供时须为布尔值（MP-S07）；非法值判 1001 不写
+    if (input.reasoning !== undefined && typeof input.reasoning !== 'boolean') {
+      return { ok: false, code: 1001, message: 'reasoning 必须为布尔值' };
+    }
+    // thinkingLevels：提供时须为 THINKING_LEVELS 内的去重列表（MP-S07）；非法项判 1001 不写
+    if (input.thinkingLevels !== undefined && input.thinkingLevels !== null) {
+      const levels = input.thinkingLevels;
+      if (
+        !Array.isArray(levels) ||
+        levels.some((l) => !THINKING_LEVELS.includes(l)) ||
+        new Set(levels).size !== levels.length
+      ) {
+        return { ok: false, code: 1001, message: 'thinkingLevels 必须为合法思考等级的去重列表' };
+      }
+    }
     const id =
       input.id !== undefined && input.id.trim() !== '' ? input.id.trim() : slugify(name);
     const baseUrl = normalizeBaseUrl(input.baseUrl);
@@ -381,6 +437,13 @@ export class ModelService {
     // vision：仅显式提供时携带（布尔；缺省保留原值，见 piModelsFileAdapter 落盘映射）
     if (input.vision !== undefined) {
       record.vision = input.vision;
+    }
+    // MP-S07 思考等级：仅显式提供时携带（布尔 / 数组或 null；缺省保留原值）
+    if (input.reasoning !== undefined) {
+      record.reasoning = input.reasoning;
+    }
+    if (input.thinkingLevels !== undefined) {
+      record.thinkingLevels = input.thinkingLevels;
     }
 
     try {
@@ -553,7 +616,11 @@ export class ModelService {
       if (levels === null) {
         return { ok: false, code: 1004, message: `模型未配置: ${model}` };
       }
-      return { ok: true, data: { levels } };
+      // MP-S07 产品决策：推理模型的可用级别不向对话框暴露 off（仅推理模型才可能同时含 off 与多级别；
+      // 非推理模型 levels=["off"] 原样返回，切换器隐藏判断不受影响）。
+      // 过滤不复制 pi 的级别规则（TD-MP-04 仍成立），仅移除产品不展示的单挡位。
+      const levelsFiltered = levels.length > 1 ? levels.filter((l) => l !== 'off') : levels;
+      return { ok: true, data: { levels: levelsFiltered } };
     } catch (err) {
       return { ok: false, code: 5000, message: `查询思考级别失败: ${toMessage(err)}` };
     }

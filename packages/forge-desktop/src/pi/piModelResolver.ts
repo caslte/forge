@@ -16,6 +16,8 @@
 import fs from 'node:fs';
 
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
+import type { ModelThinkingLevel } from '@earendil-works/pi-ai';
 
 import { defaultPiModelsPath } from './piModelsFileAdapter.ts';
 
@@ -110,4 +112,45 @@ export async function resolvePiModel(
     }
   }
   throw new Error(`模型未配置或不可用: ${model}`);
+}
+
+/**
+ * 查询模型的可用思考级别列表（TP-MP-04：消费 pi SDK `getSupportedThinkingLevels`，
+ * forge 不复制 reasoning/thinkingLevelMap 过滤规则；TD-MP-04）。
+ * @param model forge 模型 ID
+ * @param modelsPath pi models.json 路径（默认 ~/.pi/agent/models.json）
+ * @returns 可用级别数组（如 ["off","minimal",...]；非推理模型仅 ["off"]）；
+ *          模型解析失败返回 null（上层映射为 1004「模型未配置」）
+ */
+export async function getPiSupportedThinkingLevels(
+  model: string,
+  modelsPath: string = defaultPiModelsPath(),
+): Promise<string[] | null> {
+  try {
+    const piModel = await resolvePiModel(model, modelsPath);
+    return getSupportedThinkingLevels(piModel);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 请求级别超出模型支持范围时经 pi SDK `clampThinkingLevel` 就近收敛为可用级别
+ * （TD-MP-04；如仅至 high 的模型请求 max -> 收敛 high）。
+ * @param model forge 模型 ID
+ * @param level 请求级别（off/minimal/low/medium/high/xhigh/max）
+ * @param modelsPath pi models.json 路径（默认 ~/.pi/agent/models.json）
+ * @returns 收敛后的可用级别；模型解析失败返回 level 原值（上层兜底）
+ */
+export async function clampPiThinkingLevel(
+  model: string,
+  level: string,
+  modelsPath: string = defaultPiModelsPath(),
+): Promise<string> {
+  try {
+    const piModel = await resolvePiModel(model, modelsPath);
+    return clampThinkingLevel(piModel, level as ModelThinkingLevel);
+  } catch {
+    return level;
+  }
 }

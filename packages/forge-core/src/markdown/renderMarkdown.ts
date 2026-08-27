@@ -59,7 +59,7 @@ function codeRenderer(lang: string | undefined, text: string): string {
   // Mermaid：转义原文 + 数据标记，交给前端异步渲染为图表
   if (language === 'mermaid') {
     const escaped = htmlEscape(trimmed);
-    const encoded = Buffer.from(trimmed, 'utf8').toString('base64');
+    const encoded = encodeBase64Utf8(trimmed);
     return `<pre class="md-mermaid-wrap"><code class="md-mermaid" data-md-mermaid="${encoded}">${escaped}</code></pre>`;
   }
 
@@ -78,6 +78,38 @@ function codeRenderer(lang: string | undefined, text: string): string {
 /** 转义 HTML 特殊字符 */
 function htmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * UTF-8 → base64（不依赖 Node Buffer / 浏览器 btoa，Node 与浏览器渲染进程通用）。
+ * 编码结果与 Buffer.from(s, 'utf8').toString('base64') 一致，供前端 atob+TextDecoder 还原。
+ */
+const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function encodeBase64Utf8(s: string): string {
+  const bytes: number[] = [];
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x80) {
+      bytes.push(cp);
+    } else if (cp < 0x800) {
+      bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    } else if (cp < 0x10000) {
+      bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    }
+  }
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]!;
+    const b1 = bytes[i + 1];
+    const b2 = bytes[i + 2];
+    out += BASE64_CHARS[b0 >> 2];
+    out += BASE64_CHARS[((b0 & 0x3) << 4) | ((b1 ?? 0) >> 4)];
+    out += b1 === undefined ? '=' : BASE64_CHARS[((b1 & 0xf) << 2) | ((b2 ?? 0) >> 6)];
+    out += b2 === undefined ? '=' : BASE64_CHARS[b2 & 0x3f];
+  }
+  return out;
 }
 
 marked.use({

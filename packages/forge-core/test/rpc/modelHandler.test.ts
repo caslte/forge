@@ -222,6 +222,43 @@ test('saveProvider：name/type 缺失或空白、models 为空 → 1001，无写
   assert.equal(modelsFile.writeSnapshots.length, 0);
 });
 
+test('saveProvider：非法 reasoning/thinkingLevels → 1001，无写库（MP-S07/AC-MP-026）', async () => {
+  const { api, modelsFile } = makeApi();
+  const badReasoning = await api.methods['model/saveProvider']({
+    name: 'OpenAI',
+    type: 'openai',
+    models: ['gpt-4o'],
+    reasoning: 'yes',
+  });
+  assert.equal(badReasoning.code, 1001);
+  const badLevels = await api.methods['model/saveProvider']({
+    name: 'OpenAI',
+    type: 'openai',
+    models: ['gpt-4o'],
+    reasoning: true,
+    thinkingLevels: ['off', 'nope'],
+  });
+  assert.equal(badLevels.code, 1001);
+  assert.equal(modelsFile.writeSnapshots.length, 0);
+});
+
+test('saveProvider：reasoning/thinkingLevels 合法透传 → 写库（MP-S07/AC-MP-023）', async () => {
+  const { api, modelsFile } = makeApi();
+  const ok = await api.methods['model/saveProvider'](
+    validInput({ id: 'openai', models: ['gpt-4o'], reasoning: true, thinkingLevels: ['off', 'high', 'max'] }),
+  );
+  assert.equal(ok.code, 0);
+  const snap = modelsFile.writeSnapshots[0];
+  assert.ok(snap && snap[0]?.reasoning === true, '写库记录应含 reasoning=true');
+  assert.deepEqual(snap[0]?.thinkingLevels, ['off', 'high', 'max']);
+  // 重复项去重
+  const dedup = await api.methods['model/saveProvider'](
+    validInput({ id: 'openai', models: ['gpt-4o'], reasoning: true, thinkingLevels: ['off', 'off', 'high'] }),
+  );
+  assert.equal(dedup.code, 0);
+  assert.deepEqual(modelsFile.writeSnapshots[1]?.[0]?.thinkingLevels, ['off', 'high']);
+});
+
 test('saveProvider：服务层返回 1004（provider 未配置）→ 透传 code 1004', async () => {
   // 真实服务 saveProvider 不产生 1004，此处用 stub 服务模拟服务层返回 1004
   const stubService = new ModelService({
@@ -488,7 +525,15 @@ test('getModelThinkingLevels：返回结构/顺序固定；未知模型 → 1004
   assert.ok(reasoning.data !== null);
   if (reasoning.data !== null) {
     const data = reasoning.data as { levels: string[] };
-    assert.deepEqual(data.levels, full, '推理模型返回全量级别且顺序固定');
+    // MP-S07：推理模型可用级别不向对话框暴露 off（含存量配置缺省 off 的场景）
+    assert.deepEqual(data.levels, [
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
   }
   const nonReasoning = await api.methods['model/getModelThinkingLevels']({ model: 'gpt-4o-mini' });
   assert.equal(nonReasoning.code, 0);

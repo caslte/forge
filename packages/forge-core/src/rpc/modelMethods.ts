@@ -28,12 +28,13 @@
 
 import { EventEmitter } from 'node:events';
 import type { RpcResult, EventSink } from './projectMethods.ts';
-import type {
-  ModelService,
-  ModelResult,
-  ProviderConfig,
-  SaveProviderInput,
-  ThinkingLevel,
+import {
+  THINKING_LEVELS,
+  type ModelService,
+  type ModelResult,
+  type ProviderConfig,
+  type SaveProviderInput,
+  type ThinkingLevel,
 } from '../model/modelService.ts';
 
 /** 构造成功信封 */
@@ -137,6 +138,26 @@ function parseSaveInput(params: unknown): SaveProviderInput | null {
       return null;
     }
     input.vision = params.vision;
+  }
+  // reasoning（MP-S07 思考强度）：可选；必须为布尔值；非法类型判 1001 不进入服务层
+  if (params.reasoning !== undefined) {
+    if (typeof params.reasoning !== 'boolean') {
+      return null;
+    }
+    input.reasoning = params.reasoning;
+  }
+  // thinkingLevels（MP-S07 思考等级白名单）：可选；必须为 THINKING_LEVELS 内的字符串数组或 null；非法判 1001
+  if (params.thinkingLevels !== undefined) {
+    if (params.thinkingLevels === null) {
+      input.thinkingLevels = null;
+    } else if (
+      Array.isArray(params.thinkingLevels) &&
+      params.thinkingLevels.every((l) => typeof l === 'string' && THINKING_LEVELS.includes(l as ThinkingLevel))
+    ) {
+      input.thinkingLevels = [...new Set(params.thinkingLevels as ThinkingLevel[])];
+    } else {
+      return null;
+    }
   }
   return input;
 }

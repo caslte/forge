@@ -17,7 +17,9 @@ const props = defineProps<{
 
 let source = '';
 try {
-  source = atob(props.encoded);
+  // base64 → UTF-8（编码端为 UTF-8 base64；仅 atob 会得到 Latin-1 二进制串，需 TextDecoder 还原）
+  const binary = atob(props.encoded);
+  source = new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
 } catch {
   source = '';
 }

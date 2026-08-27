@@ -170,14 +170,14 @@ test('conversation/cancelStream：sessionId 缺失返回 1001', async () => {
   assert.equal((await api.methods['conversation/cancelStream']({})).code, 1001);
 });
 
-test('异常隔离：adapter 抛错返回 5000，不泄漏异常细节', async () => {
+test('异常隔离：adapter 抛错返回 5000，透传实际错误信息（便于定位 key/模型配置问题）', async () => {
   const { api, adapter } = makeApi();
   adapter.sendError = new Error('pi send failed');
   const result = await api.methods['conversation/sendMessage']({ sessionId: 'sess-1', content: 'hi' });
   assert.equal(result.code, 5000);
   assert.equal(result.data, null);
-  assert.equal(result.message, 'internal error');
-  assert.ok(!result.message.includes('pi send failed'), '不向调用方泄漏异常细节');
+  assert.equal(result.message, 'pi send failed');
+  assert.ok(result.message.includes('pi send failed'));
 });
 
 test('异常隔离：queryHistory adapter 抛错返回 5000，data null', async () => {

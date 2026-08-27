@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+// 从瘦 subpath 导入：@forge/core 根入口 re-export 含 node:events 的 RPC 层，浏览器打包会炸
+import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
 import { useToast } from '../composables/useToast';
-import type { ThemeMode, ProviderItem } from '../types';
+import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
 /**
  * 设置面板。
@@ -39,6 +41,11 @@ const formModel = ref('');
 const formContext1M = ref(false);
 /** 多模态勾选：勾选写模型记录 input:["text","image"]，未勾选移除字段（回退 pi 默认纯文本） */
 const formVision = ref(false);
+/** MP-S07：思考强度勾选（勾选写 reasoning:true，未勾选写 reasoning:false） */
+const formReasoning = ref(false);
+/** MP-S07：思考等级白名单（多选下拉；选中项写 thinkingLevelMap 非 null；off 不展示，恒可用） */
+const formLevels = ref<ThinkingLevel[]>([...DEFAULT_THINKING_LEVELS]);
+const levelMenuOpen = ref(false);
 const saving = ref(false);
 const formError = ref<string | null>(null);
 const apiKeyVisible = ref(false);
@@ -62,6 +69,28 @@ const canSubmitForm = computed(() => {
     !saving.value
   );
 });
+
+/** MP-S07：多选下拉可选项（除去 off：off 是默认态，不展示，保存时始终写入） */
+const levelOptions: ThinkingLevel[] = THINKING_LEVELS.filter((l) => l !== 'off');
+
+/** MP-S07：多选下拉触发器文案（未启用思考/空选/已选列表；off 不展示） */
+const selectedLevelsLabel = computed(() => {
+  if (!formReasoning.value) {
+    return '未启用思考';
+  }
+  const shown = formLevels.value.filter((l) => l !== 'off');
+  if (shown.length === 0) {
+    return '未选择思考等级';
+  }
+  return shown.join(' / ');
+});
+
+/** MP-S07：勾选/取消某思考等级（off 不展示；按固定顺序排序） */
+function toggleLevel(l: ThinkingLevel): void {
+  const arr = formLevels.value;
+  const next = arr.includes(l) ? arr.filter((x) => x !== l) : [...arr, l];
+  formLevels.value = next.sort((a, b) => THINKING_LEVELS.indexOf(a) - THINKING_LEVELS.indexOf(b));
+}
 
 async function loadProviders(): Promise<void> {
   try {
@@ -104,6 +133,9 @@ async function onSaveProvider(): Promise<void> {
       contextWindow: formContext1M.value ? 1000000 : null,
       // 多模态：一律按勾选覆盖（服务层写/移除 input 字段）
       vision: formVision.value,
+      // MP-S07：思考强度开关 + 思考等级白名单（off 写 null 隐藏，对话框不出现在关闭思考挡位；未启用思考时移除 thinkingLevelMap）
+      reasoning: formReasoning.value,
+      thinkingLevels: formReasoning.value ? [...formLevels.value] : null,
     });
     await loadProviders();
     await loadModels();
@@ -131,6 +163,14 @@ function onEdit(p: ProviderItem): void {
   formContext1M.value = p.contextWindow === 1000000;
   // 多模态回显：首模型 input 含 "image" 即勾选
   formVision.value = p.vision === true;
+  // MP-S07 回显：思考强度按 reasoning 字段；白名单按推导的 thinkingLevels（缺省/空回退默认集；过滤 off——off 不参与配置，写 null 隐藏）
+  formReasoning.value = p.reasoning === true;
+  const storedLevels = (p.thinkingLevels ?? []).filter((l) => l !== 'off');
+  formLevels.value = [...storedLevels];
+  if (storedLevels.length === 0) {
+    formLevels.value = [...DEFAULT_THINKING_LEVELS];
+  }
+  levelMenuOpen.value = false;
   formError.value = null;
   apiKeyVisible.value = false;
   showAddForm.value = true;
@@ -156,6 +196,9 @@ function resetForm(): void {
   formModel.value = '';
   formContext1M.value = false;
   formVision.value = false;
+  formReasoning.value = false;
+  formLevels.value = [...DEFAULT_THINKING_LEVELS];
+  levelMenuOpen.value = false;
   formError.value = null;
   apiKeyVisible.value = false;
 }
@@ -324,6 +367,37 @@ onUnmounted(() => {
             <input v-model="formVision" type="checkbox" />
             <span class="form-label">支持图片输入（多模态）</span>
           </label>
+          <!-- MP-S07：思考强度勾选（与上下勾选行样式一致）+ 下方思考等级多选下拉（控制对话框可选挡位） -->
+          <label class="form-field context-check">
+            <input v-model="formReasoning" type="checkbox" />
+            <span class="form-label">思考强度</span>
+          </label>
+          <div class="form-field level-picker" :class="{ disabled: !formReasoning }">
+            <button
+              type="button"
+              class="level-picker-trigger"
+              :disabled="!formReasoning"
+              data-tooltip="选择对话时可选用的思考等级"
+              @click.stop="levelMenuOpen = !levelMenuOpen"
+            >
+              <span class="level-picker-label">{{ selectedLevelsLabel }}</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <div v-if="levelMenuOpen" class="level-overlay" @click="levelMenuOpen = false"></div>
+            <div v-if="levelMenuOpen" class="level-menu">
+              <div class="menu-hint">对话框中可选的思考等级</div>
+              <label v-for="l in levelOptions" :key="l" class="level-option">
+                <input
+                  type="checkbox"
+                  :checked="formLevels.includes(l)"
+                  @change="toggleLevel(l)"
+                />
+                <span class="level-option-name">{{ l }}</span>
+              </label>
+            </div>
+          </div>
           <div v-if="formError" class="form-error">{{ formError }}</div>
           <div class="form-actions">
             <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
@@ -644,19 +718,125 @@ onUnmounted(() => {
   font-family: var(--font-sans);
 }
 
-/* MP-S06：上下文 1M 单档勾选（原生 checkbox 横向排布） */
+/* MP-S06：上下文 1M 单档勾选（原生 checkbox 横向排布；尺寸统一 16px 使各行文字对齐） */
 .context-check {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   cursor: pointer;
   user-select: none;
 }
 
 .context-check input[type='checkbox'] {
-  width: auto;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
   cursor: pointer;
+}
+
+/* MP-S07：思考等级多选下拉（位于「思考强度」勾选下方，独立一行） */
+.level-picker {
+  position: relative;
+}
+
+.level-picker.disabled {
+  opacity: 0.55;
+}
+
+.level-picker-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.level-picker-trigger:not(:disabled):hover,
+.level-picker-trigger:not(:disabled):focus-visible {
+  border-color: var(--brand);
+}
+
+.level-picker-trigger:disabled {
+  cursor: not-allowed;
+}
+
+.level-picker-trigger svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.level-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.level-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.level-menu {
+  position: absolute;
+  z-index: 11;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-hint {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  padding: 4px 8px 6px;
+}
+
+.level-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--foreground);
+}
+
+.level-option:hover {
+  background: var(--muted);
+}
+
+.level-option input[type='checkbox'] {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.level-option-name {
+  font-family: var(--font-mono);
+}
+
+.level-option-note {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted-foreground);
 }
 
 /* API Key：右侧眼睛切换明文/隐藏 */
@@ -664,6 +844,7 @@ onUnmounted(() => {
   position: relative;
   width: 100%;
 }
+
 
 .api-key-wrap input {
   padding-right: 34px;

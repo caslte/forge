@@ -11,7 +11,7 @@
 
 ### session/createSession
 
-**说明**：在当前项目下新建 pi session（SM-S01）。
+**说明**：在当前项目下新建 pi session（SM-S01）。调用时机为**发送首条用户消息时**（前端草稿输入态点"新建会话"不调用本接口，不产生会话记录）；会话别名在发送首条消息后由 forge-core 基于首条问题自动生成（`onFirstUserMessage` -> `updateSessionAlias`），并经 `session.updated` 事件通知 UI 会话树刷新。
 
 请求参数：
 

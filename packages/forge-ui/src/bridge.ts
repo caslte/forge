@@ -32,7 +32,10 @@ export type ForgeMethod =
   | 'model/queryModels'
   | 'model/setDefault'
   | 'model/getSessionModel'
-  | 'model/setSessionModel';
+  | 'model/setSessionModel'
+  | 'model/getModelThinkingLevels'
+  | 'model/getSessionThinkingLevel'
+  | 'model/setSessionThinkingLevel';
 
 /** 全部事件名 */
 export type ForgeEvent =

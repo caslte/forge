@@ -12,7 +12,12 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ModelService } from '../../src/model/modelService.ts';
+import {
+  ModelService,
+  THINKING_LEVELS,
+  DEFAULT_THINKING_LEVELS,
+  buildThinkingLevelMap,
+} from '../../src/model/modelService.ts';
 import type {
   KeychainAdapter,
   ModelStorePort,
@@ -443,7 +448,6 @@ test('P3-D：未注入审计回调时配置变更不报错', async () => {
 });
 
 // ===== MP-S06：contextWindow 上下文窗口 =====
-
 test('saveProvider：contextWindow=1000000 透传到 writeProviders 记录（AC-MP-015）', async () => {
   const { service, modelsFile } = makeService();
   const result = await service.saveProvider(
@@ -547,12 +551,23 @@ test('getModelThinkingLevels：成功返回级别列表；模型未配置返回 
   const ok = await service.getModelThinkingLevels('gpt-4o');
   assert.ok(ok.ok);
   if (ok.ok) {
-    assert.deepEqual(ok.data.levels, ['off', 'low', 'medium', 'high']);
+    // MP-S07：推理模型的可用级别不向对话框暴露 off
+    assert.deepEqual(ok.data.levels, ['low', 'medium', 'high']);
   }
   const unconfigured = await service.getModelThinkingLevels('unknown-model');
   assert.ok(!unconfigured.ok);
   if (!unconfigured.ok) {
     assert.equal(unconfigured.code, 1004);
+  }
+});
+
+test('getModelThinkingLevels：非推理模型 levels=["off"] 原样返回（切换器隐藏判断保留）', async () => {
+  const { service, thinkLevels } = makeServiceWithThinkLevels();
+  thinkLevels.partial['plain'] = ['off'];
+  const ok = await service.getModelThinkingLevels('plain');
+  assert.ok(ok.ok);
+  if (ok.ok) {
+    assert.deepEqual(ok.data.levels, ['off']);
   }
 });
 
@@ -698,4 +713,116 @@ test('saveProvider：vision 缺省不携带字段（保留原值，不覆盖手�
   const written = modelsFile.writeSnapshots[0]?.[0];
   assert.ok(written !== undefined);
   assert.equal(written.vision, undefined);
+});
+
+// ===== MP-S07：思考强度（reasoning）与思考等级白名单（thinkingLevels） =====
+
+test('buildThinkingLevelMap：选中=级别名，未选=null，全量 7 项（AC-MP-023）', () => {
+  assert.deepEqual(buildThinkingLevelMap(['high', 'max'] as const), {
+    off: null,
+    minimal: null,
+    low: null,
+    medium: null,
+    high: 'high',
+    xhigh: null,
+    max: 'max',
+  });
+  // 显式传 off 也可（纯函数，调用方决定；forge UI 不传 -> off:null 隐藏）
+  assert.deepEqual(buildThinkingLevelMap(['off', 'high'] as const), {
+    off: 'off',
+    minimal: null,
+    low: null,
+    medium: null,
+    high: 'high',
+    xhigh: null,
+    max: null,
+  });
+  // 全选
+  const all = buildThinkingLevelMap(THINKING_LEVELS);
+  assert.deepEqual(all, {
+    off: 'off',
+    minimal: 'minimal',
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    xhigh: 'xhigh',
+    max: 'max',
+  });
+  // 空选：全 null
+  assert.deepEqual(buildThinkingLevelMap([]), {
+    off: null,
+    minimal: null,
+    low: null,
+    medium: null,
+    high: null,
+    xhigh: null,
+    max: null,
+  });
+});
+
+test('DEFAULT_THINKING_LEVELS：minimal/low/medium/high（xhigh/max 需显式开启，off 不参与）', () => {
+  assert.deepEqual([...DEFAULT_THINKING_LEVELS], ['minimal', 'low', 'medium', 'high']);
+});
+
+test('saveProvider：reasoning + thinkingLevels 透传到 writeProviders 记录（AC-MP-023/024）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'openai', models: ['gpt-4o'], reasoning: true, thinkingLevels: ['high', 'max'] }),
+  );
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.reasoning, true);
+  assert.deepEqual(written.thinkingLevels, ['high', 'max']);
+});
+
+test('saveProvider：reasoning=false + thinkingLevels=null 透传（移除 thinkingLevelMap）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ id: 'openai', models: ['gpt-4o'], reasoning: false, thinkingLevels: null }),
+  );
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal(written.reasoning, false);
+  assert.equal(written.thinkingLevels, null);
+});
+
+test('saveProvider：非法 reasoning/thinkingLevels 返回 1001，不写入（AC-MP-026）', async () => {
+  const { service, modelsFile } = makeService();
+  // reasoning 非布尔
+  const badReasoning = await service.saveProvider(
+    validInput({ id: 'a', models: ['m'], reasoning: 'yes' as unknown as boolean }),
+  );
+  assert.ok(!badReasoning.ok);
+  if (!badReasoning.ok) {
+    assert.equal(badReasoning.code, 1001);
+  }
+  // thinkingLevels 含非法级别
+  const badLevel = await service.saveProvider(
+    validInput({ id: 'b', models: ['m'], thinkingLevels: ['off', 'ultra' as const] }),
+  );
+  assert.ok(!badLevel.ok);
+  if (!badLevel.ok) {
+    assert.equal(badLevel.code, 1001);
+  }
+  // thinkingLevels 重复
+  const dupLevel = await service.saveProvider(
+    validInput({ id: 'c', models: ['m'], thinkingLevels: ['off', 'off'] }),
+  );
+  assert.ok(!dupLevel.ok);
+  if (!dupLevel.ok) {
+    assert.equal(dupLevel.code, 1001);
+  }
+  assert.equal(modelsFile.writeSnapshots.length, 0);
+});
+
+test('saveProvider：reasoning/thinkingLevels 缺省不携带字段（保留原值）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(validInput({ id: 'openai', models: ['gpt-4o'] }));
+  assert.ok(result.ok);
+  const written = modelsFile.writeSnapshots[0]?.[0];
+  assert.ok(written !== undefined);
+  assert.equal('reasoning' in written, false);
+  assert.equal('thinkingLevels' in written, false);
 });

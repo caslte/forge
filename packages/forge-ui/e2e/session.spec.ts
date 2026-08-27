@@ -9,6 +9,7 @@ import {
   assertNoResidualStreaming,
   seedSessions,
   seedSendScript,
+  listMockSessions,
   waitForMock,
 } from './helpers/index';
 
@@ -32,18 +33,45 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await expect(page.locator('.tree-panel')).toBeVisible();
 }
 
-// ===== E-SM-001 新建会话进入工作区 =====
-test('SESSION-E2E-001 @P0 @mock-backend E-SM-001：新建会话进入会话池', async ({ page }) => {
+// ===== E-SM-001 新建会话发送首条消息后进入会话池 =====
+test('SESSION-E2E-001 @P0 @mock-backend E-SM-001：草稿态不建标签，首条消息后才创建会话并入树', async ({ page }) => {
   const health = attachHealthGuards(page);
   await boot(page, [mkSession({ alias: '已有会话' })]);
   await expect(page.locator('.tree-session')).toHaveCount(1);
 
-  await page.locator('.add-project-btn').click();
   // + 号下方是新建会话入口（app-toolbar 新建会话按钮需在会话视图）
   await page.locator('.app-toolbar-btn', { hasText: '新会话' }).click();
 
-  // 会话池新增一条
+  // 草稿输入态：右侧进入输入区，左侧会话树不新增标签（未发首条消息不创建会话）
+  await expect(page.locator('.compose-box')).toBeVisible();
+  await expect(page.locator('.tree-session')).toHaveCount(1);
+  // 草稿态即可预览当前生效模型（全局默认），而非「选择模型」占位
+  await expect(page.locator('.model-wrap .meta-link')).toContainText('deepseek-v4-flash');
+
+  // 发送首条消息：此刻才真正创建会话，树标签出现且标题为首条问题截取
+  await page.locator('.compose-input').fill('修复登录鉴权流程中的 BUG');
+  await page.locator('.compose-input').press('Enter');
+
   await expect(page.locator('.tree-session')).toHaveCount(2);
+  await expect(page.locator('.tree-session').last()).toContainText('修复登录鉴权');
+
+  // 从 mock 侧确认新增会话别名 = 首条消息截取；注入脚本让流式完整结束
+  const sessions = await listMockSessions(page);
+  const created = sessions.find((s) => s.sessionId !== undefined && s.alias === '修复登录鉴权流程中的 BUG');
+  expect(created).toBeTruthy();
+
+  if (created?.sessionId) {
+    await seedSendScript(page, created.sessionId, [
+      { type: 'message', delayMs: 30, payload: { role: 'assistant', content: '收到', ts: new Date().toISOString() } },
+    ]);
+    await expect(page.locator('.msg-assistant', { hasText: '收到' })).toBeVisible({ timeout: 5_000 });
+    await page.evaluate(
+      ([sid]) => window.__forgeMock!.emit(sid, 'conversation.statusChanged', { status: 'done' }),
+      [created.sessionId] as const,
+    );
+    await expect(page.locator('.compose-box')).not.toHaveClass(/streaming/);
+  }
+
   await assertNoResidualStreaming(page);
   health.assertHealthy();
 });
@@ -74,6 +102,9 @@ test('SESSION-E2E-002 @P0 @mock-backend E-SM-002：多会话并行流式互不�
   await input.press('Enter');
 
   await page.locator('.tree-session', { hasText: '会话B' }).click();
+  // B 也发一条，与 A 并行流式（验证不串扰）
+  await page.locator('.compose-input').fill('B 的问题');
+  await page.locator('.compose-input').press('Enter');
   // B 视图显示 B 的流式输出，不出现 A 的内容
   await expect(page.locator('.msg-assistant').first()).toBeVisible({ timeout: 10_000 });
   // 会话 B 的答非所问：B 视图不应含 A 的 token
@@ -196,6 +227,34 @@ test('SESSION-E2E-006 @P1 @mock-backend E-SM-003 负向：首次点击不删除�
   // 确认态清除（按钮恢复）且会话仍在
   await expect(row.locator('.confirm-text')).toHaveCount(0);
   await expect(page.locator('.tree-session')).toHaveCount(1);
+  health.assertHealthy();
+});
+
+// ===== 多模态门控：模型不支持图片时气泡标记「图片未发送」（E-CV-006/AC-CV-013） =====
+test('SESSION-E2E-007 @P1 @mock-backend E-CV-006：sendMessage 返回 skippedImages 时用户气泡显示「图片未发送」', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  const sess = mkSession({ alias: '图片会话' });
+  await boot(page, [sess]);
+
+  // 打开会话；门控生效：sendMessage 返回 skippedImages=1（模拟纯文本模型跳过图片）
+  await page.locator('.tree-session', { hasText: '图片会话' }).click();
+  await expect(page.locator('.compose-input')).toBeVisible();
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('conversation/sendMessage', () => ({
+      code: 0,
+      message: 'ok',
+      data: { skippedImages: 1 },
+    }));
+  });
+
+  // 发送带图消息（图片附件路径由后端门控处理，此处断言 UI 标记渲染）
+  await page.locator('.compose-input').fill('看看这张图');
+  await page.locator('.compose-input').press('Enter');
+
+  // 用户气泡出现「图片未发送」标记
+  await expect(page.locator('.msg-user .msg-image-skipped')).toContainText(
+    '图片未发送：当前模型不支持图片输入',
+  );
   health.assertHealthy();
 });
 

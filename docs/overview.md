@@ -49,7 +49,7 @@
 | 02 | 会话管理 | 会话创建/切换/删除/重命名，多会话并行，多窗口跨项目并排观察 | prd/02_session_management.md | PRD 已确认 |
 | 03 | 对话与消息 | 发消息、流式响应、Markdown/代码/Mermaid 渲染、取消、历史 | prd/03_conversation.md | PRD 已确认 |
 | 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转 | prd/04_tool_execution.md | PRD 已确认 |
-| 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择 | prd/05_model_provider.md | PRD 已确认 |
+| 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择；扩展：思考级别选择（输入框）、上下文 1M 配置 | prd/05_model_provider.md | PRD 已确认（含扩展 MP-S05/MP-S06） |
 
 ### 配套设计文档
 
@@ -75,10 +75,10 @@
 
 ## 八、当前状态
 
-- 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB（`db/forge-store/schema.md`）、API（IPC 传输无关契约）、测试设计（5 模块 coverage-matrix + 复杂场景展开 02/03/04 e2e + 05 api + 跨模块 `test/integration/pi-core.md`）生成并审核、`docs/artifacts.json` 登记（全模块 approved）、gen-doc-test-cases skill 加强（C1-C7）落地；**DB/API/测试设计三档已确认置为"已确认"，文档全部冻结**。
-- 进行中：无（**文档全部就绪且已确认，可进入 `dev` 开发阶段**）。
+- 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB/API/测试设计全档确认、PRD 05 扩展（MP-S05 思考级别选择、MP-S06 上下文 1M）文档确认与**开发交付（dev-flow run 20260827115957，COMPLETE：6 WU 通过 + Fan-in + 模块 QA PASS）**；开发产物含输入框思考级别切换器（含 max 金色流光动画）、设置页上下文 1M 勾选、forge-core/desktop 对应业务与运行时接线。
+- 进行中：无。
 - 阻塞项：无。
-- 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）。
+- 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）；PRD 05 扩展的思考级别真实链路（PIC-005）与 1M 上下文运行时验证待集成环境执行；forge-ui session 模块 2 条既有 e2e（E-SM-001/002）为模块 02 已知失败，与本扩展无关。
 ## 九、AI 开发约束
 
 - **允许改动**：forge 自有代码（forge-core/desktop/ui/extensions）；docs/。

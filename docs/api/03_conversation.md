@@ -19,8 +19,12 @@
 |--------|------|------|------|
 | sessionId | string | 是 | 会话 ID |
 | content | string | 是 | 消息内容（非空） |
+| attachments | array | 否 | 附件列表（P3-B）：`{ kind: 'image', name, mimeType, data }` 图片（base64）/ `{ kind: 'text', name, content }` 文本 |
 
-响应：`data: null`（消息已在对话区即时展示；后续内容靠事件推送）。
+响应：
+
+- `data: null`：正常（消息已在对话区即时展示；后续内容靠事件推送）。
+- `data: { "skippedImages": number }`：多模态门控生效——发送时当前生效模型的 `input` 能力不含 `"image"`，已自动跳过图片附件仅发送文字（内容中追加说明），附件不会触发对方 API 报错。`skippedImages` 为跳过的图片数量。
 
 | code | 说明 |
 |------|------|

@@ -44,7 +44,10 @@ export type ForgeMethod =
   | 'model/queryModels'
   | 'model/setDefault'
   | 'model/getSessionModel'
-  | 'model/setSessionModel';
+  | 'model/setSessionModel'
+  | 'model/getModelThinkingLevels'
+  | 'model/getSessionThinkingLevel'
+  | 'model/setSessionThinkingLevel';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -62,6 +65,7 @@ export type ForgeEvent =
   | 'project.removed'
   | 'session.statusChanged'
   | 'session.removed'
+  | 'session.updated'
   | 'conversation.statusChanged'
   | 'conversation.delta'
   | 'conversation.message'
@@ -77,6 +81,7 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'project.removed',
   'session.statusChanged',
   'session.removed',
+  'session.updated',
   'conversation.statusChanged',
   'conversation.delta',
   'conversation.message',

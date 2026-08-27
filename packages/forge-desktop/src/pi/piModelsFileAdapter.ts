@@ -32,7 +32,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { ProviderConfig, ProviderFileRecord } from '@forge/core';
+import {
+  THINKING_LEVELS,
+  buildThinkingLevelMap,
+  type ProviderConfig,
+  type ProviderFileRecord,
+  type ThinkingLevel,
+} from '@forge/core';
 
 /** pi 单个模型记录（保留 pi 附加字段，如 contextWindow/reasoning/compat） */
 interface PiModelRecord {
@@ -146,6 +152,8 @@ export class PiModelsFileAdapter {
       // 多模态：首模型 input 数组含 "image" 视为支持图片输入（未声明视为不支持）
       const vision =
         Array.isArray(firstModel?.input) && (firstModel.input as unknown[]).includes('image');
+      // MP-S07：思考强度 = 首模型 reasoning 字段（true 即启用）
+      const reasoning = firstModel?.reasoning === true;
       return {
         id: name,
         name,
@@ -154,10 +162,29 @@ export class PiModelsFileAdapter {
         models: (p.models ?? []).map((m) => m.id),
         contextWindow,
         vision,
+        // MP-S07：思考等级白名单 = thinkingLevelMap 非 null 项（镜像 pi getSupportedThinkingLevels 语义：
+        // null=隐藏；xhigh/max 缺省=不可用；其余级别缺省=可用）。未启用思考时不返回。
+        reasoning,
+        ...(reasoning ? { thinkingLevels: this.supportedThinkingLevels(firstModel?.thinkingLevelMap) } : {}),
         lastError: null,
         // 回显已存 apiKey（pi 文件里的引用或原值），供前端展示
         ...(p.apiKey !== undefined ? { apiKey: p.apiKey } : {}),
       };
+    });
+  }
+
+  /** MP-S07：由 thinkingLevelMap 推导可用思考等级白名单（镜像 pi getSupportedThinkingLevels 过滤规则） */
+  private supportedThinkingLevels(map: unknown): ThinkingLevel[] {
+    const m = (map ?? {}) as Partial<Record<ThinkingLevel, unknown>>;
+    return THINKING_LEVELS.filter((l) => {
+      const mapped = m[l];
+      if (mapped === null) {
+        return false;
+      }
+      if (l === 'xhigh' || l === 'max') {
+        return mapped !== undefined;
+      }
+      return true;
     });
   }
 
@@ -195,6 +222,23 @@ export class PiModelsFileAdapter {
             delete withoutInput.input;
             nextModels[0] = withoutInput;
           }
+        }
+        // MP-S07 思考强度：true -> 写 reasoning:true；false -> 写 reasoning:false；
+        // undefined -> 不触碰（保留原值）。
+        if (typeof p.reasoning === 'boolean') {
+          nextModels[0] = { ...(nextModels[0] ?? firstModel), reasoning: p.reasoning };
+        }
+        // MP-S07 思考等级白名单：数组 -> 覆盖写 thinkingLevelMap（选中=级别名，未选=null）；
+        // null -> 移除该字段；undefined -> 不触碰（保留手工配置）。
+        if (Array.isArray(p.thinkingLevels)) {
+          nextModels[0] = {
+            ...(nextModels[0] ?? firstModel),
+            thinkingLevelMap: buildThinkingLevelMap(p.thinkingLevels),
+          };
+        } else if (p.thinkingLevels === null) {
+          const withoutMap = { ...(nextModels[0] ?? firstModel) };
+          delete withoutMap.thinkingLevelMap;
+          nextModels[0] = withoutMap;
         }
       }
       next[p.name] = {

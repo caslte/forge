@@ -9,7 +9,10 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
-import type { PiAgentSessionFactoryOptions } from './piConversationAdapter.ts';
+import type {
+  MinimalPiSession,
+  PiAgentSessionFactoryOptions,
+} from './piConversationAdapter.ts';
 import { resolvePiModel } from './piModelResolver.ts';
 
 export interface PiSessionHandle {
@@ -25,7 +28,7 @@ export interface CreatePiAgentSessionFactoryOptions {
 type PiAgentSessionRuntimeFactory = (
   request: FactoryOptions,
 ) => Promise<{
-  session: AgentSession;
+  session: AgentSession & { setThinkingLevel(level: string): Promise<void> };
   dispose: () => void;
 }>;
 
@@ -85,15 +88,36 @@ export function createPiAgentSessionFactory(
     } else if (request.model !== undefined) {
       createOptions.model = request.model as CreateAgentSessionOptions['model'];
     }
+    // MP-S05：创建会话时应用生效思考级别（pi 内部按模型能力 clamp 就近收敛）
+    if (typeof request.thinkingLevel === 'string' && request.thinkingLevel !== '') {
+      createOptions.thinkingLevel = request.thinkingLevel as CreateAgentSessionOptions['thinkingLevel'];
+    }
 
     const result = await createAgentSession(createOptions);
 
+    // 真实 AgentSession.setThinkingLevel 为同步方法，而上层合约（MinimalPiSession）
+    // 需要 async 形式的思考级别设置；用 Proxy 仅包装该方法为 Promise，其余能力
+    // （prompt/subscribe/abort/setModel/getContextUsage/compact/modelRuntime 等）原样委托。
+    const rawSession = result.session;
+    const session = new Proxy(rawSession, {
+      get(target, prop, receiver) {
+        if (prop === 'setThinkingLevel') {
+          return (level: string) => {
+            target.setThinkingLevel(level as AgentSession['thinkingLevel']);
+            return Promise.resolve();
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as AgentSession & { setThinkingLevel(level: string): Promise<void> };
+
     return {
-      session: result.session,
-      dispose: () => result.session.dispose(),
+      session,
+      dispose: () => rawSession.dispose(),
       handle: {
         get sessionFile() {
-          return result.session.sessionFile;
+          return rawSession.sessionFile;
         },
       },
     };

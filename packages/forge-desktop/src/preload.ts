@@ -46,20 +46,47 @@ const dialogControl = {
   },
 };
 
+/** forge:event 多路复用：单条 ipcRenderer 监听分发到多类 ForgeEvent */
+const eventListeners = new Map<ForgeEvent, Set<(payload: unknown) => void>>();
+let ipcEventListening = false;
+
+function ensureIpcEventListening(): void {
+  if (ipcEventListening) return;
+  ipcEventListening = true;
+  // 单例监听，避免每个 window.forge.on 都往 IpcRenderer 追加监听导致 MaxListenersExceededWarning（10 上限）
+  ipcRenderer.on(IPC_EVENT, (_e: Electron.IpcRendererEvent, arg: { event: string; payload: unknown }) => {
+    const listeners = eventListeners.get(arg.event as ForgeEvent);
+    if (listeners === undefined || listeners.size === 0) return;
+    for (const fn of listeners) {
+      try {
+        fn(arg.payload);
+      } catch {
+        // 单个监听异常不影响其他订阅者
+      }
+    }
+  });
+}
+
 /** window.forge 桥实现 */
 const forgeBridge = {
   invoke(method: ForgeMethod, params?: Record<string, unknown>) {
     return ipcRenderer.invoke(IPC_INVOKE, { method, params });
   },
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
-    const handler = (_e: Electron.IpcRendererEvent, arg: { event: string; payload: unknown }) => {
-      if (arg.event === event) {
-        listener(arg.payload);
-      }
-    };
-    ipcRenderer.on(IPC_EVENT, handler);
+    ensureIpcEventListening();
+    let set = eventListeners.get(event);
+    if (set === undefined) {
+      set = new Set();
+      eventListeners.set(event, set);
+    }
+    set.add(listener);
     return () => {
-      ipcRenderer.removeListener(IPC_EVENT, handler);
+      const current = eventListeners.get(event);
+      if (current === undefined) return;
+      current.delete(listener);
+      if (current.size === 0) {
+        eventListeners.delete(event);
+      }
     };
   },
   window: windowControl,

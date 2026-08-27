@@ -32,6 +32,7 @@ export interface ProjectRecord {
  * @param lastActiveAt 最近活动时间（ISO8601），会话列表排序用
  * @param createdAt 创建时间（ISO8601）
  * @param modelOverride 会话级模型覆盖（模块 05；空则用全局默认）
+ * @param thinkingLevel 会话级思考级别覆盖（模块 05 MP-S05：off/minimal/low/medium/high/xhigh/max；空则用全局默认）
  */
 export interface SessionRecord {
   sessionId: string;
@@ -40,10 +41,11 @@ export interface SessionRecord {
   lastActiveAt: string;
   createdAt: string;
   modelOverride: string | null;
+  thinkingLevel: string | null;
 }
 
 /** settings 表当前键集合（schema.md 设计说明） */
-export type StoreKey = 'defaultModel' | 'schemaVersion';
+export type StoreKey = 'defaultModel' | 'thinkingLevel' | 'schemaVersion';
 
 /**
  * 全局偏好记录（对应 schema.md settings 表，单例 key-value）。

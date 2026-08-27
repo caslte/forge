@@ -385,6 +385,18 @@ async function loadThinkingState(): Promise<void> {
   }
 }
 
+/** 触发器/选项高亮展示的级别：会话级 off 在菜单不可选时回退最小可用级别（MP-S07 对话框不出现 off） */
+const displayLevel = computed<ThinkingLevel | null>(() => {
+  const cur = currentLevel.value;
+  if (cur === null) {
+    return null;
+  }
+  if (availableLevels.value.includes(cur)) {
+    return cur;
+  }
+  return availableLevels.value[0] ?? cur;
+});
+
 function toggleLevelMenu(): void {
   levelMenuOpen.value = !levelMenuOpen.value;
 }
@@ -582,24 +594,25 @@ watch(
           </div>
         </div>
 
-        <!-- 思考级别：模型选择旁紧凑切换器（仅可用级别 > off 时显示，MP-S05） -->
-        <div v-if="availableLevels.length > 1" class="level-wrap">
+        <!-- 思考级别：模型选择旁紧凑切换器
+        显示条件：含任一非 off 挡位即显示（非推理模型 levels=["off"] 隐藏；
+        推理模型即使只剩单个挡位如 ["max"] 也显示，MP-S07） -->
+        <div v-if="availableLevels.some((l) => l !== 'off')" class="level-wrap">
           <button
             class="meta-link"
-            :class="{ 'is-max': currentLevel === 'max' }"
+            :class="{ 'is-max': displayLevel === 'max' }"
             type="button"
             data-tooltip="思考级别 · 点击切换"
             @click.stop="toggleLevelMenu"
           >
-            <span>{{ currentLevel ?? 'off' }}</span>
+            <span>{{ displayLevel ?? 'off' }}</span>
           </button>
           <div v-if="levelMenuOpen" class="level-menu">
-            <div class="menu-hint">思考级别 · 下一轮生效</div>
             <button
               v-for="lv in availableLevels"
               :key="lv"
               class="menu-item"
-              :class="{ active: lv === currentLevel }"
+              :class="{ active: lv === displayLevel }"
               type="button"
               @click="selectLevel(lv)"
             >

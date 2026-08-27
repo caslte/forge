@@ -74,6 +74,17 @@ test('mermaid 块输出占位与编码源码', () => {
   assert.match(decoded, /A --> B/);
 });
 
+test('mermaid 编码含非 ASCII（UTF-8 往返一致，与 Buffer 编码等价）', () => {
+  const html = renderMarkdown('```mermaid\ngraph TD\n  A[用户输入] --> B[结果输出]\n```');
+  const encoded = html.match(/data-md-mermaid="([^"]+)"/)?.[1];
+  assert.ok(encoded);
+  const decoded = Buffer.from(encoded!, 'base64').toString('utf8');
+  assert.match(decoded, /用户输入/);
+  // 等价性：与 Node Buffer 编码结果完全一致（前端解码端兼容）
+  const expected = Buffer.from('graph TD\n  A[用户输入] --> B[结果输出]', 'utf8').toString('base64');
+  assert.equal(encoded, expected);
+});
+
 test('空输入安全', () => {
   assert.doesNotThrow(() => renderMarkdown(''));
   assert.ok(renderMarkdown('') !== '<script>');

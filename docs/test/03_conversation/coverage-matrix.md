@@ -40,6 +40,7 @@
 | AC-CV-010 | CV-S04 取消响应 | 状态 | 正常流程：取消后恢复 | P1 | - | A-CV-005 | E-CV-002 | 取消后可以再次发送 | |
 | AC-CV-011 | CV-S05 历史装载 | 一致性 | 正常流程：历史加载 | P0 | - | A-CV-006 | E-CV-005 | 全部历史被加载并正确渲染 | |
 | AC-CV-012 | CV-S05 历史装载 | 一致性 | 正常流程：角色区分 | P1 | - | A-CV-006 | E-CV-005 | user/assistant/隔离区分 | |
+| AC-CV-013 | CV-S01 发送消息（多模态门控） | 可用性 | 边界：模型不支持图片 | P1 | U-CV-005 | A-CV-007 | E-CV-006 | 图片附件被跳过仅发文字，不触发 API 报错；气泡标记「图片未发送」，内容追加说明 | 提升自然使用体验 |
 
 ---
 
@@ -53,6 +54,7 @@
 | U-CV-002 | AC-CV-006 | Markdown 渲染器 | 字段边界 | 消息内容 | `\`\`\` 代码块+标题+列表 | 渲染 | 正确生成 HTML 结构 | 不当转义 |
 | U-CV-003 | AC-CV-007 | 白名单渲染器 | 安全 | 消息含恶意 HTML | `<script>alert</script>`、`<img onerror>` | 渲染 | 危险标签被剔除/转义，不执行 | 无跨站脚本（XSS）执行 |
 | U-CV-004 | AC-CV-008 | Mermaid 渲染 | 边界 | 无效 mermaid 图 | `graph TD; a -- b --` 非法 | 渲染 | 返回错误信息+源码 | 不抛出未处理异常 |
+| U-CV-005 | AC-CV-013 | 多模态门控 | 可用性 | 会话存在 + 生效模型 | 图片附件 × N；文本附件 × 1；模型支持/不支持图片；未注入能力端口 | sendMessage | 不支持：图片被过滤、文本附件保留、内容追加说明、返回 skippedImages；支持：原样透传 data=null；无端口：不门控 | 不触发 API 报错；不支持时绝不带图请求 |
 
 ### api（IPC 契约 + CanonicalEvent）
 
@@ -64,6 +66,7 @@
 | A-CV-004 | AC-CV-005 | conversation/sendMessage（中途断流） | mock 断流 | 发送后中断 | 标记中断事件 | 已收内容保留 | 停止后可重试 |
 | A-CV-005 | AC-CV-009/010 | conversation/cancelStream | 会话 runnin g | { sessionId } | 200 | 保留已生成，标记 cancelled | 可再次发送 |
 | A-CV-006 | AC-CV-011/012 | session/queryHistory | 会话含历史 | { sessionId } | 返回全部历史 | 无 | 角色区分正确、顺序正确 |
+| A-CV-007 | AC-CV-013 | conversation/sendMessage（带图） | 会话存在 + 纯文本模型 | { sessionId, content, attachments:[image] } | 200 + data.skippedImages=1 | 图片不写入请求 | 内容追加跳过说明；不触发 API 报错；多模态模型场景 data=null 且图片透传 |
 
 ### e2e
 
@@ -74,5 +77,6 @@
 | E-CV-003 | AC-CV-006/008 | 对话区 | 历史消息含富文本 | 消息含 markdown+代码+mermaid（含错误语法） | mock-backend | 打开会话→观察渲染 | 三种富文本正确；Mermaid 错误显示提示+源码 |
 | E-CV-004 | AC-CV-007 | 对话区 | 恶意 HTML 消息 | 消息含 `<script>`/`onerror` | manual（安全断言） | 渲染消息 | 无脚本执行，无交互注入 |
 | E-CV-005 | AC-CV-011/012 | 对话区 | 会话有历史消息 | 10+ 历史消息，含 user/assistant/tool | mock-backend | 打开→滚到最新 | 历史全加载，角色正确渲染 |
+| E-CV-006 | AC-CV-013 | 对话区 | 会话存在 + 纯文本模型 | 粘贴图片后发送（模型不支持图片） | mock（门控返回不支持） | 粘图→发送→观察 | 气泡显示「图片未发送：当前模型不支持图片输入」；流式正常返回；无红色报错 |
 
 > E-CV-004 用 manual（安全边界，需人工确认无脚本执行，无法由 mock 自动判定）——已注明。可另配合禁用 CSP 的专用用例做自动化安全断言（P2 补充）。

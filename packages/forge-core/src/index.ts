@@ -93,7 +93,7 @@ export {
 export type { SnapZone, SnapRect, AutoWin } from './multiwin/windowLayout.ts';
 
 // 模型与 Provider 配置服务（wu-05-model-service）
-export { ModelService } from './model/modelService.ts';
+export { ModelService, THINKING_LEVELS, DEFAULT_THINKING_LEVELS, buildThinkingLevelMap } from './model/modelService.ts';
 export type {
   ProviderConfig,
   ProviderFileRecord,
@@ -103,8 +103,10 @@ export type {
   ModelsFileAdapter,
   KeychainAdapter,
   ModelStorePort,
+  ThinkLevelsPort,
   ModelServiceDeps,
   ModelResult,
+  ThinkingLevel,
 } from './model/modelService.ts';
 
 // 模型与 Provider 配置 RPC 方法层（wu-05-rpc）

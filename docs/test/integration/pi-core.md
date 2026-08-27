@@ -89,6 +89,26 @@
   - 无静默失败：成功即真实生效（如"保存成功"必有数据落库）
 - **证据**：方法级契约测试 + 错误码矩阵
 
+### PIC-005 思考级别真实集成（getSupportedThinkingLevels / clampThinkingLevel / setThinkingLevel）
+
+- **关联**：模块 05 MP-S05（AC-MP-010/011/013/019 的 pi 真实层，不得全 mock）| **优先级**：P0 | **自动化等级**：real-integration
+- **前置**：forge-core + 真实 pi（`@earendil-works/pi-coding-agent`），models.json 含 reasoning 模型与非推理模型各一
+- **数据**：受控 provider 模型 A（reasoning=true，thinkingLevelMap 显式含 max）、模型 B（reasoning=false）
+- **操作**：
+  1. resolve 模型 A/B -> 调 `getSupportedThinkingLevels`：A 返回含 max 的完整列表；B 返回仅 `["off"]`
+  2. 对 A 请求越界级别（如 xhigh 但模型不支持）-> `clampThinkingLevel` 就近收敛到可用级别
+  3. 会话创建携带思考级别 -> `AgentSession.setThinkingLevel(level)` -> 断言会话 JSONL 出现 `thinking_level_change` 条目
+  4. 重启/重开会话 -> 断言 thinkingLevel 恢复（会话级持久化）
+  5. 配置模型 contextWindow=1000000 后新建会话 -> 断言上下文窗口上限按 1000000（contextUsage/压缩阈值）
+- **断言**：
+  - 级别列表与模型 reasoning/thinkingLevelMap 语义完全一致（**不硬编码**）
+  - clamp 结果落在可用列表内且为最近级别
+  - setThinkingLevel 真实持久化，重启返回语义正确；会话间级别不串扰（并发 2 会话各设不同级别互不影响）
+  - contextWindow=1000000 生效于运行时上下文计算
+  - 负向：非推理模型不得产生非 off 请求；非法/越界级别不崩溃
+- **健康**：无未捕获异常、无吞错返回 success
+- **证据**：级别列表日志 + 会话 JSONL thinking_level_change 条目 + 上下文用量上报
+
 ---
 
 ## 3. 覆盖汇总
@@ -99,5 +119,6 @@
 | PIC-002 | AgentSession 生命周期 | P0 | real-integration | 创建/停止/删除/释放正确 |
 | PIC-003 | 多会话真实并发 | P0 | real-integration | 无串扰/隔离/完整 |
 | PIC-004 | 后端健康+契约 | P0 | real-integration | 无吞错/契约完整 |
+| PIC-005 | 思考级别真实链路 | P0 | real-integration | 级别列表一致/持久化恢复/并发隔离/1M 上下文 |
 
 > 注：本文件是跨模块集成设计，不并入任一模块 coverage-matrix；各模块矩阵的 A-* 契约用例与之互补（矩阵测契约、本文测真实映射）。

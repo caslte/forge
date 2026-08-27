@@ -15,6 +15,10 @@
       "types": "./dist/markdown/renderMarkdown.d.ts",
       "import": "./dist/markdown/renderMarkdown.js"
     },
+    "./model": {
+      "types": "./dist/model/modelService.d.ts",
+      "import": "./dist/model/modelService.js"
+    },
     "./multiwin-layout": {
       "types": "./dist/multiwin/windowLayout.d.ts",
       "import": "./dist/multiwin/windowLayout.js"

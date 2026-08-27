@@ -62,6 +62,10 @@ export interface ProviderItem {
   contextWindow?: number | null;
   /** 首模型是否支持图片输入（多模态） */
   vision?: boolean;
+  /** 首模型是否启用思考（MP-S07）：reasoning:true */
+  reasoning?: boolean;
+  /** 首模型启用的思考等级白名单（MP-S07）：由 thinkingLevelMap 非 null 项推导 */
+  thinkingLevels?: ThinkingLevel[];
   lastError: string | null;
   /** apiKey 安全引用/原值（回显用途，可能为空） */
   apiKey?: string;

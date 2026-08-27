@@ -120,6 +120,10 @@ watch(mdReady, (ready) => {
           @click="toggleZoom(i)"
         />
       </div>
+      <!-- 多模态门控：当前模型不支持图片输入，附件已跳过未发送 -->
+      <div v-if="isUser && message.imageSkipped" class="msg-image-skipped">
+        图片未发送：当前模型不支持图片输入
+      </div>
       <!-- Mermaid 图表（完整格式化后提取的占位，逐个渲染） -->
       <div v-for="block in mermaidBlocks" :key="block.key" class="msg-mermaid">
         <MermaidBlock :encoded="block.encoded" />
@@ -195,6 +199,23 @@ watch(mdReady, (ready) => {
 
 .msg-images:empty {
   display: none;
+}
+
+/* 多模态门控：图片未发送的提示（模型不支持图片输入） */
+.msg-image-skipped {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: color-mix(in oklab, var(--muted-foreground) 75%, var(--foreground));
+  background: color-mix(in oklab, var(--warning, #b58900) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--warning, #b58900) 22%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  user-select: none;
+}
+
+.msg-user .msg-image-skipped {
+  text-align: right;
 }
 
 .msg-image {

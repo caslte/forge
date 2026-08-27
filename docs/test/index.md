@@ -10,13 +10,13 @@
 | 02 | 会话管理 | test/02_session/coverage-matrix.md | 已确认 | e2e.md（多窗口）| 02 |
 | 03 | 对话与消息 | test/03_conversation/coverage-matrix.md | 已确认 | e2e.md（流式/XSS）| 03 |
 | 04 | 工具执行展示 | test/04_tool/coverage-matrix.md | 已确认 | e2e.md（Diff）| 04 |
-| 05 | 模型与 Provider | test/05_model/coverage-matrix.md | 已确认 | api.md（keychain）| 05 |
+| 05 | 模型与 Provider | test/05_model/coverage-matrix.md | 已确认 | api.md（keychain）+ 扩展 MP-S05/MP-S06（思考级别/上下文 1M）| 05 |
 
 ## 跨模块集成（forge-core）
 
 | 覆盖域 | 路径 | 状态 | 说明 |
 |---|---|---|---|
-| pi 集成（事件映射/生命周期/真实并发/后端健康） | test/integration/pi-core.md | 已确认 | 跨 02/03/04，补矩阵 mock 之下的真实映射层；PIC-001~004 |
+| pi 集成（事件映射/生命周期/真实并发/后端健康） | test/integration/pi-core.md | 已确认（含 PIC-005 思考级别真实链路） | 跨 02/03/04，补矩阵 mock 之下的真实映射层；PIC-001~005 |
 
 ## 覆盖率汇总
 
@@ -26,9 +26,9 @@
 | 02 | 5/5 (100%) | 10/10 (100%) | 100% | 100% | 100% | - |
 | 03 | 5/5 (100%) | 9/10 适用 (90%) | 100% | 100% | 100% | 查询组合不适用；E-CV-004 为 manual 补充（安全）但 P0 断言已覆盖 |
 | 04 | 4/4 (100%) | 9/10 适用 (90%) | 100% | 100% | 100% | 查询组合不适用；E-TE-004 manual 属补充 |
-| 05 | 4/4 (100%) | 9/10 适用 (90%) | 100% | 100% | 100% | - |
+| 05 | 6/6 (100%) | 17/17 适用 (100%) | 100% | 100% | 100% | MP-S05/MP-S06 已全量覆盖；E-MP-008 max 动画为 visual 补充，P0 断言由 U-MP-008 覆盖 |
 
-> P0 断言由自动化用例（unit/api）覆盖；P0 的 manual E2E 仅补充（E-CV-004/E-TE-004，安全 XSS 类，P0 断言已由 U-CV-003/U-TE-002 覆盖）。P1 不满足自动化的已注明原因与替代验证方式。
+> P0 断言由自动化用例（unit/api）覆盖；P0 的 manual/visual E2E 仅补充（E-CV-004/E-TE-004/E-MP-008，安全/动画类，P0 断言已由对应 unit 覆盖）。P1 不满足自动化的已注明原因与替代验证方式。
 
 ## 更新规则
 

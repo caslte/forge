@@ -64,6 +64,14 @@ export async function seedHistory(
   );
 }
 
+/** 读取 mock 当前会话列表（动态新建会话 id 需从 mock 侧获取） */
+export async function listMockSessions(
+  page: Page,
+): Promise<Array<{ sessionId: string; alias: string | null }>> {
+  await waitForMock(page);
+  return page.evaluate(() => window.__forgeMock!.getSessions());
+}
+
 /** 配置会话发送脚本（sendMessage 后被按序发射） */
 export async function seedSendScript(
   page: Page,

@@ -350,3 +350,137 @@ test('uid-x-004：readProviders 对 input 非数组/含 video 不误判；未声
   const video = await new PiModelsFileAdapter(fileVideo).readProviders();
   assert.equal(video[0]?.vision, false, '仅 text/video 不应判定为支持图片');
 });
+
+// ===== MP-S07：思考强度（reasoning）与思考等级白名单（thinkingLevelMap）读写 =====
+
+/** 读取首模型原始记录（MP-S07 断言用） */
+function readFirstModelRaw(file: string): Record<string, unknown> {
+  const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+    providers: Record<string, { models: Array<Record<string, unknown>> }>;
+  };
+  const provider = Object.values(raw.providers)[0];
+  return (provider?.models?.[0] ?? {}) as Record<string, unknown>;
+}
+
+test('writeProviders：reasoning=true + thinkingLevels -> 写 reasoning 与 thinkingLevelMap（选中=级别名，未选=null），保留其他字段', async () => {
+  const file = makePiFile({
+    providers: {
+      huo_shan: {
+        api: 'openai-completions',
+        models: [{ id: 'ark-code-latest', contextWindow: 1000000, compat: { preserve: true } }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+  await adapter.writeProviders([
+    {
+      id: 'huo_shan',
+      name: 'huo_shan',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['ark-code-latest'],
+      lastError: null,
+      reasoning: true,
+      thinkingLevels: ['off', 'high', 'max'],
+    },
+  ]);
+  const first = readFirstModelRaw(file);
+  assert.equal(first.reasoning, true);
+  assert.deepEqual(first.thinkingLevelMap, {
+    off: 'off',
+    minimal: null,
+    low: null,
+    medium: null,
+    high: 'high',
+    xhigh: null,
+    max: 'max',
+  });
+  // 其他字段保留
+  assert.equal(first.compat?.preserve, true);
+  assert.equal(first.contextWindow, 1000000);
+});
+
+test('writeProviders：reasoning=false + thinkingLevels=null -> 写 reasoning:false 并移除 thinkingLevelMap', async () => {
+  const file = makePiFile({
+    providers: {
+      huo_shan: {
+        api: 'openai-completions',
+        models: [{ id: 'ark-code-latest', reasoning: true, thinkingLevelMap: { high: 'high', max: 'max' } }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+  await adapter.writeProviders([
+    {
+      id: 'huo_shan',
+      name: 'huo_shan',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['ark-code-latest'],
+      lastError: null,
+      reasoning: false,
+      thinkingLevels: null,
+    },
+  ]);
+  const first = readFirstModelRaw(file);
+  assert.equal(first.reasoning, false);
+  assert.equal('thinkingLevelMap' in first, false, 'thinkingLevels=null 应移除 thinkingLevelMap');
+});
+
+test('writeProviders：reasoning/thinkingLevels 缺省不触碰（保留手工配置）', async () => {
+  const file = makePiFile({
+    providers: {
+      huo_shan: {
+        api: 'openai-completions',
+        models: [{ id: 'ark-code-latest', reasoning: true, thinkingLevelMap: { high: 'custom' } }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+  await adapter.writeProviders([
+    {
+      id: 'huo_shan',
+      name: 'huo_shan',
+      type: 'openai-completions',
+      baseUrl: null,
+      models: ['ark-code-latest'],
+      lastError: null,
+    },
+  ]);
+  const first = readFirstModelRaw(file);
+  assert.equal(first.reasoning, true, '缺省不触碰 reasoning');
+  assert.deepEqual(first.thinkingLevelMap, { high: 'custom' }, '缺省保留手工 thinkingLevelMap');
+});
+
+test('readProviders：reasoning=true 时按 pi 语义推导 thinkingLevels（null 隐藏；xhigh/max 缺省不可用）', async () => {
+  // 显式 map：off/medium/max 非 null；minimal/low/high 缺省项按 pi 语义仍可用（缺省=可用）
+  const fileFull = makePiFile({
+    providers: {
+      full: {
+        api: 'openai-completions',
+        models: [{ id: 'm', reasoning: true, thinkingLevelMap: { off: 'off', medium: 'medium', max: 'max' } }],
+      },
+    },
+  });
+  const full = await new PiModelsFileAdapter(fileFull).readProviders();
+  assert.equal(full[0]?.reasoning, true);
+  assert.deepEqual(full[0]?.thinkingLevels, ['off', 'minimal', 'low', 'medium', 'high', 'max']);
+
+  // 缺省 map：off/minimal/low/medium/high 可用（pi 缺省），xhigh/max 缺省不可用
+  const fileDefault = makePiFile({
+    providers: {
+      def: { api: 'openai-completions', models: [{ id: 'm', reasoning: true }] },
+    },
+  });
+  const def = await new PiModelsFileAdapter(fileDefault).readProviders();
+  assert.equal(def[0]?.reasoning, true);
+  assert.deepEqual(def[0]?.thinkingLevels, ['off', 'minimal', 'low', 'medium', 'high']);
+
+  // 未启用思考：不回显 thinkingLevels，reasoning=false
+  const filePlain = makePiFile({
+    providers: { plain: { api: 'openai-completions', models: [{ id: 'm' }] } },
+  });
+  const plain = await new PiModelsFileAdapter(filePlain).readProviders();
+  assert.equal(plain[0]?.reasoning, false);
+  assert.equal('thinkingLevels' in (plain[0] ?? {}), false);
+});
