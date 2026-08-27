@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import type { SessionStatus } from '../types';
+import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel } from '../types';
 import { call, type AttachmentFile } from '../bridge';
 
 /**
@@ -39,6 +39,18 @@ const inputBoxRef = ref<HTMLElement | null>(null);
 const attachRowRef = ref<HTMLElement | null>(null);
 const focused = ref(false);
 const modelMenuOpen = ref(false);
+
+// ===== MP-S05：思考级别切换器（模型选择旁紧凑下拉；非推理模型隐藏入口） =====
+/** 当前模型可用级别（来自 model/getModelThinkingLevels；仅 ["off"] 时隐藏切换器） */
+const availableLevels = ref<ThinkingLevel[]>([]);
+/** 会话当前生效思考级别（来自 model/getSessionThinkingLevel） */
+const currentLevel = ref<ThinkingLevel | null>(null);
+const levelMenuOpen = ref(false);
+/** max 金色流光动画开关（纯视觉，不影响输入） */
+const shimmerOn = ref(false);
+let shimmerTimer: ReturnType<typeof setTimeout> | null = null;
+/** 会话/模型切换竞态代际编号：只应用最新一次查询响应，避免交错覆盖 */
+let tlGen = 0;
 
 const isStreaming = computed(() => props.sessionStatus === 'streaming');
 const canSend = computed(() => (text.value.trim().length > 0 || attachments.value.length > 0) && !isStreaming.value);
@@ -333,11 +345,84 @@ function selectModel(m: string): void {
   if (m !== props.currentModel) onModelChange(m);
 }
 
-/** 点击浮窗外部关闭（对齐原型 document click + closest 机制） */
+// ===== MP-S05：加载并切换思考级别 =====
+/**
+ * 加载当前会话的思考级别状态：
+ * - model/getModelThinkingLevels 得可用级别（失败 → 隐藏切换器，降级不阻塞输入）
+ * - model/getSessionThinkingLevel 得当前生效级别（失败仅降级回显，不隐藏切换器）
+ * 仅当 sessionId 与 currentModel 都存在时才查询（缺少任一回退空态）。
+ */
+async function loadThinkingState(): Promise<void> {
+  const gen = ++tlGen;
+  if (!props.sessionId || !props.currentModel) {
+    availableLevels.value = [];
+    currentLevel.value = null;
+    return;
+  }
+  try {
+    const res = await call<ModelThinkingLevels>('model/getModelThinkingLevels', {
+      model: props.currentModel,
+    });
+    if (gen !== tlGen) return;
+    availableLevels.value = res.levels ?? [];
+  } catch (e) {
+    if (gen !== tlGen) return;
+    console.warn('[thinkingLevel] 查询可用级别失败，隐藏切换器', e);
+    availableLevels.value = [];
+    currentLevel.value = null;
+    return;
+  }
+  try {
+    const res = await call<SessionThinkingLevel>('model/getSessionThinkingLevel', {
+      sessionId: props.sessionId,
+    });
+    if (gen !== tlGen) return;
+    currentLevel.value = res.level ?? null;
+  } catch (e) {
+    if (gen !== tlGen) return;
+    console.warn('[thinkingLevel] 查询当前思考级别失败（降级回显）', e);
+    currentLevel.value = null;
+  }
+}
+
+function toggleLevelMenu(): void {
+  levelMenuOpen.value = !levelMenuOpen.value;
+}
+
+/** 触发输入框 max 动画（仅 MAX 浮现→停留→淡出，全程约 2.8s 后自移除，重入时重启动画） */
+function triggerShimmer(): void {
+  if (shimmerTimer) clearTimeout(shimmerTimer);
+  shimmerOn.value = false;
+  // 同一帧后再挂载，确保 CSS 动画能重新启动
+  requestAnimationFrame(() => {
+    shimmerOn.value = true;
+    shimmerTimer = setTimeout(() => {
+      shimmerOn.value = false;
+    }, 2900);
+  });
+}
+
+/** 选择思考级别：乐观更新本地 + 写当前会话（同步全局默认由后端处理）；切换 max 触发金色流光动画 */
+function selectLevel(level: ThinkingLevel): void {
+  levelMenuOpen.value = false;
+  const prev = currentLevel.value;
+  if (level === prev) return;
+  currentLevel.value = level; // 乐观更新，不弹 toast
+  if (level === 'max') triggerShimmer();
+  if (!props.sessionId) return;
+  call('model/setSessionThinkingLevel', { sessionId: props.sessionId, level }).catch((e) => {
+    console.warn('[thinkingLevel] 切换思考级别失败（静默降级）', e);
+  });
+}
+
+/** 点击浮窗外部关闭模型菜单 */
 function onDocClick(e: MouseEvent): void {
   const el = e.target as HTMLElement | null;
-  if (el && typeof el.closest === 'function' && el.closest('.model-wrap')) return;
+  const inModel = el && typeof el.closest === 'function' && el.closest('.model-wrap');
+  const inLevel = el && typeof el.closest === 'function' && el.closest('.level-wrap');
+  if (inModel || inLevel) return;
   modelMenuOpen.value = false;
+  levelMenuOpen.value = false;
 }
 
 function focus(): void {
@@ -350,12 +435,14 @@ onMounted(() => {
   nextTick(autoGrow);
   document.addEventListener('click', onDocClick);
   if (props.sessionId) void refreshUsage();
+  void loadThinkingState();
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   if (compactResultTimer) clearTimeout(compactResultTimer);
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
+  if (shimmerTimer) clearTimeout(shimmerTimer);
 });
 
 // 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）
@@ -378,6 +465,15 @@ watch(
     if (props.sessionId) void refreshUsage();
   },
 );
+
+// 会话 / 当前模型变化时重新加载思考级别状态（MP-S05）
+watch(
+  () => [props.currentModel, props.sessionId] as const,
+  () => {
+    levelMenuOpen.value = false;
+    void loadThinkingState();
+  },
+);
 </script>
 
 <template>
@@ -397,6 +493,10 @@ watch(
       @pointermove="onResizeMove"
       @pointerup="onResizeUp"
     ></div>
+    <!-- max 思考级别动画（仅 "M A X" 底部浮现 → 停留 → 淡出；纯视觉层 pointer-events:none 不阻塞输入） -->
+    <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
+      <span class="max-text">M A X</span>
+    </div>
     <!-- 附件待发区（P3-B：选择/粘贴/拖入后展示，可移除） -->
     <div ref="attachRowRef" class="attach-row">
       <div v-for="(att, i) in attachments" :key="att.path + i" class="attach-chip">
@@ -481,6 +581,32 @@ watch(
               @click="selectModel(m)"
             >
               {{ m }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 思考级别：模型选择旁紧凑切换器（仅可用级别 > off 时显示，MP-S05） -->
+        <div v-if="availableLevels.length > 1" class="level-wrap">
+          <button
+            class="meta-link"
+            :class="{ 'is-max': currentLevel === 'max' }"
+            type="button"
+            data-tooltip="思考级别 · 点击切换"
+            @click.stop="toggleLevelMenu"
+          >
+            <span>{{ currentLevel ?? 'off' }}</span>
+          </button>
+          <div v-if="levelMenuOpen" class="level-menu">
+            <div class="menu-hint">思考级别 · 下一轮生效</div>
+            <button
+              v-for="lv in availableLevels"
+              :key="lv"
+              class="menu-item"
+              :class="{ active: lv === currentLevel }"
+              type="button"
+              @click="selectLevel(lv)"
+            >
+              {{ lv }}
             </button>
           </div>
         </div>
@@ -789,6 +915,81 @@ watch(
 @keyframes menu-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 思考级别切换器（MP-S05）：紧凑胶囊，紧邻模型选择，弹层样式对齐 .model-menu */
+.level-wrap {
+  position: relative;
+}
+
+.level-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  min-width: 150px;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  z-index: 700;
+  animation: menu-rise 0.15s ease both;
+}
+
+/* 思考级别胶囊：默认前景色（黑）；当前级别为 max 时金黄色，与 MAX 动画文字同色，提示已启用最强推理 */
+.level-wrap .meta-link {
+  color: var(--foreground);
+}
+.level-wrap .meta-link.is-max {
+  color: var(--logo-gradient-accent);
+}
+
+/* max 动画：仅 "M A X" 文字浮现→停留→淡出；容器只负责裁剪与隔离 */
+.max-shimmer {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* "M A X" 文字：底部居中浮现，LOGO 同款金色渐变流动 + 金色光晕（等宽字体贴近 cli 终端质感） */
+.max-text {
+  position: absolute;
+  left: 50%;
+  bottom: 15px;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  background: linear-gradient(90deg,
+    var(--logo-gradient-base) 0%,
+    var(--logo-gradient-accent) 30%,
+    color-mix(in srgb, var(--logo-gradient-accent) 55%, white) 50%,
+    var(--logo-gradient-accent) 70%,
+    var(--logo-gradient-base) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--logo-gradient-accent) 45%, transparent));
+  animation: max-text-flow 2.4s linear infinite, max-in 0.45s ease-out 0.1s both, max-out 0.6s ease 2.2s both;
+}
+@keyframes max-text-flow {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+@keyframes max-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@keyframes max-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 .compose-actions {
