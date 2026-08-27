@@ -484,3 +484,91 @@ test('readProviders：reasoning=true 时按 pi 语义推导 thinkingLevels（nul
   assert.equal(plain[0]?.reasoning, false);
   assert.equal('thinkingLevels' in (plain[0] ?? {}), false);
 });
+
+// ===== 火山方舟（volces.com）自动补 compat =====
+
+const VOLC_COMPAT = {
+  thinkingFormat: 'deepseek',
+  supportsDeveloperRole: false,
+  maxTokensField: 'max_tokens',
+  requiresReasoningContentOnAssistantMessages: true,
+};
+
+function readProviderRaw(file: string, id: string): { models?: Array<Record<string, unknown>> } {
+  const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+    providers: Record<string, { models?: Array<Record<string, unknown>> }>;
+  };
+  return raw.providers[id] ?? {};
+}
+
+test('writeProviders：火山地址（volces.com）自动为无 compat 的模型补默认块；非火山地址不注入', async () => {
+  const file = makePiFile({
+    providers: {
+      huo_shan: {
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+        api: 'openai-completions',
+        apiKey: 'sk-secret',
+        models: [{ id: 'glm-5.3', contextWindow: 1000000, reasoning: true }],
+      },
+      other: {
+        baseUrl: 'https://xuseny.online/v1',
+        api: 'openai-completions',
+        models: [{ id: 'grok-4.5' }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  await adapter.writeProviders([
+    {
+      id: 'huo_shan',
+      name: 'huo_shan',
+      type: 'openai-completions',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+      models: ['glm-5.3'],
+      lastError: null,
+    },
+    {
+      id: 'other',
+      name: 'other',
+      type: 'openai-completions',
+      baseUrl: 'https://xuseny.online/v1',
+      models: ['grok-4.5'],
+      lastError: null,
+    },
+  ]);
+
+  const huoModel = readProviderRaw(file, 'huo_shan').models?.[0];
+  assert.deepEqual(huoModel?.compat, VOLC_COMPAT, '火山模型应自动补默认 compat');
+  assert.equal(huoModel?.contextWindow, 1000000, '原有附加字段应保留');
+
+  const otherModel = readProviderRaw(file, 'other').models?.[0];
+  assert.equal('compat' in (otherModel ?? {}), false, '非火山地址不应注入 compat');
+});
+
+test('writeProviders：火山地址但模型已有 compat 保留原值不覆盖', async () => {
+  const file = makePiFile({
+    providers: {
+      huo_shan: {
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+        api: 'openai-completions',
+        models: [{ id: 'glm-5.3', compat: { thinkingFormat: 'zai' } }],
+      },
+    },
+  });
+  const adapter = new PiModelsFileAdapter(file);
+
+  await adapter.writeProviders([
+    {
+      id: 'huo_shan',
+      name: 'huo_shan',
+      type: 'openai-completions',
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+      models: ['glm-5.3'],
+      lastError: null,
+    },
+  ]);
+
+  const model = readProviderRaw(file, 'huo_shan').models?.[0];
+  assert.deepEqual(model?.compat, { thinkingFormat: 'zai' }, '手配 compat 应保留');
+});

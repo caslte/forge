@@ -96,6 +96,7 @@ forge 对接 pi 的 provider / model 系统。pi 通过 `~/.pi/agent/models.json
   - 表单填：provider 类型（OpenAI / Anthropic / OpenRouter / 自定义）、baseUrl（默认官方，可改代理）、apiKey、models 列表。
   - forge 生成/更新 pi models.json，`apiKey` 明文写入 `providers.<id>.apiKey`（与 pi 原生一致，v1 临时）。
   - 复用 pi models.json，不自造（TD-MP-03）。
+  - 保存时按地址自动兼容：`baseUrl` 为火山方舟地址（含 `volces.com`）时，自动为缺 `compat` 的模型补默认兼容块（`thinkingFormat: deepseek` / `supportsDeveloperRole: false` / `maxTokensField: max_tokens` / `requiresReasoningContentOnAssistantMessages: true`，适配火山 OpenAI 兼容接口的 developer role / max_completion_tokens / reasoning_content 回传差异）；已有手配 `compat` 保留不覆盖，非火山地址不注入。
 - **业务数据**：provider 配置（models.json providers 段，含明文 apiKey）。
 - **交互与反馈**：设置页表单填写 -> 保存 -> 写 models.json（明文） -> 提示成功。
 - **权限边界**：v1 明文为临时方案，密钥随文件明文存储。
@@ -112,6 +113,7 @@ forge 对接 pi 的 provider / model 系统。pi 通过 `~/.pi/agent/models.json
 | AC-MP-002 | apiKey 以明文存入 models.json（v1 临时，与 pi 原生一致） | unit | 功能 | 持久化 | 配置含 key |
 | AC-MP-003 | baseUrl 格式无效或 apiKey 为空时校验提示，不保存 | unit | 边界 | 输入校验 | 无效输入 |
 | AC-MP-004 | （已废弃，v1 不涉及 keychain 降级） | - | - | - | - |
+| AC-MP-028 | 保存 baseUrl 为火山方舟地址（含 volces.com）的 provider 时，缺 compat 的模型记录自动补默认兼容块；已有手配 compat 保留原值，非火山地址不注入 | unit | 边界 | 持久化 | 火山/非火山地址、有/无 compat |
 
 #### 功能点：MP-S02 模型选择
 

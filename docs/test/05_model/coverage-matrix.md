@@ -62,6 +62,7 @@
 | AC-MP-025 | MP-S07 思考等级配置 | 状态 | 正常：编辑回显 | P1 | 是 | U-MP-010 | - | E-MP-009 | 回显 reasoning 勾选态与白名单挡位（pi 语义推导） | pi 语义：null 隐藏/xhigh·max 缺省不可用 |
 | AC-MP-026 | MP-S07 思考等级配置 | 边界 | 异常：非法输入拒绝 | P1 | 是 | U-MP-011 | A-MP-018 | - | reasoning 非布尔/白名单非法/重复 → 1001，不写文件 | 去重后写入 |
 | AC-MP-027 | MP-S07 思考等级配置 | 跨模块协作 | 正常：对话框可选挡位与白名单一致 | P0 | 是 | - | - | E-MP-009 | 保存后切换器可选级与白名单一致，未选挡位不再出现 | 真实 pi 集成 |
+| AC-MP-028 | MP-S01 火山地址自动补 compat | 持久化 | 边界：地址判定与兼容注入 | P1 | 是 | U-MP-012/013 | - | - | volces.com 无 compat 模型补默认块；有 compat 保留；非火山不注入 | 与 pi 火山实例对齐 |
 
 ---
 
@@ -84,6 +85,8 @@
 | U-MP-009 | AC-MP-023/026 | saveProvider reasoning/thinkingLevels 透传与校验 | 字段边界 | - | reasoning=true/false/非法、thinkingLevels=合法/非法/重复/null/缺省 | 保存 | 合法透传记录；非法 1001 不写；null 透传移除；缺省不携带字段 | 非法值不写文件；缺省不覆盖原值 |
 | U-MP-010 | AC-MP-025 | 白名单推导（pi 语义回显） | 状态 | 存量 thinkingLevelMap 全量/缺省/部分 null | readProviders | 读取 | reasoning=true 时按 pi 语义推导白名单（null 隐藏、xhigh/max 缺省不可用）；reasoning=false 不返回 | 顺序固定 |
 | U-MP-011 | AC-MP-026 | buildThinkingLevelMap 纯函数 | 字段边界 | - | 全选/部分选/空选 | 构建 | 全量 7 项：选中=级别名，未选=null | 确定性一致 |
+| U-MP-012 | AC-MP-028 | writeProviders 火山地址自动补 compat | 持久化 | provider.baseUrl 含 volces.com | 无 compat 的模型 / 非火山 provider | 保存 | 火山模型自动写默认 compat 块（保留其他附加字段）；非火山不注入 | 非火山模型不出现 compat |
+| U-MP-013 | AC-MP-028 | writeProviders 已有 compat 保留 | 一致性 | 火山模型已手配 compat（如 thinkingFormat: zai） | 再次保存 | 保存 | 手配 compat 原值保留，不被默认块覆盖 | 默认块不吞用户配置 |
 
 ### api（IPC+models.json 对接）
 

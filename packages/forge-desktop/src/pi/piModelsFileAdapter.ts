@@ -46,6 +46,14 @@ interface PiModelRecord {
   [k: string]: unknown;
 }
 
+/** 火山方舟默认 compat（OpenAI 兼容接口差异补齐，DeepSeek 系模型） */
+const VOLCENGINE_DEFAULT_COMPAT = {
+  thinkingFormat: 'deepseek',
+  supportsDeveloperRole: false,
+  maxTokensField: 'max_tokens',
+  requiresReasoningContentOnAssistantMessages: true,
+};
+
 /** pi provider 记录（apiKey 可为 !command / $ENV_VAR / 明文引用） */
 interface PiProviderRecord {
   baseUrl?: string;
@@ -198,6 +206,19 @@ export class PiModelsFileAdapter {
         const prev = prevModels.find((m) => m.id === id);
         return { ...(prev ?? {}), id };
       });
+      // 火山方舟（volces.com）OpenAI 兼容接口不认 pi 默认的 OpenAI 标准写法
+      // （developer role / max_completion_tokens / 多轮缺 reasoning_content 回传），
+      // 保存时自动为缺 compat 的模型补默认块；已手配的保留不覆盖。
+      const isVolcengine =
+        p.baseUrl !== null && p.baseUrl.toLowerCase().includes('volces.com');
+      if (isVolcengine) {
+        for (let i = 0; i < nextModels.length; i++) {
+          const m = nextModels[i];
+          if (m !== undefined && m.compat === undefined) {
+            nextModels[i] = { ...m, compat: { ...VOLCENGINE_DEFAULT_COMPAT } };
+          }
+        }
+      }
       // MP-S06：contextWindow 仅作用于首个模型记录——
       // number -> 写该值；null -> 移除该字段；undefined -> 不触碰（保留原值）。
       // 其余 pi 字段（reasoning/thinkingLevelMap/compat 等）一律保留不覆盖。

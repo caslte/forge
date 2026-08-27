@@ -69,6 +69,19 @@
 
 响应：`data: null`（成功后承诺事件见 §6）。
 
+**落盘附加行为**：写回时若 `baseUrl` 为火山方舟地址（域名含 `volces.com`，如 `https://ark.cn-beijing.volces.com/api/coding/v3`），自动为**没有 `compat`** 的模型记录补充默认兼容块：
+
+```json
+{
+  "thinkingFormat": "deepseek",
+  "supportsDeveloperRole": false,
+  "maxTokensField": "max_tokens",
+  "requiresReasoningContentOnAssistantMessages": true
+}
+```
+
+原因：火山 OpenAI 兼容接口不认 pi 默认的 `developer` role / `max_completion_tokens`，且 DeepSeek 系模型多轮对话必须回传 `reasoning_content`。已有手配 `compat` 的模型保留原值不覆盖；非火山地址不注入。
+
 ---
 
 ## 3. 删除 Provider
