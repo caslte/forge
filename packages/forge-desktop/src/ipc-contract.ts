@@ -33,6 +33,8 @@ export type ForgeMethod =
   | 'conversation/sendMessage'
   | 'conversation/cancelStream'
   | 'conversation/queryHistory'
+  | 'conversation/getContextUsage'
+  | 'conversation/compact'
   // tool（04）
   | 'tool/queryToolEvents'
   // model（05）
@@ -52,6 +54,7 @@ export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
 
 /** preload ↔ main 原生对话框通道 */
 export const IPC_DIALOG_OPEN_DIRECTORY = 'forge:dialog:openDirectory';
+export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 
 /** 全部事件名（与 forge-core 各 Api events.emit 的 channel 一致） */
 export type ForgeEvent =
@@ -118,13 +121,20 @@ export interface ForgeBridge {
   dialog: ForgeDialog;
 }
 
-/** window.forge.dialog 原生对话框能力 */
+/**
+ * window.forge.dialog 原生对话框能力
+ */
 export interface ForgeDialog {
   /**
    * 打开系统目录选择框。
    * @returns 用户选中的目录绝对路径；取消/失败返回 null。
    */
   selectDirectory(): Promise<string | null>;
+  /**
+   * 打开系统文件选择框（多选，图片 + 文本过滤，P3-B 附件）。
+   * @returns 附件载荷数组：图片含 base64 data + mimeType，文本含 utf8 content；取消返回空数组。
+   */
+  selectFiles(): Promise<Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }>>;
 }
 
 /** IPC invoke 的返回信封（透传 forge-core RpcResult） */

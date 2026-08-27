@@ -85,6 +85,8 @@ export class ConversationApi {
       'conversation/sendMessage': (params) => this.sendMessage(params),
       'conversation/cancelStream': (params) => this.cancelStream(params),
       'conversation/queryHistory': (params) => this.queryHistory(params),
+      'conversation/getContextUsage': (params) => this.getContextUsage(params),
+      'conversation/compact': (params) => this.compact(params),
     };
   }
 
@@ -120,7 +122,41 @@ export class ConversationApi {
     if (content === null) {
       return fail(1001, '参数错误：content 必须为非空字符串');
     }
-    const result = await this.call('sendMessage', () => this.service.sendMessage(sessionId, content));
+    const options: Record<string, unknown> = {};
+    if (typeof params === 'object' && params !== null && 'projectPath' in params) {
+      const projectPath = (params as { projectPath?: unknown }).projectPath;
+      if (typeof projectPath === 'string' && projectPath.trim() !== '') {
+        options.cwd = projectPath;
+      }
+    }
+    if (typeof params === 'object' && params !== null && 'model' in params) {
+      const model = (params as { model?: unknown }).model;
+      if (typeof model === 'string' && model.trim() !== '') {
+        options.model = model;
+      }
+    }
+    // P3-B：附件透传（图片/文本，由 adapter 转 pi image content / 受控 prompt 片段）
+    if (typeof params === 'object' && params !== null && Array.isArray((params as { attachments?: unknown }).attachments)) {
+      options.attachments = (params as { attachments?: unknown }).attachments;
+    }
+    // 文本附件转受控 prompt 片段：追加到内容末尾，由 adapter 透传图片，文本随消息进入上下文
+    const attachments = Array.isArray(options.attachments) ? (options.attachments as Array<{ kind?: string; name?: string; content?: string }>) : [];
+    const textParts = attachments.filter((a) => a.kind === 'text' && typeof a.content === 'string');
+
+    const result = await this.call('sendMessage', () =>
+      this.service.sendMessage(
+        sessionId,
+        // 文本附件以受控片段拼入消息（P3-B）：
+        // [附件：<name>]
+        // <content> …
+        textParts.length > 0
+          ? `${content}\n\n${textParts
+              .map((a) => `[附件：${a.name ?? 'file'}]\n${a.content ?? ''}`)
+              .join('\n\n')}`
+          : content,
+        options,
+      ),
+    );
     if (result.code === 0) {
       this.pushStatus(sessionId, this.service.getStatus(sessionId));
     }
@@ -143,6 +179,24 @@ export class ConversationApi {
       return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
     }
     return this.call('queryHistory', () => this.service.queryHistory(sessionId));
+  }
+
+  /** conversation/getContextUsage：查询上下文用量（P3-A，CV-S06） */
+  private getContextUsage(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+    }
+    return this.call('getContextUsage', () => this.service.getContextUsage(sessionId));
+  }
+
+  /** conversation/compact：手动压缩上下文（P3-A，CV-S07） */
+  private compact(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+    }
+    return this.call('compact', () => this.service.compact(sessionId));
   }
 
   /**

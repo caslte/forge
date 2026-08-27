@@ -15,6 +15,7 @@ export { ProjectService } from './project/projectService.ts';
 export type {
   TrustDecision,
   TrustPrompt,
+  TrustStorePort,
   ProjectResult,
   OpenProjectResult,
 } from './project/projectService.ts';
@@ -43,6 +44,7 @@ export type {
   ConversationRole,
   ConversationMessage,
   ConversationDelta,
+  ConversationAttachment,
   PiConversationAdapter,
   StreamState,
   ConversationStatusOptions,
@@ -70,6 +72,25 @@ export type {
 // 工具事件 RPC 方法层（wu-04-rpc）
 export { ToolApi, createToolApi } from './rpc/toolMethods.ts';
 export type { ToolDescriptor, ToolResult, ToolErrorInfo, ToolEmitResult } from './rpc/toolMethods.ts';
+
+// edit 工具并排 Diff 行生成（P1-B）
+export { buildSideBySideDiff } from './tool/sideBySideDiff.ts';
+export type { SideBySideRow, SideBySideCell } from './tool/sideBySideDiff.ts';
+
+// 安全 Markdown 渲染（P2-B）
+export { renderMarkdown, renderMarkdownPartial, looksLikeMermaid } from './markdown/renderMarkdown.ts';
+
+// 多窗口画布几何（P3-C）
+export {
+  detectSnapZone,
+  snapRectFor,
+  arrangeAutoLayout,
+  clampWindowBounds,
+  MW_GAP,
+  MW_MIN_W,
+  MW_MIN_H,
+} from './multiwin/windowLayout.ts';
+export type { SnapZone, SnapRect, AutoWin } from './multiwin/windowLayout.ts';
 
 // 模型与 Provider 配置服务（wu-05-model-service）
 export { ModelService } from './model/modelService.ts';

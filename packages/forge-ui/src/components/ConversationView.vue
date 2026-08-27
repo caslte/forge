@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
-import { call, subscribe } from '../bridge';
+import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { call, subscribe, type AttachmentFile } from '../bridge';
 import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, ToolEvent } from '../types';
 import MessageCard from './MessageCard.vue';
+import DiffView from './DiffView.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import InstructionInput from './InstructionInput.vue';
 
@@ -41,11 +42,106 @@ const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
 const toolEventIndex = new Map<string, number>();
 
+/** 工具组折叠状态：key 为组首条在 messages 中的起始索引 */
+const toolGroupCollapsed = reactive(new Map<number, boolean>());
+
 const isEmpty = computed(() => messages.value.length === 0 && !isStreaming.value && !loadingHistory.value);
+
+/** 分组后的展示项：连续 ≥2 的 tool 合为一组，其余单条透传 */
+type DisplayItem =
+  | { kind: 'message'; msg: ConversationMessage; idx: number }
+  | {
+      kind: 'tool-group';
+      startIndex: number;
+      tools: ConversationMessage[];
+      toolCounts: Array<{ name: string; count: number }>;
+      totalCount: number;
+      diffs: ToolDiff[];
+      collapsed: boolean;
+      lastSummary?: string;
+    };
+
+type ToolDiff = {
+  id: string;
+  filePath: string | null;
+  oldString: string | null;
+  newString: string | null;
+};
+
+function toToolDiff(message: ConversationMessage): ToolDiff | null {
+  const input = message.input;
+  if (!input || typeof input !== 'object') return null;
+  if (!('old_string' in input) && !('new_string' in input)) return null;
+  const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+  return {
+    id: message.toolEventId ?? `${message.ts}-${input.file_path ?? ''}`,
+    filePath: text(input.file_path),
+    oldString: text(input.old_string),
+    newString: text(input.new_string),
+  };
+}
+
+function groupDiffs(tools: ConversationMessage[]): ToolDiff[] {
+  return tools.flatMap((tool) => {
+    const diff = toToolDiff(tool);
+    return diff ? [diff] : [];
+  });
+}
+
+const displayItems = computed<DisplayItem[]>(() => {
+  const out: DisplayItem[] = [];
+  const msgs = messages.value;
+  let i = 0;
+  while (i < msgs.length) {
+    const cur = msgs[i]!;
+    if (cur.role !== 'tool') {
+      out.push({ kind: 'message', msg: cur, idx: i });
+      i += 1;
+    } else {
+      const start = i;
+      const tools: ConversationMessage[] = [];
+      while (i < msgs.length && msgs[i]!.role === 'tool') {
+        tools.push(msgs[i]!);
+        i += 1;
+      }
+      if (tools.length >= 2) {
+        const counts = new Map<string, number>();
+        for (const t of tools) counts.set(t.toolName ?? 'tool', (counts.get(t.toolName ?? 'tool') ?? 0) + 1);
+        const toolCounts = Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+        // 折叠状态只跟随用户操作；新增工具仅更新头部计数和外部 Diff。
+        const collapsed = toolGroupCollapsed.get(start) ?? true;
+        out.push({
+          kind: 'tool-group',
+          startIndex: start,
+          tools,
+          toolCounts,
+          totalCount: tools.length,
+          collapsed,
+          diffs: groupDiffs(tools),
+          lastSummary: tools[tools.length - 1]?.content || undefined,
+        });
+      } else {
+        for (let j = 0; j < tools.length; j += 1) out.push({ kind: 'message', msg: tools[j]!, idx: start + j });
+      }
+    }
+  }
+  return out;
+});
+
+function toggleGroup(startIndex: number): void {
+  const cur = toolGroupCollapsed.get(startIndex);
+  toolGroupCollapsed.set(startIndex, !(cur ?? true));
+}
 
 const sessionStatus = computed<SessionStatus>(() =>
   isStreaming.value ? 'streaming' : props.session.status,
 );
+
+const activeAssistantIndex = computed(() => messages.value.map((m) => m.role).lastIndexOf('assistant'));
+
+function isMessageStreaming(index: number): boolean {
+  return isStreaming.value && index === activeAssistantIndex.value;
+}
 
 /** 加载历史消息 */
 async function loadHistory(): Promise<void> {
@@ -59,6 +155,7 @@ async function loadHistory(): Promise<void> {
     if (inputSessionId === props.sessionId) {
       messages.value = res.messages ?? [];
       toolEventIndex.clear();
+      toolGroupCollapsed.clear();
       // 重建工具事件索引
       messages.value.forEach((m, i) => {
         if (m.role === 'tool' && m.toolEventId) {
@@ -82,6 +179,7 @@ function resetForSession(sid: string): void {
   inputSessionId = sid;
   messages.value = [];
   toolEventIndex.clear();
+  toolGroupCollapsed.clear();
   isStreaming.value = false;
   errorMsg.value = null;
 }
@@ -93,18 +191,31 @@ function scrollToBottom(): void {
   el.scrollTop = el.scrollHeight;
 }
 
-/** 发送消息：本地追加 user 消息 + 调后端 */
-async function onSend(text: string): Promise<void> {
+/** 发送消息：本地追加 user 消息 + 调后端（P3-B：携带附件；图片同步进本地消息流展示） */
+async function onSend(text: string, attachments?: AttachmentFile[]): Promise<void> {
   errorMsg.value = null;
+  // 图片附件进本地消息（实时显示；历史回显由 loadPiSessionHistory 解析 JSONL）
+  const images = (attachments ?? [])
+    .filter((a) => a.kind === 'image' && typeof a.data === 'string')
+    .map((a) => ({ data: a.data as string, mimeType: a.mimeType ?? 'image/png' }));
   messages.value.push({
     role: 'user',
     content: text,
     ts: new Date().toISOString(),
+    images: images.length > 0 ? images : undefined,
   });
   isStreaming.value = true;
   nextTick(scrollToBottom);
   try {
-    await call('conversation/sendMessage', { sessionId: props.sessionId, content: text });
+    const params: Record<string, unknown> = { sessionId: props.sessionId, content: text };
+    if (attachments && attachments.length > 0) {
+      params.attachments = attachments.map((a) =>
+        a.kind === 'image'
+          ? { kind: 'image', name: a.name, mimeType: a.mimeType, data: a.data }
+          : { kind: 'text', name: a.name, content: a.content },
+      );
+    }
+    await call('conversation/sendMessage', params);
   } catch (e) {
     isStreaming.value = false;
     errorMsg.value = e instanceof Error ? e.message : String(e);
@@ -141,21 +252,32 @@ function showSwitchBanner(model: string): void {
 function onConversationMessage(payload: unknown): void {
   const p = payload as { sessionId: string; message: ConversationMessage };
   if (p.sessionId !== props.sessionId) return;
+  // 流式阶段已通过 delta 构建了一条 assistant 占位消息，最终 message 到达时以其为权威内容覆盖，
+  // 避免“delta 累积 + 完整消息再推一条”成双
+  const last = messages.value[messages.value.length - 1];
+  if (last && last.role === 'assistant') {
+    last.content = p.message.content;
+    last.ts = p.message.ts ?? last.ts;
+    nextTick(scrollToBottom);
+    return;
+  }
   messages.value.push(p.message);
   nextTick(scrollToBottom);
 }
 
 function onConversationDelta(payload: unknown): void {
-  const p = payload as { sessionId: string; delta: string };
+  // 契约：delta 为 { text, kind: 'text' }（docs/api/03_conversation.md §3）
+  const p = payload as { sessionId: string; delta: { text?: string } | string };
   if (p.sessionId !== props.sessionId) return;
+  const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
   // 流式追加到最后一条 assistant 消息；无则新建
   const last = messages.value[messages.value.length - 1];
   if (last && last.role === 'assistant') {
-    last.content += p.delta;
+    last.content += text;
   } else {
     messages.value.push({
       role: 'assistant',
-      content: p.delta,
+      content: text,
       ts: new Date().toISOString(),
     });
   }
@@ -180,7 +302,12 @@ function onConversationError(payload: unknown): void {
 }
 
 function onToolStarted(payload: unknown): void {
-  const p = payload as { toolEventId: string; sessionId?: string; toolName?: string; summary?: string };
+  const p = payload as {
+    toolEventId: string;
+    sessionId?: string;
+    tool?: { name?: string; input?: Record<string, unknown> };
+    toolName?: string;
+  };
   // tool 事件可能不带 sessionId（按 ToolDescriptor 结构），保守处理：若无 sessionId 则归当前会话
   if (p.sessionId && p.sessionId !== props.sessionId) return;
   if (toolEventIndex.has(p.toolEventId)) return;
@@ -189,8 +316,9 @@ function onToolStarted(payload: unknown): void {
     content: '',
     ts: new Date().toISOString(),
     toolEventId: p.toolEventId,
-    toolName: p.toolName,
+    toolName: p.tool?.name ?? p.toolName,
     status: 'started',
+    input: p.tool?.input,
   };
   messages.value.push(msg);
   toolEventIndex.set(p.toolEventId, messages.value.length - 1);
@@ -198,26 +326,39 @@ function onToolStarted(payload: unknown): void {
 }
 
 function onToolCompleted(payload: unknown): void {
-  const p = payload as { toolEventId: string; sessionId?: string; summary?: string };
+  const p = payload as {
+    toolEventId: string;
+    sessionId?: string;
+    result?: { text: string | null };
+    summary?: string;
+  };
   if (p.sessionId && p.sessionId !== props.sessionId) return;
   const idx = toolEventIndex.get(p.toolEventId);
   if (idx === undefined) return;
   const msg = messages.value[idx];
   if (msg) {
     msg.status = 'completed';
-    if (p.summary) msg.content = p.summary;
+    const text = p.result?.text ?? p.summary;
+    if (text) msg.content = text;
   }
 }
 
 function onToolError(payload: unknown): void {
-  const p = payload as { toolEventId: string; sessionId?: string; summary?: string; message?: string };
+  const p = payload as {
+    toolEventId: string;
+    sessionId?: string;
+    error?: { message: string };
+    summary?: string;
+    message?: string;
+  };
   if (p.sessionId && p.sessionId !== props.sessionId) return;
   const idx = toolEventIndex.get(p.toolEventId);
   if (idx === undefined) return;
   const msg = messages.value[idx];
   if (msg) {
     msg.status = 'error';
-    if (p.summary || p.message) msg.content = p.summary ?? p.message ?? '';
+    const text = p.error?.message ?? p.summary ?? p.message;
+    if (text) msg.content = text;
   }
 }
 
@@ -229,11 +370,12 @@ function toToolEvent(m: ConversationMessage): ToolEvent {
     status: (m.status ?? 'started') as ToolEvent['status'],
     toolName: m.toolName,
     summary: m.content || undefined,
+    input: m.input,
   };
 }
 
 function isToolMessage(m: ConversationMessage): boolean {
-  return m.role === 'tool' && !!m.toolEventId;
+  return m.role === 'tool';
 }
 
 // 事件订阅句柄
@@ -291,22 +433,50 @@ watch(
           <h3 class="welcome-title">开始新的对话</h3>
         </div>
 
-        <!-- 消息流 -->
+        <!-- 消息流：连续 ≥2 的 tool 聚为可折叠组，文本出现即扎口 -->
         <template v-else>
-          <template v-for="(m, i) in messages" :key="m.id ?? (m.toolEventId ?? `msg-${i}-${m.ts}`)">
-            <ToolCallCard v-if="isToolMessage(m)" :event="toToolEvent(m)" />
-            <MessageCard
-              v-else
-              :message="m"
-              :streaming="isStreaming && i === messages.length - 1 && m.role === 'assistant'"
-            />
+          <template v-for="item in displayItems" :key="item.kind === 'message' ? (item.msg.id ?? item.msg.toolEventId ?? `msg-${item.idx}-${item.msg.ts}`) : `group-${item.startIndex}`">
+            <template v-if="item.kind === 'message'">
+              <ToolCallCard v-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" />
+              <MessageCard
+                v-else
+                :message="item.msg"
+                :streaming="isMessageStreaming(item.idx)"
+              />
+            </template>
+            <div v-else class="tool-group" :class="{ collapsed: item.collapsed }">
+              <button class="tool-group-head" @click="toggleGroup(item.startIndex)">
+                <svg class="tg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /><path d="M5 21l1.5-4.5" /></svg>
+                <span class="tg-label">工具调用</span>
+                <span class="tg-count">{{ item.totalCount }} 次</span>
+                <span class="tg-names">
+                  <span v-for="tc in item.toolCounts" :key="tc.name" class="tg-chip"><span class="tg-chip-name">{{ tc.name }}</span><span v-if="tc.count > 1" class="tg-chip-count">×{{ tc.count }}</span></span>
+                </span>
+                <span class="tg-collapse">{{ item.collapsed ? '▸' : '▾' }}</span>
+              </button>
+              <div class="tool-group-body-shell" :class="{ 'is-collapsed': item.collapsed }">
+                <div class="tool-group-body">
+                  <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" hide-diff />
+                </div>
+              </div>
+              <div v-if="item.diffs.length > 0" class="tool-group-diffs">
+                <DiffView
+                  v-for="diff in item.diffs"
+                  :key="diff.id"
+                  class="tool-group-diff"
+                  :file-path="diff.filePath"
+                  :old-string="diff.oldString"
+                  :new-string="diff.newString"
+                />
+              </div>
+            </div>
           </template>
-          <!-- 流式思考指示器（无 delta 时显示） -->
+          <!-- 流式思考指示器（无 delta 时显示）带 Codex 银色流光 -->
           <div v-if="isStreaming && (messages.length === 0 || messages[messages.length - 1]?.role !== 'assistant')" class="conv-thinking">
             <span class="thinking-dot"></span>
             <span class="thinking-dot"></span>
             <span class="thinking-dot"></span>
-            <span class="thinking-text">助手正在思考</span>
+            <span class="thinking-text thinking-shimmer">助手正在思考</span>
           </div>
         </template>
 
@@ -332,6 +502,7 @@ watch(
     <div class="conv-input-wrap">
       <InstructionInput
         ref="inputRef"
+        :session-id="props.sessionId"
         :session-status="sessionStatus"
         :models="models"
         :current-model="currentModel"
@@ -359,7 +530,7 @@ watch(
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  padding: 18px 22px;
+  padding: 18px 38px;
   scroll-behavior: smooth;
 }
 
@@ -409,6 +580,65 @@ watch(
 .loading-text,
 .thinking-text {
   margin-left: 6px;
+}
+
+/* 工具组折叠（连续 ≥2 的 tool 聚为一组）复用 ai-coding tool-cluster 思路 */
+.tool-group {
+  border: none;
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--muted) 58%, transparent);
+  overflow: hidden;
+}
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  user-select: none;
+  text-align: left;
+}
+.tool-group-head:hover { background: var(--muted); }
+.tg-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--muted-foreground); }
+.tg-label { font-weight: 600; color: var(--foreground); white-space: nowrap; }
+.tg-count { font-weight: 500; color: var(--muted-foreground); white-space: nowrap; }
+.tg-names { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; flex-wrap: nowrap; }
+.tg-chip { display: inline-flex; align-items: center; gap: 1px; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted) 55%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.tg-chip-count { font-weight: 600; color: var(--foreground); }
+.tg-collapse { flex-shrink: 0; color: var(--muted-foreground); font-size: 12px; }
+.tool-group-body-shell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 200ms cubic-bezier(0.4,0,0.2,1); overflow: hidden; }
+.tool-group-body-shell.is-collapsed { grid-template-rows: 0fr; }
+.tool-group-body { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 10px; transition: padding 200ms cubic-bezier(0.4,0,0.2,1), gap 200ms cubic-bezier(0.4,0,0.2,1); }
+.tool-group-body-shell.is-collapsed .tool-group-body { padding-top: 0; padding-bottom: 0; gap: 0; }
+.tool-group-diffs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 94%;
+}
+.tool-group-diff {
+  background: var(--card);
+}
+
+/* Codex 银色流光（ai-coding streaming-working 同款，银色版） */
+.thinking-shimmer {
+  display: inline-block;
+  font-weight: 500;
+  background: linear-gradient(90deg, #6b7280 0%, #f3f4f6 22%, #6b7280 42%, #e5e7eb 62%, #6b7280 82%, #ffffff 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+}
+@keyframes thinking-shimmer {
+  0% { background-position: 100% 0%; }
+  100% { background-position: 0% 0%; }
 }
 
 /* 空会话欢迎页：占满整个内容区可视高度并水平/垂直居中 */

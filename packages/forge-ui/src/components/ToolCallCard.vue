@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { ToolEvent } from '../types';
+import DiffView from './DiffView.vue';
 
 const props = defineProps<{
   event: ToolEvent;
+  hideDiff?: boolean;
 }>();
 
 const open = ref(false);
@@ -20,6 +22,34 @@ const statusLabel = computed(() => {
 });
 
 const toolLabel = computed(() => props.event.toolName ?? '工具');
+
+const toolSummaryLabel = computed(() => {
+  const input = props.event.input;
+  if (!input || typeof input !== 'object') return props.event.summary ?? '';
+  const candidates = ['file_path', 'path', 'command', 'url', 'query', 'pattern'];
+  for (const key of candidates) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.replace(/\s+/g, ' ').trim();
+    }
+  }
+  return props.event.summary ?? '';
+});
+
+/** edit 类工具：提取 file_path/old_string/new_string 三元组供并排 diff */
+const diffTriple = computed<{ filePath: string | null; oldString: string | null; newString: string | null } | null>(() => {
+  const input = props.event.input;
+  if (!input || typeof input !== 'object') return null;
+  const hasOld = 'old_string' in input;
+  const hasNew = 'new_string' in input;
+  if (!hasOld && !hasNew) return null;
+  const asText = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  return {
+    filePath: asText(input.file_path),
+    oldString: asText(input.old_string),
+    newString: asText(input.new_string),
+  };
+});
 </script>
 
 <template>
@@ -28,40 +58,37 @@ const toolLabel = computed(() => props.event.toolName ?? '工具');
       <svg class="tc-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="9 6 15 12 9 18" />
       </svg>
-      <span class="tc-title">{{ toolLabel }}</span>
+      <span class="tc-title">
+        {{ toolLabel }}
+        <span v-if="toolSummaryLabel" class="tc-summary">{{ toolSummaryLabel }}</span>
+      </span>
       <span class="tc-count">
         <span v-if="isRunning" class="mini-badge live">{{ statusLabel }}</span>
         <span v-else-if="isError" class="mini-badge danger">{{ statusLabel }}</span>
         <span v-else class="mini-badge success">{{ statusLabel }}</span>
       </span>
     </button>
-    <div v-if="event.summary" class="tool-item-body">
-      <pre class="tool-summary">{{ event.summary }}</pre>
+    <div v-if="(!hideDiff && diffTriple) || event.summary" class="tool-item-body">
+      <DiffView
+        v-if="!hideDiff && diffTriple"
+        :file-path="diffTriple.filePath"
+        :old-string="diffTriple.oldString"
+        :new-string="diffTriple.newString"
+      />
+      <pre v-if="event.summary" class="tool-summary">{{ event.summary }}</pre>
     </div>
   </div>
 </template>
 
 <style scoped>
 .tool-calls {
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 12px;
-  background: var(--card);
+  background: color-mix(in oklab, var(--muted) 58%, transparent);
   overflow: hidden;
   align-self: flex-start;
   max-width: 94%;
   min-width: 260px;
-}
-
-.tool-calls.tool-started {
-  border-color: color-mix(in oklab, var(--warning) 40%, var(--border));
-}
-
-.tool-calls.tool-error {
-  border-color: color-mix(in oklab, var(--destructive) 40%, var(--border));
-}
-
-.tool-calls.tool-completed {
-  border-color: color-mix(in oklab, var(--success) 30%, var(--border));
 }
 
 .tool-calls-head {
@@ -98,10 +125,20 @@ const toolLabel = computed(() => props.event.toolName ?? '工具');
   color: var(--foreground);
   font-family: var(--font-mono);
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   text-align: left;
+}
+
+.tc-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-foreground);
+  font-weight: 400;
 }
 
 .tc-count {

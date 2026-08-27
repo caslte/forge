@@ -23,6 +23,8 @@ export type ForgeMethod =
   | 'conversation/sendMessage'
   | 'conversation/cancelStream'
   | 'conversation/queryHistory'
+  | 'conversation/getContextUsage'
+  | 'conversation/compact'
   | 'tool/queryToolEvents'
   | 'model/queryProviderList'
   | 'model/saveProvider'
@@ -38,6 +40,7 @@ export type ForgeEvent =
   | 'project.removed'
   | 'session.statusChanged'
   | 'session.removed'
+  | 'session.updated'
   | 'conversation.statusChanged'
   | 'conversation.delta'
   | 'conversation.message'
@@ -66,7 +69,18 @@ export interface ForgeBridge {
   };
   dialog: {
     selectDirectory(): Promise<string | null>;
+    selectFiles(): Promise<AttachmentFile[]>;
   };
+}
+
+/** 附件文件（P3-B）：图片含 base64 data + mimeType，文本含 utf8 content */
+export interface AttachmentFile {
+  path: string;
+  name: string;
+  kind: 'image' | 'text';
+  mimeType?: string;
+  data?: string;
+  content?: string;
 }
 
 /**

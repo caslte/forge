@@ -23,7 +23,7 @@ test('按 forge 会话 ID 创建并恢复持久化 pi 会话', async () => {
     });
 
     assert.equal(first.session.sessionId, 'forge-forge-session-1');
-    const sessionFile = first.handle.sessionFile;
+    const sessionFile = (first as unknown as { handle?: PiSessionHandle }).handle?.sessionFile;
     assert.ok(sessionFile && fs.existsSync(sessionFile));
 
     const second = await createPiAgentSessionFactory({ agentDir })({
@@ -32,7 +32,63 @@ test('按 forge 会话 ID 创建并恢复持久化 pi 会话', async () => {
     });
 
     assert.equal(second.session.sessionId, 'forge-forge-session-1');
-    assert.equal(second.handle.sessionFile, sessionFile);
+    assert.equal((second as unknown as { handle?: PiSessionHandle }).handle?.sessionFile, sessionFile);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('工厂按 models.json 解析模型字符串并注入新会话', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-model-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+    const modelsPath = path.join(root, 'models.json');
+    fs.writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        providers: {
+          'Test Provider': {
+            baseUrl: 'https://example.com/v1',
+            api: 'openai-completions',
+            apiKey: 'sk-test',
+            models: [{ id: 'test-model', contextWindow: 128000, maxTokens: 8192 }],
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const lease = await createPiAgentSessionFactory({ agentDir, modelsPath })({
+      cwd: projectDir,
+      sessionId: 'forge-model-1',
+      model: 'test-model',
+    });
+
+    assert.equal(lease.session.model?.id, 'test-model', '新会话应使用目标模型');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('工厂解析不到模型时抛出稳定错误', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-model-miss-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+    const modelsPath = path.join(root, 'models.json');
+    fs.writeFileSync(modelsPath, JSON.stringify({ providers: {} }), 'utf8');
+
+    await assert.rejects(
+      createPiAgentSessionFactory({ agentDir, modelsPath })({
+        cwd: projectDir,
+        sessionId: 'forge-model-2',
+        model: 'ghost-model',
+      }),
+      /模型未配置或不可用: ghost-model/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -56,8 +112,8 @@ test('工厂可注入 PiConversationAdapter 并完成一次文本流映射', asy
     } catch (error) {
       assert.match(
         String(error),
-        /No API key found for the selected model/,
-        '无模型凭据时应由 pi 抛出可识别错误',
+        /模型凭据未配置/,
+        '无模型凭据时应抛出用户可读错误',
       );
       return;
     }

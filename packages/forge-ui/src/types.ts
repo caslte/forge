@@ -29,10 +29,14 @@ export interface ConversationMessage {
   content: string;
   ts: string;
   id?: string;
+  /** 消息附带图片（P3-B：用户粘贴截图/上传图片，base64 数据） */
+  images?: Array<{ data: string; mimeType: string }>;
   /** 工具调用附带（role=tool 时） */
   toolName?: string;
   toolEventId?: string;
   status?: 'started' | 'completed' | 'error';
+  /** 工具入参（edit 类含 file_path/old_string/new_string） */
+  input?: Record<string, unknown>;
 }
 
 export interface ToolEvent {
@@ -41,6 +45,8 @@ export interface ToolEvent {
   status: 'started' | 'completed' | 'error';
   toolName?: string;
   summary?: string;
+  /** 工具入参（edit 类含 file_path/old_string/new_string，供 DiffView 渲染） */
+  input?: Record<string, unknown>;
   [k: string]: unknown;
 }
 

@@ -8,3 +8,5 @@ dist/
 .DS_Store
 .sisyphus/run-continuation/
 docs/plan/
+test-results/
+playwright-report/

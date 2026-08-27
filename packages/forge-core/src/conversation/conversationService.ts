@@ -42,12 +42,14 @@ export type ConversationRole = 'user' | 'assistant' | 'tool';
  * @param content 消息内容（原始 markdown 字符串，渲染由前端白名单完成）
  * @param ts 时间戳（ISO8601，历史排序键）
  * @param id 可选消息 ID
+ * @param images 可选：消息附带图片（P3-B 用户粘贴截图，base64 数据，渲染由前端完成）
  */
 export interface ConversationMessage {
   role: ConversationRole;
   content: string;
   ts: string;
   id?: string;
+  images?: Array<{ data: string; mimeType: string }>;
 }
 
 /** 流式增量（docs/api/03_conversation.md §3 conversation.delta：kind=text） */
@@ -63,10 +65,29 @@ export interface ConversationDelta {
  * @param loadHistory 从 pi session JSONL 全量加载消息历史
  * @param cancelStream 停止当前处理，保留已生成内容
  */
+/** 附件类型：图片（转 pi image content）或文本（受控 prompt 片段，P3-B） */
+export type ConversationAttachment =
+  | { kind: 'image'; name: string; mimeType: string; data: string }
+  | { kind: 'text'; name: string; content: string };
+
+export type ConversationRuntimeOptions = {
+  sessionId?: string;
+  cwd?: string;
+  model?: string;
+  /** 附件列表（P3-B）：图片经 adapter 转 pi image content，文本拼入受控 prompt 片段 */
+  attachments?: ConversationAttachment[];
+};
+
 export interface PiConversationAdapter {
-  sendMessage(sessionId: string, content: string): Promise<void>;
+  sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void>;
   loadHistory(sessionId: string): Promise<ConversationMessage[]>;
   cancelStream(sessionId: string): Promise<void>;
+  /** 上下文用量查询（P3-A）；无数据返回 null */
+  getContextUsage?(
+    sessionId: string,
+  ): { tokens: number | null; contextWindow: number; percent: number | null } | null;
+  /** 手动压缩（P3-A） */
+  compact?(sessionId: string): Promise<{ ok: boolean; message?: string }>;
 }
 
 /** 会话流式状态（每会话内存态，含内存累积文本） */
@@ -86,12 +107,25 @@ export interface ConversationStatusOptions {
 export interface ConversationServiceOptions {
   /** 会话存在性校验（未注入则跳过校验） */
   sessionExists?: (sessionId: string) => boolean;
-  /** provider 就绪校验（未注入视为已配置） */
-  providerReady?: () => boolean;
+  /** 会话是否尚未设置别名（第一条用户消息的判定条件；未注入则跳过自动命名） */
+  sessionAliasMissing?: (sessionId: string) => boolean;
+  /** provider 就绪校验（未注入视为已配置）；支持异步（P2-D：真实 models 可用性检查） */
+  providerReady?: () => boolean | Promise<boolean>;
   /** 状态变化回调（rpc 层接到 conversation.statusChanged 事件） */
   onStatusChange?: (sessionId: string, status: ConversationStatus) => void;
   /** 流式增量回调（预留注入点；本 WU 无增量来源，rpc 层接线用） */
   onDelta?: (sessionId: string, delta: ConversationDelta) => void;
+  /** 发送前解析会话生效模型和项目 cwd（rpc 层透传给 pi runtime） */
+  resolveSendOptions?: (
+    sessionId: string,
+  ) => Promise<ConversationRuntimeOptions>;
+  /** 第一条用户消息发送后触发：基于首条问题自动设置会话别名 */
+  onFirstUserMessage?: (sessionId: string, firstUserContent: string) => void;
+}
+
+/** 提取异常消息（5000 错误联合用） */
+function toMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -127,7 +161,11 @@ export class ConversationService {
    * @returns 成功返回 null；消息为空 / 会话 ID 为空返回 1001；会话不存在返回 1002；
    *          provider 未配置返回 1004；adapter 异常向上抛出（rpc 层映射 5000）
    */
-  async sendMessage(sessionId: string, content: string): Promise<ConversationResult<null>> {
+  async sendMessage(
+    sessionId: string,
+    content: string,
+    runtimeOptions: ConversationRuntimeOptions = {},
+  ): Promise<ConversationResult<null>> {
     if (typeof content !== 'string' || content.trim() === '') {
       return { ok: false, code: 1001, message: '消息不能为空' };
     }
@@ -137,12 +175,31 @@ export class ConversationService {
     if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
       return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
     }
-    if (this.options.providerReady !== undefined && !this.options.providerReady()) {
-      return { ok: false, code: 1004, message: 'provider 未配置' };
+    if (this.options.providerReady !== undefined) {
+      const ready = await this.options.providerReady();
+      if (!ready) {
+        return { ok: false, code: 1004, message: 'provider 未配置' };
+      }
     }
-    await this.adapter.sendMessage(sessionId, content);
-    // 新流开始：清空上一轮累积文本
+    if (this.getStatus(sessionId) === 'streaming') {
+      return { ok: false, code: 1001, message: '正在流式响应，不能重复发送' };
+    }
+    const resolvedOptions =
+      this.options.resolveSendOptions !== undefined
+        ? { ...runtimeOptions, ...(await this.options.resolveSendOptions(sessionId)) }
+        : runtimeOptions;
+    // 首条用户消息自动命名：若会话别名缺失，基于问题内容生成会话名
+    if (
+      this.options.sessionAliasMissing !== undefined &&
+      this.options.onFirstUserMessage !== undefined &&
+      this.options.sessionAliasMissing(sessionId)
+    ) {
+      this.options.onFirstUserMessage(sessionId, content);
+    }
+    // 新流开始：发送前先进入 streaming（真实 pi 适配器 await 完整轮次，
+    // 完成后由事件接线驱动 done / error，不能在 await 之后覆盖状态）
     this.setStatus(sessionId, 'streaming', { lastDeltaText: undefined });
+    await this.adapter.sendMessage(sessionId, content, resolvedOptions);
     return { ok: true, data: null };
   }
 
@@ -198,6 +255,56 @@ export class ConversationService {
    */
   getStatus(sessionId: string): ConversationStatus {
     return this.streamStates.get(sessionId)?.status ?? 'idle';
+  }
+
+  /**
+   * 查询会话上下文用量（P3-A，CV-S06）：委托注入 adapter；适配器不支持时返回
+   * null 数据（UI 显示未知用量，不视为错误）。
+   * @param sessionId 会话 ID
+   * @returns { ok: true, data: usage|null }；会话不存在 1002；adapter 异常 5000
+   */
+  async getContextUsage(
+    sessionId: string,
+  ): Promise<ConversationResult<{ usage: { tokens: number | null; contextWindow: number; percent: number | null } | null }>> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    try {
+      const usage =
+        this.adapter.getContextUsage !== undefined
+          ? this.adapter.getContextUsage(sessionId)
+          : null;
+      return { ok: true, data: { usage } };
+    } catch (err) {
+      return { ok: false, code: 5000, message: `查询上下文用量失败: ${toMessage(err)}` };
+    }
+  }
+
+  /**
+   * 手动压缩上下文（P3-A，CV-S07）：委托注入 adapter；压缩失败返回明确信息且
+   * 不破坏会话历史。
+   * @param sessionId 会话 ID
+   * @returns { ok: true, data: { result } }；会话不存在 1002；adapter 异常 5000
+   */
+  async compact(sessionId: string): Promise<ConversationResult<{ result: { ok: boolean; message?: string } }>> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (this.adapter.compact === undefined) {
+      return { ok: true, data: { result: { ok: false, message: '当前环境不支持手动压缩' } } };
+    }
+    try {
+      const result = await this.adapter.compact(sessionId);
+      return { ok: true, data: { result } };
+    } catch (err) {
+      return { ok: false, code: 5000, message: `压缩失败: ${toMessage(err)}` };
+    }
   }
 
   /**

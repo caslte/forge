@@ -2,13 +2,28 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionItem } from '../types';
 import MultiWindowConversation from './MultiWindowConversation.vue';
+import {
+  detectSnapZone,
+  snapRectFor,
+  arrangeAutoLayout,
+  clampWindowBounds,
+  MW_GAP as G,
+  MW_MIN_W,
+  MW_MIN_H,
+  type SnapZone,
+} from '@forge/core/multiwin-layout';
 
 /**
  * 多窗口画布（应用内多窗口，对应 PRD 02 SM-S05，TD-SM-02 方案 A）。
  *
  * 在单个视图内用绝对定位窗口模拟多窗口：从左侧会话池（HTML5 drag）拖入开窗，
  * 窗口可拖动（拖标题栏）、边缘/四角吸附、关闭回池、4 窗格排布。会话输出在
- * forge-core，窗口只是观察口（附件逻辑留待，MVP 显示会话信息占位）。
+ * forge-core，窗口只是观察口。
+ *
+ * P3-C 打磨：
+ * - 布局持久化：窗口位置/尺寸/所属会话写 localStorage，重进/重启画布恢复
+ * - 会话删除自动关窗：外部 sessions 移除该会话时同步摘除窗口
+ * - 最小窗口尺寸：开窗/拖动/缩放 clamp，避免小画布下挤压动画变形
  */
 const props = defineProps<{
   /** 全部项目会话（会话池数据源） */
@@ -35,10 +50,77 @@ interface Win {
 
 const wins = ref<Win[]>([]);
 let zCounter = 10;
-/** 画布内边距（吸附/排布统一间距，对齐原型 G） */
-const G = 4;
 const canvasRef = ref<HTMLElement | null>(null);
 const snapPreview = ref<HTMLElement | null>(null);
+
+// ===== P3-C：布局持久化（localStorage） =====
+const LAYOUT_KEY = 'forge:multiwin:layout';
+
+interface PersistedWin {
+  sessionId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function saveLayout(): void {
+  try {
+    const data: PersistedWin[] = wins.value.map((w) => ({
+      sessionId: w.sessionId,
+      x: w.x,
+      y: w.y,
+      w: w.w,
+      h: w.h,
+    }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(data));
+  } catch {
+    // 存储失败忽略（不影响运行）
+  }
+}
+
+function loadLayout(): PersistedWin[] {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is PersistedWin =>
+        typeof p === 'object' &&
+        p !== null &&
+        typeof (p as PersistedWin).sessionId === 'string' &&
+        typeof (p as PersistedWin).x === 'number' &&
+        typeof (p as PersistedWin).y === 'number' &&
+        typeof (p as PersistedWin).w === 'number' &&
+        typeof (p as PersistedWin).h === 'number',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 恢复已持久化布局：仅在会话仍存在时开窗，位置/尺寸按画布 clamp；
+ * 避免超出画布/太小不可见。
+ */
+function restoreLayout(): void {
+  const saved = loadLayout();
+  if (saved.length === 0) return;
+  const cw = canvasRef.value?.clientWidth ?? 600;
+  const ch = canvasRef.value?.clientHeight ?? 400;
+  for (const item of saved) {
+    if (!sessionOf(item.sessionId)) continue;
+    const w = Math.max(MW_MIN_W, Math.min(item.w, cw - G * 2));
+    const h = Math.max(MW_MIN_H, Math.min(item.h, ch - G * 2));
+    const x = Math.max(0, Math.min(item.x, Math.max(0, cw - w)));
+    const y = Math.max(0, Math.min(item.y, Math.max(0, ch - h)));
+    openWindow(item.sessionId, x, y, { w, h });
+  }
+  // 恢复后写回一次（吸收 clamp 变更），并通知会话池
+  saveLayout();
+  emit('opened-change', wins.value.map((w) => w.sessionId));
+}
 
 // 当前画布上的会话 id 集合（会话池标记已开窗）
 const onCanvasSessions = computed(() => new Set(wins.value.map((w) => w.sessionId)));
@@ -66,8 +148,8 @@ function openWindow(
   if (wins.value.some((w) => w.sessionId === sessionId)) return;
   const cw = canvasRef.value?.clientWidth ?? 600;
   const ch = canvasRef.value?.clientHeight ?? 400;
-  const w = size?.w ?? Math.round(cw * 0.46);
-  const h = size?.h ?? Math.round(ch * 0.46);
+  const w = Math.max(MW_MIN_W, Math.round((size?.w ?? cw * 0.46)));
+  const h = Math.max(MW_MIN_H, Math.round((size?.h ?? ch * 0.46)));
   let px = x;
   let py = y;
   if (px === undefined || py === undefined) {
@@ -86,10 +168,12 @@ function openWindow(
     h,
     z: ++zCounter,
   });
+  saveLayout();
 }
 
 function closeWindow(id: string): void {
   wins.value = wins.value.filter((w) => w.id !== id);
+  saveLayout();
 }
 
 function focusWindow(id: string): void {
@@ -106,9 +190,9 @@ function onCanvasDragOver(e: DragEvent): void {
   if (!canvas || !r) return;
   const cx = e.clientX - r.left;
   const cy = e.clientY - r.top;
-  const zone = detectZone(cx, cy, canvas.clientWidth, canvas.clientHeight);
+  const zone = detectSnapZone(cx, cy, canvas.clientWidth, canvas.clientHeight);
   if (zone) {
-    showSnapPreview(snapRect(zone, canvas.clientWidth, canvas.clientHeight));
+    showSnapPreview(snapRectFor(zone, canvas.clientWidth, canvas.clientHeight));
   } else {
     hideSnapPreview();
   }
@@ -125,9 +209,9 @@ function onCanvasDrop(e: DragEvent): void {
   const px = e.clientX - r.left;
   const py = e.clientY - r.top;
   // 首次拖入同样判定吸附：落在边缘/四角区域内则直接贴边开窗
-  const zone = detectZone(px, py, cw, ch);
+  const zone = detectSnapZone(px, py, cw, ch);
   if (zone) {
-    const snap = snapRect(zone, cw, ch);
+    const snap = snapRectFor(zone, cw, ch);
     openWindow(sid, snap.x, snap.y, { w: snap.w, h: snap.h });
   } else {
     // 窗口左上角对准 drop 点（略偏移，方便看到标题栏）
@@ -139,8 +223,7 @@ function onCanvasDrop(e: DragEvent): void {
   hideSnapPreview();
 }
 
-// ===== 拖拽移动 + 吸附（对齐原型 mwDetectZone + mwSnapRect） =====
-type Zone = 'left' | 'right' | 'top' | 'bottom' | 'tl' | 'tr' | 'bl' | 'br';
+// ===== 拖拽移动 + 吸附（几何计算复用 forge-core windowLayout 纯模块） =====
 let dragging: {
   id: string;
   startX: number;
@@ -150,53 +233,6 @@ let dragging: {
   lastPx: number;
   lastPy: number;
 } | null = null;
-
-/** 吸附区（指针相对画布比例阈值：四角 0.13、边缘 0.16，对齐原型） */
-function detectZone(px: number, py: number, cw: number, ch: number): Zone | null {
-  if (px < 0 || py < 0 || px > cw || py > ch) return null;
-  const rx = px / cw;
-  const ry = py / ch;
-  const CT = 0.13;
-  const ET = 0.16;
-  // 四角区收窄，避免"覆盖整条"被误判为四分之一窗格
-  if (rx < CT && ry < CT) return 'tl';
-  if (rx > 1 - CT && ry < CT) return 'tr';
-  if (rx < CT && ry > 1 - CT) return 'bl';
-  if (rx > 1 - CT && ry > 1 - CT) return 'br';
-  if (rx < ET) return 'left';
-  if (rx > 1 - ET) return 'right';
-  if (ry < ET) return 'top';
-  if (ry > 1 - ET) return 'bottom';
-  return null;
-}
-
-/** 吸附矩形（带 G=6 内边距，对齐原型 mwSnapRect） */
-function snapRect(zone: Zone, cw: number, ch: number): { x: number; y: number; w: number; h: number } {
-  const hw = Math.round((cw - G * 3) / 2);
-  const hh = Math.round((ch - G * 3) / 2);
-  const L = G;
-  const R = G * 2 + hw;
-  const T = G;
-  const B = G * 2 + hh;
-  switch (zone) {
-    case 'left':
-      return { x: L, y: T, w: hw, h: ch - G * 2 };
-    case 'right':
-      return { x: R, y: T, w: hw, h: ch - G * 2 };
-    case 'top':
-      return { x: L, y: T, w: cw - G * 2, h: hh };
-    case 'bottom':
-      return { x: L, y: B, w: cw - G * 2, h: hh };
-    case 'tl':
-      return { x: L, y: T, w: hw, h: hh };
-    case 'tr':
-      return { x: R, y: T, w: hw, h: hh };
-    case 'bl':
-      return { x: L, y: B, w: hw, h: hh };
-    case 'br':
-      return { x: R, y: B, w: hw, h: hh };
-  }
-}
 
 function onBarMouseDown(e: MouseEvent, w: Win): void {
   // 点标题栏内的按钮（眼睛/关闭）时不触发拖拽，避免 mouseup 时误吸附改变布局
@@ -232,9 +268,9 @@ function onMove(e: MouseEvent): void {
   const py = e.clientY - r.top;
   dragging.lastPx = px;
   dragging.lastPy = py;
-  const zone = detectZone(px, py, cw, ch);
+  const zone = detectSnapZone(px, py, cw, ch);
   if (zone) {
-    showSnapPreview(snapRect(zone, cw, ch));
+    showSnapPreview(snapRectFor(zone, cw, ch));
   } else {
     hideSnapPreview();
   }
@@ -247,10 +283,16 @@ function onUp(): void {
   if (w && canvas) {
     const cw = canvas.clientWidth;
     const ch = canvas.clientHeight;
-    const zone = detectZone(dragging.lastPx, dragging.lastPy, cw, ch);
+    // 拖动结束 clamp 最小尺寸与画布边界
+    w.w = Math.max(MW_MIN_W, Math.min(w.w, cw - G * 2));
+    w.h = Math.max(MW_MIN_H, Math.min(w.h, ch - G * 2));
+    w.x = Math.max(0, Math.min(w.x, Math.max(0, cw - w.w)));
+    w.y = Math.max(0, Math.min(w.y, Math.max(0, ch - w.h)));
+    const zone = detectSnapZone(dragging.lastPx, dragging.lastPy, cw, ch);
     if (zone) {
-      Object.assign(w, snapRect(zone, cw, ch));
+      Object.assign(w, snapRectFor(zone, cw, ch));
     }
+    saveLayout();
   }
   hideSnapPreview();
   dragging = null;
@@ -273,53 +315,28 @@ function hideSnapPreview(): void {
 }
 
 /**
- * 自动布局：按当前窗口个数自动铺满，间距与手动贴边（G）统一。
- * - 1 个：占左右二分之一（左半区）
- * - 2 个：左右各二分之一（整高）
- * - 3~4 个：四窗格（2×2）
- * - 超过 4 个：前 4 个填四窗格，其余居中散放交由用户手动调整
+ * 自动布局：按当前窗口个数自动铺满（几何复用 forge-core arrangeAutoLayout）。
+ * 窗口按序应用布局矩形；对已存在的窗口保留 id/会话绑定，仅更新几何。
  */
 function arrangeAuto(): void {
   const canvas = canvasRef.value;
   if (!canvas || wins.value.length === 0) return;
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
-  const n = wins.value.length;
-  const hw = Math.round((cw - G * 3) / 2);
-  const hh = Math.round((ch - G * 3) / 2);
-  const L = G;
-  const T = G;
-  const R = G * 2 + hw;
-  const B = G * 2 + hh;
-  if (n <= 2) {
-    const halves = [
-      { x: L, y: T, w: hw, h: ch - G * 2 },
-      { x: R, y: T, w: hw, h: ch - G * 2 },
-    ];
-    wins.value.forEach((w, i) => i < n && Object.assign(w, halves[i]));
-  } else {
-    const cells = [
-      { x: L, y: T, w: hw, h: hh },
-      { x: R, y: T, w: hw, h: hh },
-      { x: L, y: B, w: hw, h: hh },
-      { x: R, y: B, w: hw, h: hh },
-    ];
-    wins.value.forEach((w, i) => {
-      if (i < 4) {
-        Object.assign(w, cells[i]);
-      } else {
-        // 第 5 个起居中散放，交用户手动调整
-        const ox = Math.round((cw - hw) / 2) + ((i - 4) % 3) * 18;
-        const oy = Math.round((ch - hh) / 2) + Math.floor((i - 4) / 3) * 14;
-        Object.assign(w, { x: ox, y: oy, w: hw, h: hh });
-      }
-    });
-  }
+  const layouts = arrangeAutoLayout(
+    wins.value.length,
+    canvas.clientWidth,
+    canvas.clientHeight,
+  );
+  wins.value.forEach((w, i) => {
+    const cell = layouts[i];
+    if (cell) Object.assign(w, cell);
+  });
+  saveLayout();
 }
 
 /** 全部关闭：清空窗口列表（会话不删，仅摘展示） */
 function clearAll(): void {
   wins.value = [];
+  saveLayout();
 }
 
 function onWinClick(e: MouseEvent, w: Win): void {
@@ -344,6 +361,18 @@ watch(
     emit('opened-change', list.map((w) => w.sessionId));
   },
   { deep: true },
+);
+
+// P3-C：外部会话被删除时自动关闭对应窗口（避免残留会话已消失的窗口）
+watch(
+  () => props.sessions.map((s) => s.sessionId),
+  (ids) => {
+    const alive = new Set(ids);
+    if (wins.value.some((w) => !alive.has(w.sessionId))) {
+      wins.value = wins.value.filter((w) => alive.has(w.sessionId));
+      saveLayout();
+    }
+  },
 );
 
 // ===== 画布尺寸变化：按比例缩放各窗口，让布局随窗口铺满 =====
@@ -372,8 +401,8 @@ function reflowOnResize(): void {
   wins.value.forEach((w) => {
     w.x = Math.round(w.x * sx);
     w.y = Math.round(w.y * sy);
-    w.w = Math.max(120, Math.round(w.w * sx));
-    w.h = Math.max(80, Math.round(w.h * sy));
+    w.w = Math.max(MW_MIN_W, Math.round(w.w * sx));
+    w.h = Math.max(MW_MIN_H, Math.round(w.h * sy));
   });
   traceCw = cw;
   traceCh = ch;
@@ -382,6 +411,8 @@ function reflowOnResize(): void {
 onMounted(() => {
   document.addEventListener('mousemove', onDocMouseMove);
   document.addEventListener('mouseup', onDocMouseUp);
+  // P3-C：先恢复持久化布局（会话仍存在的窗口），再同步会话池状态
+  restoreLayout();
   // 初始同步一次
   emit('opened-change', wins.value.map((w) => w.sessionId));
   // 监听画布尺寸变化做等比例铺满

@@ -2,9 +2,15 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { createAgentSession, SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
+import {
+  createAgentSession,
+  SessionManager,
+  type AgentSession,
+  type CreateAgentSessionOptions,
+} from '@earendil-works/pi-coding-agent';
 
 import type { PiAgentSessionFactoryOptions } from './piConversationAdapter.ts';
+import { resolvePiModel } from './piModelResolver.ts';
 
 export interface PiSessionHandle {
   sessionFile: string | undefined;
@@ -12,6 +18,8 @@ export interface PiSessionHandle {
 
 export interface CreatePiAgentSessionFactoryOptions {
   agentDir?: string;
+  /** pi models.json 路径（默认 ~/.pi/agent/models.json），用于模型字符串解析 */
+  modelsPath?: string;
 }
 
 type PiAgentSessionRuntimeFactory = (
@@ -66,11 +74,19 @@ export function createPiAgentSessionFactory(
     }
     manager.setSessionFile(sessionFile);
 
-    const result = await createAgentSession({
+    // P1-C：模型字符串解析为 pi Model 后注入新会话；解析失败抛稳定错误
+    const createOptions: CreateAgentSessionOptions = {
       agentDir: options.agentDir,
       cwd,
       sessionManager: manager,
-    });
+    };
+    if (typeof request.model === 'string') {
+      createOptions.model = await resolvePiModel(request.model, options.modelsPath);
+    } else if (request.model !== undefined) {
+      createOptions.model = request.model as CreateAgentSessionOptions['model'];
+    }
+
+    const result = await createAgentSession(createOptions);
 
     return {
       session: result.session,

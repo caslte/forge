@@ -15,6 +15,7 @@ import {
   IPC_WINDOW_CLOSE,
   IPC_WINDOW_IS_MAXIMIZED,
   IPC_DIALOG_OPEN_DIRECTORY,
+  IPC_DIALOG_OPEN_FILE,
   type ForgeMethod,
   type ForgeEvent,
 } from './ipc-contract.ts';
@@ -39,6 +40,9 @@ const windowControl = {
 const dialogControl = {
   async selectDirectory(): Promise<string | null> {
     return ipcRenderer.invoke(IPC_DIALOG_OPEN_DIRECTORY) as Promise<string | null>;
+  },
+  async selectFiles(): Promise<Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }>> {
+    return ipcRenderer.invoke(IPC_DIALOG_OPEN_FILE) as Promise<Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }>>;
   },
 };
 

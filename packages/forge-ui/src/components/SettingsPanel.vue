@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { call, subscribe } from '../bridge';
+import { useToast } from '../composables/useToast';
 import type { ThemeMode, ProviderItem } from '../types';
 
 /**
@@ -46,6 +47,8 @@ const themeSwatches: { mode: ThemeMode; label: string; color: string }[] = [
   { mode: 'light', label: '浅色', color: 'oklch(1 0 0)' },
   { mode: 'dark', label: '深色', color: 'oklch(0.24 0.01 286.3)' },
 ];
+
+const toast = useToast();
 
 const canSubmitForm = computed(() => {
   return (
@@ -98,6 +101,7 @@ async function onSaveProvider(): Promise<void> {
     await loadModels();
     resetForm();
     showAddForm.value = false;
+    toast.success('模型配置已保存');
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -105,7 +109,7 @@ async function onSaveProvider(): Promise<void> {
   }
 }
 
-/** 点击列表「编辑」：回填表单进入编辑态 */
+/** 点击列表「编辑」：回填表单进入编辑态（apiKey 由服务层解析为明文返回） */
 function onEdit(p: ProviderItem): void {
   editingId.value = p.id;
   formName.value = p.name;

@@ -10,11 +10,13 @@
  *
  * 单窗口（v1 MVP）；多窗口多会话为后续迭代。
  */
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, safeStorage } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY } from './ipc-contract.ts';
+import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -22,8 +24,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 
-/** 创建主窗口（无边框，自定义标题栏） */
-function createWindow(): BrowserWindow {
+/** 创建主窗口（无边框，自定义标题栏）；dev 模式自动挂 DevTools + F12/Ctrl+Shift+I 快捷键 */
+function createWindow(isDev: boolean): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -43,6 +45,26 @@ function createWindow(): BrowserWindow {
   win.on('closed', () => {
     mainWindow = null;
   });
+
+  if (isDev) {
+    // 不自动弹出 DevTools，仅保留 F12 / Ctrl+Shift+I 手动切换
+    win.webContents.on('before-input-event', (_event, input) => {
+      const f12 = input.key === 'F12' && input.type === 'keyDown';
+      const ctrlShiftI =
+        input.key.toLowerCase() === 'i' &&
+        input.control &&
+        input.shift &&
+        input.type === 'keyDown';
+      if (f12 || ctrlShiftI) {
+        if (win.webContents.isDevToolsOpened()) {
+          win.webContents.closeDevTools();
+        } else {
+          win.webContents.openDevTools({ mode: 'detach' });
+        }
+      }
+    });
+  }
+
   return win;
 }
 
@@ -84,14 +106,75 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     }
     return res.filePaths[0] ?? null;
   });
+  // 原生文件选择（P3-B 附件）：多选，支持图片与文本；返回已读取的附件载荷，取消返回空数组
+  ipcMain.handle(IPC_DIALOG_OPEN_FILE, async () => {
+    const options = {
+      title: '选择附件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '图片与文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'txt', 'md', 'json', 'log', 'csv', 'yaml', 'yml', 'toml', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'ps1'] },
+      ],
+    } as Electron.OpenDialogOptions;
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (res.canceled) {
+      return [];
+    }
+    const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+    const MIME: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', bmp: 'image/bmp',
+    };
+    const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
+    const MAX_TEXT_BYTES = 200 * 1024; // 200KB
+    const out: Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }> = [];
+    for (const filePath of res.filePaths) {
+      const ext = (path.extname(filePath) || '').slice(1).toLowerCase();
+      const base = path.basename(filePath);
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) continue;
+        if (IMAGE_EXT.has(ext)) {
+          if (stat.size > MAX_IMAGE_BYTES) continue; // 超大图片跳过（UI 提示用）
+          const buf = fs.readFileSync(filePath);
+          out.push({
+            path: filePath,
+            name: base,
+            kind: 'image',
+            mimeType: MIME[ext] ?? 'image/png',
+            data: buf.toString('base64'),
+          });
+        } else {
+          if (stat.size > MAX_TEXT_BYTES) continue;
+          const buf = fs.readFileSync(filePath);
+          out.push({
+            path: filePath,
+            name: base,
+            kind: 'text',
+            content: buf.toString('utf8').slice(0, MAX_TEXT_BYTES),
+          });
+        }
+      } catch {
+        // 单个文件读取失败跳过，不阻塞其余附件
+      }
+    }
+    return out;
+  });
 }
 
 app.whenReady().then(() => {
   const storePath = path.join(app.getPath('userData'), 'forge-store.json');
-  const { methodTable, eventBus } = createForgeCore(storePath);
+  // P3-D：Windows 下优先用 safeStorage（DPAPI）持久化密钥；不可用时回退环境变量适配器
+  const keychain = new SafeStorageKeychainAdapter(
+    path.join(app.getPath('userData'), 'forge-keyvault.json'),
+    () => safeStorage,
+  );
+  keychain.restoreEnv();
+  const { methodTable, eventBus } = createForgeCore(storePath, { keychain });
   registerIpc(methodTable, eventBus);
 
-  const win = createWindow();
+  const win = createWindow(!!process.env.FORGE_DEV_SERVER_URL);
   const devUrl = process.env.FORGE_DEV_SERVER_URL;
   if (devUrl) {
     const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;

@@ -15,6 +15,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createForgeCore, invoke } from '../src/createForgeCore.ts';
 import { MockModelsFileAdapter, MockKeychainAdapter } from '../src/mock/modelAdapters.ts';
+import type {
+  PiAgentSessionFactory,
+  PiAgentSessionFactoryOptions,
+} from '../src/pi/piConversationAdapter.ts';
 
 /** 等待 mock 异步回复（replyDelayMs 默认 300） */
 function waitForReply(): Promise<void> {
@@ -30,21 +34,117 @@ function makeTempProject(): { root: string; storeFile: string; projectDir: strin
   return { root, storeFile, projectDir };
 }
 
-/** mock 依赖：测试隔离，不读真实 pi models.json */
+/** mock 依赖：测试隔离，不读真实 pi models.json；信任端口用中立 fake（无资源、无决策） */
 function mockDeps() {
-  return { modelsFile: new MockModelsFileAdapter(), keychain: new MockKeychainAdapter() };
+  return {
+    modelsFile: new MockModelsFileAdapter(),
+    keychain: new MockKeychainAdapter(),
+    trustStore: {
+      hasTrustRequiringResources: () => false,
+      getDecision: () => null,
+      setDecision: () => undefined,
+    },
+  };
+}
+
+/** 预置 provider 的 mock 依赖：providerReady 真实检查（models 非空）通过 */
+async function seededModelDeps(): Promise<Parameters<typeof mockDeps>[0] & { modelsFile: MockModelsFileAdapter }> {
+  const modelsFile = new MockModelsFileAdapter();
+  await modelsFile.writeProviders([
+    {
+      id: 'openai',
+      name: 'OpenAI',
+      type: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      models: ['gpt-4o-mini'],
+      lastError: null,
+    },
+  ]);
+  return { modelsFile, keychain: new MockKeychainAdapter(), trustStore: { hasTrustRequiringResources: () => false, getDecision: () => null, setDecision: () => undefined } };
+}
+
+interface FakeEvent {
+  type: string;
+  delta?: string;
+  assistantMessageEvent?: { type?: string; delta?: string };
+  message?: { role?: string; content?: string | Array<{ type?: string; text?: string }> };
+  toolCallId?: string;
+  toolName?: string;
+  args?: unknown;
+  result?: unknown;
+  isError?: boolean;
+}
+
+/** 模拟真实 pi 会话：prompt 时按 pi 事件流发出增量和最终助手消息 */
+class FakePiSession {
+  readonly listeners = new Set<(event: FakeEvent) => void>();
+  promptCalls: string[] = [];
+  promptError: Error | null = null;
+  /** prompt 时附加发出的工具事件序列 */
+  toolEvents: FakeEvent[] = [];
+  /** message_end 后 prompt resolve 前的延迟（毫秒） */
+  completionDelayMs = 0;
+
+  subscribe(listener: (event: FakeEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async prompt(text: string): Promise<void> {
+    this.promptCalls.push(text);
+    if (this.promptError !== null) {
+      throw this.promptError;
+    }
+    for (const event of this.toolEvents) {
+      for (const listener of this.listeners) listener(event);
+    }
+    for (const listener of this.listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '你好' } });
+    }
+    for (const listener of this.listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '，forge' } });
+    }
+    for (const listener of this.listeners) {
+      listener({ type: 'message_end', message: { role: 'assistant', content: '你好，forge' } });
+    }
+    if (this.completionDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.completionDelayMs));
+    }
+  }
+
+  async abort(): Promise<void> {}
+}
+
+function fakeSessionFactory(): PiAgentSessionFactory<FakePiSession> {
+  return async () => {
+    const session = new FakePiSession();
+    return { session, dispose: () => undefined };
+  };
 }
 
 test('createForgeCore 全流程：project → session → conversation → tool → model 可跑通', async () => {
   const { root, storeFile, projectDir } = makeTempProject();
   try {
-    const { methodTable, eventBus } = createForgeCore(storeFile, mockDeps());
+    const { methodTable, eventBus } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: fakeSessionFactory(),
+    });
 
-    // 监听 conversation.statusChanged 事件
+    // 监听 conversation.statusChanged / delta / message 事件
     const statusEvents: { sessionId: string; status: string }[] = [];
     eventBus.on('conversation.statusChanged', (p: unknown) => {
       const e = p as { sessionId: string; status: string };
       statusEvents.push(e);
+    });
+    const deltas: string[] = [];
+    eventBus.on('conversation.delta', (p: unknown) => {
+      const e = p as { sessionId: string; delta: { text: string } };
+      deltas.push(e.delta.text);
+    });
+    const messages: { role: string; content: string }[] = [];
+    eventBus.on('conversation.message', (p: unknown) => {
+      const e = p as { sessionId: string; message: { role: string; content: string } };
+      messages.push(e.message);
     });
 
     // project/addProject
@@ -76,15 +176,25 @@ test('createForgeCore 全流程：project → session → conversation → tool 
     // conversation/queryHistory 应有 user + assistant 两条
     const histRes = await invoke(methodTable, 'conversation/queryHistory', { sessionId });
     assert.equal(histRes.code, 0);
-    const messages = (histRes.data as { messages: { role: string; content: string }[] }).messages;
-    assert.equal(messages.length, 2, '应有 user + assistant 两条消息');
-    assert.equal(messages[0]?.role, 'user');
-    assert.equal(messages[1]?.role, 'assistant');
+    const history = (histRes.data as { messages: { role: string; content: string }[] }).messages;
+    assert.equal(history.length, 2, '应有 user + assistant 两条消息');
+    assert.equal(history[0]?.role, 'user');
+    assert.equal(history[0]?.content, '你好');
+    assert.equal(history[1]?.role, 'assistant');
+    assert.equal(history[1]?.content, '你好，forge');
 
     // conversation.statusChanged 事件应被触发（streaming + done）
     const statuses = statusEvents.map((e) => e.status);
     assert.ok(statuses.includes('streaming'), `应触发 streaming 事件，实际: ${statuses.join(',')}`);
     assert.ok(statuses.includes('done'), `应触发 done 事件，实际: ${statuses.join(',')}`);
+
+    // pi 增量与最终助手消息应通过事件推送
+    assert.equal(deltas.join(''), '你好，forge', `增量事件应为完整文本，实际: ${deltas.join('')}`);
+    assert.deepEqual(
+      messages.map((m) => ({ role: m.role, content: m.content })),
+      [{ role: 'assistant', content: '你好，forge' }],
+      '应推送一条 assistant 完整消息事件',
+    );
 
     // tool/queryToolEvents（空列表）
     const toolRes = await invoke(methodTable, 'tool/queryToolEvents', { sessionId });
@@ -92,11 +202,11 @@ test('createForgeCore 全流程：project → session → conversation → tool 
     const events = (toolRes.data as { events: unknown[] }).events;
     assert.equal(events.length, 0, 'mock 下工具事件应为空');
 
-    // model/queryProviderList（mock 空列表）
+    // model/queryProviderList（seeded 态 1 个 provider）
     const modelRes = await invoke(methodTable, 'model/queryProviderList', {});
     assert.equal(modelRes.code, 0);
     const providers = (modelRes.data as { providers: unknown[] }).providers;
-    assert.equal(providers.length, 0, 'mock 下 provider 应为空');
+    assert.equal(providers.length, 1, 'seeded 下应有 1 个 provider');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -109,6 +219,300 @@ test('invoke 未知方法返回 404 信封', async () => {
     const res = await invoke(methodTable, 'unknown/method', {});
     assert.equal(res.code, 404);
     assert.equal(res.data, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('sendMessage 将会话生效模型传入 pi runtime options', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const requested: PiAgentSessionFactoryOptions[] = [];
+    const factory: PiAgentSessionFactory<{
+      subscribe(): () => void;
+      prompt(): Promise<void>;
+      abort(): Promise<void>;
+    }> = async (options) => {
+      requested.push(options);
+      return {
+        session: {
+          subscribe: () => () => undefined,
+          prompt: async () => undefined,
+          abort: async () => undefined,
+        },
+        dispose: () => undefined,
+      };
+    };
+    const modelDeps = mockDeps();
+    const core = createForgeCore(storeFile, { ...modelDeps, piAgentSessionFactory: factory });
+
+    await invoke(core.methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(core.methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+    await invoke(core.methodTable, 'model/saveProvider', {
+      name: 'Test Provider',
+      type: 'openai-completions',
+      baseUrl: 'https://example.com/v1',
+      apiKey: 'env:TEST_API_KEY',
+      models: ['test-model'],
+    });
+    const providers = await invoke(core.methodTable, 'model/queryProviderList', {});
+    assert.equal((providers.data as { providers: unknown[] }).providers.length, 1);
+    const models = await invoke(core.methodTable, 'model/queryModels', {});
+    assert.deepEqual((models.data as { models: string[] }).models, ['test-model']);
+    await invoke(core.methodTable, 'model/setDefault', { model: 'test-model' });
+
+    await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: 'hello' });
+
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0]?.sessionId, sessionId);
+    assert.equal(requested[0]?.cwd, projectDir);
+    assert.equal(requested[0]?.model, 'test-model');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('未注入工厂时默认使用真实 pi 对话适配器而不是 mock', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    // 空 agentDir 强制真实 pi 无凭据可用，隔离开发机 ~/.pi 配置
+    const emptyAgentDir = path.join(root, '.pi-agent-empty');
+    fs.mkdirSync(emptyAgentDir, { recursive: true });
+    const core = createForgeCore(storeFile, { ...mockDeps(), piAgentDir: emptyAgentDir });
+
+    await invoke(core.methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(core.methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    const result = await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: 'hello' });
+
+    assert.notEqual(result.code, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('凭据失败时状态置为 error 并发射 conversation.error', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const failingFactory: PiAgentSessionFactory<FakePiSession> = async () => {
+      const session = new FakePiSession();
+      session.promptError = new Error('No API key found for provider openai');
+      return { session, dispose: () => undefined };
+    };
+    const { methodTable, eventBus } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: failingFactory,
+    });
+
+    const statusEvents: { sessionId: string; status: string }[] = [];
+    eventBus.on('conversation.statusChanged', (p: unknown) => {
+      statusEvents.push(p as { sessionId: string; status: string });
+    });
+    const errors: { sessionId: string; code: number; message: string }[] = [];
+    eventBus.on('conversation.error', (p: unknown) => {
+      errors.push(p as { sessionId: string; code: number; message: string });
+    });
+
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    const sendRes = await invoke(methodTable, 'conversation/sendMessage', { sessionId, content: '你好' });
+    assert.notEqual(sendRes.code, 0, '凭据失败时发送应返回错误信封');
+
+    const statuses = statusEvents.map((e) => e.status);
+    assert.ok(statuses.includes('error'), `应触发 error 状态事件，实际: ${statuses.join(',')}`);
+    assert.equal(errors.length, 1, '应发射一次 conversation.error 事件');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('pi 工具事件映射为 tool.started/completed 并可查询', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const factory: PiAgentSessionFactory<FakePiSession> = async () => {
+      const session = new FakePiSession();
+      session.toolEvents = [
+        { type: 'tool_execution_start', toolCallId: 'call-9', toolName: 'edit', args: { file_path: 'x.ts' } },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'call-9',
+          toolName: 'edit',
+          result: { content: [{ type: 'text', text: 'done' }] },
+          isError: false,
+        },
+      ];
+      return { session, dispose: () => undefined };
+    };
+    const { methodTable, eventBus } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: factory,
+    });
+
+    const started: unknown[] = [];
+    const completed: unknown[] = [];
+    eventBus.on('tool.started', (p: unknown) => started.push(p));
+    eventBus.on('tool.completed', (p: unknown) => completed.push(p));
+
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    await invoke(methodTable, 'conversation/sendMessage', { sessionId, content: '改文件' });
+
+    assert.equal(started.length, 1, '应发射 tool.started');
+    assert.equal(completed.length, 1, '应发射 tool.completed');
+
+    const toolRes = await invoke(methodTable, 'tool/queryToolEvents', { sessionId });
+    assert.equal(toolRes.code, 0);
+    const events = (toolRes.data as { events: Array<{ status: string; toolEventId: string }> }).events;
+    assert.equal(events.length, 1, '同一工具调用只保留一张卡片');
+    assert.equal(events[0]?.toolEventId, 'call-9');
+    assert.equal(events[0]?.status, 'completed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** 可手动控制完成时机的 pi 会话（用于并发交错验证） */
+class DeferredPiSession {
+  readonly listeners = new Set<(event: FakeEvent) => void>();
+  promptCalls: string[] = [];
+  private pending: (() => void) | null = null;
+
+  subscribe(listener: (event: FakeEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  prompt(text: string): Promise<void> {
+    this.promptCalls.push(text);
+    return new Promise<void>((resolve) => {
+      this.pending = resolve;
+    });
+  }
+
+  /** 手动完成当前 prompt 并发出最终助手消息 */
+  finish(content: string): void {
+    for (const listener of this.listeners) {
+      listener({ type: 'message_end', message: { role: 'assistant', content } });
+    }
+    this.pending?.();
+    this.pending = null;
+  }
+
+  abort(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+test('双会话并发发送：事件按 sessionId 隔离互不串扰', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const sessions = new Map<string, DeferredPiSession>();
+    const factory: PiAgentSessionFactory<DeferredPiSession> = async (options) => {
+      const session = new DeferredPiSession();
+      sessions.set(options.sessionId ?? `auto-${sessions.size}`, session);
+      return { session, dispose: () => undefined };
+    };
+    const { methodTable, eventBus } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: factory,
+    });
+
+    const deltasBySession = new Map<string, string[]>();
+    eventBus.on('conversation.delta', (p: unknown) => {
+      const e = p as { sessionId: string; delta: { text: string } };
+      const list = deltasBySession.get(e.sessionId) ?? [];
+      list.push(e.delta.text);
+      deltasBySession.set(e.sessionId, list);
+    });
+    const messagesBySession = new Map<string, string[]>();
+    eventBus.on('conversation.message', (p: unknown) => {
+      const e = p as { sessionId: string; message: { content: string } };
+      const list = messagesBySession.get(e.sessionId) ?? [];
+      list.push(e.message.content);
+      messagesBySession.set(e.sessionId, list);
+    });
+
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const createdA = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const createdB = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sidA = (createdA.data as { session: { sessionId: string } }).session.sessionId;
+    const sidB = (createdB.data as { session: { sessionId: string } }).session.sessionId;
+
+    // 同时发起两个会话的发送，不互相阻塞
+    const sendA = invoke(methodTable, 'conversation/sendMessage', { sessionId: sidA, content: 'A 的问题' });
+    const sendB = invoke(methodTable, 'conversation/sendMessage', { sessionId: sidB, content: 'B 的问题' });
+
+    // 等待发送链路完成工厂调用（resolveSendOptions 异步）
+    for (let i = 0; i < 50 && sessions.size < 2; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const sessionA = sessions.get(sidA);
+    const sessionB = sessions.get(sidB);
+    assert.ok(sessionA && sessionB, '两个会话都应创建各自的 pi 会话实例');
+    assert.notEqual(sessionA, sessionB);
+
+    // A 完成时 B 尚未完成
+    sessionA.finish('A 的回答');
+    await sendA;
+    assert.deepEqual(deltasBySession.get(sidB) ?? [], [], 'A 完成前 B 不应收到任何增量');
+
+    sessionB.finish('B 的回答');
+    await sendB;
+
+    assert.deepEqual(messagesBySession.get(sidA), ['A 的回答'], 'A 只收到自己的消息');
+    assert.deepEqual(messagesBySession.get(sidB), ['B 的回答'], 'B 只收到自己的消息');
+
+    const histA = await invoke(methodTable, 'conversation/queryHistory', { sessionId: sidA });
+    const histB = await invoke(methodTable, 'conversation/queryHistory', { sessionId: sidB });
+    const msgsA = (histA.data as { messages: Array<{ role: string; content: string }> }).messages;
+    const msgsB = (histB.data as { messages: Array<{ role: string; content: string }> }).messages;
+    assert.deepEqual(
+      msgsA.map((m) => m.content),
+      ['A 的问题', 'A 的回答'],
+    );
+    assert.deepEqual(
+      msgsB.map((m) => m.content),
+      ['B 的问题', 'B 的回答'],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('中间助手消息完成不提前结束会话流式状态', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    const session = new FakePiSession();
+    session.completionDelayMs = 30;
+    const { methodTable, eventBus } = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piAgentSessionFactory: async () => ({ session, dispose: () => undefined }),
+    });
+    await invoke(methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    const statuses: string[] = [];
+    eventBus.on('conversation.statusChanged', (payload: unknown) => {
+      statuses.push((payload as { status: string }).status);
+    });
+
+    const sending = invoke(methodTable, 'conversation/sendMessage', {
+      sessionId,
+      content: '先读文件，再回答',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(statuses.at(-1) === 'streaming', `message_end 后应仍是 streaming，实际: ${statuses.join(',')}`);
+
+    await sending;
+    assert.equal(statuses.at(-1), 'done', '整轮 prompt 完成后才应变为 done');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

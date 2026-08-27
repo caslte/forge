@@ -140,17 +140,21 @@ export class SessionApi {
     return result;
   }
 
-  /** session/updateSessionAlias：重命名会话（SM-S03） */
-  private updateSessionAlias(params: unknown): Promise<RpcResult> {
+  /** session/updateSessionAlias：重命名会话（SM-S03），成功后发射 session.updated */
+  private async updateSessionAlias(params: unknown): Promise<RpcResult> {
     const sessionId = requireString(params, 'sessionId');
     if (sessionId === null) {
-      return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+      return fail(1001, '参数错误：sessionId 必须为非空字符串');
     }
     const alias = requireString(params, 'alias');
     if (alias === null) {
-      return Promise.resolve(fail(1001, '参数错误：alias 必须为非空字符串'));
+      return fail(1001, '参数错误：alias 必须为非空字符串');
     }
-    return this.call('updateSessionAlias', () => this.service.updateSessionAlias(sessionId, alias));
+    const result = await this.call('updateSessionAlias', () => this.service.updateSessionAlias(sessionId, alias));
+    if (result.code === 0 && result.data !== null) {
+      this.events.emit('session.updated', { session: (result.data as { session: unknown }).session });
+    }
+    return result;
   }
 
   /** session/getSessionStatus：查询会话状态（SM-S04） */

@@ -47,6 +47,18 @@ import type { ProjectRecord, TrustState } from '../types/forge-store.ts';
 /** 信任决策（docs/api/01_project.md §6：trust / reject / trustOnce） */
 export type TrustDecision = 'trust' | 'reject' | 'trustOnce';
 
+/**
+ * 信任权威端口（P2-A：真实权威交给 pi 项目信任机制，forge store 只缓存展示状态）。
+ * forge-core 不 import pi，由上层（forge-desktop）注入真实 pi 实现；测试注入 fake。
+ * - hasTrustRequiringResources：目录是否含需要信任门禁的项目资源（.pi / .agents/skills）
+ * - getDecision / setDecision：pi 权威信任决策读写（true=信任 false=拒绝 null=未定）
+ */
+export interface TrustStorePort {
+  hasTrustRequiringResources(cwd: string): boolean;
+  getDecision(cwd: string): boolean | null;
+  setDecision(cwd: string, decision: boolean): void;
+}
+
 /** 信任询问提示载荷（docs/api/01_project.md §4：reason=project-extensions） */
 export interface TrustPrompt {
   reason: 'project-extensions';
@@ -77,12 +89,36 @@ export type OpenProjectResult =
 /**
  * 项目管理服务：项目注册/移除/查询/打开/别名/信任，消费 forge-store。
  * @param store forge-store 持久化实例（由上层注入，路径指向 userData 下 forge-store.json）
+ * @param trust 信任权威端口（可选；注入后权威信任决策读写交给 pi，forge store 仅缓存展示状态；
+ *              未注入时回退到本地 `.pi` 目录检测 + forge 状态机（历史行为，测试兼容））
  */
 export class ProjectService {
   private readonly store: ForgeStore;
+  private readonly trust: TrustStorePort | null;
 
-  constructor(store: ForgeStore) {
+  constructor(store: ForgeStore, trust?: TrustStorePort) {
     this.store = store;
+    this.trust = trust ?? null;
+  }
+
+  /** 判断目录是否含需要信任门禁的项目资源（注入权威端口时用它，否则本地 `.pi` 检测） */
+  private hasTrustResources(key: string): boolean {
+    if (this.trust !== null) {
+      return this.trust.hasTrustRequiringResources(key);
+    }
+    return fs.existsSync(path.join(key, '.pi'));
+  }
+
+  /** 读取权威信任决策（未注入端口视为未定，走本地状态机） */
+  private trustDecision(key: string): boolean | null {
+    return this.trust?.getDecision(key) ?? null;
+  }
+
+  /** 写入权威信任决策（trust=true / reject=false；trustOnce 不持久） */
+  private persistTrustDecision(key: string, decision: boolean | null): void {
+    if (this.trust !== null && decision !== null) {
+      this.trust.setDecision(key, decision);
+    }
   }
 
   /**
@@ -162,12 +198,29 @@ export class ProjectService {
     if (project === null) {
       return { ok: false, code: 1002, message: `项目不存在: ${key}` };
     }
-    const hasPiResource = fs.existsSync(path.join(key, '.pi'));
+    const hasPiResource = this.hasTrustResources(key);
+    // 无项目资源：不触发信任门禁，展示状态为 untrusted（权威决策无关）
+    let nextState: TrustState = !hasPiResource ? 'untrusted' : project.trustState;
+    if (hasPiResource && this.trust !== null) {
+      // 注入权威端口时以 pi 决策为准：pi 已确定覆盖 forge 缓存展示状态
+      const authority = this.trustDecision(key);
+      if (authority === true) {
+        nextState = 'trusted';
+      } else if (authority === false) {
+        nextState = 'rejected';
+      } else if (project.trustState === 'untrusted') {
+        // 权威未决且含资源：未信任 → 进入询问中
+        nextState = 'asking';
+      }
+    } else if (
+      hasPiResource &&
+      (project.trustState === 'untrusted' || project.trustState === 'asking')
+    ) {
+      nextState = project.trustState === 'untrusted' ? 'asking' : project.trustState;
+    }
+    // 仅在最终状态仍未确定（asking / untrusted 且含资源）时触发询问
     const needsTrust =
-      hasPiResource && (project.trustState === 'untrusted' || project.trustState === 'asking');
-    // 未信任且含 .pi 资源：进入询问中状态；已确定状态保持不变
-    const nextState: TrustState =
-      needsTrust && project.trustState === 'untrusted' ? 'asking' : project.trustState;
+      hasPiResource && (nextState === 'untrusted' || nextState === 'asking');
     const updated = this.store.updateProject({
       ...project,
       lastOpenedAt: new Date().toISOString(),
@@ -237,6 +290,8 @@ export class ProjectService {
           // trustOnce：本次信任，不持久状态，回到未信任（下次打开重新询问）
           next = 'untrusted';
         }
+        // 权威端口联动：trust/reject 写入 pi 信任决策（持久），trustOnce 不持久
+        this.persistTrustDecision(key, decision === 'trust' ? true : decision === 'reject' ? false : null);
         const updated = this.store.updateProject({ ...project, trustState: next });
         if (!updated.ok) {
           return { ok: false, code: 1002, message: updated.message };

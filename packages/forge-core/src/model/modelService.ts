@@ -17,7 +17,8 @@
  *    - 5000 内部错误：adapter 读写异常（models.json 写失败等）捕获为 5000 错误联合。
  * 2. 密钥安全（TD-MP-01，硬约束）：apiKey 明文仅传给 KeychainAdapter.storeKey，
  *    models.json 中只落 `!command`（keychain 可用）或 `$ENV_VAR`（keychain 不可用
- *    降级）引用，绝不明文写入；queryProviderList 返回的 ProviderConfig 不含 apiKey。
+ *    降级）引用，绝不明文写入；queryProviderList 对引用形式 apiKey 经 keychain.readKey
+ *    解析为明文返回（供编辑回显），keychain 不支持时保留引用。
  * 3. 幂等（MP-S01）：saveProvider 以 id 为键 upsert —— 同 id 重复保存覆盖更新；
  *    id 缺省时由 name 生成 slug 作为 id；未提供新 apiKey 时保留内存中已存的引用。
  * 4. 删除联动（docs/api/05_model.md §3）：deleteProvider 删除 provider 后，若全局
@@ -91,11 +92,16 @@ export interface ModelsFileAdapter {
  * 隔离 OS keychain 访问，服务层不直接调用系统密钥服务。
  * @param storeKey 将 apiKey 存入密钥链，返回安全引用（`!command` 或 `$ENV_VAR`）
  * @param isAvailable 密钥链是否可用（不可用时降级为 $ENV_VAR 引用）
+ * @param readKey 可选：读取已存密钥的原始明文（UI 编辑回显用）；不支持返回 null
  */
 export interface KeychainAdapter {
   storeKey(providerId: string, apiKey: string): Promise<string>;
   isAvailable(): Promise<boolean>;
+  readKey?(providerId: string): Promise<string | null>;
 }
+
+/** pi 配置值引用前缀（`!command` / `$ENV_VAR`，不明文落盘的安全引用形式） */
+const KEY_REF_PREFIX = /^[!$]/;
 
 /**
  * 最小 store 接口（兼容 ForgeStore 实例，便于测试注入 mock）。
@@ -108,11 +114,28 @@ export interface ModelStorePort {
   saveSession(record: SessionRecord): void;
 }
 
-/** 服务依赖（构造注入：models.json 适配器 + 密钥适配器 + 最小 store） */
+/**
+ * 审计日志回调（P3-D）：配置变更记审计日志；payload 只含 provider id / 动作标识，
+ * 绝不含 apiKey 明文或引用。
+ */
+export type AuditLogFn = (event: {
+  action: 'provider.saved' | 'provider.deleted' | 'model.defaultChanged';
+  providerId: string;
+  ts: string;
+}) => void;
+
+/** 服务依赖（构造注入：models.json 适配器 + 密钥适配器 + 最小 store；可选审计日志） */
 export interface ModelServiceDeps {
   modelsFile: ModelsFileAdapter;
   keychain: KeychainAdapter;
   store: ModelStorePort;
+  /** 审计日志回调（P3-D；可选，缺省不记） */
+  audit?: AuditLogFn;
+  /**
+   * provider 配置变更钩子：saveProvider / deleteProvider 成功后触发，
+   * 供上层刷新模型运行时缓存（使新 API Key 立即生效）；异常不阻断主流程。
+   */
+  onConfigChanged?: () => void | Promise<void>;
 }
 
 /**
@@ -183,12 +206,35 @@ export class ModelService {
 
   /**
    * 查询 provider 列表（MP-S03）：从 models.json 适配器读取。
+   * apiKey 为引用形式（`$VAR` / `!cmd`）时，若 keychain 支持读取则解析为明文
+   * 返回（供 UI 编辑回显，与其他明文 provider 行为一致）；不支持/读取失败时
+   * 保留引用，不回显明文。
    * @returns 成功返回 provider 列表；adapter 异常返回 5000
    */
   async queryProviderList(): Promise<ModelResult<{ providers: ProviderConfig[] }>> {
     try {
       const providers = await this.deps.modelsFile.readProviders();
-      return { ok: true, data: { providers } };
+      // bind 保留 keychain 为 this（class 实现依赖实例状态），并消除可选类型
+      const readKey = this.deps.keychain.readKey?.bind(this.deps.keychain);
+      if (readKey === undefined) {
+        return { ok: true, data: { providers } };
+      }
+      const resolved = await Promise.all(
+        providers.map(async (p) => {
+          const apiKey = p.apiKey;
+          if (apiKey === undefined || !KEY_REF_PREFIX.test(apiKey)) {
+            return p;
+          }
+          try {
+            const plain = await readKey(p.id);
+            return plain !== null ? { ...p, apiKey: plain } : p;
+          } catch {
+            // 读取失败（机器变更等）：保留引用，访问者按引用解析或重新录入
+            return p;
+          }
+        }),
+      );
+      return { ok: true, data: { providers: resolved } };
     } catch (err) {
       return { ok: false, code: 5000, message: `读取 provider 配置失败: ${toMessage(err)}` };
     }
@@ -221,8 +267,21 @@ export class ModelService {
       input.id !== undefined && input.id.trim() !== '' ? input.id.trim() : slugify(name);
     const baseUrl = normalizeBaseUrl(input.baseUrl);
 
-    // 密钥处理：提供新 key 时经 keychain 存引用（不可用降级 $ENV_VAR）；否则保留缓存引用
+    // 密钥处理：提供新 key 时经 keychain 存引用（不可用降级 $ENV_VAR）；
+    // 未提供时保留现有引用——内存缓存未命中（进程重启后为空）则回读
+    // models.json 现有记录继承（否则留空保存会把已有 apiKey 引用丢掉）
     let apiKeyRef: string | undefined = this.apiKeyRefs.get(id);
+    if (apiKeyRef === undefined) {
+      try {
+        const existing = await this.deps.modelsFile.readProviders();
+        apiKeyRef = existing.find((p) => p.id === id)?.apiKey;
+        if (apiKeyRef !== undefined) {
+          this.apiKeyRefs.set(id, apiKeyRef);
+        }
+      } catch {
+        // 读取失败按无引用处理（后续写入按新记录覆盖）
+      }
+    }
     if (input.apiKey !== undefined) {
       let available = false;
       try {
@@ -266,6 +325,14 @@ export class ModelService {
     } catch (err) {
       return { ok: false, code: 5000, message: `写入 models.json 失败: ${toMessage(err)}` };
     }
+    // P3-D：配置变更审计（不含密钥明文/引用）
+    this.deps.audit?.({ action: 'provider.saved', providerId: id, ts: new Date().toISOString() });
+    // 配置变更钩子：刷新模型运行时缓存（新 API Key 立即生效）；失败不阻断保存结果
+    try {
+      await this.deps.onConfigChanged?.();
+    } catch (err) {
+      console.error('[saveProvider] onConfigChanged failed', err);
+    }
     return { ok: true, data: null };
   }
 
@@ -289,6 +356,14 @@ export class ModelService {
       const defaultModel = this.deps.store.getSetting('defaultModel');
       if (typeof defaultModel === 'string' && target.models.includes(defaultModel)) {
         this.deps.store.setSetting('defaultModel', null);
+      }
+      // P3-D：删除 provider 记审计（不含密钥）
+      this.deps.audit?.({ action: 'provider.deleted', providerId, ts: new Date().toISOString() });
+      // 配置变更钩子：刷新模型运行时缓存；失败不阻断删除结果
+      try {
+        await this.deps.onConfigChanged?.();
+      } catch (err) {
+        console.error('[deleteProvider] onConfigChanged failed', err);
       }
       return { ok: true, data: null };
     } catch (err) {
@@ -336,6 +411,12 @@ export class ModelService {
       }
     }
     this.deps.store.setSetting('defaultModel', target);
+    // P3-D：默认模型变更记审计
+    this.deps.audit?.({
+      action: 'model.defaultChanged',
+      providerId: target ?? '',
+      ts: new Date().toISOString(),
+    });
     return { ok: true, data: null };
   }
 

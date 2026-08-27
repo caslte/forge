@@ -57,6 +57,10 @@ class MockModelsFileAdapter implements ModelsFileAdapter {
 /** keychain 适配器 mock：可配置可用性，记录存储调用，返回 `!forge-secret get <id>` 引用 */
 class MockKeychainAdapter implements KeychainAdapter {
   available = true;
+  /** 是否支持读取明文（缺省支持，映射 providerId -> 明文） */
+  readBack: Record<string, string> = {};
+  /** 显式置 undefined 模拟不支持 readKey 的适配器 */
+  supportReadKey = true;
   stored: Array<{ providerId: string; apiKey: string }> = [];
 
   async isAvailable(): Promise<boolean> {
@@ -65,7 +69,14 @@ class MockKeychainAdapter implements KeychainAdapter {
 
   async storeKey(providerId: string, apiKey: string): Promise<string> {
     this.stored.push({ providerId, apiKey });
+    this.readBack[providerId] = apiKey;
     return `!forge-secret get ${providerId}`;
+  }
+
+  // class 实现可选接口方法无需 `?`（Node 原生 strip-types 支持标准方法）
+  async readKey(providerId: string): Promise<string | null> {
+    if (!this.supportReadKey) return null;
+    return this.readBack[providerId] ?? null;
   }
 }
 
@@ -282,6 +293,68 @@ test('setSessionModel：设置/清除覆盖，仅影响该会话', async () => {
   assert.equal(store.sessions.get('sess-1')?.modelOverride, null);
 });
 
+test('queryProviderList：引用形式 apiKey（$VAR/!cmd）且 keychain 支持读取时返回明文（编辑回显用）', async () => {
+  const { service, modelsFile, keychain } = makeService();
+  modelsFile.providers = [
+    {
+      id: 'minimax',
+      name: 'MiniMax',
+      type: 'openai-completions',
+      baseUrl: 'https://api.minimax.com/v1',
+      models: ['MiniMax-M3'],
+      lastError: null,
+      apiKey: '$FORGE_MINIMAX_M3_API_KEY',
+    },
+  ];
+  keychain.readBack['minimax'] = 'sk-real-minimax-secret';
+  const list = await service.queryProviderList();
+  assert.ok(list.ok);
+  if (list.ok) {
+    assert.equal(list.data.providers[0]?.apiKey, 'sk-real-minimax-secret');
+  }
+});
+
+test('queryProviderList：keychain 不支持读取时保留引用，不回显明文', async () => {
+  const { service, modelsFile, keychain } = makeService();
+  modelsFile.providers = [
+    {
+      id: 'minimax',
+      name: 'MiniMax',
+      type: 'openai-completions',
+      baseUrl: 'https://api.minimax.com/v1',
+      models: ['MiniMax-M3'],
+      lastError: null,
+      apiKey: '$FORGE_MINIMAX_M3_API_KEY',
+    },
+  ];
+  keychain.supportReadKey = false;
+  const list = await service.queryProviderList();
+  assert.ok(list.ok);
+  if (list.ok) {
+    assert.equal(list.data.providers[0]?.apiKey, '$FORGE_MINIMAX_M3_API_KEY');
+  }
+});
+
+test('queryProviderList：明文 apiKey 原样返回（与既有行为一致）', async () => {
+  const { service, modelsFile } = makeService();
+  modelsFile.providers = [
+    {
+      id: 'grok',
+      name: 'Grok',
+      type: 'openai-completions',
+      baseUrl: 'https://xuseny.online/v1',
+      models: ['grok-4.5'],
+      lastError: null,
+      apiKey: 'sk-plain-grok-key',
+    },
+  ];
+  const list = await service.queryProviderList();
+  assert.ok(list.ok);
+  if (list.ok) {
+    assert.equal(list.data.providers[0]?.apiKey, 'sk-plain-grok-key');
+  }
+});
+
 test('queryProviderList / queryModels：从适配器与 store 读取', async () => {
   const { service, modelsFile, store } = makeService();
   modelsFile.providers = [
@@ -325,4 +398,45 @@ test('adapter 异常统一返回 5000 错误联合', async () => {
   if (!save.ok) {
     assert.equal(save.code, 5000);
   }
+});
+// ===== P3-D：配置变更审计日志 =====
+
+test('P3-D：saveProvider/deleteProvider/setDefault 触发审计且不含密钥', async () => {
+  const modelsFile = new MockModelsFileAdapter();
+  const keychain = new MockKeychainAdapter();
+  const store = new MockModelStore();
+  const auditEvents: Array<{ action: string; providerId: string; ts: string }> = [];
+  const service = new ModelService({
+    modelsFile,
+    keychain,
+    store,
+    audit: (e) => auditEvents.push(e),
+  });
+
+  await service.saveProvider(validInput({ name: 'Test', id: 'test-provider', models: ['m1'], apiKey: 'sk-super-sec-secret' }));
+  modelsFile.modelNames = ['m1']; // mock 的 readModelNames 独立于 providers（其余测试同约定）
+  assert.equal(auditEvents.length, 1);
+  assert.equal(auditEvents[0]?.action, 'provider.saved');
+  assert.equal(auditEvents[0]?.providerId, 'test-provider');
+  assert.ok(auditEvents[0]?.ts);
+
+  await service.setDefault('m1');
+  assert.equal(auditEvents.length, 2);
+  assert.equal(auditEvents[1]?.action, 'model.defaultChanged');
+
+  await service.deleteProvider('test-provider');
+  assert.equal(auditEvents.length, 3);
+  assert.equal(auditEvents[2]?.action, 'provider.deleted');
+  assert.equal(auditEvents[2]?.providerId, 'test-provider');
+
+  // 审计载荷绝不含 apiKey 明文
+  const serialized = JSON.stringify(auditEvents);
+  assert.ok(!serialized.includes('sk-super-sec-secret'), '审计日志不得含密钥明文');
+});
+
+test('P3-D：未注入审计回调时配置变更不报错', async () => {
+  const { service } = makeService();
+  const saved = await service.saveProvider(validInput({ id: 'no-audit', models: ['m1'] }));
+  assert.equal(saved.ok, true);
+  assert.equal((await service.deleteProvider('no-audit')).ok, true);
 });

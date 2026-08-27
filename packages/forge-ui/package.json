@@ -14,9 +14,12 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@forge/core": "*",
+    "mermaid": "^11.17.1",
     "vue": "^3.5.41"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@vitejs/plugin-vue": "^5.2.4",
     "vite": "^5.4.21",
     "vue-tsc": "^2.2.12"

@@ -104,6 +104,20 @@ test('sendMessage：成功进入 streaming，adapter.sendMessage 调用一次（
   assert.deepEqual(adapter.sendCalls, [{ sessionId: 'sess-1', content: 'hi' }]);
 });
 
+test('sendMessage：streaming 中重复发送返回 1001，adapter 不被调用', async () => {
+  const { service, adapter } = makeService();
+  service.setStatus('sess-1', 'streaming', { lastDeltaText: 'partial' });
+
+  const result = await service.sendMessage('sess-1', 'again');
+
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1001);
+    assert.match(result.message, /正在流式响应/);
+  }
+  assert.equal(adapter.sendCalls.length, 0);
+});
+
 test('cancelStream：streaming 中取消 -> canceled，adapter 调用，已生成内容保留（A-CV-005/AC-CV-009）', async () => {
   const { service, adapter } = makeService();
   service.setStatus('sess-1', 'streaming', { lastDeltaText: 'partial reply' });
@@ -196,4 +210,62 @@ test('多会话独立：10 会话交错状态流转互不干扰（状态隔离�
   assert.equal(service.getStreamState('sess-1').lastDeltaText, 'partial-sess-1');
   assert.equal(service.getStreamState('sess-9').lastDeltaText, 'partial-sess-9');
   assert.deepEqual(adapter.cancelCalls, ['sess-0', 'sess-2', 'sess-4', 'sess-6', 'sess-8']);
+});
+
+// ===== P3-A：上下文用量与压缩 =====
+
+test('getContextUsage：adapter 支持时返回用量，未支持时返回 null 数据（P3-A）', async () => {
+  // 未实现 getContextUsage 的 adapter → null（UI 显示未知，不算错误）
+  const { service } = makeService({ sessionExists: () => true });
+  const none = await service.getContextUsage('sess-x');
+  assert.ok(none.ok);
+  assert.equal(none.data?.usage, null);
+
+  // 实现 getContextUsage 的 adapter → 透传用量
+  const usageAdapter = new MockPiConversationAdapter();
+  usageAdapter.getContextUsage = () => ({ tokens: 4200, contextWindow: 128000, percent: 3.3 });
+  const svc = new ConversationService(usageAdapter, { sessionExists: () => true });
+  const res = await svc.getContextUsage('sess-x');
+  assert.ok(res.ok);
+  assert.equal(res.data?.usage?.tokens, 4200);
+  assert.equal(res.data?.usage?.percent, 3.3);
+});
+
+test('getContextUsage：空参数 1001 / 会话不存在 1002', async () => {
+  const { service } = makeService({ sessionExists: (id) => id === 'sess-known' });
+  const empty = await service.getContextUsage('');
+  assert.equal(empty.ok, false);
+  if (!empty.ok) assert.equal(empty.code, 1001);
+  const unknown = await service.getContextUsage('ghost');
+  assert.equal(unknown.ok, false);
+  if (!unknown.ok) assert.equal(unknown.code, 1002);
+});
+
+test('compact：adapter 支持时返回结果，不支持时明确失败不破坏历史（P3-A）', async () => {
+  const { service } = makeService({ sessionExists: () => true });
+  const unsupported = await service.compact('sess-x');
+  assert.ok(unsupported.ok);
+  assert.equal(unsupported.data?.result.ok, false);
+
+  const compactAdapter = new MockPiConversationAdapter();
+  compactAdapter.compact = async () => ({ ok: true, message: '压缩完成' });
+  const svc = new ConversationService(compactAdapter, { sessionExists: () => true });
+  const res = await svc.compact('sess-x');
+  assert.ok(res.ok);
+  assert.equal(res.data?.result.ok, true);
+  assert.equal(res.data?.result.message, '压缩完成');
+});
+
+test('compact：压缩异常返回失败信息且不抛出（P3-A 手动压缩失败不破坏历史）', async () => {
+  const failAdapter = new MockPiConversationAdapter();
+  failAdapter.compact = async () => {
+    throw new Error('provider 超时');
+  };
+  const svc = new ConversationService(failAdapter, { sessionExists: () => true });
+  const res = await svc.compact('sess-x');
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.code, 5000);
+    assert.match(res.message, /压缩失败/);
+  }
 });

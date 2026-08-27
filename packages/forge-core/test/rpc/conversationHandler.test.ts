@@ -106,6 +106,20 @@ test('conversation/sendMessage：provider 未配置返回 1004，adapter 不被�
   assert.equal(adapter.sendCalls.length, 0);
 });
 
+test('conversation/sendMessage：streaming 中重复发送返回 1001 并保留 streaming', async () => {
+  const { api, service, adapter, events } = makeApi();
+  service.setStatus('sess-1', 'streaming', { lastDeltaText: 'partial' });
+  const changed: unknown[] = [];
+  events.on('conversation.statusChanged', (payload) => changed.push(payload));
+
+  const result = await api.methods['conversation/sendMessage']({ sessionId: 'sess-1', content: 'again' });
+
+  assert.equal(result.code, 1001);
+  assert.equal(adapter.sendCalls.length, 0);
+  assert.equal(changed.length, 0);
+  assert.equal(service.getStatus('sess-1'), 'streaming');
+});
+
 test('conversation/sendMessage：会话不存在返回 1002，adapter 不被调用', async () => {
   const { api, adapter } = makeApi({ sessionExists: () => false });
   const result = await api.methods['conversation/sendMessage']({ sessionId: 'sess-ghost', content: 'hi' });
@@ -224,4 +238,21 @@ test('信封：所有方法返回 { code, message, data }', async () => {
   for (const r of results) {
     assert.deepEqual(Object.keys(r).sort(), ['code', 'data', 'message'], '信封恒为 { code, message, data }');
   }
+});
+
+test('conversation/sendMessage：文本附件拼入受控 prompt 片段，图片附件透传（P3-B）', async () => {
+  const { api, adapter } = makeApi();
+  const result = await api.methods['conversation/sendMessage']({
+    sessionId: 'sess-1',
+    content: '读一下',
+    attachments: [
+      { kind: 'text', name: 'readme.md', content: '项目说明' },
+      { kind: 'image', name: 'pic.png', mimeType: 'image/png', data: 'YWJj' },
+    ],
+  });
+  assert.equal(result.code, 0);
+  assert.equal(adapter.sendCalls.length, 1);
+  const call0 = adapter.sendCalls[0]!;
+  // 文本附件以 [附件：name] 片段拼入 content；图片附件仅在 options 透传
+  assert.match(call0.content, /^读一下\n\n\[附件：readme\.md\]\n项目说明$/);
 });

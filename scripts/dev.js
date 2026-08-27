@@ -51,7 +51,19 @@ function waitForDevServer(maxAttempts = 30) {
 }
 
 function runBuild(workspace) {
-  spawnSync(npmCmd, ['run', 'build', '-w', workspace], { stdio: 'inherit' });
+  // Windows 下 spawn .cmd 必须 shell:true（Node CVE-2024-27980 后强制 EINVAL）
+  const res = spawnSync(npmCmd, ['run', 'build', '-w', workspace], {
+    stdio: 'inherit',
+    shell: isWindows,
+  });
+  if (res.error) {
+    console.error(`[dev] ${workspace} 构建进程异常:`, res.error.message);
+    process.exit(1);
+  }
+  if (res.status !== 0) {
+    console.error(`[dev] ${workspace} 构建失败（exit ${res.status}），中止启动`);
+    process.exit(res.status ?? 1);
+  }
 }
 
 async function main() {

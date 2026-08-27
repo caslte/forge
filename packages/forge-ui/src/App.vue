@@ -10,6 +10,7 @@ import ConversationView from './components/ConversationView.vue';
 import MultiWindowCanvas from './components/MultiWindowCanvas.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import ProjectPickerDialog from './components/ProjectPickerDialog.vue';
+import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 
@@ -25,6 +26,9 @@ const activeView = ref<View>('sessions');
 const sidebarCollapsed = ref(false);
 const showProjectPicker = ref(false);
 const showExitDialog = ref(false);
+/** 待信任确认的项目（1005 弹窗） */
+const trustAskPath = ref<string | null>(null);
+const trustAskName = ref('');
 /** 多窗口画布模式（单会话视图 ↔ 多窗口画布 切换） */
 const multiWindow = ref(false);
 /** 已在多窗口画布上打开的会话 id 列表（供会话池标记灰态） */
@@ -66,7 +70,7 @@ async function loadProjects(): Promise<void> {
     const res = await call<{ projects: ProjectItem[] }>('project/queryProjectList');
     projects.value = res.projects;
     if (currentProjectPath.value === null && projects.value.length > 0) {
-      await selectProject(projects.value[0]!.path);
+      await openProject(projects.value[0]!.path);
     }
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
@@ -79,6 +83,43 @@ async function selectProject(path: string): Promise<void> {
   // 设置在设置页时，点击项目应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
   await loadSessions();
+}
+
+/**
+ * 打开项目（P2-A）：先走 project/openProject；含项目资源且信任未定时返回 1005，
+ * 弹出信任确认；已确定状态直接进入。错误码 1005 特殊处理（带 prompt 载荷）。
+ */
+async function openProject(path: string): Promise<void> {
+  try {
+    await call('project/openProject', { path });
+    await selectProject(path);
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('1005')) {
+      // 信任询问：附带路径进入弹窗，不阻断会话视图
+      trustAskPath.value = path;
+      trustAskName.value = basename(path);
+      await selectProject(path);
+    } else {
+      // 其余错误：仍进入项目（基础会话可用），仅提示
+      await selectProject(path);
+      showError(e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+/** 信任决策回传（P2-A）：写 pi 权威后关闭弹窗 */
+async function onTrustDecide(decision: 'trust' | 'reject' | 'trustOnce'): Promise<void> {
+  const path = trustAskPath.value;
+  trustAskPath.value = null;
+  if (!path) return;
+  try {
+    await call('project/setTrust', { path, decision });
+    const label =
+      decision === 'trust' ? '已信任' : decision === 'reject' ? '已拒绝' : '本次已信任';
+    showToast(`${label}：${basename(path)}`, decision === 'reject' ? 'info' : 'success');
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  }
 }
 
 async function loadSessions(): Promise<void> {
@@ -255,6 +296,7 @@ function basename(p: string): string {
 }
 
 let unsubSessionRemoved: (() => void) | null = null;
+let unsubSessionUpdated: (() => void) | null = null;
 let unsubProjectRemoved: (() => void) | null = null;
 let unsubProvidersChanged: (() => void) | null = null;
 
@@ -272,6 +314,10 @@ onMounted(() => {
     if (p.sessionId === currentSessionId.value) currentSessionId.value = null;
     void loadSessions();
   });
+  // 会话别名更新（手动重命名或首条消息自动命名）：刷新列表保持 UI 同步
+  unsubSessionUpdated = subscribe('session.updated', () => {
+    void loadSessions();
+  });
   unsubProjectRemoved = subscribe('project.removed', () => {
     void loadProjects();
   });
@@ -284,6 +330,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   unsubSessionRemoved?.();
+  unsubSessionUpdated?.();
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
   if (errorTimer !== null) clearTimeout(errorTimer);
@@ -462,6 +509,13 @@ onUnmounted(() => {
       v-if="showProjectPicker"
       @close="showProjectPicker = false"
       @confirm="onAddProject"
+    />
+
+    <TrustAskDialog
+      v-if="trustAskPath !== null"
+      :project-path="trustAskPath"
+      :project-name="trustAskName"
+      @decide="onTrustDecide"
     />
 
     <ExitConfirmDialog

@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionStatus } from '../types';
+import { call, type AttachmentFile } from '../bridge';
 
 /**
  * 指令输入框。
- * 参考 ai-coding 的 composer 视觉，但精简为 textarea（非 contenteditable），
- * 因 forge-core mock 不支持 skill/文件提及/附件上传，相关按钮仅占位禁用。
+ * 参考 ai-coding 的 composer 视觉，但精简为 textarea（非 contenteditable）。
+ * P3-B：附件上传（文件选择 / Ctrl+V 粘贴截图 / 拖拽图片），随消息一起发送。
  * 模型切换为点击浮窗菜单（对齐原型 .menu 机制：点字样开、点外部关）。
+ * P3-A：底部上下文用量区读取 conversation/getContextUsage，压缩按钮调用 compact。
  */
 const props = defineProps<{
   /** 当前会话状态，streaming 时切换为停止按钮并禁用输入 */
@@ -15,17 +17,23 @@ const props = defineProps<{
   models: string[];
   /** 当前会话模型（来自 model/getSessionModel），null 表示用默认 */
   currentModel: string | null;
+  /** 会话 ID（P3-A：读取上下文用量 / 手动压缩） */
+  sessionId?: string;
   /** 紧凑模式（多窗口用）：更小的默认高度，可用鼠标拖拽调整 */
   compact?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: 'send', text: string): void;
+  (e: 'send', text: string, attachments?: AttachmentFile[]): void;
   (e: 'cancel'): void;
   (e: 'model-change', model: string): void;
 }>();
 
 const text = ref('');
+/** P3-B：待发附件（图片 base64 / 文本 content，随消息一起发送） */
+const attachments = ref<AttachmentFile[]>([]);
+const attachError = ref<string | null>(null);
+let attachErrorTimer: ReturnType<typeof setTimeout> | null = null;
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const inputBoxRef = ref<HTMLElement | null>(null);
 const attachRowRef = ref<HTMLElement | null>(null);
@@ -33,9 +41,72 @@ const focused = ref(false);
 const modelMenuOpen = ref(false);
 
 const isStreaming = computed(() => props.sessionStatus === 'streaming');
-const canSend = computed(() => text.value.trim().length > 0 && !isStreaming.value);
+const canSend = computed(() => (text.value.trim().length > 0 || attachments.value.length > 0) && !isStreaming.value);
 const charCount = computed(() => text.value.length);
 const MAX_CHARS = 8000;
+
+// ===== P3-A：上下文用量 =====
+interface ContextUsageInfo {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+}
+const usage = ref<ContextUsageInfo | null>(null);
+const usageError = ref<string | null>(null);
+const compacting = ref(false);
+const compactResult = ref<string | null>(null);
+let compactResultTimer: ReturnType<typeof setTimeout> | null = null;
+
+const usagePercent = computed(() => {
+  if (usage.value === null || usage.value.percent === null) return null;
+  return Math.round(usage.value.percent * 10) / 10;
+});
+const usagePct = computed(() => (usagePercent.value === null ? 0 : usagePercent.value));
+const usageLabel = computed(() => {
+  if (usage.value === null) return '—';
+  const pct = usagePercent.value;
+  if (pct === null) return `${usage.value.tokens ?? '?'} tokens`;
+  return `${pct}%`;
+});
+const usageWarning = computed(() => usagePercent.value !== null && usagePercent.value >= 80);
+
+/** 拉取当前会话上下文用量（P3-A） */
+async function refreshUsage(): Promise<void> {
+  if (!props.sessionId) return;
+  try {
+    const res = await call<{ usage: ContextUsageInfo | null }>('conversation/getContextUsage', {
+      sessionId: props.sessionId,
+    });
+    usage.value = res.usage ?? null;
+    usageError.value = null;
+  } catch (e) {
+    usageError.value = e instanceof Error ? e.message : '';
+    usage.value = null;
+  }
+}
+
+/** 手动压缩（P3-A）：成功后刷新用量 */
+async function onCompact(): Promise<void> {
+  if (!props.sessionId || compacting.value) return;
+  compacting.value = true;
+  compactResult.value = null;
+  try {
+    const res = await call<{ result: { ok: boolean; message?: string } }>('conversation/compact', {
+      sessionId: props.sessionId,
+    });
+    const r = res.result;
+    compactResult.value = r.ok ? '压缩完成' : (r.message ?? '压缩失败');
+    await refreshUsage();
+  } catch (e) {
+    compactResult.value = e instanceof Error ? e.message : '压缩失败';
+  } finally {
+    compacting.value = false;
+    if (compactResultTimer) clearTimeout(compactResultTimer);
+    compactResultTimer = setTimeout(() => {
+      compactResult.value = null;
+    }, 4000);
+  }
+}
 
 /** textarea 自适应高度上限：与拖拽盒子上限(320)对齐（320 − 上内边距12 − 底部预留58），之后交给滚动条 */
 const GROW_MAX = 250;
@@ -108,9 +179,141 @@ function onKeydown(ev: KeyboardEvent): void {
 function onSend(): void {
   if (!canSend.value) return;
   const t = text.value.trim();
+  const atts = attachments.value;
   text.value = '';
+  attachments.value = [];
+  attachError.value = null;
   nextTick(autoGrow);
-  emit('send', t);
+  emit('send', t, atts.length > 0 ? atts : undefined);
+}
+
+/** P3-B：选择附件并加入待发区（图片/文本由主进程读取） */
+async function pickAttachments(): Promise<void> {
+  if (isStreaming.value) return;
+  try {
+    const files = await window.forge.dialog.selectFiles();
+    if (files.length === 0) return;
+    attachments.value = [...attachments.value, ...files];
+    attachError.value = null;
+  } catch (e) {
+    showAttachError(e instanceof Error ? e.message : '读取附件失败');
+  }
+}
+
+// ===== 截图图片上传：粘贴（Ctrl+V）+ 拖拽 =====
+/** 图片大小上限，与主进程 selectFiles 的 10MB 一致 */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** 拖拽悬停高亮态 */
+const dragOver = ref(false);
+
+/** Blob 读取为纯 base64（去掉 data URL 前缀，与主进程附件 data 格式一致） */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = reader.result;
+      if (typeof r === 'string' && r.includes(',')) {
+        resolve(r.slice(r.indexOf(',') + 1));
+      } else {
+        reject(new Error('图片读取失败'));
+      }
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * 把剪贴板/拖入的图片 Blob 加入附件待发区。
+ * @param file 图片 Blob（粘贴截图无文件名，自动按时间生成）
+ * @param fallbackName 已知文件名（拖入场景），缺省生成「截图-HHmmss.ext」
+ */
+async function addImageFromBlob(file: Blob, fallbackName?: string): Promise<void> {
+  if (file.size > MAX_IMAGE_BYTES) {
+    showAttachError('图片超过 10MB 上限，已跳过');
+    return;
+  }
+  const mimeType = file.type || 'image/png';
+  const ext = (mimeType.split('/')[1] ?? 'png').split('+')[0] ?? 'png';
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  const name = fallbackName ?? `截图-${hh}${mm}${ss}.${ext}`;
+  try {
+    const data = await blobToBase64(file);
+    attachments.value = [
+      ...attachments.value,
+      { path: `clipboard:${name}`, name, kind: 'image' as const, mimeType, data },
+    ];
+    attachError.value = null;
+  } catch (e) {
+    showAttachError(e instanceof Error ? e.message : '图片读取失败');
+  }
+}
+
+/**
+ * 粘贴事件：剪贴板含文本时优先走默认文本粘贴（如从 Excel 复制）；
+ * 纯截图（Win+Shift+S 等）拦截为图片附件。
+ */
+function onPaste(ev: ClipboardEvent): void {
+  if (isStreaming.value) return;
+  const cd = ev.clipboardData;
+  if (!cd) return;
+  if (cd.getData('text/plain').trim() !== '') return;
+  const images: File[] = [];
+  for (const item of cd.items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const f = item.getAsFile();
+      if (f) images.push(f);
+    }
+  }
+  if (images.length === 0) return;
+  ev.preventDefault();
+  for (const f of images) void addImageFromBlob(f);
+}
+
+/** 拖拽悬停：仅当拖入的是文件时高亮并允许放置 */
+function onDragOver(ev: DragEvent): void {
+  if (isStreaming.value) return;
+  const types = ev.dataTransfer?.types;
+  if (!types || !Array.from(types).includes('Files')) return;
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+  dragOver.value = true;
+}
+
+/** 拖拽离开：越过子元素内部移动不取消高亮 */
+function onDragLeave(ev: DragEvent): void {
+  const el = inputBoxRef.value;
+  if (el && ev.relatedTarget && el.contains(ev.relatedTarget as Node)) return;
+  dragOver.value = false;
+}
+
+/** 放置：读取拖入的图片文件（非图片类型忽略） */
+function onDrop(ev: DragEvent): void {
+  if (isStreaming.value) return;
+  dragOver.value = false;
+  const files = Array.from(ev.dataTransfer?.files ?? []);
+  if (files.length === 0) return;
+  ev.preventDefault();
+  for (const f of files) {
+    if (f.type.startsWith('image/')) void addImageFromBlob(f, f.name);
+  }
+}
+
+/** 从待发区移除附件（P3-B 失败/误选可移除重试） */
+function removeAttachment(index: number): void {
+  attachments.value = attachments.value.filter((_, i) => i !== index);
+}
+
+function showAttachError(msg: string): void {
+  attachError.value = msg;
+  if (attachErrorTimer) clearTimeout(attachErrorTimer);
+  attachErrorTimer = setTimeout(() => {
+    attachError.value = null;
+  }, 4000);
 }
 
 function onCancel(): void {
@@ -146,25 +349,46 @@ defineExpose({ focus });
 onMounted(() => {
   nextTick(autoGrow);
   document.addEventListener('click', onDocClick);
+  if (props.sessionId) void refreshUsage();
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
+  if (compactResultTimer) clearTimeout(compactResultTimer);
+  if (attachErrorTimer) clearTimeout(attachErrorTimer);
 });
 
-// 会话回到空闲时自动聚焦输入框
+// 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）
 watch(
   () => props.sessionStatus,
   (s) => {
     if (s === 'idle' || s === 'done') {
       nextTick(focus);
+      void refreshUsage();
     }
+  },
+);
+
+// 会议切换 / sessionId 变化时重新拉取用量
+watch(
+  () => props.sessionId,
+  () => {
+    usage.value = null;
+    compactResult.value = null;
+    if (props.sessionId) void refreshUsage();
   },
 );
 </script>
 
 <template>
-  <div ref="inputBoxRef" class="compose-box" :class="{ streaming: isStreaming, focused, compact }">
+  <div
+    ref="inputBoxRef"
+    class="compose-box"
+    :class="{ streaming: isStreaming, focused, compact, dragover: dragOver }"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
     <!-- 上边沿：透明拖拽带，悬停显示 row-resize，可拖拽调整整个输入框高度 -->
     <div
       class="cb-resize"
@@ -173,18 +397,46 @@ watch(
       @pointermove="onResizeMove"
       @pointerup="onResizeUp"
     ></div>
-    <!-- 附件待发区（预留，后端接入后展示） -->
-    <div ref="attachRowRef" class="attach-row"></div>
+    <!-- 附件待发区（P3-B：选择/粘贴/拖入后展示，可移除） -->
+    <div ref="attachRowRef" class="attach-row">
+      <div v-for="(att, i) in attachments" :key="att.path + i" class="attach-chip">
+        <span
+          v-if="att.kind === 'image' && att.data"
+          class="attach-thumb"
+          :style="{ backgroundImage: `url(data:${att.mimeType ?? 'image/png'};base64,${att.data})` }"
+        ></span>
+        <span v-else class="attach-icon">
+          <svg v-if="att.kind === 'image'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <polyline points="21 15 16 10 5 21" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+        </span>
+        <span class="attach-name" :title="att.path">{{ att.name }}</span>
+        <button class="attach-remove" title="移除附件" @click="removeAttachment(i)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div v-if="attachError" class="attach-error">{{ attachError }}</div>
+    </div>
 
     <textarea
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? '助手正在回复，可点击停止中断…' : '输入你的问题或任务指令… 按 Enter 发送'"
+      :placeholder="isStreaming ? '助手正在回复，可点击停止中断…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
       :disabled="isStreaming"
       :rows="3"
       @input="onInput"
       @keydown="onKeydown"
+      @paste="onPaste"
       @focus="focused = true"
       @blur="focused = false"
     ></textarea>
@@ -194,9 +446,10 @@ watch(
         <!-- 附件 -->
         <button
           class="meta-link"
-          disabled
-          data-tooltip="附件功能暂未启用"
+          :disabled="isStreaming"
+          data-tooltip="添加附件（图片 / 文本）"
           aria-label="附件"
+          @click="pickAttachments"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -234,10 +487,26 @@ watch(
       </div>
 
       <div class="compose-actions">
-        <div class="ctx" title="上下文用量，接近上限可压缩" data-tooltip="上下文用量（后端接入后展示）">
-          <span class="ctx-num">—</span>
-          <div class="ctx-track"><div class="ctx-fill" style="width:0%"></div></div>
-          <span class="ctx-cmp">压缩</span>
+        <div
+          class="ctx"
+          :class="{ 'ctx-warn': usageWarning }"
+          :title="usageError || '上下文用量，接近上限可压缩'"
+          data-tooltip="上下文用量"
+        >
+          <span class="ctx-num">{{ usageLabel }}</span>
+          <div class="ctx-track">
+            <div
+              class="ctx-fill"
+              :class="{ warn: usageWarning }"
+              :style="{ width: usagePct + '%' }"
+            ></div>
+          </div>
+          <span
+            class="ctx-cmp"
+            :class="{ disabled: compacting }"
+            :title="compacting ? '压缩中…' : '压缩上下文'"
+            @click="onCompact"
+          >{{ compacting ? '压缩中…' : '压缩' }}</span>
         </div>
 
         <!-- 发送/停止 -->
@@ -295,6 +564,12 @@ watch(
   border-color: color-mix(in oklab, var(--warning) 50%, var(--input));
 }
 
+/* 拖拽图片悬停高亮：边框品牌色 + 轻微底色提示可放置 */
+.compose-box.dragover {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 4%, var(--background));
+}
+
 /* 紧凑模式（多窗口）：与单窗口输入框高度规则保持一致（可拖拽调整） */
 
 /* 附件待发区 */
@@ -307,6 +582,79 @@ watch(
 
 .attach-row:empty {
   display: none;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--foreground);
+}
+
+.attach-icon {
+  display: inline-flex;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+/* 图片附件缩略图：base64 直接渲染，直观确认粘贴/拖入的截图内容 */
+.attach-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--muted);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.attach-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.attach-remove:hover {
+  color: var(--destructive);
+  background: color-mix(in oklab, var(--destructive) 10%, transparent);
+}
+
+.attach-remove svg {
+  width: 11px;
+  height: 11px;
+}
+
+.attach-error {
+  font-size: 12px;
+  color: var(--destructive);
+  padding: 2px 4px;
 }
 
 .compose-input {
@@ -459,6 +807,10 @@ watch(
   white-space: nowrap;
 }
 
+.ctx.warn .ctx-num {
+  color: var(--warning);
+}
+
 .ctx-num {
   font-size: 12px;
   color: var(--muted-foreground);
@@ -481,6 +833,10 @@ watch(
   transition: width 300ms ease;
 }
 
+.ctx-fill.warn {
+  background: var(--warning);
+}
+
 .ctx-cmp {
   padding: 3px 5px;
   border-radius: 5px;
@@ -492,6 +848,11 @@ watch(
 .ctx-cmp:hover {
   color: var(--foreground);
   background: var(--muted);
+}
+
+.ctx-cmp.disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* 发送/停止（对齐原型：常显品牌色，禁用态灰） */
