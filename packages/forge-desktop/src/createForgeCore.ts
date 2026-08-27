@@ -36,6 +36,7 @@ import {
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
+import { getPiSupportedThinkingLevels } from './pi/piModelResolver.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 import { PiTrustStoreAdapter } from './pi/piTrustStoreAdapter.ts';
 
@@ -129,7 +130,17 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       return undefined;
     }
   };
-  conversationAdapter = new PiConversationAdapter(piAgentSessionFactory, { resolveSessionFile });
+  // 实时读取全局默认思考级别（MP-QA-G01 修复）：不保存启动快照，每次发送前
+  // 经 store.getSetting('thinkingLevel') 实时读取，避免运行中 setSessionThinkingLevel
+  // 同步全局后新会话仍用初始快照。setting 缺失（旧数据）时兜底 'off'（schema.md 兼容）。
+  const readDefaultThinkingLevel = (): string => {
+    const stored = store.getSetting('thinkingLevel');
+    return typeof stored === 'string' && stored !== '' ? stored : 'off';
+  };
+  conversationAdapter = new PiConversationAdapter(piAgentSessionFactory, {
+    resolveSessionFile,
+    resolveDefaultThinkingLevel: readDefaultThinkingLevel,
+  });
   // model（05）共享实例：提供真实 provider 就绪检查（models 非空）与会话模型解析
   const modelService = new ModelService({
     modelsFile: deps.modelsFile ?? new PiModelsFileAdapter(deps.piModelsPath ?? defaultPiModelsPath()),
@@ -150,6 +161,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     // provider 增删改后刷新模型运行时（清缓存 + 活跃会话重读 models.json），
     // 使新保存的 API Key 立即生效，无需重启应用
     onConfigChanged: () => conversationAdapter.refreshModelConfig(),
+    // MP-S05：思考级别能力来源 = pi SDK getSupportedThinkingLevels（TD-MP-04，不复制
+    // 过滤规则）。模型解析失败时内部返回 null -> 服务层映射为 1004「模型未配置」。
+    thinkLevels: {
+      getSupportedThinkingLevels: (model: string) =>
+        getPiSupportedThinkingLevels(model, deps.piModelsPath),
+    },
   });
   const conversationService = new ConversationService(conversationAdapter, {
     sessionExists: (id: string) => store.getSession(id) !== undefined,
@@ -170,10 +187,17 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     resolveSendOptions: async (sessionId) => {
       const session = store.getSession(sessionId);
       const modelResult = await modelService.getSessionModel(sessionId);
+      // MP-S05：会话生效思考级别 = session.thinkingLevel ?? 实时全局默认
+      // （readDefaultThinkingLevel 每次读取 settings.thinkingLevel，含旧数据缺失时
+      // 兜底 off），随 options 流入 pi 会话运行时。MP-QA-G01：不缓存启动快照。
+      const sessionLevel = session?.thinkingLevel;
+      const thinkingLevel =
+        typeof sessionLevel === 'string' && sessionLevel !== '' ? sessionLevel : readDefaultThinkingLevel();
       return {
         sessionId,
         cwd: session?.projectPath,
         model: modelResult.ok ? modelResult.data.model ?? undefined : undefined,
+        thinkingLevel,
       };
     },
     onStatusChange: (sid, status) => conversationApi.pushStatus(sid, status),
@@ -199,9 +223,9 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     onMessage: (sessionId, message) => {
       conversationApi.emitMessage(sessionId, message);
     },
-    onError: (sessionId) => {
+    onError: (sessionId, error) => {
       conversationService.setStatus(sessionId, 'error');
-      conversationApi.emitError(sessionId, 5000, '对话处理失败');
+      conversationApi.emitError(sessionId, 5000, error?.message ?? '对话处理失败');
     },
     onToolStarted: (sessionId, event) => {
       toolApi.emitToolStarted(sessionId, event.toolEventId, event.tool);

@@ -57,6 +57,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 | lastActiveAt | string(ISO8601) | 否 | 创建时 | 最近活动时间（会话列表排序） |
 | createdAt | string(ISO8601) | 否 | - | 创建时间 |
 | modelOverride | string | 是 | null | 会话级模型覆盖（模块 05；空则用全局默认） |
+| thinkingLevel | string | 是 | null | 会话级思考级别覆盖（模块 05 MP-S05；枚举同 pi：off/minimal/low/medium/high/xhigh/max；空则用全局默认） |
 
 - 主键：`sessionId`
 - 索引：`projectPath`、`lastActiveAt`
@@ -70,6 +71,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 - 删除会话 = 删 pi session（不可逆）+ 删本元数据（PRD02 TD-SM-05）。
 - 消息、工具事件全部由 pi 存储，本表不承载。
 - 窗口为展示层（会话输出与窗口解耦），不按窗口持久化；窗口崩溃后从会话与 forge-core 输出流重建（PRD02 §3.5）。
+- `thinkingLevel` 语义（PRD05 MP-S05）：会话有已存值则用已存值（运行时按模型能力 clamp），无已存值则继承 `settings.thinkingLevel` 全局默认；切换思考级别时**同时写本字段并同步全局默认**，已存在会话各自保持本字段，互不影响。
 
 ---
 
@@ -85,13 +87,15 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 - 主键：`key`
 - seed 数据（首次创建时写入）：
   - `key='defaultModel'`，`value=null`（全局默认模型，未配置为 null）
+  - `key='thinkingLevel'`，`value='off'`（全局默认思考级别，新会话继承；**默认关闭**——thinking 内容默认不产生/不展示，用户可显式调高）
   - `key='schemaVersion'`，`value=1`
 - 状态：已确认
 
 ### 设计说明
 
-- 当前键集合：`defaultModel`（全局默认模型）；后续可扩展 `windowLayout`（多窗口布局持久化，如需重启恢复布局）、`theme` 等。
+- 当前键集合：`defaultModel`（全局默认模型）、`thinkingLevel`（全局默认思考级别，PRD05 MP-S05）；后续可扩展 `windowLayout`（多窗口布局持久化，如需重启恢复布局）、`theme` 等。
 - 全局默认模型语义：会话无 `modelOverride` 时才用全局默认，不影响已配置覆盖的会话。
+- 全局默认思考级别语义：会话无 `thinkingLevel` 覆盖时继承；输入框切换思考级别时同步更新本键，已存在会话各自保持 `session.thinkingLevel` 不受影响。**默认值为 `off`**（forge 启动即默认关闭思考内容产生/展示），旧数据缺失该键时按 `'off'` 兜底处理。
 
 ---
 
@@ -112,7 +116,9 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 | 会话元数据（别名/项目归属） | forge | forge-store.json | 读写 |
 | 全局默认模型 | forge | forge-store.json | 读写 |
 | 会话模型覆盖 | forge | forge-store.json | 读写 |
+| 全局默认思考级别 | forge | forge-store.json | 读写（PRD05 MP-S05） |
+| 会话思考级别覆盖 | forge | forge-store.json | 读写（PRD05 MP-S05） |
 | pi 会话消息 | pi | JSONL（`~/.pi/agent/sessions`） | 只读/委托创建 |
-| provider 配置 | pi | models.json | 写入（可视化编辑器） |
+| provider 配置 | pi | models.json | 写入（可视化编辑器），含模型 contextWindow |
 | API key | pi | OS keychain | 经 `!forge-secret` 读写，不明文入库 |
 | 项目信任状态 | pi | pi 内部 | 只读缓存（trustState 仅展示） |

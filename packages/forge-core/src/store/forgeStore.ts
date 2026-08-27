@@ -84,6 +84,8 @@ function createEmptyData(): ForgeStoreData {
     sessions: [],
     settings: [
       { key: 'defaultModel', value: null },
+      // 全局默认思考级别默认关闭（thinking 内容不展示，除用户显式开启）
+      { key: 'thinkingLevel', value: 'off' },
       { key: 'schemaVersion', value: CURRENT_SCHEMA_VERSION },
     ],
   };
@@ -190,7 +192,8 @@ export class ForgeStore {
   /**
    * 播种默认数据并落盘（首次创建 / schemaVersion 缺失时由 load 调用）。
    * 默认值：schemaVersion=1，projects/sessions 为空，settings 含
-   * defaultModel=null 与 schemaVersion=1（schema.md settings 表 seed 数据）。
+   * defaultModel=null、thinkingLevel=off（全局默认思考级别默认关闭）与
+   * schemaVersion=1（schema.md settings 表 seed 数据）。
    */
   seedDefaults(): void {
     this.data = createEmptyData();

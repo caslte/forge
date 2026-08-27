@@ -59,12 +59,14 @@ function makeSessionRecord(
   };
 }
 
-test('首次运行：播种默认值并创建文件（defaultModel=null, schemaVersion=1）', () => {
+test('首次运行：播种默认值并创建文件（defaultModel=null, thinkingLevel=off, schemaVersion=1）', () => {
   const tmp = makeTempDir();
   try {
     const storePath = path.join(tmp, 'forge-store.json');
     const store = new ForgeStore(storePath);
     assert.equal(store.getSetting('defaultModel'), null);
+    // 全局默认思考级别默认关闭：thinking 内容默认不产生/不展示
+    assert.equal(store.getSetting('thinkingLevel'), 'off');
     assert.equal(store.getSetting('schemaVersion'), 1);
     assert.deepEqual(store.listProjects(), []);
     assert.ok(fs.existsSync(storePath), '首次运行应创建存储文件');
@@ -72,6 +74,23 @@ test('首次运行：播种默认值并创建文件（defaultModel=null, schemaV
     assert.equal(onDisk.schemaVersion, 1);
     assert.deepEqual(onDisk.projects, []);
     assert.deepEqual(onDisk.sessions, []);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('AC-MP-012：首次播种 settings 含 thinkingLevel=off（全局默认思考级别默认关闭）', () => {
+  const tmp = makeTempDir();
+  try {
+    const storePath = path.join(tmp, 'forge-store.json');
+    const store = new ForgeStore(storePath);
+    // 落盘后的 settings seed 必须含 thinkingLevel=off（与 defaultModel / schemaVersion 并列）
+    const onDisk = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+    const keys = onDisk.settings.map((s: { key: string }) => s.key);
+    assert.ok(keys.includes('thinkingLevel'), 'settings 应含 thinkingLevel 键');
+    const rec = onDisk.settings.find((s: { key: string }) => s.key === 'thinkingLevel');
+    assert.equal(rec?.value, 'off');
+    assert.equal(store.getSetting('thinkingLevel'), 'off');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

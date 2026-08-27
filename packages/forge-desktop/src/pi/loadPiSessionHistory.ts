@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 
 import type { ConversationMessage } from '@forge/core';
+import { stripThinkingContent } from './thinkingFilter.ts';
 
 type PiContentPart = {
   type?: string;
@@ -61,6 +62,8 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
       content = texts.join('\n');
       if (imgs.length > 0) images = imgs;
     }
+    // 兜底展示过滤：剥离混入正文的 thinking/reasoning 包裹块（正常为 text part 提取）
+    content = stripThinkingContent(content);
 
     // 跳过空的 assistant 占位（仅含 thinking/toolCall，无 text），避免空泡
     if (message.role === 'assistant' && content === '') continue;

@@ -52,6 +52,8 @@ class FakePiSession {
   promptError: Error | null = null;
   /** setModel 热切换调用记录（P1-C） */
   setModelCalls: unknown[] = [];
+  /** setThinkingLevel 调用记录（默认思考级别应用） */
+  setThinkingLevelCalls: string[] = [];
 
   subscribe(listener: (event: MinimalEvent) => void): () => void {
     this.listeners.add(listener);
@@ -95,6 +97,11 @@ class FakePiSession {
     this.setModelCalls.push(model);
   }
 
+  /** 思考级别调用记录（默认 off 策略） */
+  async setThinkingLevel(level: string): Promise<void> {
+    this.setThinkingLevelCalls.push(level);
+  }
+
   /** 测试辅助：向订阅者广播任意事件 */
   emit(event: MinimalEvent): void {
     for (const listener of this.listeners) listener(event);
@@ -124,6 +131,137 @@ test('发送消息时映射 pi 文本增量和最终助手消息', async () => {
 
   assert.deepEqual(deltas, ['你好', '，forge']);
   assert.equal(finalText, '你好，forge');
+});
+
+test('发送消息前应用默认思考级别 off（thinking 内容默认关闭，幂等不重复设）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+
+  await adapter.sendMessage('session-tl', 'hello');
+
+  // 缺省 defaultThinkingLevel='off'：首次创建会话时应用一次
+  assert.deepEqual(fake.setThinkingLevelCalls, ['off']);
+  // 同一级别再次发送：与已应用级别相同，不再重复 setThinkingLevel（幂等）
+  await adapter.sendMessage('session-tl', 'world');
+  assert.deepEqual(fake.setThinkingLevelCalls, ['off']);
+});
+
+test('可注入自定义默认思考级别', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(
+    async () => ({ session: fake, dispose: () => fake.dispose() }),
+    { defaultThinkingLevel: 'medium' },
+  );
+
+  await adapter.sendMessage('session-tl2', 'hello');
+
+  assert.deepEqual(fake.setThinkingLevelCalls, ['medium']);
+});
+
+test('sendMessage options.thinkingLevel 与当前已应用级别不同时调用 setThinkingLevel', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+
+  // 首次创建会话应用默认 off
+  await adapter.sendMessage('session-tl-diff', 'hello');
+  assert.deepEqual(fake.setThinkingLevelCalls, ['off']);
+
+  // 发送时指定不同级别 -> 对已有 lease 调用 setThinkingLevel
+  await adapter.sendMessage('session-tl-diff', '切到 high', { thinkingLevel: 'high' });
+  assert.deepEqual(fake.setThinkingLevelCalls, ['off', 'high']);
+
+  // 同级重复发送 -> 不再设置（幂等）
+  await adapter.sendMessage('session-tl-diff', '仍是 high', { thinkingLevel: 'high' });
+  assert.deepEqual(fake.setThinkingLevelCalls, ['off', 'high']);
+
+  // 再切回不同级别 -> 再次设置
+  await adapter.sendMessage('session-tl-diff', '切回 off', { thinkingLevel: 'off' });
+  assert.deepEqual(fake.setThinkingLevelCalls, ['off', 'high', 'off']);
+});
+
+test('会话不支持 setThinkingLevel 时忽略不报错', async () => {
+  const session: {
+    subscribe: (listener: (event: unknown) => void) => () => void;
+    prompt: (text: string) => Promise<void>;
+    abort: () => Promise<void>;
+  } = {
+    subscribe: () => () => undefined,
+    prompt: async () => undefined,
+    abort: async () => undefined,
+  };
+  const adapter = new PiConversationAdapter(async () => ({ session, dispose: () => undefined }));
+
+  // 尽管指定了 thinkingLevel，但 lease 无 setThinkingLevel 能力，应静默忽略不抛错
+  await adapter.sendMessage('session-no-tl', 'hello', { thinkingLevel: 'high' });
+});
+
+test('assistant 消息文本中的 thinking/reasoning 包裹块被剥离（兜底展示过滤）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+
+  const messages: string[] = [];
+  adapter.onMessage('session-strip', (m) => messages.push(m.content));
+
+  // 先 sendMessage 建立订阅，再广播含思考包裹块的 message_end
+  await adapter.sendMessage('session-strip', 'hello');
+  fake.emit({
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      content: '答案在前<thinking>这是思考过程不应展示</thinking>，结论在后',
+    },
+  });
+
+  assert.deepEqual(messages, ['你好，forge', '答案在前，结论在后']);
+});
+
+test('流式阶段剥离 MiniMax 混流思考正文（增量清洗，思考期不出字）', async () => {
+  // 专用静默 fake：prompt 不发任何增量，由测试自行驱动 text_delta
+  const listeners = new Set<(event: MinimalEvent) => void>();
+  const silentFake = {
+    subscribe(listener: (event: MinimalEvent) => void): () => void {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async prompt(): Promise<void> {},
+    async abort(): Promise<void> {},
+    dispose(): void {},
+    async setThinkingLevel(): Promise<void> {},
+  };
+  const adapter = new PiConversationAdapter(async () => ({ session: silentFake, dispose: () => silentFake.dispose() }));
+
+  const deltas: string[] = [];
+  adapter.onDelta('session-live', (t) => deltas.push(t));
+
+  await adapter.sendMessage('session-live', 'hi'); // 建立订阅
+  const emit = (delta: string) => {
+    for (const listener of listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } });
+    }
+  };
+  emit(' thinkingThe');
+  emit(' user');
+  emit(' response');
+  emit('\n\n你好！');
+
+  // 思考期不输出任何增量（'助手正在思考'占位可见），收尾标记后一次性补发正式回答
+  assert.deepEqual(deltas, ['你好！']);
+});
+
+test('assistant 最终消息剥离 MiniMax 混流思考正文', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+
+  const messages: string[] = [];
+  adapter.onMessage('session-final', (m) => messages.push(m.content));
+
+  await adapter.sendMessage('session-final', 'hi');
+  fake.emit({
+    type: 'message_end',
+    message: { role: 'assistant', content: ' thinking为了把话说清楚，先梳理一遍。 response\n\n最终回答' },
+  });
+
+  assert.equal(messages[messages.length - 1], '最终回答');
 });
 
 test('取消时停止当前 pi 会话并保留已生成文本', async () => {

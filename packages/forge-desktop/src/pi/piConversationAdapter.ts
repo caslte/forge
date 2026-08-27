@@ -1,5 +1,6 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ConversationAttachment, ConversationMessage } from '@forge/core';
+import { stripThinkingContent } from './thinkingFilter.ts';
 
 export interface PiAgentSessionLease<TSession> {
   session: TSession;
@@ -13,6 +14,8 @@ export interface PiAgentSessionFactoryOptions {
   model?: unknown;
   /** 附件（P3-B）：与 core ConversationAttachment 结构一致，adapter 转 pi image content */
   attachments?: ConversationAttachment[];
+  /** 会话生效思考级别（MP-S05）：创建会话时应用；与当前已应用级别不同时运行时调整 */
+  thinkingLevel?: string;
 }
 
 /** 结构化最小 pi 会话接口（真实 AgentSession 与测试 fake 共同满足） */
@@ -27,6 +30,8 @@ export type MinimalPiSession = {
   getContextUsage?(): unknown;
   /** 手动压缩（P3-A）；真实 AgentSession 支持，fake 可选；返回压缩结果 */
   compact?(customInstructions?: string): Promise<unknown>;
+  /** 思考级别设置（默认关闭策略）；真实 AgentSession 为同步，适配层 async 包装 */
+  setThinkingLevel?(level: string): Promise<void>;
   /**
    * 模型运行时刷新（provider 配置变更用）：重读 models.json 重组 providers，
    * 使已保存的 API Key 引用立即生效；真实 AgentSession 经 modelRuntime 暴露。
@@ -49,6 +54,18 @@ export interface PiConversationAdapterOptions {
    * 重启后内存 sessionFiles 为空，命中磁盘 JSONL 时据此恢复历史。
    */
   resolveSessionFile?: (sessionId: string) => string | undefined;
+  /**
+ * 全局默认思考级别（默认 'off'：thinking 内容默认不产生不展示）。
+ * 每次发送前应用到会话（幂等；pi 内部按模型能力 clamp，级别未变化不写
+ * transcript）。改为其它级别时，思考内容仍会被展示层过滤，仅影响模型是否思考。
+ */
+defaultThinkingLevel?: string;
+/**
+ * 实时读取全局默认思考级别（MP-QA-G01 修复）：运行中 `model/setSessionThinkingLevel`
+ * 会同步全局 settings.thinkingLevel，须每次发送前实时读取，消除「启动快照 vs
+ * 实时全局」不一致。缺省时不注入，退化为 defaultThinkingLevel 常量兜底。
+ */
+resolveDefaultThinkingLevel?: () => string;
 }
 
 export type PiAgentSessionFactory<TSession = AgentSession> = (
@@ -101,6 +118,9 @@ type MinimalPiEvent = {
     role?: string;
     /** pi AssistantMessage.content：字符串或内容块数组（{type:'text',text}） */
     content?: string | Array<{ type?: string; text?: string }>;
+    stopReason?: string;
+    errorMessage?: string;
+    error?: string;
   };
   /** pi AssistantMessageEvent：仅 text_delta 携带文本增量 */
   assistantMessageEvent?: { type?: string; delta?: string };
@@ -109,17 +129,26 @@ type MinimalPiEvent = {
   args?: unknown;
   result?: unknown;
   isError?: boolean;
+  // agent_end / turn_end 可能携带错误
+  errorMessage?: string;
+  willRetry?: boolean;
 };
 
 export class PiConversationAdapter {  private readonly leases = new Map<string, PiAgentSessionLease<MinimalPiSession>>();
   private readonly callbacks = new Map<string, SessionCallbacks>();
   private readonly partialContent = new Map<string, string>();
+  /** 流式清洗后已转发的累计文本（供增量求差，思考块剥除后仍能正确续传） */
+  private readonly forwardedClean = new Map<string, string>();
   private readonly errorListeners = new Map<string, (error: PiConversationError) => void>();
   private readonly sessionFiles = new Map<string, string>();
+  /** 本轮 prompt 已通过 handleEvent 触发过错误，避免 catch 重复上报 */
+  private readonly errorEmittedThisTurn = new Set<string>();
   /** 内存会话记录（无 pi session 文件时的历史回退，含 user 与 assistant） */
   private readonly transcripts = new Map<string, ConversationMessage[]>();
   /** 会话当前生效模型字符串（热切换差异比较用） */
   private readonly leaseModels = new Map<string, string | undefined>();
+  /** 每会话最后应用/已生效的思考级别（差异比较用；未应用过则为 undefined） */
+  private readonly appliedThinkingLevels = new Map<string, string>();
   /** 每会话在底层 AgentSession 上的单次订阅取消函数（防重复订阅） */
   private readonly unsubs = new Map<string, () => void>();
   private eventHandlers: PiConversationEventHandlers = {};
@@ -128,12 +157,18 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly factory: PiAgentSessionFactory<MinimalPiSession>;
   private readonly resolveModel: (model: string) => Promise<unknown>;
   private readonly resolveSessionFile: ((sessionId: string) => string | undefined) | undefined;
+  /** 全局默认思考级别；缺省 'off'（thinking 内容默认不产生不展示） */
+  private readonly defaultThinkingLevel: string;
+  /** 实时读取全局默认思考级别（MP-QA-G01 修复）；未注入则用 defaultThinkingLevel 常量兜底 */
+  private readonly resolveDefaultThinkingLevel: (() => string) | undefined;
 
   constructor(
     factory: PiAgentSessionFactory<MinimalPiSession>,
     options: PiConversationAdapterOptions = {},
   ) {
     this.factory = factory;
+    this.defaultThinkingLevel = options.defaultThinkingLevel ?? 'off';
+    this.resolveDefaultThinkingLevel = options.resolveDefaultThinkingLevel;
     this.resolveSessionFile = options.resolveSessionFile;
     this.resolveModel =
       options.resolveModel ??
@@ -194,6 +229,22 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       await this.applyModelChange(sessionId, lease, options);
     }
     this.partialContent.set(sessionId, '');
+    this.forwardedClean.set(sessionId, '');
+    this.errorEmittedThisTurn.delete(sessionId);
+    // 思考级别应用（MP-S05）：目标级别 = options.thinkingLevel（会话生效级别，
+    // 由上层 resolveSendOptions 计算：session.thinkingLevel ?? settings，兜底 off），
+    // 缺省降级 defaultThinkingLevel。仅当目标级别与当前已应用级别不同时才调用
+    // setThinkingLevel（幂等：未变化不打断/不写 transcript）。clamp 收敛由上层/
+    // 服务保证，此处不得越权扩容；lease 无此能力则忽略不报错。
+    const targetLevel = options.thinkingLevel ?? this.getDefaultThinkingLevel();
+    if (targetLevel !== this.appliedThinkingLevels.get(sessionId)) {
+      try {
+        lease.session.setThinkingLevel?.(targetLevel);
+      } catch (err) {
+        console.warn(`[piConversationAdapter] 设置思考级别 ${targetLevel} 失败`, err);
+      }
+      this.appliedThinkingLevels.set(sessionId, targetLevel);
+    }
     this.transcripts.set(sessionId, [
       ...(this.transcripts.get(sessionId) ?? []),
       { role: 'user', content, ts: new Date().toISOString() },
@@ -231,16 +282,35 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       const message = /No API key found/i.test(error.message)
         ? `模型凭据未配置（${error.message}）：请在设置中为对应模型填写并保存 API Key 后重试`
         : error.message;
-      this.errorListeners.get(sessionId)?.({ message });
-      this.eventHandlers.onError?.(sessionId, { message });
+      // 若本轮已通过 handleEvent 上报过同类错误（如 message_end error），避免重复
+      if (!this.errorEmittedThisTurn.has(sessionId)) {
+        this.errorListeners.get(sessionId)?.({ message });
+        this.eventHandlers.onError?.(sessionId, { message });
+      }
+      this.errorEmittedThisTurn.delete(sessionId);
       throw new Error(message);
     }
+    const hadError = this.errorEmittedThisTurn.has(sessionId);
+    this.errorEmittedThisTurn.delete(sessionId);
 
-    this.completionHandler?.(sessionId);
+    if (!hadError) {
+      this.completionHandler?.(sessionId);
+    }
   }
 
   async cancelStream(sessionId: string): Promise<void> {
     await this.leases.get(sessionId)?.session.abort();
+  }
+
+  /**
+   * 读取回退默认思考级别（MP-QA-G01 修复）：优先调用注入的实时 getter
+   * （每次发送前读取 settings.thinkingLevel），否则退化为构造时默认常量。
+   */
+  private getDefaultThinkingLevel(): string {
+    if (this.resolveDefaultThinkingLevel !== undefined) {
+      return this.resolveDefaultThinkingLevel();
+    }
+    return this.defaultThinkingLevel;
   }
 
   /**
@@ -369,9 +439,11 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.callbacks.delete(sessionId);
     this.errorListeners.delete(sessionId);
     this.partialContent.delete(sessionId);
+    this.forwardedClean.delete(sessionId);
     this.transcripts.delete(sessionId);
     this.sessionFiles.delete(sessionId);
     this.leaseModels.delete(sessionId);
+    this.appliedThinkingLevels.delete(sessionId);
   }
 
   /**
@@ -408,11 +480,22 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         : undefined;
 
     if (typeof delta === 'string') {
-      this.partialContent.set(sessionId, `${this.partialContent.get(sessionId) ?? ''}${delta}`);
+      // 仅转发 text_delta（thinking/toolcall 增量本身已丢弃）。MiniMax 等模型会把
+      // 思考以「正文混流」形式输出（thinking…response），此处对整条累计文本做
+      // 展示层清洗，转发「清洗后相对已转发部分的新增增量」：思考块剥除时本次
+      // 不发（"助手正在思考"占位保持可见），收尾标记一出现即一次性补发正式回答。
+      const raw = `${this.partialContent.get(sessionId) ?? ''}${delta}`;
+      this.partialContent.set(sessionId, raw);
+      const clean = stripThinkingContent(raw);
+      const prev = this.forwardedClean.get(sessionId) ?? '';
+      this.forwardedClean.set(sessionId, clean);
+      if (prev === clean) return;
+      const inc = clean.length >= prev.length ? clean.slice(prev.length) : '';
+      if (inc === '') return;
       if (callback) {
-        callback.onDelta(delta);
+        callback.onDelta(inc);
       } else {
-        this.eventHandlers.onDelta?.(sessionId, delta);
+        this.eventHandlers.onDelta?.(sessionId, inc);
       }
       return;
     }
@@ -421,8 +504,27 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       event.type === 'message_end' &&
       event.message?.role === 'assistant'
     ) {
+      const rawMsg: unknown = event.message as unknown;
+      const stopReason = (rawMsg as { stopReason?: string }).stopReason;
+      const errMsgRaw =
+        (rawMsg as { errorMessage?: string }).errorMessage ??
+        (rawMsg as { error?: string }).error;
+      // 关键修复：stopReason === 'error' 时必须透传错误到对话框（超时/拒绝连接/鉴权失败等）
+      if (stopReason === 'error') {
+        const content = extractAssistantText(event.message.content);
+        const raw = errMsgRaw || content || '对话处理失败';
+        const message = /No API key found/i.test(raw)
+          ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
+          : raw;
+        if (content !== '') this.partialContent.set(sessionId, content);
+        this.errorEmittedThisTurn.add(sessionId);
+        this.errorListeners.get(sessionId)?.({ message });
+        this.eventHandlers.onError?.(sessionId, { message });
+        return;
+      }
       // pi AssistantMessage.content 为内容块数组（或字符串），提取纯文本
       const content = extractAssistantText(event.message.content);
+      this.forwardedClean.set(sessionId, content);
       if (content !== '') {
         this.partialContent.set(sessionId, content);
         const message: ConversationMessage = {
@@ -438,6 +540,40 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         }
       }
       return;
+    }
+
+    // 兜底：agent/turn 级错误（超时/网络拒绝等）也需透传
+    if (
+      (event.type === 'agent_end' || event.type === 'turn_end') &&
+      typeof (event as { errorMessage?: unknown }).errorMessage === 'string' &&
+      ((event as { errorMessage: string }).errorMessage.length > 0)
+    ) {
+      const raw = (event as { errorMessage: string }).errorMessage;
+      const message = /No API key found/i.test(raw)
+        ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
+        : raw;
+      this.errorEmittedThisTurn.add(sessionId);
+      this.errorListeners.get(sessionId)?.({ message });
+      this.eventHandlers.onError?.(sessionId, { message });
+      return;
+    }
+    if (event.type === 'error') {
+      const raw = event as unknown as { error?: unknown; message?: unknown };
+      const rawMsg =
+        typeof raw.error === 'string'
+          ? raw.error
+          : typeof raw.message === 'string'
+            ? raw.message
+            : undefined;
+      if (typeof rawMsg === 'string' && rawMsg.length > 0) {
+        const message = /No API key found/i.test(rawMsg)
+          ? `模型凭据未配置（${rawMsg}）：请在设置中为对应模型填写并保存 API Key 后重试`
+          : rawMsg;
+        this.errorEmittedThisTurn.add(sessionId);
+        this.errorListeners.get(sessionId)?.({ message });
+        this.eventHandlers.onError?.(sessionId, { message });
+        return;
+      }
     }
 
     if (event.type === 'tool_execution_start' && typeof event.toolCallId === 'string') {
@@ -473,19 +609,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-/** 从 pi assistant 消息 content 提取纯文本（字符串透传；块数组取 type==='text' 的 text 拼接） */
+/**
+ * 从 pi assistant 消息 content 提取纯文本（字符串透传；块数组取 type==='text'
+ * 的 text 拼接），并按需要剥离混入正文的 thinking/reasoning 包裹块（兜底展示过滤）。
+ */
 function extractAssistantText(content: unknown): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part) =>
-        isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? part.text : '',
-      )
-      .join('');
-  }
-  return '';
+  const raw =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((part) =>
+              isRecord(part) && part.type === 'text' && typeof part.text === 'string' ? part.text : '',
+            )
+            .join('')
+        : '';
+  return stripThinkingContent(raw);
 }
 
 /** 从 pi 工具结果提取文本（content[].text 拼接；空内容返回 null） */
