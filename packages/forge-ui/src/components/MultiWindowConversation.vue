@@ -373,7 +373,7 @@ onUnmounted(() => {
             </div>
           </div>
         </template>
-        <div v-if="isStreaming && (messages.length === 0 || messages[messages.length - 1]?.role !== 'assistant')" class="wc-hint thinking-shimmer">助手正在思考</div>
+        <div v-if="isStreaming" class="wc-hint thinking-shimmer">助手正在思考</div>
       </template>
       <div v-if="switchBanner" class="wc-switch-banner">
         <span class="wc-sb-line"></span>

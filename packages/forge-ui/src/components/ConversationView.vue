@@ -481,8 +481,8 @@ watch(
               </div>
             </div>
           </template>
-          <!-- 流式思考指示器（无 delta 时显示）带 Codex 银色流光 -->
-          <div v-if="isStreaming && (messages.length === 0 || messages[messages.length - 1]?.role !== 'assistant')" class="conv-thinking">
+          <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
+          <div v-if="isStreaming" class="conv-thinking">
             <span class="thinking-dot"></span>
             <span class="thinking-dot"></span>
             <span class="thinking-dot"></span>

@@ -124,7 +124,6 @@ watch(mdReady, (ready) => {
       <div v-for="block in mermaidBlocks" :key="block.key" class="msg-mermaid">
         <MermaidBlock :encoded="block.encoded" />
       </div>
-      <div v-if="streaming" class="msg-cursor"></div>
     </div>
     <div v-if="!streaming" class="msg-footer">
       <button class="msg-copy" :title="copied ? '已复制' : '复制'" @click="copy">
@@ -372,21 +371,6 @@ watch(mdReady, (ready) => {
 
 .msg-content :deep(tbody tr:nth-child(even)) {
   background: color-mix(in oklab, var(--muted) 40%, transparent);
-}
-
-.msg-cursor {
-  display: inline-block;
-  width: 7px;
-  height: 16px;
-  background: var(--brand);
-  margin-left: 2px;
-  animation: cursor-blink 1s step-end infinite;
-  vertical-align: text-bottom;
-}
-
-@keyframes cursor-blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
 }
 
 @keyframes rise {
