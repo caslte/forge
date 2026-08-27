@@ -167,7 +167,10 @@ async function loadHistory(): Promise<void> {
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e);
   } finally {
-    if (inputSessionId === props.sessionId) loadingHistory.value = false;
+    if (inputSessionId === props.sessionId) {
+      loadingHistory.value = false;
+      nextTick(scrollToBottom);
+    }
   }
 }
 
@@ -184,11 +187,18 @@ function resetForSession(sid: string): void {
   errorMsg.value = null;
 }
 
-/** 滚动到底部 */
+/** 滚动到底部：覆盖 smooth 做瞬时定位，下一帧再补一次；长内容快速到达最后一条回复 */
 function scrollToBottom(): void {
   const el = scrollRef.value;
   if (!el) return;
+  const prev = el.style.scrollBehavior;
+  el.style.scrollBehavior = 'auto';
   el.scrollTop = el.scrollHeight;
+  requestAnimationFrame(() => {
+    if (scrollRef.value !== el) return;
+    el.scrollTop = el.scrollHeight;
+    el.style.scrollBehavior = prev;
+  });
 }
 
 /** 发送消息：本地追加 user 消息 + 调后端（P3-B：携带附件；图片同步进本地消息流展示） */

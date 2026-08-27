@@ -123,6 +123,7 @@ export class SessionService {
       lastActiveAt: now,
       createdAt: now,
       modelOverride: null,
+      thinkingLevel: null,
     };
     this.store.saveSession(session);
     return { ok: true, data: { session } };

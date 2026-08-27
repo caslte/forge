@@ -120,7 +120,15 @@ function isMessageStreaming(index: number): boolean {
 
 function scrollToBottom(): void {
   const el = scrollRef.value;
-  if (el) el.scrollTop = el.scrollHeight;
+  if (!el) return;
+  const prev = el.style.scrollBehavior;
+  el.style.scrollBehavior = 'auto';
+  el.scrollTop = el.scrollHeight;
+  requestAnimationFrame(() => {
+    if (scrollRef.value !== el) return;
+    el.scrollTop = el.scrollHeight;
+    el.style.scrollBehavior = prev;
+  });
 }
 
 async function loadModel(): Promise<void> {
@@ -174,6 +182,7 @@ async function loadHistory(): Promise<void> {
     errorMsg.value = e instanceof Error ? e.message : String(e);
   } finally {
     loading.value = false;
+    nextTick(scrollToBottom);
   }
 }
 
