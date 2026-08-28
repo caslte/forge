@@ -186,6 +186,16 @@ async function onRenameProject(path: string, alias: string): Promise<void> {
   }
 }
 
+/** 项目拖拽排序：全量新顺序落盘后刷新列表 */
+async function onReorderProjects(paths: string[]): Promise<void> {
+  try {
+    await call('project/reorderProjects', { paths });
+    await loadProjects();
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /**
  * 新建会话：仅进入草稿输入态，不真正创建 pi session。
  * 发送首条消息时由 ConversationView 创建会话并 emit 'session-created'（见 onSessionCreated）。
@@ -416,6 +426,7 @@ onUnmounted(() => {
             @select-project="selectProject"
             @remove-project="onRemoveProject"
             @rename-project="onRenameProject"
+            @reorder-project="onReorderProjects"
             @create-session="onCreateSession"
             @select-session="onSelectSession"
             @delete-session="onDeleteSession"

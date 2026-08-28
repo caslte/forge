@@ -39,6 +39,7 @@
 | AC-PM-009 | PM-S04 项目信任 | 安全 | 正常流程：选择信任 | P0 | U-PM-003 | A-PM-006 | E-PM-004 | setTrust(trust) 回传 pi；项目级资源加载 | 依赖 pi 信任机制 mock |
 | AC-PM-010 | PM-S04 项目信任 | 安全/可用性 | 异常：拒绝信任 | P0 | U-PM-003 | A-PM-007 | E-PM-004 | 资源不加载；基础会话仍可用；trustState=rejected | |
 | AC-PM-011 | PM-S04 项目信任 | 幂等 | 正常流程：已信任再次打开 | P1 | U-PM-003 | - | E-PM-004 | 不重复弹窗；trustState 已确定 | 幂等断言 |
+| AC-PM-012 | PM-S01 项目拖拽排序 | 数据一致性 | 正常流程：拖拽排优先级 | P0 | U-PM-004/005 | A-PM-008 | - | 新顺序写 priority=0..n-1 持久化；未钉扎按最近打开倒序 | 全量重排一次落盘 |
 
 ---
 
@@ -51,6 +52,8 @@
 | U-PM-001 | AC-PM-002 | projectService 路径规范化/唯一键 | 幂等 | forge-store 无该项目 | 同路径两次 addProject（第 2 次含符号链接变体） | 规范化后比较 | 第 2 次返回 1001；store 仅 1 条 | store 不出现重复 path |
 | U-PM-002 | AC-PM-003 | projectService 路径校验 | 字段边界 | - | 不存在路径 / 无权限路径 | addProject | 返回校验错误，不写 store | store 无新增 |
 | U-PM-003 | AC-PM-009/010/011 | trustService 状态机 | 权限/状态流转/幂等 | 项目含 .pi 资源 | decision=trust/reject/trustOnce；重复 openProject | setTrust 后校验状态 | trust→trusted 资源加载；reject→rejected 不加载；已确定状态不再询问 | 状态不跳转（untrusted 不可直接 trusted） |
+| U-PM-004 | AC-PM-012 | store.reorderProjects 排序/持久化 | 数据一致性 | 3 个项目 | 全量重排 paths | 重排 + 重载 | 新顺序写 priority=0..n-1，listProjects 按钉扎升序，重载保持 | 含未注册路径 → 1003 不写盘 |
+| U-PM-005 | AC-PM-012 | projectService.reorderProjects 校验/透传 | 字段边界 | - | 非数组/空/含非字符串；含未注册路径 | 重排 | 非法 1001；未注册 1002；合法 0 且持久化 | 不写盘 |
 
 ### api（IPC 契约 + 持久化）
 
@@ -63,6 +66,7 @@
 | A-PM-005 | AC-PM-006 | project/removeProject | 项目含会话 | { path } | 0 | store project 删除；pi session 不动 | 源文件存在 + pi JSONL 存在 + store 记录删除 |
 | A-PM-006 | AC-PM-008/009 | project/openProject + setTrust | 项目含 .pi 资源 | { path } → { decision: trust } | 0；1005 先触发询问 | trustState 更新 | trustRequested 事件 → setTrust 回传 |
 | A-PM-007 | AC-PM-010 | project/setTrust | 询问中 | { decision: reject } | 0 | trustState=rejected | 资源不加载；会话基础能力可用 |
+| A-PM-008 | AC-PM-012 | project/reorderProjects | 3 个项目已注册 | { paths: 重排后的全量顺序 } | 0 | 列表顺序变更且持久化 | paths 非法（非数组/空/含非字符串）→ 1001；含未注册路径 → 1002 不写盘 |
 
 ### e2e
 

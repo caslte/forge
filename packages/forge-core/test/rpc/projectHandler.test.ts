@@ -306,3 +306,41 @@ test('异常隔离：store 落盘失败返回 5000，不泄漏异常', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ===== 项目拖拽排序（project/reorderProjects） =====
+
+test('project/reorderProjects：paths 非字符串数组 -> 1001', () => {
+  const tmp = makeTempDir();
+  try {
+    const { api, store } = makeApi(tmp);
+    assert.equal(api.methods['project/reorderProjects']({}).code, 1001);
+    assert.equal(api.methods['project/reorderProjects']({ paths: 'a,b' }).code, 1001);
+    assert.equal(api.methods['project/reorderProjects']({ paths: [] }).code, 1001);
+    assert.equal(api.methods['project/reorderProjects']({ paths: ['a', 1] }).code, 1001);
+    assert.deepEqual(store.listProjects(), []);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('project/reorderProjects：合法重排返回 code 0，列表顺序变更并持久化', () => {
+  const tmp = makeTempDir();
+  try {
+    const { api, store } = makeApi(tmp);
+    const a = makeProjectDir(tmp, 'a');
+    const b = makeProjectDir(tmp, 'b');
+    const c = makeProjectDir(tmp, 'c');
+    assert.equal(api.methods['project/addProject']({ path: a }).code, 0);
+    assert.equal(api.methods['project/addProject']({ path: b }).code, 0);
+    assert.equal(api.methods['project/addProject']({ path: c }).code, 0);
+    const result = api.methods['project/reorderProjects']({ paths: [c, a, b] });
+    assert.equal(result.code, 0);
+    const list = api.methods['project/queryProjectList']({});
+    assert.equal(list.code, 0);
+    const data = list.data as { projects: Array<{ path: string }> };
+    assert.deepEqual(data.projects.map((p) => p.path), [c, a, b]);
+    assert.equal(store.listProjects().length, 3);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -398,3 +398,51 @@ test('queryProjectList：按 lastOpenedAt 倒序（最近打开在前，未打�
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ===== 项目拖拽排序（reorderProjects） =====
+
+test('reorderProjects：非数组/空数组/含非字符串 -> 1001，不写盘', () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store } = makeService(tmp);
+    const a = service.addProject(makeProjectDir(tmp, 'a'));
+    assert.ok(a.ok);
+    assert.equal(service.reorderProjects(null).code, 1001);
+    assert.equal(service.reorderProjects([]).code, 1001);
+    assert.equal(service.reorderProjects(['x', 1]).code, 1001);
+    assert.equal(service.reorderProjects(['']).code, 1001);
+    assert.deepEqual(store.listProjects().map((p) => p.path), [a.data?.project.path].filter(Boolean));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('reorderProjects：全量重排透传 store，queryProjectList 顺序变更且持久化', () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store } = makeService(tmp);
+    const a = service.addProject(makeProjectDir(tmp, 'a'));
+    const b = service.addProject(makeProjectDir(tmp, 'b'));
+    const c = service.addProject(makeProjectDir(tmp, 'c'));
+    assert.ok(a.ok && b.ok && c.ok);
+    if (!a.ok || !b.ok || !c.ok) return;
+    const paths = [c.data.project.path, a.data.project.path, b.data.project.path];
+    const res = service.reorderProjects(paths);
+    assert.ok(res.ok);
+    const list = service.queryProjectList();
+    assert.ok(list.ok);
+    if (list.ok) {
+      assert.deepEqual(list.data.projects.map((p) => p.path), paths);
+    }
+    // 持久化：新实例 + 新 service 读回顺序不变
+    const reloaded = makeService(tmp);
+    const relist = reloaded.service.queryProjectList();
+    assert.ok(relist.ok);
+    if (relist.ok) {
+      assert.deepEqual(relist.data.projects.map((p) => p.path), paths);
+    }
+    assert.equal(store.listProjects().length, 3);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

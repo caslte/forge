@@ -72,6 +72,21 @@ function requireString(params: unknown, key: string): string | null {
   return value;
 }
 
+/** 从 params 读取非空字符串数组（reorderProjects 用）；缺失/非数组/空/含非字符串返回 null */
+function requireArray(params: unknown, key: string): string[] | null {
+  if (!isRecord(params)) {
+    return null;
+  }
+  const value = params[key];
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  if (value.some((v) => typeof v !== 'string' || v.trim() === '')) {
+    return null;
+  }
+  return value as string[];
+}
+
 /** 类型守卫：decision 是否为合法信任决策值 */
 function isTrustDecision(value: string): value is TrustDecision {
   return value === 'trust' || value === 'reject' || value === 'trustOnce';
@@ -98,6 +113,7 @@ export class ProjectApi {
       'project/queryProjectList': (params) => this.queryProjectList(params),
       'project/openProject': (params) => this.openProject(params),
       'project/updateProjectAlias': (params) => this.updateProjectAlias(params),
+      'project/reorderProjects': (params) => this.reorderProjects(params),
       'project/setTrust': (params) => this.setTrust(params),
     };
   }
@@ -153,9 +169,18 @@ export class ProjectApi {
     }
   }
 
-  /** project/queryProjectList：查询项目列表（按最近打开倒序） */
+  /** project/queryProjectList：查询项目列表（钉扎优先，其余按最近打开倒序） */
   private queryProjectList(_params: unknown): RpcResult {
     return this.call('queryProjectList', () => this.service.queryProjectList());
+  }
+
+  /** project/reorderProjects：全量重排项目（拖拽钉扎） */
+  private reorderProjects(params: unknown): RpcResult {
+    const paths = requireArray(params, 'paths');
+    if (paths === null) {
+      return fail(1001, '参数错误：paths 必须为非空字符串数组');
+    }
+    return this.call('reorderProjects', () => this.service.reorderProjects(paths));
   }
 
   /** project/openProject：打开项目（PM-S02），含 .pi 未信任时同步返回 1005 */

@@ -20,6 +20,7 @@ const emit = defineEmits<{
   (e: 'select-session', id: string): void;
   (e: 'delete-session', id: string): void;
   (e: 'rename-session', id: string, alias: string): void;
+  (e: 'reorder-project', paths: string[]): void;
 }>();
 
 const VISIBLE_SESSION_LIMIT = 5;
@@ -53,9 +54,10 @@ let deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 const projectDeleteConfirmPath = ref<string | null>(null);
 let projectDeleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 
-// 拖拽视觉反馈（不重排）
+// 项目拖拽排序：视觉反馈 + 落点（before/after）
 const draggedPath = ref<string | null>(null);
 const dragOverPath = ref<string | null>(null);
+const dragOverPos = ref<'before' | 'after' | null>(null);
 
 const statusTitleMap: Record<SessionStatus, string> = {
   idle: '空闲',
@@ -290,7 +292,7 @@ function onMenuDelete(): void {
   if (project) requestDeleteProject(project);
 }
 
-// 仅视觉反馈，不重排数组
+// 项目拖拽排序：记录拖拽源；指针在目标节点上半部=插入其前，下半部=其后
 function onProjectDragStart(p: ProjectItem): void {
   draggedPath.value = p.path;
 }
@@ -300,8 +302,9 @@ function isOnCanvas(session: SessionItem): boolean {
   return props.openedSessionIds?.includes(session.sessionId) ?? false;
 }
 
-/** 会话拖拽到多窗口画布：在 dataTransfer 记录 sessionId */
+/** 会话拖拽到多窗口画布：在 dataTransfer 记录 sessionId（需阻止冒泡，避免触发项目重排） */
 function onSessionDragStart(e: DragEvent, s: SessionItem): void {
+  e.stopPropagation();
   if (e.dataTransfer) {
     e.dataTransfer.setData('text/forge-session', s.sessionId);
     e.dataTransfer.effectAllowed = 'copy';
@@ -309,23 +312,68 @@ function onSessionDragStart(e: DragEvent, s: SessionItem): void {
 }
 
 function onProjectDragOver(ev: DragEvent, p: ProjectItem): void {
-  if (!draggedPath.value) return;
+  if (!draggedPath.value || draggedPath.value === p.path) return;
   ev.preventDefault();
-  if (draggedPath.value !== p.path) dragOverPath.value = p.path;
+  const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+  dragOverPath.value = p.path;
+  dragOverPos.value = ev.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
 }
 
 function onProjectDragLeave(p: ProjectItem): void {
-  if (dragOverPath.value === p.path) dragOverPath.value = null;
+  if (dragOverPath.value === p.path) {
+    dragOverPath.value = null;
+    dragOverPos.value = null;
+  }
 }
 
-function onProjectDrop(ev: DragEvent): void {
+/** 目标节点上放下：把拖拽项目移动到目标前/后，发射新顺序（全量） */
+function onProjectDrop(ev: DragEvent, p: ProjectItem): void {
   ev.preventDefault();
+  const from = draggedPath.value;
+  const to = p.path;
+  const pos = dragOverPos.value;
+  resetProjectDrag();
+  if (!from || from === to || !pos) return;
+  const order = reorderCurrentList(from, to, pos);
+  if (order !== null) emit('reorder-project', order);
+}
+
+/** 容器空白处放下：拖拽项目移到列表末尾 */
+function onSectionDrop(ev: DragEvent): void {
+  ev.preventDefault();
+  const from = draggedPath.value;
+  resetProjectDrag();
+  if (!from) return;
+  const order = props.projects.map((p) => p.path).filter((p) => p !== from);
+  order.push(from);
+  if (order.length === props.projects.length) emit('reorder-project', order);
+}
+
+function onSectionDragOver(ev: DragEvent): void {
+  if (!draggedPath.value) return;
+  ev.preventDefault();
+}
+
+/** 按目标位置计算新全量顺序；顺序未变化（拖到原位）返回 null */
+function reorderCurrentList(from: string, to: string, pos: 'before' | 'after'): string[] | null {
+  const cur = props.projects.map((p) => p.path);
+  const fromIdx = cur.indexOf(from);
+  const toIdx = cur.indexOf(to);
+  if (fromIdx === -1 || toIdx === -1) return null;
+  const next = cur.filter((p) => p !== from);
+  const insertAt = next.indexOf(to) + (pos === 'after' ? 1 : 0);
+  next.splice(insertAt, 0, from);
+  return next.join('|') === cur.join('|') ? null : next;
+}
+
+function resetProjectDrag(): void {
+  draggedPath.value = null;
   dragOverPath.value = null;
+  dragOverPos.value = null;
 }
 
 function onProjectDragEnd(): void {
-  draggedPath.value = null;
-  dragOverPath.value = null;
+  resetProjectDrag();
 }
 
 function focusAndSelect(el: Element | ComponentPublicInstance | null): void {
@@ -373,20 +421,21 @@ onUnmounted(() => {
   <div class="project-tree">
     <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">暂无项目</div>
 
-    <div v-else class="tree-section">
+    <div v-else class="tree-section" @dragover="onSectionDragOver" @drop="onSectionDrop">
       <div
         v-for="project in projects"
         :key="project.path"
         class="tree-node"
         :class="{
-          'drag-over': dragOverPath === project.path,
+          'drag-over-before': dragOverPath === project.path && dragOverPos === 'before',
+          'drag-over-after': dragOverPath === project.path && dragOverPos === 'after',
           dragging: draggedPath === project.path,
         }"
         draggable="true"
         @dragstart="onProjectDragStart(project)"
         @dragover="onProjectDragOver($event, project)"
         @dragleave="onProjectDragLeave(project)"
-        @drop="onProjectDrop($event)"
+        @drop="onProjectDrop($event, project)"
         @dragend="onProjectDragEnd"
       >
         <div
@@ -602,10 +651,22 @@ onUnmounted(() => {
   position: relative;
 }
 
-.tree-node.drag-over::before {
+.tree-node.drag-over-before::before {
   content: '';
   position: absolute;
   top: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--brand);
+  border-radius: 2px;
+  z-index: 1;
+}
+
+.tree-node.drag-over-after::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
   left: 0;
   right: 0;
   height: 2px;

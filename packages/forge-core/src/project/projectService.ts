@@ -264,6 +264,25 @@ export class ProjectService {
   }
 
   /**
+   * 全量重排项目（拖拽钉扎）：按传入顺序持久化优先级，列表排序以钉扎为准。
+   * @param paths 新的全量顺序（已注册项目路径列表）
+   * @returns 成功返回 null；非字符串数组/空/含空白串返回 1001；含未注册路径返回 1002
+   */
+  reorderProjects(paths: unknown): ProjectResult<null> {
+    if (!Array.isArray(paths) || paths.length === 0) {
+      return { ok: false, code: 1001, message: 'paths 必须为非空数组' };
+    }
+    if (paths.some((p) => typeof p !== 'string' || p.trim() === '')) {
+      return { ok: false, code: 1001, message: 'paths 必须为字符串数组' };
+    }
+    const result = this.store.reorderProjects(paths as string[]);
+    if (!result.ok) {
+      return { ok: false, code: 1002, message: result.message };
+    }
+    return { ok: true, data: null };
+  }
+
+  /**
    * 设置项目信任（PM-S04）：回传信任询问决策，驱动状态机流转。
    * @param input 项目路径
    * @param decision 决策：trust（信任）/ reject（拒绝）/ trustOnce（本次信任）

@@ -30,9 +30,10 @@ forge 管理的项目注册信息。用户源码目录不在本项目内复制�
 | createdAt | string(ISO8601) | 否 | - | 创建时间 |
 | lastOpenedAt | string(ISO8601) | 是 | null | 最近打开时间（排序用） |
 | trustState | enum | 否 | 'untrusted' | 信任状态缓存（untrusted/asking/trusted/rejected） |
+| priority | number \| null | 是 | null | 手动排序优先级（拖拽钉扎）：数字越小越靠前；null=未钉扎 |
 
 - 主键：`path`
-- 索引：`lastOpenedAt`（项目列表按最近打开排序）
+- 索引：`priority`（项目列表排序主键：钉扎升序优先）；`lastOpenedAt`（未钉扎项目按最近打开倒序排其后）
 - 关联：该项目的会话元数据在 `session` 表按 `projectPath` 关联
 - seed 数据：无
 - 状态：已确认
@@ -41,6 +42,7 @@ forge 管理的项目注册信息。用户源码目录不在本项目内复制�
 
 - 同一路径不可重复注册；路径经 `fs.realpath` 规范化后作为唯一键（PRD01 §3.3 PM-S01）。
 - `trustState` 仅为**展示缓存**，权威值在 pi（PRD01 §3.2）；项目移除时删除本记录，不影响 pi 会话与源文件。
+- `priority` 为拖拽钉扎的手动排序优先级：列表排序 `priority` 升序优先，未钉扎（null）项目按 `lastOpenedAt` 倒序排其后；首次拖拽排序时为全量项目写 0..n-1（全部钉扎，此后打开项目不再重排），之后新增项目保持未钉扎。
 - 刻意不存文件树、不存 pi 会话内容、不存密钥。
 
 ---

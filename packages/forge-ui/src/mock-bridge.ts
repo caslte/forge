@@ -189,6 +189,14 @@ const bridge: ForgeBridge = {
     switch (method) {
       case 'project/queryProjectList':
         return { code: 0, message: 'ok', data: { projects: DB.projects } };
+      case 'project/reorderProjects': {
+        // 拖拽重排：按传入顺序重排内存项目列表（与真实端持久化语义一致）
+        const paths = (params as { paths?: string[] } | null)?.paths ?? [];
+        const byPath = new Map(DB.projects.map((p) => [p.path, p]));
+        const next = paths.map((p) => byPath.get(p)).filter((p): p is (typeof DB.projects)[number] => p !== undefined);
+        DB.projects = next;
+        return { code: 0, message: 'ok', data: null };
+      }
       case 'session/querySessionList':
         return {
           code: 0,

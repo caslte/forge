@@ -12,6 +12,7 @@ export type ForgeMethod =
   | 'project/queryProjectList'
   | 'project/openProject'
   | 'project/updateProjectAlias'
+  | 'project/reorderProjects'
   | 'project/setTrust'
   | 'session/createSession'
   | 'session/querySessionList'

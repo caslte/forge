@@ -64,7 +64,7 @@ project/addProject
 
 ### project/queryProjectList
 
-**说明**：返回全部已注册项目，按最近打开时间倒序（PM-S01/列表页）。
+**说明**：返回全部已注册项目。排序规则：拖拽钉扎（`priority`）升序优先，未钉扎项目按最近打开时间倒序排其后（PM-S01/列表页）。
 
 请求参数：无。
 
@@ -78,15 +78,39 @@ project/addProject
       "alias": "a",
       "createdAt": "...",
       "lastOpenedAt": "...",
-      "trustState": "trusted"
+      "trustState": "trusted",
+      "priority": 0
     }
   ]
 }
 ```
 
+`priority`：手动排序优先级（拖拽钉扎），数字越小越靠前；`null`/缺省=未钉扎（按最近打开倒序）。
+
 ---
 
-## 4. 打开项目
+## 4. 重排项目（拖拽排序）
+
+### project/reorderProjects
+
+**说明**：项目拖拽排序后提交**全量新顺序**，为列表内每个项目写 `priority=index`（全部钉扎），一次落盘（PM-S01）。排序立即生效并持久化，打开项目不再影响已钉扎顺序。
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| paths | string[] | 是 | 新的全量项目顺序（已注册的规范化路径列表，非空、每项非空白） |
+
+响应：`data: null`。
+
+| code | 说明 |
+|------|------|
+| 1001 | paths 非数组 / 为空 / 含非字符串 |
+| 1002 | paths 中含未注册项目路径（不写盘） |
+
+---
+
+## 5. 打开项目
 
 ### project/openProject
 
@@ -120,7 +144,7 @@ project/addProject
 
 ---
 
-## 5. 更新项目别名
+## 6. 更新项目别名
 
 ### project/updateProjectAlias
 
@@ -135,7 +159,7 @@ project/addProject
 
 ---
 
-## 6. 设置项目信任
+## 7. 设置项目信任
 
 ### project/setTrust
 
@@ -158,7 +182,7 @@ project/addProject
 
 ---
 
-## 7. 事件
+## 8. 事件
 
 ### project.trustRequested
 
@@ -193,7 +217,7 @@ project/addProject
 
 ---
 
-## 8. 错误码
+## 9. 错误码
 
 | code | 说明 |
 |------|------|

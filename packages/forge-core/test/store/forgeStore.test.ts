@@ -543,3 +543,83 @@ test('listSessions：按 lastActiveAt 降序（最近活动在前）', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+// ===== 项目拖拽排序（priority 钉扎） =====
+
+test('reorderProjects：全量重排写 priority，列表按 priority 升序且持久化', () => {
+  const tmp = makeTempDir();
+  try {
+    const storePath = path.join(tmp, 'forge-store.json');
+    const store = new ForgeStore(storePath);
+    const a = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'a')));
+    const b = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'b')));
+    const c = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'c')));
+    assert.ok(a.ok && b.ok && c.ok);
+    if (!a.ok || !b.ok || !c.ok) return;
+    // 初始未钉扎：全部 lastOpenedAt=null，顺序稳定（注册序）
+    // 拖拽重排为 c, a, b
+    const res = store.reorderProjects([c.project.path, a.project.path, b.project.path]);
+    assert.ok(res.ok);
+    if (!res.ok) return;
+    assert.deepEqual(
+      res.projects.map((p) => p.path),
+      [c.project.path, a.project.path, b.project.path],
+    );
+    assert.deepEqual(
+      store.listProjects().map((p) => p.path),
+      [c.project.path, a.project.path, b.project.path],
+    );
+    // 持久化：新实例读回顺序不变
+    const reloaded = new ForgeStore(storePath);
+    assert.deepEqual(
+      reloaded.listProjects().map((p) => p.path),
+      [c.project.path, a.project.path, b.project.path],
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('reorderProjects：含未注册 path 返回 1003 且不写盘', () => {
+  const tmp = makeTempDir();
+  try {
+    const storePath = path.join(tmp, 'forge-store.json');
+    const store = new ForgeStore(storePath);
+    const a = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'a')));
+    assert.ok(a.ok);
+    if (!a.ok) return;
+    const missing = path.join(tmp, 'no-such');
+    const res = store.reorderProjects([missing, a.project.path]);
+    assert.ok(!res.ok);
+    if (!res.ok) assert.equal(res.code, 1003);
+    // 无副作用：顺序与 priority 均未变
+    const reloaded = new ForgeStore(storePath);
+    assert.deepEqual(reloaded.listProjects().map((p) => p.path), [a.project.path]);
+    assert.equal(reloaded.getProject(a.project.path)?.priority ?? null, null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('listProjects：priority 钉扎升序优先，未钉扎按最近打开倒序排后', () => {
+  const tmp = makeTempDir();
+  try {
+    const store = new ForgeStore(path.join(tmp, 'forge-store.json'));
+    const ra = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'a')));
+    const rb = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'b')));
+    const rc = store.addProject(makeProjectRecord(makeProjectDir(tmp, 'c')));
+    assert.ok(ra.ok && rb.ok && rc.ok);
+    if (!ra.ok || !rb.ok || !rc.ok) return;
+    // a 钉扎 priority=1（最近打开更晚但不影响钉扎顺序）；b 钉扎 priority=0；
+    // c 未钉扎但最近打开：应排所有钉扎之后
+    const upA = store.updateProject({ ...ra.project, priority: 1, lastOpenedAt: '2026-06-01T00:00:00.000Z' });
+    const upB = store.updateProject({ ...rb.project, priority: 0, lastOpenedAt: '2026-03-01T00:00:00.000Z' });
+    const upC = store.updateProject({ ...rc.project, lastOpenedAt: '2026-09-01T00:00:00.000Z' });
+    assert.ok(upA.ok && upB.ok && upC.ok);
+    assert.deepEqual(
+      store.listProjects().map((p) => p.path),
+      [rb.project.path, ra.project.path, rc.project.path],
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

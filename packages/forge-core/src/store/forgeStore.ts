@@ -76,6 +76,15 @@ export type UpdateProjectResult =
  */
 export type RemoveProjectResult = { ok: true; removed: boolean };
 
+/**
+ * reorderProjects 的结果（判别联合）。
+ * - `{ ok: true, projects }`：重排成功，返回按新 priority 排序后的列表
+ * - `{ ok: false, code: 1003 }`：paths 中含未注册项目路径，不写盘
+ */
+export type ReorderProjectsResult =
+  | { ok: true; projects: ProjectRecord[] }
+  | { ok: false; code: 1003; message: string };
+
 /** 构造默认存储数据（首次创建 / 重新播种时使用，与 schema.md seed 数据一致） */
 function createEmptyData(): ForgeStoreData {
   return {
@@ -201,16 +210,29 @@ export class ForgeStore {
   }
 
   /**
-   * 项目列表，按 lastOpenedAt 降序（最近打开在前），未打开过（null）排最后。
+   * 项目列表排序（拖拽钉扎优先）：priority 升序在前（数字越小越靠前），
+   * 未钉扎（null/缺省）项目按 lastOpenedAt 降序排其后。
    * @returns 项目记录副本（外部修改不影响内存数据）
    */
   listProjects(): ProjectRecord[] {
     return [...this.data.projects].sort((a, b) => {
-      if (a.lastOpenedAt === null && b.lastOpenedAt === null) return 0;
-      if (a.lastOpenedAt === null) return 1;
-      if (b.lastOpenedAt === null) return -1;
-      return b.lastOpenedAt.localeCompare(a.lastOpenedAt);
+      const ap = a.priority ?? null;
+      const bp = b.priority ?? null;
+      if (ap !== null || bp !== null) {
+        if (ap === null) return 1;
+        if (bp === null) return -1;
+        if (ap !== bp) return ap - bp;
+      }
+      return this.compareByLastOpenedAt(a, b);
     });
+  }
+
+  /** 最近打开时间降序比较（null 排最后） */
+  private compareByLastOpenedAt(a: ProjectRecord, b: ProjectRecord): number {
+    if (a.lastOpenedAt === null && b.lastOpenedAt === null) return 0;
+    if (a.lastOpenedAt === null) return 1;
+    if (b.lastOpenedAt === null) return -1;
+    return b.lastOpenedAt.localeCompare(a.lastOpenedAt);
   }
 
   /**
@@ -259,6 +281,25 @@ export class ForgeStore {
     this.data.projects[idx] = updated;
     this.save();
     return { ok: true, project: updated };
+  }
+
+  /**
+   * 全量重排项目（拖拽钉扎）：按传入顺序为每个项目写 priority=index（全部钉扎），
+   * 一次性落盘。
+   * @param paths 新的全量顺序（已注册的规范化路径列表）
+   * @returns 成功返回按新顺序排序后的项目列表；含未注册路径返回 1003 且不写盘
+   */
+  reorderProjects(paths: string[]): ReorderProjectsResult {
+    const byPath = new Map(this.data.projects.map((p) => [p.path, p]));
+    for (const p of paths) {
+      if (!byPath.has(p)) {
+        return { ok: false, code: 1003, message: `项目不存在: ${p}` };
+      }
+    }
+    const next = this.data.projects.map((p) => ({ ...p, priority: paths.indexOf(p.path) }));
+    this.data.projects = next;
+    this.save();
+    return { ok: true, projects: this.listProjects() };
   }
 
   /**

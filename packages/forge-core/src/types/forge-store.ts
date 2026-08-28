@@ -15,6 +15,7 @@ export type TrustState = 'untrusted' | 'asking' | 'trusted' | 'rejected';
  * @param createdAt 创建时间（ISO8601）
  * @param lastOpenedAt 最近打开时间（ISO8601），未打开过为 null
  * @param trustState 信任状态缓存
+ * @param priority 手动排序优先级（拖拽钉扎）：数字越小越靠前；null/缺省=未钉扎，按最近打开倒序排钉扎项目之后
  */
 export interface ProjectRecord {
   path: string;
@@ -22,6 +23,7 @@ export interface ProjectRecord {
   createdAt: string;
   lastOpenedAt: string | null;
   trustState: TrustState;
+  priority?: number | null;
 }
 
 /**
