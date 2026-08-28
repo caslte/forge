@@ -515,6 +515,61 @@ test('saveProvider：勾选多模态后 providersChanged 载荷保留 vision（�
   }
 });
 
+test('queryProviderList：reasoning / thinkingLevels 回显（编辑对话框思考等级回填前置）', async () => {
+  const { api, modelsFile } = makeApi();
+  modelsFile.providers = [
+    {
+      id: 'think',
+      name: 'Thinker',
+      type: 'openai',
+      baseUrl: null,
+      models: ['think-model'],
+      lastError: null,
+      reasoning: true,
+      thinkingLevels: ['low', 'medium', 'high'],
+    },
+    {
+      id: 'plain',
+      name: 'Plain',
+      type: 'openai',
+      baseUrl: null,
+      models: ['plain-model'],
+      lastError: null,
+    },
+  ];
+  const result = await api.methods['model/queryProviderList']({});
+  assert.equal(result.code, 0);
+  assert.ok(result.data !== null);
+  if (result.data !== null) {
+    const providers = (result.data as { providers: ProviderConfig[] }).providers;
+    assert.equal(providers[0]?.reasoning, true, '启用思考的 provider 回显 reasoning=true');
+    assert.deepEqual(providers[0]?.thinkingLevels, ['low', 'medium', 'high'], '回显 thinkingLevels 白名单');
+    assert.equal(providers[1]?.reasoning, undefined, '未配置思考的 provider 省略 reasoning');
+    assert.equal(providers[1]?.thinkingLevels, undefined, '未配置思考的 provider 省略 thinkingLevels');
+  }
+});
+
+test('saveProvider：设置思考等级后 providersChanged 载荷保留 reasoning / thinkingLevels', async () => {
+  const { api, events } = makeApi();
+  const changed: unknown[] = [];
+  events.on('model.providersChanged', (payload) => changed.push(payload));
+  const input = validInput({
+    name: 'Thinker',
+    type: 'openai',
+    models: ['think-model'],
+    reasoning: true,
+    thinkingLevels: ['low', 'high'],
+  });
+  const result = await api.methods['model/saveProvider'](input);
+  assert.equal(result.code, 0);
+  assert.equal(changed.length, 1);
+  if (changed[0] !== undefined) {
+    const payload = changed[0] as { providers: ProviderConfig[] };
+    assert.equal(payload.providers[0]?.reasoning, true, '事件载荷保留 reasoning=true');
+    assert.deepEqual(payload.providers[0]?.thinkingLevels, ['low', 'high'], '事件载荷保留 thinkingLevels');
+  }
+});
+
 test('getModelThinkingLevels：返回结构/顺序固定；未知模型 → 1004（A-MP-012）', async () => {
   const { api, thinkLevels } = makeApi();
   const full = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];

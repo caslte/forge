@@ -88,6 +88,9 @@ function toSafeProvider(provider: ProviderConfig): ProviderConfig {
     ...(provider.apiKey !== undefined ? { apiKey: provider.apiKey } : {}),
     // 多模态回显：布尔值透传（未配置省略，前端按 === true 勾选）
     ...(provider.vision !== undefined ? { vision: provider.vision } : {}),
+    // MP-S07 回显：思考强度 + 思考等级白名单透传（丢字段会导致编辑对话框要求重选思考等级）
+    ...(provider.reasoning !== undefined ? { reasoning: provider.reasoning } : {}),
+    ...(provider.thinkingLevels !== undefined ? { thinkingLevels: provider.thinkingLevels } : {}),
   };
 }
 

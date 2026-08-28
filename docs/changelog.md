@@ -1,5 +1,13 @@
 # 变更日志
 
+## v2.9 (桌面应用打包：免安装 forge.exe 手动组装流程)
+
+- 实现范围：新增 `scripts/package.mjs`（一条命令出免安装包）与 `scripts/collect-prod-deps.mjs`（production 依赖扁平收集）。背景：electron-builder 在 npm workspaces + pi 生态大 node_modules 上依赖扫描卡死（"searching for node modules" 无进展），改为确定性手动组装：构建 workspaces → 收集 @forge/core/pi-ai/pi-coding-agent production 依赖（136 包，Dereference 穿透 workspace symlink）→ 组装 `release/`（forge.exe + resources/app）→ 拷贝 Electron 运行时。
+- 产物布局：`release/forge.exe` 双击即用；主进程 `resources/app/{package.json,dist/,node_modules/}`；UI 在 `resources/forge-ui/dist/`（对齐 `src/main.ts` 生产路径 `../../forge-ui/dist/index.html`）。
+- 生效方式：`node scripts/package.mjs` 重新打包，产物在 `release/`，已 .gitignore；运行用 data 目录不变（forge-store.json 照常落盘）。
+- 验证：全链路冒烟通过——主进程稳定（多进程存活）、`forge-store.json` 落盘、CDP 确认 UI 渲染（FORGE/项目树/设置等，58 DOM 节点）。
+- 文档同步：`scripts/package.mjs` 头部注释（背景/布局/用法）；changelog 本条。
+
 ## v2.8 (项目拖拽排序：会话树项目按优先级钉扎)
 
 - 实现范围：
