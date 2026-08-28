@@ -123,3 +123,102 @@ test('工厂可注入 PiConversationAdapter 并完成一次文本流映射', asy
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ===== wu-06：事件总线注入与 cross-extension-rpc stop 通道 =====
+
+interface RecordedRequest {
+  requestId: string;
+  agentId: string;
+}
+
+test('工厂注入 eventBus：lease 暴露总线与 stop 通道（subagents:rpc:stop 协议）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-bus-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const handlers = new Map<string, Set<(data: unknown) => void>>();
+    const requests: RecordedRequest[] = [];
+    const bus = {
+      emit(channel: string, data: unknown): void {
+        if (channel === 'subagents:rpc:stop') {
+          requests.push(data as RecordedRequest);
+        }
+        for (const handler of [...(handlers.get(channel) ?? [])]) handler(data);
+      },
+      on(channel: string, handler: (data: unknown) => void): () => void {
+        let set = handlers.get(channel);
+        if (set === undefined) {
+          set = new Set();
+          handlers.set(channel, set);
+        }
+        set.add(handler);
+        return () => set.delete(handler);
+      },
+    };
+
+    const lease = await createPiAgentSessionFactory({ agentDir, eventBus: bus })({
+      cwd: projectDir,
+      sessionId: 'forge-bus-1',
+    });
+
+    // lease 暴露注入的总线（扩展 pi.events === 该总线）
+    assert.equal(
+      (lease as unknown as { events?: unknown }).events,
+      bus,
+      'lease 应暴露注入的事件总线',
+    );
+
+    // 句柄暴露 stop 通道：发 subagents:rpc:stop { requestId, agentId } 并等回复信封
+    const stop = (lease as unknown as { handle?: { stopSubagent?: (agentId: string) => Promise<void> } })
+      .handle?.stopSubagent;
+    assert.equal(typeof stop, 'function', '句柄应暴露 stopSubagent 通道');
+
+    // 成功回复 → resolve
+    const okPromise = stop!('agent-1');
+    assert.equal(requests.length, 1, '应发出一次 stop RPC 请求');
+    assert.ok(
+      typeof requests[0]?.requestId === 'string' && requests[0].requestId.length > 0,
+      '请求应携带 requestId',
+    );
+    assert.equal(requests[0]?.agentId, 'agent-1');
+    bus.emit(`subagents:rpc:stop:reply:${requests[0]!.requestId}`, { success: true });
+    await assert.doesNotReject(okPromise);
+
+    // 失败回复 → reject(error message)
+    const failPromise = stop!('agent-2');
+    const second = requests[1]!;
+    bus.emit(`subagents:rpc:stop:reply:${second.requestId}`, { success: false, error: 'Agent not found' });
+    await assert.rejects(failPromise, /Agent not found/);
+
+    // 请求的 reply channel 与 requestId 一一对应
+    assert.notEqual(requests[0]?.requestId, requests[1]?.requestId, '每次请求应有独立 requestId');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('未注入 eventBus 时工厂为每会话创建独立总线（事件绑定会话）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-bus-auto-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const factory = createPiAgentSessionFactory({ agentDir });
+    const leaseA = await factory({ cwd: projectDir, sessionId: 'forge-bus-a' });
+    const leaseB = await factory({ cwd: projectDir, sessionId: 'forge-bus-b' });
+
+    const eventsA = (leaseA as unknown as { events?: unknown }).events;
+    const eventsB = (leaseB as unknown as { events?: unknown }).events;
+    assert.ok(eventsA !== undefined && eventsB !== undefined, '每会话应有独立事件总线');
+    assert.notEqual(eventsA, eventsB, '两个会话的总线互不共享（事件归组隔离）');
+
+    // stop 通道可用（扩展缺失时经超时/错误回复映射，不在本测试展开）
+    const stop = (leaseA as unknown as { handle?: { stopSubagent?: unknown } }).handle?.stopSubagent;
+    assert.equal(typeof stop, 'function');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

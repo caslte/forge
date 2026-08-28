@@ -87,12 +87,30 @@ export interface SessionThinkingLevel {
 
 export type ThemeMode = 'light' | 'dark';
 
-/** 子 Agent（占位，forge-core 未实现，UI 预留） */
+/**
+ * 子 Agent（API 06 §0 业务对象）。
+ * forge-core 内存态（按 sessionId 隔离，不持久化，应用重启后为空）；
+ * 终态不可逆（finishedAt/result 一经设置不变）。
+ */
 export interface Subagent {
+  /** 扩展派生的子 agent 唯一 ID（幂等合并键） */
   agentId: string;
+  /** agent 类型（如 general-purpose / Explore） */
   agentType: string;
-  name: string;
-  status: 'working' | 'finished' | 'error';
+  /** 描述（Tab 显示名，截断由前端处理） */
+  description: string;
+  /** 状态机：queued → running → completed / failed / stopped */
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+  /** 开始时间（ISO 8601） */
+  startedAt: string;
+  /** 结束时间（终态才有，否则 null） */
+  finishedAt: string | null;
+  /** 结果全文（completed 才有；failed 时为 null，错误信息走 error 字段） */
+  result: string | null;
+  /** 失败/终止原因（终态非 completed 时有值） */
+  error: string | null;
+  /** Token 用量（lifetime 累计；无产出时缺省） */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 /** 任务清单项（占位，forge-core 未实现） */

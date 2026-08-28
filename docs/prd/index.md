@@ -11,6 +11,7 @@
 | 03 | 对话与消息 | prd/03_conversation.md | PRD 已确认 | 流式响应、Markdown/Mermaid、取消、历史 |
 | 04 | 工具执行展示 | prd/04_tool_execution.md | PRD 已确认 | tool 卡片、并排 Diff、状态流转 |
 | 05 | 模型与 Provider 配置 | prd/05_model_provider.md | PRD 已确认 | models.json 可视化编辑、密钥安全、全局+会话模型；扩展：思考级别选择（输入框）、上下文 1M 配置 |
+| 06 | 子 Agent 管理 | prd/06_subagent_management.md | PRD 已确认 | 主会话状态联动、Tab 栏+结果视图监控、停止级联/单个终止 |
 
 ## 状态说明
 

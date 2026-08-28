@@ -50,6 +50,16 @@
         "db": { "path": "docs/db/forge-store/schema.md", "status": "approved" },
         "test-api": { "path": "docs/test/05_model/api.md", "status": "approved" }
       }
+    },
+    "06_subagent": {
+      "status": "approved",
+      "artifacts": {
+        "prd": { "path": "docs/prd/06_subagent_management.md", "status": "approved" },
+        "verification": { "path": "docs/test/06_subagent/coverage-matrix.md", "status": "approved" },
+        "api": { "path": "docs/api/06_subagent.md", "status": "approved" },
+        "test-e2e": { "path": "docs/test/06_subagent/e2e.md", "status": "approved" },
+        "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
+      }
     }
   }
 }

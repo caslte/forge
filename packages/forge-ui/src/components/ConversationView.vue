@@ -4,6 +4,7 @@ import { call, subscribe, type AttachmentFile } from '../bridge';
 import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus } from '../types';
 import InstructionInput from './InstructionInput.vue';
 import MessageListItem, { type DisplayItem, type ToolDiff } from './MessageListItem.vue';
+import { computeTurnFooters } from '../composables/useTurnFooter';
 
 /**
  * 对话主视图。
@@ -81,11 +82,20 @@ function itemKey(m: ConversationMessage): string {
 const displayItems = computed(() => {
   const out: DisplayItem[] = [];
   const msgs = messages.value;
+  // 轮次 footer：一次回复被工具调用拆成多张 assistant 卡片时，仅末卡显示复制+时间
+  const footers = computeTurnFooters(msgs);
   let i = 0;
   while (i < msgs.length) {
     const cur = msgs[i]!;
     if (cur.role !== 'tool') {
-      out.push({ key: itemKey(cur), kind: 'message', msg: cur, idx: i });
+      const footer = footers.get(i);
+      out.push({
+        key: itemKey(cur),
+        kind: 'message',
+        msg: cur,
+        idx: i,
+        ...(footer ? { showFooter: footer.showFooter, copyText: footer.copyText } : {}),
+      });
       i += 1;
     } else {
       const start = i;

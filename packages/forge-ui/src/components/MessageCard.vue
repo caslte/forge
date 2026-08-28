@@ -7,6 +7,10 @@ import MermaidBlock from './MermaidBlock.vue';
 const props = defineProps<{
   message: ConversationMessage;
   streaming?: boolean;
+  /** footer（复制+时间）是否渲染；assistant 分片卡片由父级按轮次分组只保留末卡 */
+  showFooter?: boolean;
+  /** 整轮复制文本（assistant 末卡覆盖同轮全部分片；缺省复制本条内容） */
+  copyText?: string;
 }>();
 
 const isUser = computed(() => props.message.role === 'user');
@@ -17,10 +21,10 @@ const isSystem = computed(() => props.message.role === 'system');
 const copied = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** 复制消息内容到剪贴板 */
+/** 复制消息内容到剪贴板（有整轮 copyText 时复制整轮文本） */
 async function copy(): Promise<void> {
   try {
-    await navigator.clipboard.writeText(props.message.content);
+    await navigator.clipboard.writeText(props.copyText ?? props.message.content);
     copied.value = true;
     if (copyTimer) clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
@@ -129,7 +133,7 @@ watch(mdReady, (ready) => {
         <MermaidBlock :encoded="block.encoded" />
       </div>
     </div>
-    <div v-if="!streaming" class="msg-footer">
+    <div v-if="!streaming && showFooter !== false" class="msg-footer">
       <button class="msg-copy" :title="copied ? '已复制' : '复制'" @click="copy">
         <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="20 6 9 17 4 12" />

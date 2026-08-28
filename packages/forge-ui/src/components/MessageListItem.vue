@@ -31,6 +31,9 @@ export type DisplayItem =
       kind: 'message';
       msg: ConversationMessage;
       idx: number;
+      /** assistant 分片 footer 轮次控制（仅 assistant 消息需要） */
+      showFooter?: boolean;
+      copyText?: string;
     }
   | {
       key: string;
@@ -75,7 +78,13 @@ function isToolMessage(m: ConversationMessage): boolean {
 <template>
   <template v-if="item.kind === 'message'">
     <ToolCallCard v-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" />
-    <MessageCard v-else :message="item.msg" :streaming="streaming" />
+    <MessageCard
+      v-else
+      :message="item.msg"
+      :streaming="streaming"
+      :show-footer="item.showFooter"
+      :copy-text="item.copyText"
+    />
   </template>
 
   <div v-else class="tool-group" :class="{ collapsed: item.collapsed }">

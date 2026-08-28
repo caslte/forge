@@ -538,3 +538,158 @@ test('P3-B：无效图片附件（空 data / 非 image）被过滤不抛错', as
   assert.equal(images.images.length, 1);
   assert.equal(images.images[0]?.data, 'ZGF0YQ==');
 });
+
+// ===== wu-06：子 agent 事件映射、终止通道与删除清理 =====
+
+import { SubagentService } from '@forge/core';
+
+/** 子 agent 扩展事件总线 fake（pi.events 结构） */
+class SubagentTestBus {
+  readonly handlers = new Map<string, Set<(data: unknown) => void>>();
+  emit(channel: string, data: unknown): void {
+    for (const handler of [...(this.handlers.get(channel) ?? [])]) handler(data);
+  }
+
+  on(channel: string, handler: (data: unknown) => void): () => void {
+    let set = this.handlers.get(channel);
+    if (set === undefined) {
+      set = new Set();
+      this.handlers.set(channel, set);
+    }
+    set.add(handler);
+    return () => set.delete(handler);
+  }
+}
+
+/** 收集 SubagentService sink 事件 */
+function collectingSink(): {
+  events: Array<{ sessionId: string; event: string; payload: unknown }>;
+  sink: { emit: (sessionId: string, event: string, payload: unknown) => boolean };
+} {
+  const events: Array<{ sessionId: string; event: string; payload: unknown }> = [];
+  return {
+    events,
+    sink: {
+      emit: (sessionId, event, payload) => {
+        events.push({ sessionId, event, payload });
+        return true;
+      },
+    },
+  };
+}
+
+test('subagents 生命周期事件映射为 SubagentService ingest 并按会话归组', async () => {
+  const { sink, events } = collectingSink();
+  const service = new SubagentService({ sink });
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(
+    async () => ({ session: fake, dispose: () => fake.dispose(), events: bus }),
+    { subagentService: service },
+  );
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '派生任务');
+
+  // pi-subagents 真实载荷形状（created → started → completed）
+  bus.emit('subagents:created', { id: 'ag-9', type: 'Explore', description: '探查代码' });
+  bus.emit('subagents:started', { id: 'ag-9', type: 'Explore', description: '探查代码' });
+  bus.emit('subagents:completed', {
+    id: 'ag-9',
+    type: 'Explore',
+    description: '探查代码',
+    status: 'completed',
+    result: '探查结论',
+    tokens: { input: 10, output: 20, total: 30 },
+  });
+
+  const list = service.queryList('s1');
+  assert.ok(list.ok && list.data.length === 1, `会话 s1 应有一条记录: ${JSON.stringify(list)}`);
+  const record = list.ok ? list.data[0]! : null;
+  assert.equal(record?.agentId, 'ag-9');
+  assert.equal(record?.status, 'completed');
+  assert.equal(record?.agentType, 'Explore');
+  assert.equal(record?.description, '探查代码');
+  assert.equal(record?.result, '探查结论');
+  assert.deepEqual(record?.usage, { inputTokens: 10, outputTokens: 20 });
+
+  // failed 事件：error → failed；stopped/aborted → stopped
+  bus.emit('subagents:created', { id: 'ag-f', type: 'general-purpose' });
+  bus.emit('subagents:failed', { id: 'ag-f', type: 'general-purpose', status: 'error', error: 'boom' });
+  bus.emit('subagents:created', { id: 'ag-s', type: 'general-purpose' });
+  bus.emit('subagents:failed', { id: 'ag-s', type: 'general-purpose', status: 'aborted', error: '中止' });
+  const list2 = service.queryList('s1');
+  const byId = new Map(list2.ok ? list2.data.map((r) => [r.agentId, r]) : []);
+  assert.equal(byId.get('ag-f')?.status, 'failed');
+  assert.equal(byId.get('ag-f')?.error, 'boom');
+  assert.equal(byId.get('ag-s')?.status, 'stopped', 'aborted 应映射为 stopped');
+
+  // sink 收到 subagent.updated（完整记录）且绑定会话
+  assert.ok(events.some((e) => e.sessionId === 's1' && e.event === 'subagent.updated'));
+
+  // 其他会话不受影响（事件绑定 lease 所属会话）
+  assert.ok(service.queryList('other').ok && service.queryList('other').data.length === 0);
+});
+
+test('removeSession 退订扩展事件总线并清理子 agent 会话内存态', async () => {
+  const { sink, events } = collectingSink();
+  const service = new SubagentService({ sink });
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  let disposed = false;
+  const adapter = new PiConversationAdapter(
+    async () => ({ session: fake, dispose: () => (disposed = true), events: bus }),
+    { subagentService: service },
+  );
+  adapter.onMessage('s-del', () => undefined);
+  await adapter.sendMessage('s-del', '任务');
+
+  bus.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '任务' });
+  assert.equal(service.queryList('s-del').ok && service.queryList('s-del').data.length, 1);
+
+  await adapter.removeSession('s-del');
+  assert.ok(disposed, 'lease 应被 dispose');
+
+  // 退订后迟到事件不再 ingest（无 updated、无记录）
+  const before = events.length;
+  bus.emit('subagents:completed', { id: 'ag-1', type: 'general-purpose', status: 'completed', result: '迟到' });
+  assert.equal(events.length, before, '退订后不应再收到子 agent 事件');
+  assert.equal(service.queryList('s-del').ok && service.queryList('s-del').data.length, 0, '内存态应清空');
+
+  // removeSession 幂等
+  await adapter.removeSession('s-del');
+});
+
+test('stopSubagent 委托 lease 句柄的扩展 stop 通道；通道缺失时抛错', async () => {
+  const stopped: string[] = [];
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => undefined,
+    handle: {
+      stopSubagent: async (agentId: string) => {
+        stopped.push(agentId);
+      },
+    },
+  }));
+  adapter.onMessage('s-stop', () => undefined);
+  await adapter.sendMessage('s-stop', '任务');
+  await adapter.stopSubagent('s-stop', 'ag-1');
+  assert.deepEqual(stopped, ['ag-1'], '应委托 lease 句柄的 stopSubagent');
+
+  // 通道缺失（扩展缺失/未激活会话）→ 抛错（上层映射 1002/5000）
+  await assert.rejects(adapter.stopSubagent('s-unknown', 'ag-1'), /终止通道不可用/);
+});
+
+test('未注入 subagentService 时静默降级：不订阅事件、无副作用', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => undefined,
+    events: bus,
+  }));
+  adapter.onMessage('s-plain', () => undefined);
+  // 不抛错即通过（事件总线被忽略）
+  await adapter.sendMessage('s-plain', '普通问题');
+  assert.equal(fake.promptCalls.length, 1);
+});

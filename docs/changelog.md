@@ -1,5 +1,15 @@
 # 变更日志
 
+## v3.1 (PRD 06 配套 API 文档与测试设计)
+
+- API（`api/06_subagent.md` 新增，`api/index.md` 登记）：方法 `subagent/queryList` / `subagent/stop` / `subagent/clearFinished`；事件 `subagent.updated`（完整记录幂等 upsert）/ `subagent.removed`；跨模块语义扩展 `conversation/cancelStream`（级联终止全部活跃子 agent）与 `conversation.statusChanged`（done 判据 = 主轮结束且活跃计数为 0，30 分钟兜底）；Subagent 业务对象与状态机定义；扩展缺失走非错误路径（空列表/1002）。
+- 测试设计（`test/06_subagent/` 新增 coverage-matrix.md + unit.md + e2e.md）：24 条 AC 全映射（U-SA-001~007 状态机/门控/兜底/级联/隔离清理；E-SA-001~009 mock 事件序列驱动 UI 用例）；`test/integration/pi-core.md` 新增 PIC-006（真实 pi + pi-subagents 事件链路，不得全 mock）；`test/index.md` 登记（模块 06 功能点 8/8、P0/P1 100%，3 项风险维度不适用有据）。
+
+## v3.0 (新增 PRD 06 子 Agent 管理并确认；footer 轮次分组修复)
+
+- PRD 06（`prd/06_subagent_management.md`）从无到有并确认：背景为派生后台子 agent 后主会话误判"已完成"且完全不可见。范围：SA-F01 事件接入（pi.events 共享事件总线，TD-SA-01）、SA-F02 主会话状态联动（done = 主 agent 本轮结束且活跃子 agent 计数为 0，30 分钟超时兜底，TD-SA-02）、SA-F03 Tab 栏（输入框上方，主会话+子 agent Tab，参照 ai-coding 模式，TD-SA-04）、SA-F04 结果视图（状态/实时耗时/result 全文/Token，v-show 切换）、SA-F05 停止按钮级联终止（主 agent 本轮+全部活跃子 agent，TD-SA-03）、SA-F06 单个终止（二次确认）、SA-F07 运行期内存态按会话隔离+重启不恢复（TD-SA-05）、SA-F08 扩展缺失静默降级（TD-SA-06）。24 条 AC（AC-SA-001~024）。明确不做：spawn、左树"子 Agent (N)"分组（用户裁定 v1 不加）、子 agent 逐 token 实时查看。`prd/index.md`、`overview.md`（模块表/MVP 范围）同步更新。
+- UI 修复：一次 AI 回复被工具调用拆成多张 assistant 卡片时复制按钮+时间戳重复出现。新增 `forge-ui/src/composables/useTurnFooter.ts` 轮次分组（以 user 消息为界，仅末卡显示 footer，复制内容为整轮文本）；MessageCard 增加 showFooter/copyText；ConversationView 与 MultiWindowConversation 同步接入；新增 e2e `footerTurn.spec.ts`（E-CV-FOOTER-001），全套 21/21 通过。
+
 ## v2.9 (桌面应用打包：免安装 forge.exe 手动组装流程)
 
 - 实现范围：新增 `scripts/package.mjs`（一条命令出免安装包）与 `scripts/collect-prod-deps.mjs`（production 依赖扁平收集）。背景：electron-builder 在 npm workspaces + pi 生态大 node_modules 上依赖扫描卡死（"searching for node modules" 无进展），改为确定性手动组装：构建 workspaces → 收集 @forge/core/pi-ai/pi-coding-agent production 依赖（136 包，Dereference 穿透 workspace symlink）→ 组装 `release/`（forge.exe + resources/app）→ 拷贝 Electron 运行时。

@@ -699,3 +699,167 @@ test('MP-QA-G01 回归：运行中全局默认切到 high 后新建会话发送�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ===== wu-06：子 agent done 门控接线（SA-F02）=====
+
+/** 子 agent 门控测试用 fake 总线（扩展生命周期事件源） */
+class GateTestBus {
+  readonly handlers = new Map<string, Set<(data: unknown) => void>>();
+  emit(channel: string, data: unknown): void {
+    for (const handler of [...(this.handlers.get(channel) ?? [])]) handler(data);
+  }
+
+  on(channel: string, handler: (data: unknown) => void): () => void {
+    let set = this.handlers.get(channel);
+    if (set === undefined) {
+      set = new Set();
+      this.handlers.set(channel, set);
+    }
+    set.add(handler);
+    return () => set.delete(handler);
+  }
+}
+
+interface GateFixture {
+  root: string;
+  sessionId: string;
+  methodTable: ReturnType<typeof createForgeCore>['methodTable'];
+  eventBus: import('node:events').EventEmitter;
+  sessions: Map<string, DeferredPiSession>;
+  buses: Map<string, GateTestBus>;
+}
+
+/** 带 fake 扩展事件总线的门控测试装配 */
+async function makeGateFixture(deps: Partial<Parameters<typeof createForgeCore>[1]> = {}): Promise<GateFixture> {
+  const { root, storeFile, projectDir } = makeTempProject();
+  const sessions = new Map<string, DeferredPiSession>();
+  const buses = new Map<string, GateTestBus>();
+  const factory: PiAgentSessionFactory<DeferredPiSession> = async (options) => {
+    const session = new DeferredPiSession();
+    const bus = new GateTestBus();
+    const sid = options.sessionId ?? `auto-${sessions.size}`;
+    sessions.set(sid, session);
+    buses.set(sid, bus);
+    return { session, dispose: () => undefined, events: bus };
+  };
+  const modelsFile = new MockModelsFileAdapter();
+  await modelsFile.writeProviders([
+    {
+      id: 'openai',
+      name: 'OpenAI',
+      type: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      models: ['gpt-4o-mini'],
+      lastError: null,
+    },
+  ]);
+  const core = createForgeCore(storeFile, {
+    modelsFile,
+    keychain: new MockKeychainAdapter(),
+    trustStore: {
+      hasTrustRequiringResources: () => false,
+      getDecision: () => null,
+      setDecision: () => undefined,
+    },
+    piAgentSessionFactory: factory,
+    ...deps,
+  });
+  const created = await invoke(core.methodTable, 'session/createSession', { projectPath: projectDir });
+  const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+  return {
+    root,
+    sessionId,
+    methodTable: core.methodTable,
+    eventBus: core.eventBus,
+    sessions,
+    buses,
+  };
+}
+
+test('子 agent 活跃时主轮结束 done 延迟，子 agent 完成后收敛且恰好一次', async () => {
+  const fx = await makeGateFixture();
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+
+    // 派生一个运行中子 agent（事件先于主轮结束到达）
+    const sending = invoke(fx.methodTable, 'conversation/sendMessage', {
+      sessionId: fx.sessionId,
+      content: '研究一下',
+    });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fx.buses.get(fx.sessionId)!.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '研究' });
+    fx.buses.get(fx.sessionId)!.emit('subagents:started', { id: 'ag-1', type: 'general-purpose', description: '研究' });
+
+    // 主轮结束：活跃计数=1 → done 延迟
+    fx.sessions.get(fx.sessionId)!.finish('主轮回答');
+    await sending;
+    assert.ok(
+      !statuses.some((e) => e.sessionId === fx.sessionId && e.status === 'done'),
+      `活跃子 agent 存在时主轮结束不应立即 done，实际: ${JSON.stringify(statuses)}`,
+    );
+
+    // 子 agent 完成 → 计数归零 → done 收敛
+    fx.buses
+      .get(fx.sessionId)!
+      .emit('subagents:completed', { id: 'ag-1', type: 'general-purpose', status: 'completed', result: '结论' });
+    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
+    assert.equal(doneEvents.length, 1, `done 应恰好发射一次，实际: ${JSON.stringify(statuses)}`);
+    assert.ok(!statuses.some((e) => e.sessionId === fx.sessionId && e.status === 'error'));
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('无活跃子 agent 时主轮结束立即 done（与现状一致）', async () => {
+  const fx = await makeGateFixture();
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+    await invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '普通问题' });
+    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
+    assert.equal(doneEvents.length, 1, '无子 agent 时 done 语义与现状完全一致');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('活跃子 agent 超时兜底（注入小窗口）到期自动发 done 且恰好一次', async () => {
+  const fx = await makeGateFixture({ subagentDoneTimeoutMs: 80 });
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+    const sending = invoke(fx.methodTable, 'conversation/sendMessage', {
+      sessionId: fx.sessionId,
+      content: '长任务',
+    });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fx.buses.get(fx.sessionId)!.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '长任务' });
+    fx.buses.get(fx.sessionId)!.emit('subagents:started', { id: 'ag-1', type: 'general-purpose', description: '长任务' });
+    fx.sessions.get(fx.sessionId)!.finish('主轮回答');
+    await sending;
+
+    // 兜底窗口内不发 done
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.ok(!statuses.some((e) => e.status === 'done'), '窗口内不应发 done');
+
+    // 兜底到期自动放行（窗口内无任何子 agent 事件）
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
+    assert.equal(doneEvents.length, 1, `超时兜底应自动发 done 恰好一次，实际: ${JSON.stringify(statuses)}`);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+

@@ -112,6 +112,29 @@ export type {
 // 模型与 Provider 配置 RPC 方法层（wu-05-rpc）
 export { ModelApi, createModelApi } from './rpc/modelMethods.ts';
 
+// 子 Agent 管理服务（wu-06-subagent-core）
+export {
+  SubagentRegistry,
+  SubagentService,
+  SUBAGENT_DONE_TIMEOUT_MS,
+  isTerminalStatus,
+} from './subagent/subagentService.ts';
+export type {
+  SubagentStatus,
+  SubagentUsage,
+  SubagentRecord,
+  SubagentEventInput,
+  SubagentRegistryOptions,
+  IngestResult,
+  SubagentClock,
+  SubagentStopPort,
+  SubagentEventSink,
+  SubagentLogger,
+  SubagentServiceOptions,
+  SubagentResult,
+  StopAllActiveResult,
+} from './subagent/subagentService.ts';
+
 // forge-store 类型（docs/db/forge-store/schema.md）
 export type {
   TrustState,

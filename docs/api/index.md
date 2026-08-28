@@ -39,6 +39,7 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 | 03 | 对话与消息 | api/03_conversation.md | 已确认 | 03 |
 | 04 | 工具执行 | api/04_tool.md | 已确认 | 04 |
 | 05 | 模型与 Provider | api/05_model.md | 已确认 | 05 |
+| 06 | 子 Agent 管理 | api/06_subagent.md | 已确认 | 06 |
 
 ## 更新规则
 

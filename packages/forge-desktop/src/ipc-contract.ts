@@ -48,7 +48,11 @@ export type ForgeMethod =
   | 'model/setSessionModel'
   | 'model/getModelThinkingLevels'
   | 'model/getSessionThinkingLevel'
-  | 'model/setSessionThinkingLevel';
+  | 'model/setSessionThinkingLevel'
+  // subagent（06）
+  | 'subagent/queryList'
+  | 'subagent/stop'
+  | 'subagent/clearFinished';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -74,7 +78,9 @@ export type ForgeEvent =
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
-  | 'model.providersChanged';
+  | 'model.providersChanged'
+  | 'subagent.updated'
+  | 'subagent.removed';
 
 /** 全部事件名运行时数组（主进程遍历注册转发，避免遗漏事件） */
 export const FORGE_EVENTS: readonly ForgeEvent[] = [
@@ -91,7 +97,69 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'tool.completed',
   'tool.error',
   'model.providersChanged',
+  'subagent.updated',
+  'subagent.removed',
 ];
+
+/** 子 Agent 信息（API 06 §0 业务对象；与 forge-ui types.ts 的 Subagent 字段一致） */
+export interface SubagentInfo {
+  /** 扩展派生的子 agent 唯一 ID（幂等合并键） */
+  agentId: string;
+  /** agent 类型（如 general-purpose / Explore） */
+  agentType: string;
+  /** 描述（Tab 显示名，截断由前端处理） */
+  description: string;
+  /** 状态机：queued → running → completed / failed / stopped；终态不可逆 */
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+  /** 开始时间（ISO 8601） */
+  startedAt: string;
+  /** 结束时间（终态才有，否则 null） */
+  finishedAt: string | null;
+  /** 结果全文（completed 才有；failed 时为 null，错误信息走 error 字段） */
+  result: string | null;
+  /** 失败/终止原因（终态非 completed 时有值） */
+  error: string | null;
+  /** Token 用量（lifetime 累计；无产出时缺省） */
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+/** subagent/queryList 请求参数 */
+export interface SubagentQueryListParams {
+  sessionId: string;
+}
+
+/** subagent/stop 请求参数 */
+export interface SubagentStopParams {
+  sessionId: string;
+  agentId: string;
+}
+
+/** subagent/clearFinished 请求参数 */
+export interface SubagentClearFinishedParams {
+  sessionId: string;
+}
+
+/** subagent/queryList 响应 data（运行中在前，终态按 finishedAt 倒序；无子 agent 时空数组） */
+export interface SubagentQueryListResult {
+  subagents: SubagentInfo[];
+}
+
+/** subagent/clearFinished 响应 data（被移除的终态子 agent ID 列表） */
+export interface SubagentClearFinishedResult {
+  removed: string[];
+}
+
+/** subagent.updated 事件 payload（携带完整记录，前端按 agentId 幂等 upsert） */
+export interface SubagentUpdatedPayload {
+  sessionId: string;
+  subagent: SubagentInfo;
+}
+
+/** subagent.removed 事件 payload（清除已完成后被移除的子 agent ID 列表） */
+export interface SubagentRemovedPayload {
+  sessionId: string;
+  agentIds: string[];
+}
 
 /** IPC 主通道：渲染进程发起方法调用 */
 export const IPC_INVOKE = 'forge:invoke';
@@ -121,6 +189,8 @@ export interface ForgeBridge {
    * - conversation.error: { sessionId, code, message }
    * - tool.started: ToolDescriptor / tool.completed: ToolResult / tool.error: ToolErrorInfo
    * - model.providersChanged: { providers }
+   * - subagent.updated: SubagentUpdatedPayload（{ sessionId, subagent } 完整记录）
+   * - subagent.removed: SubagentRemovedPayload（{ sessionId, agentIds }）
    */
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** 原生对话框（目录选择等） */

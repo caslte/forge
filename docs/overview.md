@@ -50,6 +50,7 @@
 | 03 | 对话与消息 | 发消息、流式响应、Markdown/代码/Mermaid 渲染、取消、历史 | prd/03_conversation.md | PRD 已确认 |
 | 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转 | prd/04_tool_execution.md | PRD 已确认 |
 | 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择；扩展：思考级别选择（输入框）、上下文 1M 配置 | prd/05_model_provider.md | PRD 已确认（含扩展 MP-S05/MP-S06） |
+| 06 | 子 Agent 管理 | 主会话状态与后台子 agent 联动、Tab 栏+结果视图监控、停止级联/单个终止 | prd/06_subagent_management.md | PRD 已确认 |
 
 ### 配套设计文档
 
@@ -69,9 +70,11 @@
 
 ## 七、MVP 范围
 
-**做**：项目管理、多会话（并行执行）、对话（Markdown/Mermaid）、工具执行卡片/Diff、模型配置、项目信任（pi 自带）、多窗口观察（多会话跨项目并排，窗口吸附）。
+**做**：项目管理、多会话（并行执行）、对话（Markdown/Mermaid）、工具执行卡片/Diff、模型配置、项目信任（pi 自带）、多窗口观察（多会话跨项目并排，窗口吸附）、子 Agent 管理（模块 06：状态联动+Tab 监控+终止）。
 
-**不做（后续迭代）**：嵌入式终端、发送队列、子代理面板、复杂 ToolProfile CRUD、图片附件、per-tool 审批扩展、嵌入式 agent（v2+）、TUI 形态。
+**不做（后续迭代）**：嵌入式终端、发送队列、复杂 ToolProfile CRUD、图片附件、per-tool 审批扩展、嵌入式 agent（v2+）、TUI 形态、子 agent 左侧树分组与逐 token 实时查看（PRD 06 明确不做）。
+
+> 子代理面板原列"不做"，2026-08-28 提级为模块 06（PRD 已确认）。
 
 ## 八、当前状态
 

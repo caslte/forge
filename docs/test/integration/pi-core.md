@@ -111,6 +111,26 @@
 
 ---
 
+### PIC-006 子 agent 真实事件链路（eventBus 注入 / 生命周期映射 / 真实终止）
+
+- **关联**：模块 06（AC-SA-001/002/003/004/016/024 的 pi 真实层，不得全 mock）| **优先级**：P0 | **自动化等级**：real-integration
+- **前置**：forge-core + 真实 pi + `@tintinweb/pi-subagents` 扩展（`~/.pi/agent/npm`）；会话经 forge 工厂创建且注入共享 eventBus
+- **数据**：一个可快速完成的子 agent 任务（如"回复 ok"）+ 一个可终止的长任务
+- **操作**：
+  1. 主 agent 派生后台子 agent → 断言 forge 侧订阅到 created/started 事件，记录进入会话内存态（ID/类型/描述正确）
+  2. 等待其完成 → 断言 completed 事件与 result/usage 落位，活跃计数归零，会话 done 判据放行
+  3. 派生长任务后经扩展 RPC stop → 断言 stopped 事件到达、记录终态、计数收敛
+  4. 同一会话连续派生 2 个子 agent 并行 → 事件无丢/无乱序/无串扰（扩展并发上限内）
+  5. 未注入 pi-subagents 的环境（临时移除扩展路径）→ queryList 空、无事件、无报错（AC-SA-024 真实层）
+- **断言**：
+  - 扩展 `pi.events` 事件与 forge 内存态一一对应（无丢事件/无错映射/无乱序收敛失败）
+  - 终止后主会话状态按门控收敛；真实完成通知经 followUp 进入会话消息
+  - 负向：终止不存在 ID 返回约定错误码不崩
+- **健康**：无未捕获异常、无吞错返回 success
+- **证据**：事件日志时序 + 注册表快照 + 会话 JSONL（子 agent 会话文件由扩展生成）
+
+---
+
 ## 3. 覆盖汇总
 
 | 用例 | 集成点 | 优先级 | 自动化等级 | 关键断言 |
@@ -120,5 +140,6 @@
 | PIC-003 | 多会话真实并发 | P0 | real-integration | 无串扰/隔离/完整 |
 | PIC-004 | 后端健康+契约 | P0 | real-integration | 无吞错/契约完整 |
 | PIC-005 | 思考级别真实链路 | P0 | real-integration | 级别列表一致/持久化恢复/并发隔离/1M 上下文 |
+| PIC-006 | 子 agent 真实事件链路 | P0 | real-integration | 事件无丢/无乱序/状态收敛/终止生效/缺失降级 |
 
 > 注：本文件是跨模块集成设计，不并入任一模块 coverage-matrix；各模块矩阵的 A-* 契约用例与之互补（矩阵测契约、本文测真实映射）。

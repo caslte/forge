@@ -36,7 +36,10 @@ export type ForgeMethod =
   | 'model/setSessionModel'
   | 'model/getModelThinkingLevels'
   | 'model/getSessionThinkingLevel'
-  | 'model/setSessionThinkingLevel';
+  | 'model/setSessionThinkingLevel'
+  | 'subagent/queryList'
+  | 'subagent/stop'
+  | 'subagent/clearFinished';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -52,7 +55,9 @@ export type ForgeEvent =
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
-  | 'model.providersChanged';
+  | 'model.providersChanged'
+  | 'subagent.updated'
+  | 'subagent.removed';
 
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
 export interface ForgeResult<T = unknown> {
