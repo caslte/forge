@@ -1,5 +1,12 @@
 # 变更日志
 
+## v3.2 (模块 03 扩展 CV-S06 会话历史导航【草稿-待确认】；独立模块 07 方案撤销)
+
+- 背景：用户需求「增加一个这种左侧的用户会话历史，点击可以定位，然后可以看到历史的对话浮窗」（附 ZCode 客户端参考图）。初稿曾按独立模块 07（左侧跨项目历史列表方案）起草；**用户裁定：不单独设模块，并入主会话（对话区）一侧**，07 的 PRD/测试设计文件与全部登记已撤销（`prd/07_session_history.md`、`test/07_session_history/` 删除，index/overview/artifacts 回退）。
+- 扩展设计（并入 PRD 03，状态：基础部分已确认不变 + 扩展 CV-S06【草稿-待确认】）：**会话内提问时间线**——对话区左缘按时间正序列出当前会话全部用户消息（单行截断）；hover ≥300ms 弹浮窗预览该轮对话（用户消息 120 码点 + 助手回复 200 码点纯文本截断快照，流式中为快照不实时刷新，Esc/移开即关）；点击定位到该消息并进入**回看模式**（流式不强制滚底 + 底部"回到底部"提示，触底/点击恢复，TD-CV-06）。数据为已加载消息流纯派生：零新增接口、零新增存储（TD-CV-05）。范围限定主会话消息流（子 agent 结果视图不渲染，画布小窗后续）。
+- 登记：`prd/03_conversation.md`（场景 CV-S06、TD-CV-05/06、功能点 CV-S06、AC-CV-014~019、页面承载、自检——扩展 6 项 PASS）；`test/03_conversation/coverage-matrix.md`（扩展基线 6 AC + unit U-CV-006~008 + e2e E-CV-007~011 行）；`test/03_conversation/e2e.md`（E-CV-007~011 详设 + 汇总行）；`prd/index.md`、`overview.md`（03 行扩展标记 + MVP 范围 + 当前状态）、`test/index.md`（03 行）。扩展为纯前端派生视图，无 API/DB 增量文档。
+- 待办：用户复核扩展章节后转「已确认」并升级 artifacts（03 verification 增补扩展 AC），随后可调 `dev`。
+
 ## v3.1 (PRD 06 配套 API 文档与测试设计)
 
 - API（`api/06_subagent.md` 新增，`api/index.md` 登记）：方法 `subagent/queryList` / `subagent/stop` / `subagent/clearFinished`；事件 `subagent.updated`（完整记录幂等 upsert）/ `subagent.removed`；跨模块语义扩展 `conversation/cancelStream`（级联终止全部活跃子 agent）与 `conversation.statusChanged`（done 判据 = 主轮结束且活跃计数为 0，30 分钟兜底）；Subagent 业务对象与状态机定义；扩展缺失走非错误路径（空列表/1002）。

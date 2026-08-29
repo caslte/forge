@@ -48,16 +48,16 @@ onUnmounted(() => {
     >
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <template v-if="sidebarCollapsed">
-          <!-- 已折叠：竖线在左，箭头朝右=点击展开 -->
-          <rect x="3" y="4" width="18" height="16" rx="2" opacity="0.28" stroke="none" />
-          <path d="M9 4v16" />
-          <path d="M14 9l3 3-3 3" />
+          <!-- 已折叠：面板描边+分隔线在右，箭头朝右=点击展开 -->
+          <rect x="3" y="4" width="18" height="16" rx="2.5" />
+          <path d="M15 4v16" />
+          <path d="m8 15 3-3-3-3" />
         </template>
         <template v-else>
-          <!-- 展开中：竖线在右，箭头朝左=点击折叠 -->
-          <rect x="3" y="4" width="18" height="16" rx="2" opacity="0.28" stroke="none" />
-          <path d="M15 4v16" />
-          <path d="M10 9l-3 3 3 3" />
+          <!-- 展开中：面板描边+分隔线在左，箭头朝左=点击折叠 -->
+          <rect x="3" y="4" width="18" height="16" rx="2.5" />
+          <path d="M9 4v16" />
+          <path d="m16 15-3-3 3-3" />
         </template>
       </svg>
     </button>
@@ -121,6 +121,11 @@ onUnmounted(() => {
 .titlebar-icon-btn svg {
   width: 16px;
   height: 16px;
+}
+
+.titlebar-toggle svg {
+  width: 18px;
+  height: 18px;
 }
 
 .titlebar-toggle:hover,

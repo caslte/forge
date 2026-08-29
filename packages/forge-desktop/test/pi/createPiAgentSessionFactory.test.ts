@@ -222,3 +222,95 @@ test('未注入 eventBus 时工厂为每会话创建独立总线（事件绑定�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('工厂 stop 通道：回复超时 reject（扩展无响应时终止请求不挂起）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-stop-timeout-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    // 静默总线：只转发订阅，不产生任何回复（模拟扩展缺失/事件丢失）
+    const handlers = new Map<string, Set<(data: unknown) => void>>();
+    const silentBus = {
+      emit(channel: string, data: unknown): void {
+        for (const handler of [...(handlers.get(channel) ?? [])]) handler(data);
+      },
+      on(channel: string, handler: (data: unknown) => void): () => void {
+        let set = handlers.get(channel);
+        if (set === undefined) {
+          set = new Set();
+          handlers.set(channel, set);
+        }
+        set.add(handler);
+        return () => set.delete(handler);
+      },
+    };
+
+    const lease = await createPiAgentSessionFactory({
+      agentDir,
+      eventBus: silentBus,
+      stopRpcTimeoutMs: 80,
+    })({ cwd: projectDir, sessionId: 'forge-bus-timeout' });
+    const stop = (lease as unknown as { handle?: { stopSubagent?: (agentId: string) => Promise<void> } })
+      .handle?.stopSubagent;
+    assert.equal(typeof stop, 'function');
+
+    const startedAt = Date.now();
+    await assert.rejects(stop!('agent-x'), /超时/, '无回复时应在窗口到期后 reject');
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed >= 60 && elapsed < 5_000, `应在注入的小窗口（80ms）附近超时，实际 ${elapsed}ms`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('工厂总线桥接：会话总线注入 pi 扩展加载（DefaultResourceLoader eventBus）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-bridge-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const handlers = new Map<string, Set<(data: unknown) => void>>();
+    const bus = {
+      emit(channel: string, data: unknown): void {
+        for (const handler of [...(handlers.get(channel) ?? [])]) handler(data);
+      },
+      on(channel: string, handler: (data: unknown) => void): () => void {
+        let set = handlers.get(channel);
+        if (set === undefined) {
+          set = new Set();
+          handlers.set(channel, set);
+        }
+        set.add(handler);
+        return () => set.delete(handler);
+      },
+    };
+
+    const lease = await createPiAgentSessionFactory({ agentDir, eventBus: bus })({
+      cwd: projectDir,
+      sessionId: 'forge-bridge-1',
+    });
+    // lease.events 即注入总线：桥接后扩展的 pi.events 与 forge 订阅源同源
+    assert.equal((lease as unknown as { events?: unknown }).events, bus, 'lease.events 应为注入总线');
+
+    // 端到端协议校验：模拟扩展按 pi-subagents 契约在总线上发生命周期事件，
+    // forge 侧订阅（PiConversationAdapter.bindSubagentBus 同款）应原样收到
+    const seen: Array<{ channel: string; data: unknown }> = [];
+    const offs = ['subagents:created', 'subagents:started', 'subagents:completed'].map((channel) =>
+      bus.on(channel, (data) => seen.push({ channel, data })),
+    );
+    bus.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '扫描' });
+    bus.emit('subagents:started', { id: 'ag-1' });
+    bus.emit('subagents:completed', { id: 'ag-1', status: 'completed', result: '完成', tokens: { input: 1, output: 2 } });
+    for (const off of offs) off();
+    assert.deepEqual(
+      seen.map((e) => e.channel),
+      ['subagents:created', 'subagents:started', 'subagents:completed'],
+      '注入总线应可承载扩展生命周期事件（桥接通道成立）',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

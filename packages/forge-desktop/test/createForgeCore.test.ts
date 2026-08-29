@@ -764,7 +764,9 @@ async function makeGateFixture(deps: Partial<Parameters<typeof createForgeCore>[
     piAgentSessionFactory: factory,
     ...deps,
   });
+  await invoke(core.methodTable, 'project/addProject', { path: projectDir });
   const created = await invoke(core.methodTable, 'session/createSession', { projectPath: projectDir });
+  assert.equal(created.code, 0, `createSession 应成功: ${created.message}`);
   const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
   return {
     root,
@@ -818,11 +820,17 @@ test('子 agent 活跃时主轮结束 done 延迟，子 agent 完成后收敛且
 test('无活跃子 agent 时主轮结束立即 done（与现状一致）', async () => {
   const fx = await makeGateFixture();
   try {
+    // 同步等待工厂创建（sendMessage 本身在等待 prompt()，不能被 await）
+    const sending = invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '普通问题' });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     const statuses: Array<{ sessionId: string; status: string }> = [];
     fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
       statuses.push(p as { sessionId: string; status: string }),
     );
-    await invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '普通问题' });
+    fx.sessions.get(fx.sessionId)!.finish('普通回答');
+    await sending;
     const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
     assert.equal(doneEvents.length, 1, '无子 agent 时 done 语义与现状完全一致');
   } finally {
@@ -857,6 +865,80 @@ test('活跃子 agent 超时兜底（注入小窗口）到期自动发 done 且�
     await new Promise((resolve) => setTimeout(resolve, 300));
     const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
     assert.equal(doneEvents.length, 1, `超时兜底应自动发 done 恰好一次，实际: ${JSON.stringify(statuses)}`);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('主轮看门狗：prompt 挂起（主轮结束信号丢失）且无活动时注入窗口到期强制放行 done 恰好一次', async () => {
+  const fx = await makeGateFixture({ subagentMainTurnTimeoutMs: 120 });
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+
+    // prompt 永不 finish（模拟 pi 侧 run 生命周期竞态挂起）——notifyMainTurnEnd
+    // 永远不会到达，done 门控的子 agent 兜底不会启动，只有看门狗能放行
+    void invoke(fx.methodTable, 'conversation/sendMessage', {
+      sessionId: fx.sessionId,
+      content: '挂起',
+    });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // 窗口内不发 done
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(!statuses.some((e) => e.status === 'done'), '看门狗窗口内不应发 done');
+
+    // 窗口到期（布防起 120ms 无任何活动）强制放行 done
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
+    assert.equal(doneEvents.length, 1, `看门狗应强制放行 done 恰好一次，实际: ${JSON.stringify(statuses)}`);
+
+    // 迟到的主轮结束（prompt 最终返回）不得重复发 done（forceDone 已标记门控收敛）
+    fx.sessions.get(fx.sessionId)!.finish('迟到回答');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const doneAfter = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
+    assert.equal(doneAfter.length, 1, '迟到的主轮结束不得重复发 done');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('主轮看门狗：活动刷新窗口——窗口内持续有 delta 时不触发，静默后才放行', async () => {
+  const fx = await makeGateFixture({ subagentMainTurnTimeoutMs: 200 });
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+    void invoke(fx.methodTable, 'conversation/sendMessage', {
+      sessionId: fx.sessionId,
+      content: '长任务',
+    });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const session = fx.sessions.get(fx.sessionId)!;
+
+    // 布防后 300ms 内持续发 delta（每次刷新活动时间戳），期间不应触发看门狗
+    for (let i = 0; i < 6; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      for (const listener of session.listeners) {
+        listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '…' } });
+      }
+    }
+    assert.ok(
+      !statuses.some((e) => e.sessionId === fx.sessionId && e.status === 'done'),
+      `持续活动期间看门狗不应触发，实际: ${JSON.stringify(statuses)}`,
+    );
+
+    // 静默超过窗口后放行
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
+    assert.equal(doneEvents.length, 1, '静默超窗后看门狗应放行恰好一次 done');
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }

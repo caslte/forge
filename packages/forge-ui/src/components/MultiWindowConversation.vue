@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, reactive, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe, type AttachmentFile } from '../bridge';
-import type { ConversationMessage, SessionStatus } from '../types';
+import type { ConversationMessage, SessionStatus, Subagent } from '../types';
 import { useToast } from '../composables/useToast';
 import InstructionInput from './InstructionInput.vue';
 import MessageListItem, { type DisplayItem, type ToolDiff } from './MessageListItem.vue';
+import SubagentTabBar from './SubagentTabBar.vue';
+import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
 
 /**
  * 多窗口画布内单个窗口的会话视图：加载历史、订阅会话/工具事件、渲染消息流，
  * 底部输入与单视图（ConversationView）保持一致（附件 / 切换模型 / 上下文用量 / 发送）。
+ * 模块 06：与单视图同样拥有子 Agent Tab 栏 + 结果视图（单/多窗口行为一致，AC-SA-012）。
  */
 const props = defineProps<{
   sessionId: string;
@@ -25,6 +28,11 @@ const loading = ref(false);
 const errorMsg = ref<string | null>(null);
 const currentModel = ref<string | null>(null);
 const scrollRef = ref<HTMLElement | null>(null);
+
+/** 子 Agent 内存态 + 激活 Tab（多窗口下每个窗口独立，AC-SA-012） */
+const subagents = ref<Subagent[]>([]);
+const activeAgentId = ref<string | null>(null);
+const pendingStopAgentId = ref<string | null>(null);
 
 /** toolEventId -> messages 索引，用于 started→completed 聚合 */
 const toolEventIndex = new Map<string, number>();
@@ -315,11 +323,105 @@ function onToolError(payload: unknown): void {
   if (p.summary || p.message) m.content = p.summary ?? p.message ?? '';
 }
 
+// ===== 子 Agent 处理（与单视图同步，AC-SA-012） =====
+
+async function loadSubagents(): Promise<void> {
+  try {
+    const res = await call<{ subagents: Subagent[] }>('subagent/queryList', {
+      sessionId: props.sessionId,
+    });
+    subagents.value = res.subagents ?? [];
+  } catch {
+    subagents.value = [];
+  }
+}
+
+function applySubagentUpsert(sa: Subagent): void {
+  const idx = subagents.value.findIndex((s) => s.agentId === sa.agentId);
+  if (idx === -1) {
+    subagents.value.push({ ...sa });
+    return;
+  }
+  const cur = subagents.value[idx]!;
+  subagents.value[idx] = {
+    ...cur,
+    ...sa,
+    finishedAt: cur.finishedAt ?? sa.finishedAt,
+    result: cur.result ?? sa.result,
+    error: cur.error ?? sa.error,
+  };
+}
+
+function onSubagentUpdated(payload: unknown): void {
+  const p = payload as { sessionId: string; subagent: Subagent };
+  if (p.sessionId !== props.sessionId) return;
+  applySubagentUpsert(p.subagent);
+}
+
+function onSubagentRemoved(payload: unknown): void {
+  const p = payload as { sessionId: string; agentIds: string[] };
+  if (p.sessionId !== props.sessionId) return;
+  const removed = new Set(p.agentIds);
+  subagents.value = subagents.value.filter((s) => !removed.has(s.agentId));
+  if (activeAgentId.value !== null && removed.has(activeAgentId.value)) {
+    activeAgentId.value = null;
+  }
+}
+
+function onSelectTab(agentId: string | null): void {
+  activeAgentId.value = agentId;
+}
+
+function onCloseTab(agentId: string): void {
+  subagents.value = subagents.value.filter((s) => s.agentId !== agentId);
+  if (activeAgentId.value === agentId) activeAgentId.value = null;
+}
+
+async function onClearFinished(): Promise<void> {
+  try {
+    await call('subagent/clearFinished', { sessionId: props.sessionId });
+    subagents.value = subagents.value.filter(
+      (s) => s.status === 'queued' || s.status === 'running',
+    );
+  } catch {
+    subagents.value = subagents.value.filter(
+      (s) => s.status === 'queued' || s.status === 'running',
+    );
+  }
+}
+
+function onSubagentStopRequest(agentId: string): void {
+  pendingStopAgentId.value = agentId;
+}
+
+async function confirmSubagentStop(): Promise<void> {
+  const agentId = pendingStopAgentId.value;
+  pendingStopAgentId.value = null;
+  if (agentId === null) return;
+  try {
+    await call('subagent/stop', { sessionId: props.sessionId, agentId });
+  } catch (e) {
+    console.warn('[subagent] 终止失败', e);
+  }
+}
+
+function cancelSubagentStop(): void {
+  pendingStopAgentId.value = null;
+}
+
+const activeSubagent = computed<Subagent | null>(() => {
+  if (activeAgentId.value === null) return null;
+  return subagents.value.find((s) => s.agentId === activeAgentId.value) ?? null;
+});
+
+const showResultView = computed(() => activeSubagent.value !== null);
+
 let unsubs: Array<(() => void) | null> = [];
 
 onMounted(() => {
   void loadHistory();
   void loadModel();
+  void loadSubagents();
   unsubs = [
     subscribe('conversation.message', onMessage),
     subscribe('conversation.delta', onDelta),
@@ -328,6 +430,8 @@ onMounted(() => {
     subscribe('tool.started', onToolStarted),
     subscribe('tool.completed', onToolCompleted),
     subscribe('tool.error', onToolError),
+    subscribe('subagent.updated', onSubagentUpdated),
+    subscribe('subagent.removed', onSubagentRemoved),
   ];
 });
 
@@ -340,7 +444,8 @@ onUnmounted(() => {
 
 <template>
   <div class="wc-view">
-    <div ref="scrollRef" class="wc-messages">
+    <!-- 消息区 vs 结果视图：v-show 互斥；结果视图原地占据消息区位置 -->
+    <div ref="scrollRef" v-show="!showResultView" class="wc-messages">
       <div v-if="loading" class="wc-hint">加载历史…</div>
       <div v-else-if="isEmpty" class="wc-empty">开始新的对话</div>
       <template v-else>
@@ -363,6 +468,22 @@ onUnmounted(() => {
       <div v-if="errorMsg" class="wc-error">{{ errorMsg }}</div>
     </div>
 
+    <!-- 结果视图：占据消息区位置（与消息区 v-show 互斥） -->
+    <SubagentResultView
+      v-if="showResultView && activeSubagent"
+      :subagent="activeSubagent"
+      @stop="onSubagentStopRequest"
+    />
+
+    <!-- 子 Agent Tab 栏：固定在输入框上方，仅子 agent > 0 时渲染 -->
+    <SubagentTabBar
+      :subagents="subagents"
+      :active-agent-id="activeAgentId"
+      @select="onSelectTab"
+      @close="onCloseTab"
+      @clear-finished="onClearFinished"
+    />
+
     <div class="wc-input">
       <InstructionInput
         compact
@@ -374,6 +495,18 @@ onUnmounted(() => {
         @cancel="onCancel"
         @model-change="onSelectModel"
       />
+    </div>
+
+    <!-- 单个子 agent 终止二次确认弹窗 -->
+    <div v-if="pendingStopAgentId" class="wc-stop-confirm-overlay" @click.self="cancelSubagentStop">
+      <div class="wc-stop-confirm" role="alertdialog" aria-modal="true" aria-label="确认终止子 Agent">
+        <div class="wc-stop-confirm-title">确认终止该子 Agent？</div>
+        <div class="wc-stop-confirm-desc">该操作不可逆。终止后子 Agent 将转“已终止”状态，未完成的工作不会保留。</div>
+        <div class="wc-stop-confirm-actions">
+          <button type="button" class="wc-stop-confirm-cancel" @click="cancelSubagentStop">取消</button>
+          <button type="button" class="wc-stop-confirm-confirm" @click="confirmSubagentStop">确认终止</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -440,4 +573,77 @@ onUnmounted(() => {
 }
 .thinking-shimmer { display: inline-block; font-weight: 500; background: linear-gradient(90deg, #6b7280 0%, #f3f4f6 22%, #6b7280 42%, #e5e7eb 62%, #6b7280 82%, #ffffff 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: thinking-shimmer 2.4s linear infinite; }
 @keyframes thinking-shimmer { 0% { background-position: 100% 0%; } 100% { background-position: 0% 0%; } }
+
+/* 结果视图：在多窗口会话区中占据主区位置 */
+.subagent-result-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 单个终止二次确认弹窗（多窗口用） */
+.wc-stop-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklab, black 50%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.wc-stop-confirm {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 22px 24px;
+  max-width: 420px;
+  width: calc(100% - 40px);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.wc-stop-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.wc-stop-confirm-desc {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.55;
+}
+
+.wc-stop-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.wc-stop-confirm-cancel,
+.wc-stop-confirm-confirm {
+  padding: 6px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.wc-stop-confirm-cancel:hover { background: var(--muted); }
+
+.wc-stop-confirm-confirm {
+  background: var(--destructive);
+  color: var(--brand-foreground);
+  border-color: var(--destructive);
+}
+
+.wc-stop-confirm-confirm:hover { filter: brightness(0.95); }
 </style>

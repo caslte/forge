@@ -219,8 +219,15 @@ async function setupSubagentCore(
     root,
     core,
     sessionId,
-    session: fake.sessions.get(sessionId)!,
-    bus: fake.buses.get(sessionId)!,
+    // 懒加载：factory 回调在 sendMessage 异步路径中触发，建立会话后才能拿到 lease/session/bus。
+    // 在 setup 阶段（factory 未调用时）这些是 undefined，使用时已同步为非空（参见 startPendingSend
+    // 的 waitFor）。getter 语义下在测试使用 ctx.bus.emit() 时总线必然已存在。
+    get session() {
+      return fake.sessions.get(sessionId)!;
+    },
+    get bus() {
+      return fake.buses.get(sessionId)!;
+    },
     sessions: fake.sessions,
     buses: fake.buses,
     updated,
@@ -229,21 +236,35 @@ async function setupSubagentCore(
   };
 }
 
-function cleanup(ctx: SubagentTestContext): void {
+async function cleanup(ctx: SubagentTestContext): Promise<void> {
+  // wu-06：逐个删除 buses map 中所有会话，清理子 agent 门控计时器（默认 30 分钟 setTimeout
+  // 会泄漏阻塞进程退出）。A-SA-001 等多会话测试还会创建会话 B，未清理会产生计时器泄漏。
+  // deleteSession 幂等；副作用 dispose 计时器 + 事件退订是清理路径唯一作用。
+  for (const sid of ctx.buses.keys()) {
+    try {
+      await invoke(ctx.core.methodTable, 'session/deleteSession', { sessionId: sid });
+    } catch {
+      // 清理路径不需错误冒泡
+    }
+  }
   fs.rmSync(ctx.root, { recursive: true, force: true });
 }
 
-/** 启动一次未完成的 sendMessage（工厂已创建 lease，prompt 挂起） */
-async function startPendingSend(
+/** 启动一次未完成的 sendMessage（工厂已创建 lease，prompt 挂起）。
+ *  返回的是仍在进行中的 sending promise，调用方不能 `await startPendingSend(...)`（那会
+ *  等到 sendMessage 结束，而结束时所需 finish() 在用例末尾，形成自锁死循环），
+ *  应 `const sending = startPendingSend(ctx)` 拿到句柄，在用例末尾 `await sending` 收尾。
+ *  调用方在测试中途访问 ctx.bus / ctx.session 前需 `await waitFor(() => ctx.buses.has(sessionId))`
+ *  同步等待工厂回调（因为 sendMessage 本身在等待 prompt() 解决，不能被 await）。 */
+function startPendingSend(
   ctx: SubagentTestContext,
   sessionId = ctx.sessionId,
 ): Promise<{ code: number; message: string; data: unknown }> {
-  const sending = invoke(ctx.core.methodTable, 'conversation/sendMessage', {
+  void waitFor(() => ctx.sessions.has(sessionId));
+  return invoke(ctx.core.methodTable, 'conversation/sendMessage', {
     sessionId,
     content: '派生子 agent 帮我研究',
   });
-  await waitFor(() => ctx.sessions.has(sessionId));
-  return sending;
 }
 
 async function queryList(ctx: SubagentTestContext, sessionId = ctx.sessionId): Promise<SubagentInfo[]> {
@@ -255,8 +276,9 @@ async function queryList(ctx: SubagentTestContext, sessionId = ctx.sessionId): P
 test('A-SA-001: 子 agent 事件按会话归组并映射为 queryList 记录与 updated 事件', async () => {
   const ctx = await setupSubagentCore();
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
     assert.ok(sending, 'sendMessage 应已启动');
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
 
     // 扩展生命周期事件（pi-subagents 在 pi.events 上的真实载荷形状）
     ctx.bus.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '研究定价' });
@@ -319,15 +341,16 @@ test('A-SA-001: 子 agent 事件按会话归组并映射为 queryList 记录与 
     ctx.sessions.get(sidB)!.finish();
     await sendingB;
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
 test('A-SA-002: 失败与终止事件不误标已完成（failed/stopped 语义）', async () => {
   const ctx = await setupSubagentCore();
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
 
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     ctx.bus.emit('subagents:created', { id: 'ag-e', type: 'general-purpose', description: '会失败的' });
     ctx.bus.emit('subagents:started', { id: 'ag-e', type: 'general-purpose', description: '会失败的' });
     ctx.bus.emit('subagents:failed', {
@@ -365,14 +388,15 @@ test('A-SA-002: 失败与终止事件不误标已完成（failed/stopped 语义�
     ctx.session.finish();
     await sending;
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
 test('A-SA-003: 停止按钮级联终止（cancelStream → 主轮 abort + 全部活跃子 agent stopped → done）', async () => {
   const ctx = await setupSubagentCore();
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     for (const agentId of ['ag-1', 'ag-2']) {
       ctx.bus.emit('subagents:created', { id: agentId, type: 'general-purpose', description: `任务 ${agentId}` });
       ctx.bus.emit('subagents:started', { id: agentId, type: 'general-purpose', description: `任务 ${agentId}` });
@@ -407,14 +431,15 @@ test('A-SA-003: 停止按钮级联终止（cancelStream → 主轮 abort + 全�
     assert.equal(repeat.code, 0);
     assert.equal(ctx.bus.stopRequests().length, before, '重复取消不应产生新 stop 请求');
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
 test('A-SA-003: 单个终止只影响目标（subagent/stop），重复终止幂等，未知返回 1002', async () => {
   const ctx = await setupSubagentCore();
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     for (const agentId of ['ag-1', 'ag-2']) {
       ctx.bus.emit('subagents:created', { id: agentId, type: 'general-purpose', description: agentId });
       ctx.bus.emit('subagents:started', { id: agentId, type: 'general-purpose', description: agentId });
@@ -456,14 +481,15 @@ test('A-SA-003: 单个终止只影响目标（subagent/stop），重复终止幂
     ctx.session.finish();
     await sending;
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
 test('A-SA-003: stop RPC 失败重试恰一次后映射 5000，记录保留原状态', async () => {
   const ctx = await setupSubagentCore();
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     ctx.bus.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '任务' });
     ctx.bus.emit('subagents:started', { id: 'ag-1', type: 'general-purpose', description: '任务' });
     ctx.bus.onStopRequest = (requestId) =>
@@ -481,14 +507,15 @@ test('A-SA-003: stop RPC 失败重试恰一次后映射 5000，记录保留原�
     ctx.session.finish();
     await sending;
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
 test('A-SA-004: clearFinished 批量移除终态 Tab 记录，运行中保留并发射 removed 事件', async () => {
   const ctx = await setupSubagentCore();
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     ctx.bus.emit('subagents:created', { id: 'ag-done', type: 'general-purpose', description: '已完成' });
     ctx.bus.emit('subagents:started', { id: 'ag-done', type: 'general-purpose', description: '已完成' });
     ctx.bus.emit('subagents:completed', { id: 'ag-done', type: 'general-purpose', status: 'completed', result: 'ok' });
@@ -515,7 +542,7 @@ test('A-SA-004: clearFinished 批量移除终态 Tab 记录，运行中保留并
     ctx.session.finish();
     await sending;
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
@@ -523,7 +550,8 @@ test('A-SA-005: 删除会话清空子 agent 内存态、退订事件且延迟 do
   // 注入小超时窗口：若删除路径未清理等待器/门控计时器，done 会在窗口后泄漏发射
   const ctx = await setupSubagentCore({ subagentDoneTimeoutMs: 150 });
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     ctx.bus.emit('subagents:created', { id: 'ag-1', type: 'general-purpose', description: '任务' });
     ctx.bus.emit('subagents:started', { id: 'ag-1', type: 'general-purpose', description: '任务' });
 
@@ -550,14 +578,15 @@ test('A-SA-005: 删除会话清空子 agent 内存态、退订事件且延迟 do
       '删除会话后不应有延迟 done 泄漏',
     );
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });
 
 test('A-SA-006: 扩展缺失（无事件源/停止通道）静默降级：空列表、stop 1002、无报错', async () => {
   const ctx = await setupSubagentCore({}, { plain: true });
   try {
-    const sending = await startPendingSend(ctx);
+    const sending = startPendingSend(ctx);
+    await waitFor(() => ctx.buses.has(ctx.sessionId));
     ctx.session.finish();
     await sending;
 
@@ -578,6 +607,6 @@ test('A-SA-006: 扩展缺失（无事件源/停止通道）静默降级：空列
     const statuses = ctx.statusEvents.filter((e) => e.sessionId === ctx.sessionId).map((e) => e.status);
     assert.equal(statuses.at(-1), 'done', '无子 agent 时停止/收尾行为与现状一致');
   } finally {
-    cleanup(ctx);
+    await cleanup(ctx);
   }
 });

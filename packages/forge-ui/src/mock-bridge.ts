@@ -1,12 +1,15 @@
 /**
- * Dev-only mock bridge。
+ * Dev-only mock bridge.
  *
  * 仅用于纯浏览器 (vite dev) 预览 UI：当 CSP/Node 环境没有 Electron preload 注入的
  * `window.forge` 时，注入内存种子数据，便于在浏览器里核对视觉布局。
  * - 生产构建 (vite build) 不包含此文件（由 main.ts 在 `import.meta.env.DEV` 下引入）
  * - Electron 真实运行时有 `window.forge`，本文件不触发
+ *
+ * 模块 06 子 Agent 管理：mock 增加子 agent 内存态、subagent.* 事件、级联 cancelStream。
  */
 import type { ForgeBridge, ForgeResult } from './bridge';
+import type { Subagent } from './types';
 
 declare global {
   interface Window {
@@ -22,7 +25,23 @@ interface MockSessionSeed {
   lastActiveAt: string;
 }
 
-const DB: { projects: Array<Record<string, unknown>>; sessions: MockSessionSeed[] } = {
+/** mock 侧子 agent 记录（含 sessionId 以便按会话归组） */
+interface MockSubagentSeed extends Subagent {
+  sessionId: string;
+}
+
+/** 会话种子持久化键：E2E seed 后 reload（新 JS 上下文）仍保留 */
+const SESSIONS_STORAGE_KEY = 'forge-mock-sessions';
+/** 子 agent 列表持久化键：setSubagents 后 reload 保留（E-SA-009 重启不重建基线） */
+const SUBAGENTS_STORAGE_KEY = 'forge-mock-subagents';
+/** 历史持久化键：setHistory 后 reload 保留种子 */
+const HISTORY_STORAGE_KEY = 'forge-mock-history';
+
+const DB: {
+  projects: Array<Record<string, unknown>>;
+  sessions: MockSessionSeed[];
+  subagents: Record<string, MockSubagentSeed[]>;
+} = {
   projects: [
     { path: 'D:/work/aiwork/forge', alias: null, lastOpenedAt: new Date().toISOString(), trust: 'trusted' },
   ],
@@ -58,23 +77,8 @@ const DB: { projects: Array<Record<string, unknown>>; sessions: MockSessionSeed[
       lastActiveAt: new Date().toISOString(),
     },
   ],
+  subagents: {},
 };
-
-/** 会话种子持久化键：E2E seed 后 reload（新 JS 上下文）仍保留 */
-const SESSIONS_STORAGE_KEY = 'forge-mock-sessions';
-
-// 初始化：若存在 localStorage 种子（E2E seed 后 reload），覆盖默认会话数据
-try {
-  const persisted = localStorage.getItem(SESSIONS_STORAGE_KEY);
-  if (persisted !== null) {
-    const parsed = JSON.parse(persisted) as unknown;
-    if (Array.isArray(parsed)) {
-      DB.sessions = parsed as MockSessionSeed[];
-    }
-  }
-} catch {
-  // localStorage 不可用（隐私模式等）按默认种子运行
-}
 
 const HISTORY: Record<string, unknown[]> = {
   'sess-code-review': [
@@ -128,6 +132,59 @@ const HISTORY: Record<string, unknown[]> = {
   ],
 };
 
+// 初始化：若存在 localStorage 种子（E2E seed 后 reload），覆盖默认数据
+try {
+  const persisted = localStorage.getItem(SESSIONS_STORAGE_KEY);
+  if (persisted !== null) {
+    const parsed = JSON.parse(persisted) as unknown;
+    if (Array.isArray(parsed)) {
+      DB.sessions = parsed as MockSessionSeed[];
+    }
+  }
+} catch {
+  // localStorage 不可用（隐私模式等）按默认种子运行
+}
+
+try {
+  const persisted = localStorage.getItem(SUBAGENTS_STORAGE_KEY);
+  if (persisted !== null) {
+    const parsed = JSON.parse(persisted) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      DB.subagents = parsed as Record<string, MockSubagentSeed[]>;
+    }
+  }
+} catch {
+  // ignore
+}
+
+try {
+  const persisted = localStorage.getItem(HISTORY_STORAGE_KEY);
+  if (persisted !== null) {
+    const parsed = JSON.parse(persisted) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      Object.assign(HISTORY, parsed as Record<string, unknown[]>);
+    }
+  }
+} catch {
+  // ignore
+}
+
+function persistSubagents(): void {
+  try {
+    localStorage.setItem(SUBAGENTS_STORAGE_KEY, JSON.stringify(DB.subagents));
+  } catch {
+    // 忽略持久化失败
+  }
+}
+
+function persistHistory(): void {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(HISTORY));
+  } catch {
+    // 忽略持久化失败
+  }
+}
+
 const listeners: Record<string, Array<(payload: unknown) => void>> = {};
 
 function emit(event: string, payload: unknown): void {
@@ -147,6 +204,12 @@ interface MockScriptItem {
   payload: Record<string, unknown>;
 }
 
+/** 可选 cancelStream 行为：模拟级联终止 */
+interface MockCancelOpts {
+  /** 是否级联终止该会话的全部活跃子 agent（emit subagent.updated stopped） */
+  cascadeSubagents?: boolean;
+}
+
 interface MockControl {
   /** 覆盖/追加方法处理器（返回 { code, message, data } 信封或 null 走默认） */
   seed(
@@ -156,7 +219,20 @@ interface MockControl {
   /** 配置会话的发送脚本；pending 时发送挂起等待脚本绪 */
   onSend(sessionId: string, script: MockScriptItem[]): void;
   /** 主动向会话发射事件（测工具卡片/流式时序） */
-  emit(sessionId: string, event: 'conversation.delta' | 'conversation.message' | 'conversation.error' | 'tool.started' | 'tool.completed' | 'tool.error', payload: Record<string, unknown>): void;
+  emit(
+    sessionId: string,
+    event:
+      | 'conversation.delta'
+      | 'conversation.message'
+      | 'conversation.error'
+      | 'tool.started'
+      | 'tool.completed'
+      | 'tool.error'
+      | 'subagent.updated'
+      | 'subagent.removed'
+      | 'conversation.statusChanged',
+    payload: Record<string, unknown>,
+  ): void;
   /** 注入查询会话列表/历史的种子覆盖 */
   setSessions(list: unknown[]): void;
   setHistory(sessionId: string, messages: unknown[]): void;
@@ -164,6 +240,12 @@ interface MockControl {
   getSessions(): Array<Record<string, unknown>>;
   /** 等待中的发送脚本数（断言用） */
   pendingCount(): number;
+  /** 注入会话的子 agent 列表种子（按 sessionId 隔离，E2E 用以模拟服务端内存态） */
+  setSubagents(sessionId: string, list: unknown[]): void;
+  /** 读取会话的子 agent 列表（按显示顺序：运行中在前，终态按 finishedAt desc） */
+  getSubagents(sessionId: string): Array<Record<string, unknown>>;
+  /** 配置 cancelStream 行为（级联/单点） */
+  setCancelStream(opts: MockCancelOpts): void;
 }
 
 declare global {
@@ -175,6 +257,55 @@ declare global {
 const seedHandlers = new Map<string, (params: Record<string, unknown>) => Record<string, unknown> | null>();
 const sendScripts = new Map<string, MockScriptItem[]>();
 const sendInFlight = new Map<string, Promise<void>>();
+
+/** mock cancelStream 行为配置（默认级联，与真实后端语义一致） */
+let cancelOpts: MockCancelOpts = { cascadeSubagents: true };
+
+/** 子 agent 是否处于活跃态（排队中/运行中） */
+function isActive(status: Subagent['status']): boolean {
+  return status === 'queued' || status === 'running';
+}
+
+/**
+ * 终态不可逆：终态记录的 finishedAt/result 一经设置不得回退。
+ * mock 侧保留同一规则，避免 E2E 误测覆盖语义。
+ */
+function applySubagentUpsert(sessionId: string, incoming: Subagent): MockSubagentSeed {
+  const list = (DB.subagents[sessionId] ??= []);
+  const idx = list.findIndex((s) => s.agentId === incoming.agentId);
+  if (idx === -1) {
+    const rec: MockSubagentSeed = { ...incoming, sessionId };
+    list.push(rec);
+    return rec;
+  }
+  const cur = list[idx]!;
+  // 终态字段不回退
+  const merged: MockSubagentSeed = {
+    ...cur,
+    ...incoming,
+    sessionId,
+    finishedAt: cur.finishedAt ?? incoming.finishedAt,
+    result: cur.result ?? incoming.result,
+    error: cur.error ?? incoming.error,
+  };
+  list[idx] = merged;
+  return merged;
+}
+
+/** 按展示顺序排序：运行中在前（启动顺序），终态按 finishedAt desc */
+function sortSubagents(list: MockSubagentSeed[]): MockSubagentSeed[] {
+  return [...list].sort((a, b) => {
+    const aActive = isActive(a.status);
+    const bActive = isActive(b.status);
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    if (aActive && bActive) {
+      // 活跃：按 startedAt 升序（先来先排前）
+      return (a.startedAt ?? '').localeCompare(b.startedAt ?? '');
+    }
+    // 终态：finishedAt desc
+    return (b.finishedAt ?? '').localeCompare(a.finishedAt ?? '');
+  });
+}
 
 const bridge: ForgeBridge = {
   async invoke(method, params) {
@@ -193,7 +324,9 @@ const bridge: ForgeBridge = {
         // 拖拽重排：按传入顺序重排内存项目列表（与真实端持久化语义一致）
         const paths = (params as { paths?: string[] } | null)?.paths ?? [];
         const byPath = new Map(DB.projects.map((p) => [p.path, p]));
-        const next = paths.map((p) => byPath.get(p)).filter((p): p is (typeof DB.projects)[number] => p !== undefined);
+        const next = paths
+          .map((p) => byPath.get(p))
+          .filter((p): p is (typeof DB.projects)[number] => p !== undefined);
         DB.projects = next;
         return { code: 0, message: 'ok', data: null };
       }
@@ -211,7 +344,8 @@ const bridge: ForgeBridge = {
       case 'session/createSession': {
         // E2E：动态新建会话（测试可直接建多会话做并行/删除场景）
         const sessionId = 'sess-' + Math.random().toString(36).slice(2, 10);
-        const projectPath = (params as { projectPath?: string }).projectPath ?? DB.projects[0]?.path ?? 'D:/work/aiwork/forge';
+        const projectPath =
+          (params as { projectPath?: string }).projectPath ?? DB.projects[0]?.path ?? 'D:/work/aiwork/forge';
         DB.sessions.push({
           sessionId,
           projectPath: projectPath as string,
@@ -224,8 +358,10 @@ const bridge: ForgeBridge = {
       case 'session/deleteSession': {
         const sid = (params as { sessionId?: string }).sessionId;
         DB.sessions = DB.sessions.filter((s) => s.sessionId !== sid);
+        if (sid !== undefined) delete DB.subagents[sid];
         emit('session.removed', { sessionId: sid });
         sendScripts.delete(sid ?? '');
+        persistSubagents();
         return { code: 0, message: 'ok', data: null };
       }
       case 'conversation/sendMessage': {
@@ -247,13 +383,14 @@ const bridge: ForgeBridge = {
         }
         // 用户消息写入会话历史（与真实 pi 持久化一致，会话切换回显依赖）
         (HISTORY[sessionId] ??= []).push({ role: 'user', content, ts: new Date().toISOString() });
+        persistHistory();
         // 挂起：等待测试注入脚本后再执行（模拟真实运行时序）
         const scriptPromise = new Promise<void>((resolve) => {
-          const tick = () => {
+          const tick = (): void => {
             const script = sendScripts.get(sessionId);
             if (script) {
               resolve();
-              runScript(sessionId, script);
+              void runScript(sessionId, script);
             } else {
               setTimeout(tick, 20);
             }
@@ -263,9 +400,27 @@ const bridge: ForgeBridge = {
         sendInFlight.set(sessionId, scriptPromise.then(() => undefined));
         return { code: 0, message: 'ok', data: null };
       }
-      case 'conversation/cancelStream':
-        // E2E：取消后补发 canceled 状态（保留已生成内容由 UI 状态机处理）
+      case 'conversation/cancelStream': {
+        // E2E：取消后按 cancelOpts 决定是否级联终止活跃子 agent（默认级联，与真实后端一致）
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        if (cancelOpts.cascadeSubagents) {
+          const list = DB.subagents[sid] ?? [];
+          const now = new Date().toISOString();
+          for (const sa of list) {
+            if (!isActive(sa.status)) continue;
+            const stopped: Subagent = {
+              ...sa,
+              status: 'stopped',
+              finishedAt: sa.finishedAt ?? now,
+              error: sa.error ?? '用户终止',
+            };
+            applySubagentUpsert(sid, stopped);
+            emit('subagent.updated', { sessionId: sid, subagent: stopped });
+          }
+          persistSubagents();
+        }
         return { code: 0, message: 'ok', data: null };
+      }
       case 'conversation/queryHistory':
         return {
           code: 0,
@@ -274,6 +429,50 @@ const bridge: ForgeBridge = {
         };
       case 'conversation/getContextUsage':
         return { code: 0, message: 'ok', data: { usage: { tokens: 4200, contextWindow: 128000, percent: 3.3 } } };
+      case 'subagent/queryList': {
+        // 返回该会话的子 agent 列表（按展示顺序：运行中在前，终态按 finishedAt desc）
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const list = sortSubagents(DB.subagents[sid] ?? []);
+        return { code: 0, message: 'ok', data: { subagents: list as unknown[] } };
+      }
+      case 'subagent/stop': {
+        // 单个终止：标记 stopped 并发出 subagent.updated
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const agentId = (params as { agentId?: string }).agentId ?? '';
+        const list = DB.subagents[sid] ?? [];
+        const target = list.find((s) => s.agentId === agentId);
+        if (!target) return { code: 1002, message: '子 agent 不存在', data: null };
+        if (!isActive(target.status)) {
+          // 幂等：终态重复终止直接成功
+          return { code: 0, message: 'ok', data: null };
+        }
+        const stopped: Subagent = {
+          ...target,
+          status: 'stopped',
+          finishedAt: target.finishedAt ?? new Date().toISOString(),
+          error: target.error ?? '用户终止',
+        };
+        applySubagentUpsert(sid, stopped);
+        emit('subagent.updated', { sessionId: sid, subagent: stopped });
+        persistSubagents();
+        return { code: 0, message: 'ok', data: null };
+      }
+      case 'subagent/clearFinished': {
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const list = DB.subagents[sid] ?? [];
+        const removedIds: string[] = [];
+        const next = list.filter((s) => {
+          if (isActive(s.status)) return true;
+          removedIds.push(s.agentId);
+          return false;
+        });
+        DB.subagents[sid] = next;
+        if (removedIds.length > 0) {
+          emit('subagent.removed', { sessionId: sid, agentIds: removedIds });
+        }
+        persistSubagents();
+        return { code: 0, message: 'ok', data: { removed: removedIds } };
+      }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };
       case 'model/getSessionModel':
@@ -328,6 +527,7 @@ async function runScript(sessionId: string, script: MockScriptItem[]): Promise<v
       emit('conversation.message', { sessionId, message: item.payload });
       // assistant 消息写入会话历史（会话切换回显依赖）
       (HISTORY[sessionId] ??= []).push(item.payload);
+      persistHistory();
     } else if (item.type === 'tool') {
       emit('tool.started', { sessionId, ...item.payload });
       emit('tool.completed', { sessionId, ...item.payload });
@@ -336,6 +536,8 @@ async function runScript(sessionId: string, script: MockScriptItem[]): Promise<v
   // 流式结束：会话状态从 streaming 置 done，广播刷新会话树（未打开的完成会话显示绿点）
   const doneSess = DB.sessions.find((s) => s.sessionId === sessionId);
   if (doneSess && doneSess.status === 'streaming') {
+    // 真实后端会在所有子 agent 终态后才发 done；mock 简化：脚本结束即视为活跃计数已收敛，
+    // 因为本 mock 默认无任何子 agent 种子（无 setSubagents → 计数恒为 0）。
     doneSess.status = 'done';
     emit('session.updated', { session: doneSess });
   }
@@ -350,10 +552,23 @@ const mockControl: MockControl = {
     sendScripts.set(sessionId, script);
   },
   emit(sessionId, event, payload) {
+    // subagent.updated 额外写库（mock 侧权威状态由 emit 维护，便于 getSubagents 反查）
+    if (event === 'subagent.updated') {
+      const sub = payload['subagent'] as Subagent | undefined;
+      if (sub && typeof sub === 'object') {
+        applySubagentUpsert(sessionId, sub);
+        persistSubagents();
+      }
+    } else if (event === 'subagent.removed') {
+      const ids = (payload['agentIds'] as string[] | undefined) ?? [];
+      const list = DB.subagents[sessionId] ?? [];
+      DB.subagents[sessionId] = list.filter((s) => !ids.includes(s.agentId));
+      persistSubagents();
+    }
     emit(event, { sessionId, ...payload });
   },
   setSessions(list) {
-    DB.sessions = [...list] as typeof DB.sessions;
+    DB.sessions = [...list] as MockSessionSeed[];
     // 持久化：page.reload() 后新 JS 上下文重建 DB 时保留 E2E 种子
     try {
       localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(DB.sessions));
@@ -363,12 +578,23 @@ const mockControl: MockControl = {
   },
   setHistory(sessionId, messages) {
     HISTORY[sessionId] = [...messages] as unknown[];
+    persistHistory();
   },
   getSessions() {
     return DB.sessions.map((s) => ({ ...s }));
   },
   pendingCount() {
     return sendInFlight.size;
+  },
+  setSubagents(sessionId, list) {
+    DB.subagents[sessionId] = (list as Subagent[]).map((s) => ({ ...s, sessionId }));
+    persistSubagents();
+  },
+  getSubagents(sessionId) {
+    return sortSubagents(DB.subagents[sessionId] ?? []).map((s) => ({ ...s }));
+  },
+  setCancelStream(opts) {
+    cancelOpts = { ...opts };
   },
 };
 

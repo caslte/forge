@@ -465,3 +465,52 @@ test('错误码：queryList/clearFinished 参数缺失返回 1001；会话不存
   assert.ok(list.ok);
   assert.deepEqual(list.data, []); // 会话不存在/空返回 []
 });
+
+// ===== 主轮看门狗强制放行（wu-06 兜底补充：主轮结束信号整体丢失）=====
+
+test('forceDone：无前置信号直接发 done 恰好一次，迟到门控信号与子 agent 事件不复活', () => {
+  const { service, sink } = makeService();
+  // 主轮结束信号丢失（notifyMainTurnEnd 未达）时看门狗强制放行
+  service.forceDone('s1');
+  assert.equal(sink.doneCount('s1'), 1, 'forceDone 应直接发 done 恰好一次');
+
+  // 迟到的主轮结束信号不重复发 done
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 1, '迟到 notifyMainTurnEnd 不得重复发 done');
+
+  // 迟到子 agent 事件只更新记录，不复活门控、不重发 done
+  service.ingest('s1', { agentId: 'a1', agentType: 'T', description: 'd', status: 'running' });
+  service.ingest('s1', { agentId: 'a1', status: 'completed', result: 'R' });
+  assert.equal(sink.doneCount('s1'), 1, '迟到子 agent 事件不得重发 done');
+  const updated = sink.all('subagent.updated');
+  assert.equal(updated.length, 2, '迟到事件仍应更新子 agent 记录（列表最终一致）');
+});
+
+test('forceDone：与活跃子 agent 兜底共用收敛语义（forceDone 后清空兜底计时器）', () => {
+  const { service, sink, clock } = makeService({ timeoutMs: 60_000 });
+  // 主轮结束 + 活跃子 agent → 延迟 done 并启动兜底计时
+  service.ingest('s1', { agentId: 'a1', status: 'running' });
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 0);
+  assert.equal(clock.pendingCount, 1, '计数>0 应启动兜底计时');
+
+  // 看门狗在子 agent 兜底窗口内强制放行 → done 恰好一次且计时器清理
+  service.forceDone('s1');
+  assert.equal(sink.doneCount('s1'), 1);
+  assert.equal(clock.pendingCount, 0, 'forceDone 应清理兜底计时器');
+
+  // 子 agent 后续完成不再重发 done
+  service.ingest('s1', { agentId: 'a1', status: 'completed', result: 'R' });
+  assert.equal(sink.doneCount('s1'), 1);
+});
+
+test('forceDone：已销毁会话忽略；重复调用幂等', () => {
+  const { service, sink } = makeService();
+  service.disposeSession('s1');
+  service.forceDone('s1');
+  assert.equal(sink.doneCount('s1'), 0, '已销毁会话的 forceDone 应忽略');
+
+  service.forceDone('s2');
+  service.forceDone('s2');
+  assert.equal(sink.doneCount('s2'), 1, '重复 forceDone 应幂等');
+});

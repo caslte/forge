@@ -1,23 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe, type AttachmentFile } from '../bridge';
-import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus } from '../types';
+import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, Subagent } from '../types';
 import InstructionInput from './InstructionInput.vue';
 import MessageListItem, { type DisplayItem, type ToolDiff } from './MessageListItem.vue';
+import SubagentTabBar from './SubagentTabBar.vue';
+import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
 
 /**
  * 对话主视图。
- * 参考 ai-coding ConversationView 的消息流 + 内嵌 composer 结构，但精简为：
- * - 单一会话消息流（不做 subagent tab / 消息分组聚类，后端 mock 不支持）
- * - 历史加载（conversation/queryHistory）
- * - 事件订阅：conversation.message / delta / statusChanged / error + tool.started/completed/error
- * - 流式状态条（streaming 时顶部显示）
- * - 空会话欢迎页
- * - 底部内嵌 InstructionInput
+ * 模块 06：子 Agent Tab 栏 + 结果视图。Tab 栏仅在会话内存态含子 agent 时渲染；
+ * 切换 Tab 时消息区 v-show 互斥（不销毁 DOM，切回主会话消息流与滚动位置原样恢复）。
  *
- * 工具事件（tool.*）作为 role='tool' 消息插入流中，按 toolEventId 聚合 started→completed。
- * mock 适配器不产生工具事件，但事件通道真实存在，UI 兼容渲染。
+ * 其他职责与原文档一致。
  */
 const props = defineProps<{
   /** 草稿态（新建会话尚未发送首条消息）时为 null；发送首条消息时先创建会话再发送 */
@@ -40,6 +36,13 @@ const loadingHistory = ref(false);
 const errorMsg = ref<string | null>(null);
 const scrollRef = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
+
+/** 子 Agent 内存态（按 sessionId 隔离）；空 = 不渲染 Tab 栏 */
+const subagents = ref<Subagent[]>([]);
+/** 当前激活的 Tab；null = 主会话 */
+const activeAgentId = ref<string | null>(null);
+/** 待二次确认的停止请求（结果视图头部"终止"） */
+const pendingStopAgentId = ref<string | null>(null);
 
 /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
 const toolEventIndex = new Map<string, number>();
@@ -415,12 +418,123 @@ function onToolError(payload: unknown): void {
   }
 }
 
+// ===== 子 Agent 处理 =====
+
+/** 加载会话的子 agent 内存态（queryList） */
+async function loadSubagents(): Promise<void> {
+  const sid = props.sessionId ?? createdSessionId;
+  if (sid === null) {
+    subagents.value = [];
+    return;
+  }
+  try {
+    const res = await call<{ subagents: Subagent[] }>('subagent/queryList', { sessionId: sid });
+    subagents.value = res.subagents ?? [];
+  } catch {
+    subagents.value = [];
+  }
+}
+
+/** 终态字段不可逆：终态记录的 finishedAt/result 一经设置不得回退 */
+function applySubagentUpsert(sa: Subagent): void {
+  const idx = subagents.value.findIndex((s) => s.agentId === sa.agentId);
+  if (idx === -1) {
+    subagents.value.push({ ...sa });
+    return;
+  }
+  const cur = subagents.value[idx]!;
+  subagents.value[idx] = {
+    ...cur,
+    ...sa,
+    finishedAt: cur.finishedAt ?? sa.finishedAt,
+    result: cur.result ?? sa.result,
+    error: cur.error ?? sa.error,
+  };
+}
+
+function onSubagentUpdated(payload: unknown): void {
+  const p = payload as { sessionId: string; subagent: Subagent };
+  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
+  applySubagentUpsert(p.subagent);
+}
+
+function onSubagentRemoved(payload: unknown): void {
+  const p = payload as { sessionId: string; agentIds: string[] };
+  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
+  const removed = new Set(p.agentIds);
+  subagents.value = subagents.value.filter((s) => !removed.has(s.agentId));
+  // 若被移除者正在激活，切回主会话
+  if (activeAgentId.value !== null && removed.has(activeAgentId.value)) {
+    activeAgentId.value = null;
+  }
+}
+
+function onSelectTab(agentId: string | null): void {
+  activeAgentId.value = agentId;
+}
+
+/** 单个终态 Tab 关闭：本地移除（mock 不区分单删与批量清除，二者语义一致） */
+function onCloseTab(agentId: string): void {
+  subagents.value = subagents.value.filter((s) => s.agentId !== agentId);
+  if (activeAgentId.value === agentId) activeAgentId.value = null;
+}
+
+/** 清除已完成：批量移除终态 → 调 subagent/clearFinished（mock 也会 emit subagent.removed） */
+async function onClearFinished(): Promise<void> {
+  const sid = props.sessionId ?? createdSessionId;
+  if (sid === null) return;
+  try {
+    await call('subagent/clearFinished', { sessionId: sid });
+    // mock 已 emit subagent.removed 同步了本地状态；防御性主动清一次
+    subagents.value = subagents.value.filter(
+      (s) => s.status === 'queued' || s.status === 'running',
+    );
+  } catch {
+    // 静默失败：本地乐观更新已落
+    subagents.value = subagents.value.filter(
+      (s) => s.status === 'queued' || s.status === 'running',
+    );
+  }
+}
+
+/** 结果视图头部“终止”按钮点击：进入二次确认（不可逆） */
+function onSubagentStopRequest(agentId: string): void {
+  pendingStopAgentId.value = agentId;
+}
+
+async function confirmSubagentStop(): Promise<void> {
+  const agentId = pendingStopAgentId.value;
+  pendingStopAgentId.value = null;
+  if (agentId === null) return;
+  const sid = props.sessionId ?? createdSessionId;
+  if (sid === null) return;
+  try {
+    await call('subagent/stop', { sessionId: sid, agentId });
+  } catch (e) {
+    console.warn('[subagent] 终止失败', e);
+  }
+}
+
+function cancelSubagentStop(): void {
+  pendingStopAgentId.value = null;
+}
+
+/** 计算属性：当前激活的子 agent（结果视图渲染依赖） */
+const activeSubagent = computed<Subagent | null>(() => {
+  if (activeAgentId.value === null) return null;
+  return subagents.value.find((s) => s.agentId === activeAgentId.value) ?? null;
+});
+
+/** 当前是否在结果视图 */
+const showResultView = computed(() => activeSubagent.value !== null);
+
 // 事件订阅句柄
 let unsubs: Array<(() => void) | null> = [];
 
 onMounted(() => {
   resetForSession(props.sessionId ?? '');
   if (props.sessionId !== null) void loadHistory();
+  void loadSubagents();
   unsubs = [
     subscribe('conversation.message', onConversationMessage),
     subscribe('conversation.delta', onConversationDelta),
@@ -429,6 +543,8 @@ onMounted(() => {
     subscribe('tool.started', onToolStarted),
     subscribe('tool.completed', onToolCompleted),
     subscribe('tool.error', onToolError),
+    subscribe('subagent.updated', onSubagentUpdated),
+    subscribe('subagent.removed', onSubagentRemoved),
   ];
 });
 
@@ -449,13 +565,16 @@ watch(
     }
     resetForSession(sid ?? '');
     void loadHistory();
+    activeAgentId.value = null; // 切换会话回主会话 Tab
+    void loadSubagents();
   },
 );
 </script>
 
 <template>
   <div class="conv-view">
-    <div ref="scrollRef" class="conv-messages">
+    <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
+    <div ref="scrollRef" v-show="!showResultView" class="conv-messages">
       <div class="conv-messages-inner">
         <!-- 加载态 -->
         <div v-if="loadingHistory" class="conv-loading">
@@ -514,6 +633,22 @@ watch(
       </div>
     </div>
 
+    <!-- 结果视图：占据消息区位置（与消息区 v-show 互斥） -->
+    <SubagentResultView
+      v-if="showResultView && activeSubagent"
+      :subagent="activeSubagent"
+      @stop="onSubagentStopRequest"
+    />
+
+    <!-- 子 Agent Tab 栏：固定在输入框上方，有子 agent 才渲染 -->
+    <SubagentTabBar
+      :subagents="subagents"
+      :active-agent-id="activeAgentId"
+      @select="onSelectTab"
+      @close="onCloseTab"
+      @clear-finished="onClearFinished"
+    />
+
     <div class="conv-input-wrap">
       <InstructionInput
         ref="inputRef"
@@ -525,6 +660,18 @@ watch(
         @cancel="onCancel"
         @model-change="onModelChange"
       />
+    </div>
+
+    <!-- 单个子 agent 终止二次确认弹窗（不可逆） -->
+    <div v-if="pendingStopAgentId" class="stop-confirm-overlay" @click.self="cancelSubagentStop">
+      <div class="stop-confirm" role="alertdialog" aria-modal="true" aria-label="确认终止子 Agent">
+        <div class="stop-confirm-title">确认终止该子 Agent？</div>
+        <div class="stop-confirm-desc">该操作不可逆。终止后子 Agent 将转“已终止”状态，未完成的工作不会保留。</div>
+        <div class="stop-confirm-actions">
+          <button type="button" class="stop-confirm-cancel" @click="cancelSubagentStop">取消</button>
+          <button type="button" class="stop-confirm-confirm" @click="confirmSubagentStop">确认终止</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -690,5 +837,83 @@ watch(
 .conv-input-wrap {
   flex-shrink: 0;
   padding: 12px 22px 18px;
+}
+
+/* 结果视图：与消息流 v-show 互斥，独立占据消息区位置 */
+.subagent-result-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 单个终止二次确认弹窗 */
+.stop-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklab, black 50%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.stop-confirm {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 22px 24px;
+  max-width: 420px;
+  width: calc(100% - 40px);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stop-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.stop-confirm-desc {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.55;
+}
+
+.stop-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.stop-confirm-cancel,
+.stop-confirm-confirm {
+  padding: 6px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.stop-confirm-cancel:hover {
+  background: var(--muted);
+}
+
+.stop-confirm-confirm {
+  background: var(--destructive);
+  color: var(--brand-foreground);
+  border-color: var(--destructive);
+}
+
+.stop-confirm-confirm:hover {
+  filter: brightness(0.95);
 }
 </style>

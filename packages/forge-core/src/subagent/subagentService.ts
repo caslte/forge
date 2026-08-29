@@ -525,6 +525,25 @@ export class SubagentService {
   }
 
   /**
+   * 主轮看门狗强制放行（SA-F02 兜底补充）：主轮结束信号整体丢失（如 pi 侧 run
+   * 生命周期异常导致适配器 prompt 永不返回，notifyMainTurnEnd 永远不会到达）时，
+   * 由上层在无活动窗口到期后调用。直接置门控为已结束并发 done（幂等：已发过则
+   * 忽略）；已销毁会话忽略。与 notifyMainTurnEnd 共享「每会话恰好一次」语义。
+   */
+  forceDone(sessionId: string): void {
+    if (sessionId === '' || this.disposedSessions.has(sessionId)) {
+      return;
+    }
+    let gate = this.gates.get(sessionId);
+    if (gate === undefined) {
+      gate = { mainTurnEnded: false, doneSent: false, timeoutTimer: null };
+      this.gates.set(sessionId, gate);
+    }
+    gate.mainTurnEnded = true;
+    this.sendDone(sessionId);
+  }
+
+  /**
    * 会话删除清理（SA-F07 / AC-SA-022）：清内存态、清计时器、标记已销毁（迟到
    * ingest 与门控信号丢弃不报错不重建）；重复调用幂等。
    */

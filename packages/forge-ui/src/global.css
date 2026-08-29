@@ -43,6 +43,14 @@ button {
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
+/* 去掉点击后的系统默认 focus 描边（Windows 上呈系统强调色） */
+button:focus,
+button:focus-visible,
+[role="button"]:focus,
+[role="button"]:focus-visible {
+  outline: none;
+}
+
 button:hover {
   border-color: var(--brand);
   color: var(--brand);

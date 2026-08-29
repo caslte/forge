@@ -1,10 +1,18 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ConversationAttachment, ConversationMessage } from '@forge/core';
 import { stripThinkingContent } from './thinkingFilter.ts';
+import type { SubagentEventBus } from './createPiAgentSessionFactory.ts';
 
 export interface PiAgentSessionLease<TSession> {
   session: TSession;
   dispose: () => void;
+  /** 子 agent 扩展事件总线（生命周期事件订阅源；扩展缺失时可缺省） */
+  events?: SubagentEventBus;
+  /** 句柄：暴露 sessionFile + cross-extension-rpc stop 通道 */
+  handle?: {
+    sessionFile?: string;
+    stopSubagent?: (agentId: string) => Promise<void>;
+  };
 }
 
 export interface PiAgentSessionFactoryOptions {
@@ -66,6 +74,35 @@ defaultThinkingLevel?: string;
  * 实时全局」不一致。缺省时不注入，退化为 defaultThinkingLevel 常量兜底。
  */
 resolveDefaultThinkingLevel?: () => string;
+  /**
+   * 子 agent 管理服务（wu-06）。未注入时适配器静默降级：忽略 lease.events、
+   * stopSubagent 直接 reject（适配器层错误，createForgeCore 映射 1002）。
+   */
+  subagentService?: SubagentServiceLike;
+  /**
+   * 主轮完成回调（wu-06 done 门控入口）：prompt 解析（成功/中止）后触发，
+   * 由上层（createForgeCore）转发到 subagentService.notifyMainTurnEnd
+   * 实现「活跃子 agent 全部完成才发 done」的语义。
+   */
+  onMainTurnEnd?: (sessionId: string) => void;
+}
+
+/** SubagentService 适配子集（仅消费 ingest/notifyMainTurnEnd/disposeSession；解耦 @forge/core 强依赖） */
+export interface SubagentServiceLike {
+  ingest(sessionId: string, event: SubagentAdapterEvent): void;
+  notifyMainTurnEnd(sessionId: string): void;
+  disposeSession(sessionId: string): void;
+}
+
+/** 适配层喂入的子 agent 事件（与 forge-core SubagentEventInput 字段对齐） */
+export interface SubagentAdapterEvent {
+  agentId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+  agentType?: string;
+  description?: string;
+  result?: string;
+  error?: string;
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export type PiAgentSessionFactory<TSession = AgentSession> = (
@@ -151,8 +188,12 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly appliedThinkingLevels = new Map<string, string>();
   /** 每会话在底层 AgentSession 上的单次订阅取消函数（防重复订阅） */
   private readonly unsubs = new Map<string, () => void>();
+  /** 每会话在子 agent 扩展事件总线上的订阅取消函数（removeSession 时释放） */
+  private readonly subagentUnsubs = new Map<string, () => void>();
   private eventHandlers: PiConversationEventHandlers = {};
   private completionHandler: TurnCompletionHandler | undefined;
+  /** 主轮完成回调（wu-06 done 门控）：prompt 解析后调用，转发到 subagentService.notifyMainTurnEnd */
+  private mainTurnEndHandler: ((sessionId: string) => void) | undefined;
 
   private readonly factory: PiAgentSessionFactory<MinimalPiSession>;
   private readonly resolveModel: (model: string) => Promise<unknown>;
@@ -161,6 +202,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly defaultThinkingLevel: string;
   /** 实时读取全局默认思考级别（MP-QA-G01 修复）；未注入则用 defaultThinkingLevel 常量兜底 */
   private readonly resolveDefaultThinkingLevel: (() => string) | undefined;
+  /** 子 agent 管理服务（wu-06）：生命周期事件喂入入口；缺省静默降级 */
+  private readonly subagentService: SubagentServiceLike | undefined;
 
   constructor(
     factory: PiAgentSessionFactory<MinimalPiSession>,
@@ -170,6 +213,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.defaultThinkingLevel = options.defaultThinkingLevel ?? 'off';
     this.resolveDefaultThinkingLevel = options.resolveDefaultThinkingLevel;
     this.resolveSessionFile = options.resolveSessionFile;
+    this.subagentService = options.subagentService;
+    this.mainTurnEndHandler = options.onMainTurnEnd;
     this.resolveModel =
       options.resolveModel ??
       (async (model: string) => {
@@ -250,7 +295,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       { role: 'user', content, ts: new Date().toISOString() },
     ]);
     const handle = (lease as PiAgentSessionLease<MinimalPiSession> & {
-      handle?: { sessionFile?: string };
+      handle?: { sessionFile?: string; stopSubagent?: (agentId: string) => Promise<void> };
     }).handle;
     if (handle?.sessionFile) {
       this.sessionFiles.set(sessionId, handle.sessionFile);
@@ -268,6 +313,9 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       const unsub = lease.session.subscribe((event) => this.handleEvent(sessionId, event));
       this.unsubs.set(sessionId, unsub);
     }
+    // wu-06：订阅子 agent 扩展事件总线（created/started/completed/failed）→ SubagentService.ingest
+    // lease.events 缺失（扩展未激活）时跳过；每个会话独立订阅，removeSession 时退订。
+    this.bindSubagentBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     try {
       // P3-B：附件图片随 prompt 透传（pi prompt 第二参为 PromptOptions.images）
       const images = normalizeImages(options.attachments);
@@ -294,7 +342,14 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.errorEmittedThisTurn.delete(sessionId);
 
     if (!hadError) {
-      this.completionHandler?.(sessionId);
+      // wu-06 done 门控：prompt 解析后转发到 subagentService.notifyMainTurnEnd，
+      // 由服务层决策「计数=0 立即 done / >0 延迟 + 超时兜底」。completionHandler 保留
+      // 给旧路径兼容（与 onMainTurnEnd 二选一，优先 onMainTurnEnd）。
+      if (this.mainTurnEndHandler !== undefined) {
+        this.mainTurnEndHandler(sessionId);
+      } else {
+        this.completionHandler?.(sessionId);
+      }
     }
   }
 
@@ -417,6 +472,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   /**
    * 删除会话时释放运行资源（P2-D）：停止执行、dispose lease、清理内存态。
    * 幂等：未知会话无操作。磁盘文件删除由 PiSessionAdapter 负责。
+   * wu-06：同时退订该会话在子 agent 扩展事件总线上的订阅，避免迟到事件误处理。
    */
   async removeSession(sessionId: string): Promise<void> {
     const unsub = this.unsubs.get(sessionId);
@@ -426,6 +482,15 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       } catch {}
       this.unsubs.delete(sessionId);
     }
+    const subagentUnsub = this.subagentUnsubs.get(sessionId);
+    if (subagentUnsub !== undefined) {
+      try {
+        subagentUnsub();
+      } catch {}
+      this.subagentUnsubs.delete(sessionId);
+    }
+    // wu-06：退订后清空子 agent 会话内存态（会话删除是子 agent 注销的最终时机）
+    this.subagentService?.disposeSession(sessionId);
     const lease = this.leases.get(sessionId);
     if (lease !== undefined) {
       try {
@@ -444,6 +509,61 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.sessionFiles.delete(sessionId);
     this.leaseModels.delete(sessionId);
     this.appliedThinkingLevels.delete(sessionId);
+  }
+
+  /**
+   * 委托 lease 句柄的 cross-extension-rpc stop 通道终止单个子 agent。
+   * lease 缺失/无 stopSubagent 通道（扩展未激活）时抛错，上层映射 1002。
+   */
+  async stopSubagent(sessionId: string, agentId: string): Promise<void> {
+    const lease = this.leases.get(sessionId);
+    if (lease === undefined) {
+      throw new Error('终止通道不可用');
+    }
+    const handle = (lease as PiAgentSessionLease<MinimalPiSession> & {
+      handle?: { stopSubagent?: (agentId: string) => Promise<void> };
+    }).handle;
+    if (handle?.stopSubagent === undefined) {
+      throw new Error('终止通道不可用');
+    }
+    await handle.stopSubagent(agentId);
+  }
+
+  /**
+   * wu-06：按 lease 的扩展事件总线订阅生命周期事件，喂入 SubagentService.ingest。
+   * 每个 channel 独立绑定，便于 removeSession 时统一退订；总线/服务缺失时静默跳过。
+   */
+  private bindSubagentBus(
+    sessionId: string,
+    lease: PiAgentSessionLease<MinimalPiSession>,
+  ): void {
+    if (this.subagentService === undefined) {
+      return;
+    }
+    const bus = lease.events;
+    if (bus === undefined) {
+      return;
+    }
+    // 重建 lease 时退订旧订阅（适配器持有 lease 引用，旧 bus 可能被 dispose）
+    const prev = this.subagentUnsubs.get(sessionId);
+    if (prev !== undefined) {
+      try { prev(); } catch {}
+      this.subagentUnsubs.delete(sessionId);
+    }
+    const channels = ['subagents:created', 'subagents:started', 'subagents:completed', 'subagents:failed'];
+    const offs: Array<() => void> = [];
+    for (const channel of channels) {
+      offs.push(
+        bus.on(channel, (raw) => {
+          this.subagentService!.ingest(sessionId, mapSubagentExtensionEvent(channel, raw));
+        }),
+      );
+    }
+    this.subagentUnsubs.set(sessionId, () => {
+      for (const off of offs) {
+        try { off(); } catch {}
+      }
+    });
   }
 
   /**
@@ -661,4 +781,59 @@ function normalizeImages(
       mimeType: a.mimeType,
     }))
     .filter((a) => a.data.length > 0);
+}
+
+/**
+ * 映射 pi-subagents 扩展事件 → SubagentService.ingest 入参（wu-06）。
+ * - subagents:created → status='queued'（首次建档）
+ * - subagents:started → status='running'（推进状态机）
+ * - subagents:completed → status='completed' + result + usage（按 tokens 转换）
+ * - subagents:failed：按 payload.status 子状态映射：
+ *   error → 'failed'；stopped/aborted → 'stopped'（统一终态语义）
+ */
+function mapSubagentExtensionEvent(
+  channel: string,
+  raw: unknown,
+): SubagentAdapterEvent {
+  const payload = (raw ?? {}) as {
+    id?: unknown;
+    type?: unknown;
+    description?: unknown;
+    status?: unknown;
+    result?: unknown;
+    error?: unknown;
+    tokens?: unknown;
+  };
+  const agentId = typeof payload.id === 'string' && payload.id !== '' ? payload.id : '';
+  const agentType = typeof payload.type === 'string' ? payload.type : undefined;
+  const description = typeof payload.description === 'string' ? payload.description : undefined;
+  const errorMessage = typeof payload.error === 'string' && payload.error !== '' ? payload.error : undefined;
+  const resultText = typeof payload.result === 'string' && payload.result !== '' ? payload.result : undefined;
+  let status: SubagentAdapterEvent['status'];
+  if (channel === 'subagents:created') {
+    status = 'queued';
+  } else if (channel === 'subagents:started') {
+    status = 'running';
+  } else if (channel === 'subagents:completed') {
+    status = 'completed';
+  } else {
+    // subagents:failed（status: error/stopped/aborted → 映射为失败/停止）
+    const subStatus = typeof payload.status === 'string' ? payload.status : 'error';
+    status = subStatus === 'stopped' || subStatus === 'aborted' ? 'stopped' : 'failed';
+  }
+  const event: SubagentAdapterEvent = {
+    agentId,
+    status,
+  };
+  if (agentType !== undefined) event.agentType = agentType;
+  if (description !== undefined) event.description = description;
+  if (resultText !== undefined) event.result = resultText;
+  if (errorMessage !== undefined) event.error = errorMessage;
+  if (isRecord(payload.tokens)) {
+    const t = payload.tokens as { input?: unknown; output?: unknown };
+    if (typeof t.input === 'number' && typeof t.output === 'number') {
+      event.usage = { inputTokens: t.input, outputTokens: t.output };
+    }
+  }
+  return event;
 }
