@@ -4,9 +4,14 @@ import { call, subscribe, type AttachmentFile } from '../bridge';
 import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, Subagent } from '../types';
 import InstructionInput from './InstructionInput.vue';
 import MessageListItem, { type DisplayItem, type ToolDiff } from './MessageListItem.vue';
+import ConversationTimelineRail from './ConversationTimelineRail.vue';
+import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
+import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
+import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
+import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 
 /**
  * 对话主视图。
@@ -162,7 +167,9 @@ async function loadHistory(): Promise<void> {
     });
     // 仅在会话未切换时应用结果
     if (inputSessionId === props.sessionId) {
-      messages.value = res.messages ?? [];
+      // 拷贝为本地数组：mock-backend 的 queryHistory 返回内部 HISTORY 数组引用，
+      // 直接持有会被 mock 后续写入（sendMessage/runScript push）原地污染，出现重复消息
+      messages.value = [...(res.messages ?? [])];
       toolEventIndex.clear();
       toolGroupCollapsed.clear();
       // 重建工具事件索引
@@ -171,14 +178,14 @@ async function loadHistory(): Promise<void> {
           toolEventIndex.set(m.toolEventId, i);
         }
       });
-      nextTick(scrollToBottom);
+      autoScrollToBottom();
     }
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e);
   } finally {
     if (inputSessionId === props.sessionId) {
       loadingHistory.value = false;
-      nextTick(scrollToBottom);
+      autoScrollToBottom();
     }
   }
 }
@@ -199,6 +206,10 @@ function resetForSession(sid: string): void {
   toolGroupCollapsed.clear();
   isStreaming.value = false;
   errorMsg.value = null;
+  // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
+  reviewCtrl.reset();
+  syncReview();
+  clearLocateHighlight();
 }
 
 /** 滚动到底部：覆盖 smooth 做瞬时定位，下一帧再补一次；长内容快速到达最后一条回复 */
@@ -254,7 +265,7 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
     images: images.length > 0 ? images : undefined,
   });
   isStreaming.value = true;
-  nextTick(scrollToBottom);
+  autoScrollToBottom();
   try {
     const params: Record<string, unknown> = { sessionId, content: text };
     if (attachments && attachments.length > 0) {
@@ -297,7 +308,7 @@ let switchBannerTimer: ReturnType<typeof setTimeout> | null = null;
 function showSwitchBanner(model: string): void {
   switchBanner.value = `已切换模型 ${model}`;
   // 横幅渲染在对话流底部，立即滚动到底部，避免需要手动下拉才能看到
-  nextTick(scrollToBottom);
+  autoScrollToBottom();
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
   switchBannerTimer = setTimeout(() => {
     switchBanner.value = null;
@@ -314,11 +325,11 @@ function onConversationMessage(payload: unknown): void {
   if (last && last.role === 'assistant') {
     last.content = p.message.content;
     last.ts = p.message.ts ?? last.ts;
-    nextTick(scrollToBottom);
+    autoScrollToBottom();
     return;
   }
   messages.value.push(p.message);
-  nextTick(scrollToBottom);
+  autoScrollToBottom();
 }
 
 function onConversationDelta(payload: unknown): void {
@@ -337,7 +348,7 @@ function onConversationDelta(payload: unknown): void {
       ts: new Date().toISOString(),
     });
   }
-  nextTick(scrollToBottom);
+  autoScrollToBottom();
 }
 
 function onConversationStatusChanged(payload: unknown): void {
@@ -378,7 +389,7 @@ function onToolStarted(payload: unknown): void {
   };
   messages.value.push(msg);
   toolEventIndex.set(p.toolEventId, messages.value.length - 1);
-  nextTick(scrollToBottom);
+  autoScrollToBottom();
 }
 
 function onToolCompleted(payload: unknown): void {
@@ -528,6 +539,212 @@ const activeSubagent = computed<Subagent | null>(() => {
 /** 当前是否在结果视图 */
 const showResultView = computed(() => activeSubagent.value !== null);
 
+// ===== CV-S06 会话提问时间线 =====
+/** 渲染前提：当前会话消息流含至少一条 user 消息（无 user 消息/草稿态不渲染，AC-CV-017） */
+const hasTimeline = computed(() => messages.value.some((m) => m?.role === 'user'));
+
+// ===== CV-S06 定位与回看模式（AC-CV-016，TD-CV-06） =====
+/**
+ * 回看模式状态机（纯函数，utils/reviewMode）：
+ * - 点击条目 enter(index) → review（autoFollow=false）：流式 delta/新消息不再强制滚底；
+ * - 滚动触底（距底 <40px，去抖停稳判定）或点击"回到底部"提示条 → exit → browse（autoFollow=true）；
+ * - 会话切换 resetForSession → reset() 回浏览模式。
+ */
+const reviewCtrl = createReviewModeController();
+const reviewState = ref<ReviewModeState>(reviewCtrl.getState());
+
+function syncReview(): void {
+  reviewState.value = reviewCtrl.getState();
+}
+
+/** 自动滚底统一门控：回看模式（autoFollow=false）下流式增量/新消息不强制滚底（AC-CV-016） */
+const autoFollow = computed(() => reviewState.value.autoFollow);
+const isReviewing = computed(() => reviewState.value.mode === 'review');
+/** 回看态定位目标（Rail 条目弱高亮用）；browse 态为 null */
+const reviewTargetIndex = computed(() =>
+  reviewState.value.mode === 'review' ? reviewState.value.targetIndex : null,
+);
+
+function autoScrollToBottom(): void {
+  if (!autoFollow.value) return;
+  nextTick(scrollToBottom);
+}
+
+/** 定位高亮持续时长（短暂高亮提示，超时移除 class） */
+const LOCATE_HIGHLIGHT_MS = 1500;
+/** 触底判定距离（距底 <40px 视为触底） */
+const NEAR_BOTTOM_PX = 40;
+/** 触底判定去抖：滚动停稳后仍触底才判定（定位平滑滚动途中路过底部不误判退出） */
+const NEAR_BOTTOM_DEBOUNCE_MS = 120;
+
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+let highlightedMsgEl: HTMLElement | null = null;
+let nearBottomTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearLocateHighlight(): void {
+  if (highlightTimer !== null) {
+    clearTimeout(highlightTimer);
+    highlightTimer = null;
+  }
+  if (highlightedMsgEl !== null) {
+    highlightedMsgEl.classList.remove('msg-locate-highlight');
+    highlightedMsgEl = null;
+  }
+}
+
+/** messages 数组索引 → 第几条 user 消息（0 起）；索引越界或该位置非 user 返回 -1 */
+function userOrdinalOf(index: number): number {
+  const msgs = messages.value;
+  if (!Number.isInteger(index) || index < 0 || index >= msgs.length) return -1;
+  let count = 0;
+  for (let i = 0; i <= index; i += 1) {
+    if (msgs[i]?.role === 'user') count += 1;
+  }
+  return count - 1;
+}
+
+/**
+ * 时间线条目点击：进入回看模式 + 平滑滚动定位到该用户消息 + 短暂高亮（AC-CV-016）。
+ * 定位目标是 user 消息本身（.msg-user 按 DOM 顺序与 userOrdinal 对齐），
+ * 工具组折叠不影响——user 消息永远渲染可见。
+ */
+function locateMessage(index: number): void {
+  if (showResultView.value) return; // 结果视图激活期间不定位/回看（防御；Rail 本就隐藏）
+  const container = scrollRef.value;
+  if (!container) return;
+  const ordinal = userOrdinalOf(index);
+  if (ordinal < 0) return;
+  const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
+  if (!el) return;
+  reviewCtrl.enter(index); // browse→review；review 中重复点击仅更新目标
+  syncReview();
+  clearLocateHighlight();
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('msg-locate-highlight');
+  highlightedMsgEl = el;
+  highlightTimer = setTimeout(() => {
+    highlightTimer = null;
+    highlightedMsgEl?.classList.remove('msg-locate-highlight');
+    highlightedMsgEl = null;
+  }, LOCATE_HIGHLIGHT_MS);
+}
+
+function onTimelineSelect(index: number): void {
+  locateMessage(index);
+}
+
+/** scrollRef 滚动：回看态下停稳后仍触底 → 触底信号退出回看恢复自动滚底（恰好一次由状态机保证） */
+function onMessagesScroll(): void {
+  if (!isReviewing.value) return;
+  if (nearBottomTimer !== null) clearTimeout(nearBottomTimer);
+  nearBottomTimer = setTimeout(() => {
+    nearBottomTimer = null;
+    const el = scrollRef.value;
+    if (!el || !isReviewing.value) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX) {
+      reviewCtrl.nearBottom();
+      syncReview();
+    }
+  }, NEAR_BOTTOM_DEBOUNCE_MS);
+}
+
+/** "回到底部"提示条点击：退出回看 + 立即滚到底（AC-CV-016） */
+function onBackdownClick(): void {
+  reviewCtrl.exit();
+  syncReview();
+  scrollToBottom();
+}
+
+// ===== CV-S06 历史浮窗（AC-CV-015/018） =====
+/** 浮窗期望宽（PRD：固定宽度约 320px） */
+const POPOVER_WIDTH = 320;
+/** 渲染前求解用的名义高度（渲染后按实际高度校正 y，仅影响首帧绘制前的内部计算） */
+const POPOVER_NOMINAL_HEIGHT = 160;
+
+/** 浮窗状态：snapshot 为**弹出时刻**的一次性快照（流式期间不随 delta 变化） */
+const historyPopover = ref<{
+  open: boolean;
+  x: number;
+  y: number;
+  width: number;
+  snapshot: RoundSnapshot;
+  running: boolean;
+}>({
+  open: false,
+  x: 0,
+  y: 0,
+  width: POPOVER_WIDTH,
+  snapshot: { userText: '', assistantText: null },
+  running: false,
+});
+
+/** 浮窗组件实例（读其根元素实际渲染高度用于二次校正 y） */
+const popoverComp = ref<InstanceType<typeof ConversationHistoryPopover> | null>(null);
+/** 弹出时刻记录的锚点/视口矩形（渲染后按实际高度二次校正 y 用） */
+let popoverAnchor: Rect | null = null;
+let popoverViewport: Rect | null = null;
+
+/** 关闭浮窗（移开条目/浮窗或 Esc；v-if 卸载 + 过渡 ≤150ms，无残留 DOM） */
+function closeHistoryPopover(): void {
+  if (!historyPopover.value.open) return;
+  historyPopover.value.open = false;
+  popoverAnchor = null;
+  popoverViewport = null;
+}
+
+/** 按实际渲染高度重解坐标（nextTick 内调用，首帧绘制前完成，无可视跳动） */
+function repositionHistoryPopover(): void {
+  if (!popoverAnchor || !popoverViewport || !historyPopover.value.open) return;
+  const el = popoverComp.value?.rootEl ?? null;
+  const measuredHeight = el && el.offsetHeight > 0 ? el.offsetHeight : POPOVER_NOMINAL_HEIGHT;
+  const solved = solvePopoverPosition(
+    popoverAnchor,
+    { width: POPOVER_WIDTH, height: measuredHeight },
+    popoverViewport,
+  );
+  historyPopover.value.x = solved.x;
+  historyPopover.value.y = solved.y;
+  historyPopover.value.width = solved.width;
+}
+
+/** Rail hover（Rail 已做 300ms 防扫过，到时才 emit）：弹出时刻生成快照并求解坐标 */
+function onTimelineHover(payload: { index: number; el: HTMLElement }): void {
+  const rect = payload.el.getBoundingClientRect();
+  popoverAnchor = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  popoverViewport = {
+    x: 0,
+    y: 0,
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? window.innerHeight : 800,
+  };
+  // 快照在弹出时刻生成一次：流式期间内容不随 delta 变化；关闭再 hover 才取新快照
+  historyPopover.value.snapshot = buildRoundSnapshot(messages.value, payload.index);
+  // running 仅影响无回复时的状态提示：仅"最后一条提问且正在流式"视为运行中，历史轮为等待中/出错
+  const lastUserIndex = messages.value.map((m) => m?.role).lastIndexOf('user');
+  historyPopover.value.running = isStreaming.value && payload.index === lastUserIndex;
+  historyPopover.value.open = true;
+  nextTick(repositionHistoryPopover);
+}
+
+/** 指针移开条目：立即关闭（Rail 侧计时器由 Rail 自己清理） */
+function onTimelineHoverEnd(): void {
+  closeHistoryPopover();
+}
+
+/** Esc 关闭：仅浮窗打开期间挂全局 keydown（不干扰其他快捷键） */
+function onPopoverKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  closeHistoryPopover();
+}
+
+watch(
+  () => historyPopover.value.open,
+  (open) => {
+    if (open) window.addEventListener('keydown', onPopoverKeydown);
+    else window.removeEventListener('keydown', onPopoverKeydown);
+  },
+);
+
 // 事件订阅句柄
 let unsubs: Array<(() => void) | null> = [];
 
@@ -535,6 +752,8 @@ onMounted(() => {
   resetForSession(props.sessionId ?? '');
   if (props.sessionId !== null) void loadHistory();
   void loadSubagents();
+  // 回看模式触底判定（scrollRef 元素常驻，仅 v-show 切换）
+  scrollRef.value?.addEventListener('scroll', onMessagesScroll, { passive: true });
   unsubs = [
     subscribe('conversation.message', onConversationMessage),
     subscribe('conversation.delta', onConversationDelta),
@@ -552,6 +771,14 @@ onUnmounted(() => {
   unsubs.forEach((u) => u?.());
   unsubs = [];
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
+  window.removeEventListener('keydown', onPopoverKeydown);
+  // 回看模式清理：触底判定去抖计时器 + 定位高亮
+  if (nearBottomTimer !== null) {
+    clearTimeout(nearBottomTimer);
+    nearBottomTimer = null;
+  }
+  scrollRef.value?.removeEventListener('scroll', onMessagesScroll);
+  clearLocateHighlight();
 });
 
 // 会话切换
@@ -573,64 +800,95 @@ watch(
 
 <template>
   <div class="conv-view">
-    <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
-    <div ref="scrollRef" v-show="!showResultView" class="conv-messages">
-      <div class="conv-messages-inner">
-        <!-- 加载态 -->
-        <div v-if="loadingHistory" class="conv-loading">
-          <span class="loading-dot"></span>
-          <span class="loading-dot"></span>
-          <span class="loading-dot"></span>
-          <span class="loading-text">加载历史消息</span>
-        </div>
+    <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。时间线与消息区 v-show 同步隐藏；
+         结果视图激活时隐藏（v-show，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
+    <div class="conv-main-row">
+      <ConversationTimelineRail
+        v-if="hasTimeline"
+        v-show="!showResultView"
+        :messages="messages"
+        :active-index="reviewTargetIndex"
+        @select="onTimelineSelect"
+        @hover="onTimelineHover"
+        @hover-end="onTimelineHoverEnd"
+      />
+      <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
+      <div ref="scrollRef" v-show="!showResultView" class="conv-messages">
+        <div class="conv-messages-inner">
+          <!-- 加载态 -->
+          <div v-if="loadingHistory" class="conv-loading">
+            <span class="loading-dot"></span>
+            <span class="loading-dot"></span>
+            <span class="loading-dot"></span>
+            <span class="loading-text">加载历史消息</span>
+          </div>
 
-        <!-- 空会话欢迎页 -->
-        <div v-else-if="isEmpty" class="conv-welcome">
-          <div class="welcome-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          <!-- 空会话欢迎页 -->
+          <div v-else-if="isEmpty" class="conv-welcome">
+            <div class="welcome-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </div>
+            <h3 class="welcome-title">开始新的对话</h3>
+          </div>
+
+          <!-- 消息流：连续 ≥2 的 tool 聚为可折叠组。每个展示项独立组件 + 稳定 key，
+               流式聚合边界变化（单条 ↔ 组）只在组件内部切换形态，避免 patch 错位 -->
+          <template v-else>
+            <MessageListItem
+              v-for="item in displayItems"
+              :key="item.key"
+              :item="item"
+              :streaming="item.kind === 'message' && isMessageStreaming(item.idx)"
+              :session-id="props.sessionId ?? createdSessionId ?? ''"
+              @toggle-group="toggleGroup"
+            />
+            <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
+            <div v-if="isStreaming" class="conv-thinking">
+              <span class="thinking-dot"></span>
+              <span class="thinking-dot"></span>
+              <span class="thinking-dot"></span>
+              <span class="thinking-text thinking-shimmer">助手正在思考</span>
+            </div>
+          </template>
+
+          <!-- 模型切换横幅（临时显示在对话流底部） -->
+          <div v-if="switchBanner" class="conv-switch-banner">
+            <span class="csb-line"></span>
+            <span class="csb-text">{{ switchBanner }}</span>
+            <span class="csb-line"></span>
+          </div>
+
+          <!-- 错误提示 -->
+          <div v-if="errorMsg" class="conv-error">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
+            <span>{{ errorMsg }}</span>
           </div>
-          <h3 class="welcome-title">开始新的对话</h3>
-        </div>
-
-        <!-- 消息流：连续 ≥2 的 tool 聚为可折叠组。每个展示项独立组件 + 稳定 key，
-             流式聚合边界变化（单条 ↔ 组）只在组件内部切换形态，避免 patch 错位 -->
-        <template v-else>
-          <MessageListItem
-            v-for="item in displayItems"
-            :key="item.key"
-            :item="item"
-            :streaming="item.kind === 'message' && isMessageStreaming(item.idx)"
-            :session-id="props.sessionId ?? createdSessionId ?? ''"
-            @toggle-group="toggleGroup"
-          />
-          <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
-          <div v-if="isStreaming" class="conv-thinking">
-            <span class="thinking-dot"></span>
-            <span class="thinking-dot"></span>
-            <span class="thinking-dot"></span>
-            <span class="thinking-text thinking-shimmer">助手正在思考</span>
-          </div>
-        </template>
-
-        <!-- 模型切换横幅（临时显示在对话流底部） -->
-        <div v-if="switchBanner" class="conv-switch-banner">
-          <span class="csb-line"></span>
-          <span class="csb-text">{{ switchBanner }}</span>
-          <span class="csb-line"></span>
-        </div>
-
-        <!-- 错误提示 -->
-        <div v-if="errorMsg" class="conv-error">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="8" x2="12" y2="12" />
-            <line x1="12" y1="16" x2="12.01" y2="16" />
-          </svg>
-          <span>{{ errorMsg }}</span>
         </div>
       </div>
+
+      <!-- CV-S06 回看模式"回到底部"提示条（AC-CV-016）：悬浮于消息流底部、输入框上方，
+           absolute 定位不改变消息区布局（回看期间无跳动）、不遮挡输入框；点击退出回看恢复自动滚底 -->
+      <Transition name="bd-pop">
+        <button
+          v-if="isReviewing"
+          type="button"
+          class="review-backdown"
+          data-testid="review-backdown"
+          @click="onBackdownClick"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="19" x2="12" y2="5" />
+            <polyline points="5 12 12 5 19 12" />
+          </svg>
+          <span>回到底部</span>
+        </button>
+      </Transition>
     </div>
 
     <!-- 结果视图：占据消息区位置（与消息区 v-show 互斥） -->
@@ -662,6 +920,23 @@ watch(
       />
     </div>
 
+    <!-- CV-S06 历史浮窗：teleport 到 body + 组件内 fixed 定位（坐标由 solvePopoverPosition 求解，
+         快照为弹出时刻一次性生成，流式期间不刷新；移开条目/浮窗或 Esc 立即关闭，过渡 ≤150ms） -->
+    <Teleport to="body">
+      <Transition name="hp-pop">
+        <ConversationHistoryPopover
+          v-if="historyPopover.open"
+          ref="popoverComp"
+          :snapshot="historyPopover.snapshot"
+          :running="historyPopover.running"
+          :x="historyPopover.x"
+          :y="historyPopover.y"
+          :width="historyPopover.width"
+          @leave="onTimelineHoverEnd"
+        />
+      </Transition>
+    </Teleport>
+
     <!-- 单个子 agent 终止二次确认弹窗（不可逆） -->
     <div v-if="pendingStopAgentId" class="stop-confirm-overlay" @click.self="cancelSubagentStop">
       <div class="stop-confirm" role="alertdialog" aria-modal="true" aria-label="确认终止子 Agent">
@@ -683,6 +958,16 @@ watch(
   display: flex;
   flex-direction: column;
   background: var(--background);
+}
+
+/* 左缘时间线 + 消息区横排容器（CV-S06）：时间线窄条在左，消息流占满余宽；
+   relative 作为"回到底部"提示条的定位上下文 */
+.conv-main-row {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
 }
 
 /* 消息流：全宽 thread，与原型对齐 */
@@ -915,5 +1200,90 @@ watch(
 
 .stop-confirm-confirm:hover {
   filter: brightness(0.95);
+}
+
+/* ===== CV-S06 回看模式"回到底部"提示条（AC-CV-016） =====
+   悬浮于消息流底部（absolute 不参与布局，回看切换零跳动），点击退出回看恢复自动滚底 */
+.review-backdown {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--shadow-lg);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.review-backdown svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+}
+
+.review-backdown:hover {
+  background: var(--muted);
+}
+
+.bd-pop-enter-active,
+.bd-pop-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.bd-pop-enter-from,
+.bd-pop-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
+}
+
+/* ===== CV-S06 历史浮窗出现/消失过渡（≤150ms，AC-CV-015） =====
+   Transition 类作用于子组件根元素（父作用域 id 亦挂在其上） */
+.hp-pop-enter-active,
+.hp-pop-leave-active {
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.hp-pop-enter-from,
+.hp-pop-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+</style>
+
+<style>
+/* ===== CV-S06 点击定位短暂高亮（AC-CV-016） =====
+   高亮 class 由运行时加在 MessageCard 根元素（.msg-user，位于孙组件 MessageListItem
+   的 fragment 模板内，父作用域样式无法命中），故用全局命名空间类；
+   动画 1.5s 与 ConversationView 的 LOCATE_HIGHLIGHT_MS 一致，超时后 class 一并移除 */
+@keyframes msg-locate-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand) 45%, transparent);
+    background: color-mix(in oklab, var(--brand) 16%, transparent);
+    border-radius: 12px;
+  }
+  70% {
+    box-shadow: 0 0 0 8px color-mix(in oklab, var(--brand) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background: transparent;
+    border-radius: 12px;
+  }
+}
+
+.msg-locate-highlight {
+  animation: msg-locate-pulse 1.5s ease-out;
 }
 </style>

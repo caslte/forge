@@ -1,11 +1,44 @@
 # 变更日志
 
-## v3.2 (模块 03 扩展 CV-S06 会话历史导航【草稿-待确认】；独立模块 07 方案撤销)
+## v3.6 (CV-S06 时间线动画修正为 ZCode 悬停伸长风格)
+
+- 用户反馈：上一版"独立指示条滑动"理解偏了——ZCode 的效果是**悬停时横条自身平滑伸长**（指针扫过时"最长的那根"随之流动），点击选中后该条保持加长。
+- 实现（TDD，重写 E-CV-007b 先 RED 后 GREEN）：移除独立指示条元素；横条自身 width 过渡（200ms cubic-bezier）承担动画——默认 12px、hover 22px（颜色同步提亮）、回看选中 18px brand 色常驻、定位闪烁 22px brand。
+- **根因修复（隐藏 bug）**：横条是按钮（flex，内容宽 12px）的子项，`flex-shrink:1` 把任何 >12px 的宽度压回 12px——**此前 hover 伸长从未真正生效**；加 `flex:none` 并将 Rail 内容区预留伸长空间（宽 28px、左右 padding 3px，`overflow-x:hidden` 不再裁切伸长段）。
+- 测试：E-CV-007b 断言改为悬停伸长（>20px）/移开复位/选中保持（>14px + brand 色）/无 thumb 元素；全量 e2e 40/40、单测 50/50、typecheck 通过；hover 态截图 `e2e-report/E-CV-007b-hover-style.png`（伸长条+浮窗，与 ZCode 参考一致）。
+- 文档同步：PRD CV-S06 交互与反馈（悬停伸长描述）、`test/03_conversation/e2e.md` E-CV-007b。
+
+## v3.5 (CV-S06 时间线视觉细化：纵向居中 + 选中滑动指示条)
+
+- 用户反馈：风格已接近 ZCode，但需①横条列垂直居中（少量条目时不堆顶部）②滑动横条动画③选中的更长。
+- 实现（TDD，新增 E-CV-007b 先 RED 后 GREEN）：Rail `justify-content: safe center`（溢出回退顶部保持可滚动）；新增 18px brand 色滑动指示条（`v-if` 回看态渲染、`top` 260ms cubic-bezier 平滑滑动、首次出现无动画直接就位后淡入——避免从顶部滑入；普通横条 12px 保持不变）。条目 offsetTop 经 ref 登记测量，指示条随内容滚动。
+- 排障记录：E-CV-007 曾因**长期复用的 vite dev server（端口 51731）多轮 HMR 后 scoped 样式注入失效**而整块样式不生效（rail 120px、bar inline），重启 dev server 后恢复——与代码无关，测试基建注意项。
+- 测试：全量 e2e 40/40（新增 E-CV-007b：居中偏差 ≤30px、指示条宽度>14px、目标对齐 ≤8px、transitionDuration>0）、单测 50/50、typecheck 通过。
+- 文档同步：PRD CV-S06 交互与反馈（居中+滑动指示条）、`test/03_conversation/e2e.md`（新增 E-CV-007b + 汇总行）。
+
+## v3.4 (CV-S06 时间线样式简化：横条标记替代文本行，去除分隔竖线)
+
+- 用户反馈：时间线条目应为简化横条/圆点，而非文本行；Rail 与消息区之间的竖线切割感重。
+- 实现（TDD，E-CV-007 断言先行 RED→GREEN）：`ConversationTimelineRail.vue` 条目改为 12×3 圆角短横条（不展示文本，截断文本保留在原生 title 提示；hover 加长变品牌色、定位闪烁/回看目标加宽高亮）；Rail 移除 `border-right` 分隔边框、背景透明、宽度 32→24px，融入消息区。交互语义不变（hover 300ms 浮窗、点击定位、高亮态、testid 不变），纯函数与单测零改动（50/50）。
+- 测试：E-CV-007 断言改为横条几何（宽>8px、高≤6px）、textContent 为空 + title 承载截断文本、条目 y 正序、Rail borderRight=0；全量 e2e 39/39、typecheck 通过。
+- 文档同步（用户裁定的样式修订）：PRD 03 CV-S06 业务规则与 AC-CV-014、`test/03_conversation/coverage-matrix.md`（AC-CV-014/E-CV-007 行）、`test/03_conversation/e2e.md`（E-CV-007 断言）中"条目文本单行截断"改为"简化短横条标记"。
+
+## v3.3 (CV-S06 会话历史导航开发交付：dev-flow run 20260829155926 COMPLETE)
+
+- 交付范围：模块 03 扩展 CV-S06（AC-CV-014~019），纯前端 forge-ui，forge-core/forge-desktop 零改动。3 个 WU 串行链全部通过 D4 验证 + D5 Fan-in + D6 模块 QA PASS。
+- 实现结构：
+  - 纯函数（零运行时依赖，node --test 直跑 TS）：`src/utils/conversationTimeline.ts`（buildTimelineEntries 时间线条目 40 码点、buildRoundSnapshot 轮次快照 120/200 码点截断、Array.from 码点截断无半代理对、畸形输入按空处理）、`src/utils/popoverPosition.ts`（solvePopoverPosition 右弹/翻左/垂直夹取/极窄收拢，输出恒在视口内）、`src/utils/reviewMode.ts`（browse↔review 状态机：enter 定位、exit/nearBottom 恰好一次退出、autoFollow 结构性门控、reset 会话重置）。
+  - 组件：`ConversationTimelineRail.vue`（32px 左缘时间线、空态不渲染、300ms hover 延迟 emit、点击 select、定位闪烁高亮）、`ConversationHistoryPopover.vue`（320px/40vh/纯文本插值无 v-html/150ms 过渡/等待回复与运行中提示态）、`ConversationView.vue` 集成（Rail+浮窗+定位滚动 scrollIntoView+1.5s 高亮、8 处 scrollToBottom 全部经 autoFollow 门控、底部"回到底部"提示条 review 态渲染、120ms 去抖触底退出、会话切换 reset、loadHistory 数组拷贝隔离 mock 引用污染）。
+  - 基建：forge-ui package.json 补 `"test": "node --test"`（先例 forge-core/desktop）。
+- 测试证据：单测 50/50（22 快照/16 定位/12 状态机，RED→GREEN 全记录）；Playwright 全量回归 39/39（新增 10 条：E-CV-007/008×3/009/010×2/011）+ vite build 通过；QA Agent 独立复跑证实（50 unit + 8 新 e2e + 39 全量 + typecheck 零错误 + 无 v-html/XSS 面 + write_scope 无越界）。证据：`docs/plan/results/`（任务包/结果/验证）、`docs/plan/review-qa/module-qa-20260829155926.json`、`packages/forge-ui/e2e-report/E-CV-0*.png`（10 张截图）、flow state `docs/plan/dev-20260829155926-flow.json`（D8 COMPLETE）。
+- 已知语义（非缺陷）：浮窗 Esc 关闭后指针未移开时需重新 hover 才再现（无新 mouseenter 不触发）；触底判定含 120ms 停稳去抖（smooth 滚动途中路过底部不误退）；定位高亮 class 用 ConversationView 内非 scoped 全局命名空间样式块（目标元素在孙组件 fragment 内，仅限该类名影响面）。
+
+## v3.2 (模块 03 扩展 CV-S06 会话历史导航已确认；独立模块 07 方案撤销)
 
 - 背景：用户需求「增加一个这种左侧的用户会话历史，点击可以定位，然后可以看到历史的对话浮窗」（附 ZCode 客户端参考图）。初稿曾按独立模块 07（左侧跨项目历史列表方案）起草；**用户裁定：不单独设模块，并入主会话（对话区）一侧**，07 的 PRD/测试设计文件与全部登记已撤销（`prd/07_session_history.md`、`test/07_session_history/` 删除，index/overview/artifacts 回退）。
-- 扩展设计（并入 PRD 03，状态：基础部分已确认不变 + 扩展 CV-S06【草稿-待确认】）：**会话内提问时间线**——对话区左缘按时间正序列出当前会话全部用户消息（单行截断）；hover ≥300ms 弹浮窗预览该轮对话（用户消息 120 码点 + 助手回复 200 码点纯文本截断快照，流式中为快照不实时刷新，Esc/移开即关）；点击定位到该消息并进入**回看模式**（流式不强制滚底 + 底部"回到底部"提示，触底/点击恢复，TD-CV-06）。数据为已加载消息流纯派生：零新增接口、零新增存储（TD-CV-05）。范围限定主会话消息流（子 agent 结果视图不渲染，画布小窗后续）。
+- 扩展设计（并入 PRD 03，已确认）：**会话内提问时间线**——对话区左缘按时间正序列出当前会话全部用户消息（单行截断）；hover ≥300ms 弹浮窗预览该轮对话（用户消息 120 码点 + 助手回复 200 码点纯文本截断快照，流式中为快照不实时刷新，Esc/移开即关）；点击定位到该消息并进入**回看模式**（流式不强制滚底 + 底部"回到底部"提示，触底/点击恢复，TD-CV-06）。数据为已加载消息流纯派生：零新增接口、零新增存储（TD-CV-05）。范围限定主会话消息流（子 agent 结果视图不渲染，画布小窗后续）。
 - 登记：`prd/03_conversation.md`（场景 CV-S06、TD-CV-05/06、功能点 CV-S06、AC-CV-014~019、页面承载、自检——扩展 6 项 PASS）；`test/03_conversation/coverage-matrix.md`（扩展基线 6 AC + unit U-CV-006~008 + e2e E-CV-007~011 行）；`test/03_conversation/e2e.md`（E-CV-007~011 详设 + 汇总行）；`prd/index.md`、`overview.md`（03 行扩展标记 + MVP 范围 + 当前状态）、`test/index.md`（03 行）。扩展为纯前端派生视图，无 API/DB 增量文档。
-- 待办：用户复核扩展章节后转「已确认」并升级 artifacts（03 verification 增补扩展 AC），随后可调 `dev`。
+- 确认（2026-08-29）：用户确认扩展章节；PRD 03 与测试设计 03（含扩展 CV-S06）全部转「已确认」，`prd/index.md`、`overview.md`（03 行 + MVP 范围 + 当前状态）、`test/index.md` 同步；artifacts 03 各项维持 approved（verification/api/test-e2e 为既有文件，已覆盖扩展内容，无新增登记）。下一步可调 `dev` 开发（建议拆 WU：时间线组件与派生纯函数 / 浮窗交互 / 定位与回看模式）。
 
 ## v3.1 (PRD 06 配套 API 文档与测试设计)
 
