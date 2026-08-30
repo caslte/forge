@@ -79,9 +79,9 @@
 ## 八、当前状态
 
 - 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB/API/测试设计全档确认、PRD 05 扩展（MP-S05 思考级别选择、MP-S06 上下文 1M）文档确认与**开发交付（dev-flow run 20260827115957，COMPLETE：6 WU 通过 + Fan-in + 模块 QA PASS）**；开发产物含输入框思考级别切换器（含 max 金色流光动画）、设置页上下文 1M 勾选、forge-core/desktop 对应业务与运行时接线；**模块 03 扩展 CV-S06 会话历史导航文档确认与开发交付（dev-flow run 20260829155926，COMPLETE：3 WU 通过 + Fan-in 39 e2e 全绿 + 模块 QA PASS；独立模块 07 方案撤销，纯前端零新增后端）**。
-- 进行中：无。
-- 阻塞项：无。
-- 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）；PRD 05 扩展的思考级别真实链路（PIC-005）与 1M 上下文运行时验证待集成环境执行；forge-ui session 模块 2 条既有 e2e（E-SM-001/002）为模块 02 已知失败，与本扩展无关。
+- 进行中：v1.1 计划草案（`plan/forge-v1.1-plan.md`，待确认范围后进入 gen-doc-prd / dev）。
+- 阻塞项：无（v1.1 范围待确认点见计划文档 §7）。
+- 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）；PRD 05 扩展的思考级别真实链路（PIC-005）与 1M 上下文运行时验证、PIC-006 子 agent 真实链路 **已于 2026-08-30 用户确认 OK**；forge-ui session 模块 2 条既有 e2e（E-SM-001/002）已修复（全量 41/41 通过）。
 ## 九、AI 开发约束
 
 - **允许改动**：forge 自有代码（forge-core/desktop/ui/extensions）；docs/。

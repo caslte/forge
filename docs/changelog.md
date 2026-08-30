@@ -1,5 +1,13 @@
 # 变更日志
 
+## v3.8 (真实验收状态更新 + forge v1.1 计划草案)
+
+- 验收状态（2026-08-30 用户确认）：真实 provider 内测基本通过（真实对话可正常进行）；PIC-005（思考级别真实链路 + 1M 上下文运行时）、PIC-006（子 agent 真实事件链路）确认 OK。`pi-integration-status.md` 关键风险 1 标记解除，`overview.md` §8 风险项同步；E-SM-001/002 已修复（全量 e2e 41/41 通过，已实测复核）。
+- 新增 `plan/forge-v1.1-plan.md`（草案 v2 待确认）：主线 = forge-desktop 桌面壳补全（D-01 单例锁 / D-02 安装器 / D-03 自动更新 / D-04 托盘 / D-05 系统通知 / D-06 健壮性杂项）+ **SQ 发送队列专项**；质量收尾 Q-01 损坏 session 样本 / Q-02 多会话真实并发 / Q-03 CI。
+- **F-04（per-tool 审批扩展）、F-05（嵌入式终端）搁置**（2026-08-30 用户指示）；F-07 维持搁置；F-02 子 agent 逐 token / F-03 多窗口时间线 / F-06 子 agent 左树列为 M3 候选。
+- **发送队列对标 ai-coding**（`backend/internal/sendqueue` ~440 行 + SendQueuePanel + 4 e2e）：队列状态机（pending/sending/cancelled + dispatch_failed 回退）、5 类 queue.* 事件、4 个 API、turn 完成尾部 auto-dequeue（forceDirect 防死循环）、异常 CancelAll/超时保留、立即发送 interrupt 路径、前端分流（busy→入队）+ 面板 + sending 才上屏时序。结论：forge 可实现 ~90%（单引擎裁掉 capabilities 探测与 runtime 快照；附件队列化是小增量），无需改 pi。现状：forge streaming 中发送返回 1001 拒绝。
+- 建议里程碑 M1 桌面壳可用 → M2 发布链路 + 队列 → M3 收尾。待确认点：安装器方案、签名证书/更新源、SQ 范围裁定（立即发送/error 保留/附件上限）、M3 择项、CI 立项。
+
 ## v3.7 (CV-S06 时间线波浪衰减 + 定位贴底不退出回看)
 
 - 用户反馈：不只是选中突出——悬停条**周边**要有平滑的波浪衰减（附 ZCode 截图：波峰周围的横条按距离递减伸长）。
