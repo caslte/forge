@@ -1,7 +1,7 @@
 /**
- * 子 agent 方法接线测试（wu-06-subagent-desktop，A-SA-001~006 + 接线断言）。
+ * 子 agent 方法接线测试（wu-06-subagent-desktop，A-SA-001~007 + 接线断言）。
  *
- * 验证 createForgeCore 组装的 subagent/queryList|stop|clearFinished 方法信封与
+ * 验证 createForgeCore 组装的 subagent/queryList|stop|clearFinished|queryOutput 方法信封与
  * 错误码（1001/1002/5000）、subagent.updated/removed 事件桥接、conversation/cancelStream
  * 级联终止、done 门控接线、会话删除清理与扩展缺失静默降级。
  *
@@ -22,6 +22,7 @@ import type {
   SubagentUpdatedPayload,
 } from '../src/ipc-contract.ts';
 import type { PiAgentSessionFactory } from '../src/pi/piConversationAdapter.ts';
+import { resolveSubagentOutputFile } from '../src/pi/subagentOutput.ts';
 
 let requestCounter = 0;
 
@@ -606,6 +607,68 @@ test('A-SA-006: 扩展缺失（无事件源/停止通道）静默降级：空列
     assert.equal(ctx.updated.length, 0, '扩展缺失不应产生 subagent.updated 事件');
     const statuses = ctx.statusEvents.filter((e) => e.sessionId === ctx.sessionId).map((e) => e.status);
     assert.equal(statuses.at(-1), 'done', '无子 agent 时停止/收尾行为与现状一致');
+  } finally {
+    await cleanup(ctx);
+  }
+});
+
+// ===== wu-06 v1.1：subagent/queryOutput（执行过程只读 tail，AC-SA-025/026）=====
+
+test('A-SA-007: queryOutput 参数缺失 1001、会话不存在 1002、输出文件尾部只读返回', async () => {
+  const ctx = await setupSubagentCore();
+  try {
+    // 参数缺失 → 1001
+    const missing = await invoke(ctx.core.methodTable, 'subagent/queryOutput', {});
+    assert.equal(missing.code, 1001);
+    // 会话不存在 → 1002
+    const noSession = await invoke(ctx.core.methodTable, 'subagent/queryOutput', {
+      sessionId: 'sess-nope',
+      agentId: 'a1',
+    });
+    assert.equal(noSession.code, 1002);
+
+    // 正常路径：按扩展约定路径写输出文件（内容超 64KB 验证只读尾部 + 多字节边界）
+    const projectDir = path.join(ctx.root, 'my-project');
+    const file = resolveSubagentOutputFile(projectDir, ctx.sessionId, 'a1');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const pad = 'x'.repeat(70 * 1024);
+    const content = pad + '\n扫描开始\n目录结构：packages/core\n汇总完成 ✓';
+    fs.writeFileSync(file, content, 'utf8');
+
+    const res = await invoke(ctx.core.methodTable, 'subagent/queryOutput', {
+      sessionId: ctx.sessionId,
+      agentId: 'a1',
+    });
+    assert.equal(res.code, 0, `queryOutput 应成功: ${res.message}`);
+    const data = res.data as { exists: boolean; size: number; chunk: string };
+    assert.equal(data.exists, true);
+    assert.equal(data.size, Buffer.byteLength(content, 'utf8'));
+    // 只读尾部：字节数 ≤ 64KB（全量 ~70KB+），尾部完整（含多字节字符 ✓ 不乱码）
+    assert.ok(
+      Buffer.byteLength(data.chunk, 'utf8') <= 64 * 1024,
+      `应只返回尾部而非全量，实际 ${Buffer.byteLength(data.chunk, 'utf8')}B`,
+    );
+    assert.ok(data.chunk.includes('扫描开始'));
+    assert.ok(data.chunk.includes('汇总完成 ✓'), `尾部应完整包含多字节行，实际结尾: ${JSON.stringify(data.chunk.slice(-24))}`);
+
+    // maxBytes 上限收敛（请求超大值 → 夹到 64KB）
+    const capped = await invoke(ctx.core.methodTable, 'subagent/queryOutput', {
+      sessionId: ctx.sessionId,
+      agentId: 'a1',
+      maxBytes: 10 * 1024 * 1024,
+    });
+    assert.equal(capped.code, 0);
+    const cappedData = capped.data as { chunk: string };
+    assert.ok(Buffer.byteLength(cappedData.chunk, 'utf8') <= 64 * 1024);
+
+    // 文件不存在 → exists: false
+    fs.rmSync(file, { force: true });
+    const gone = await invoke(ctx.core.methodTable, 'subagent/queryOutput', {
+      sessionId: ctx.sessionId,
+      agentId: 'a1',
+    });
+    assert.equal(gone.code, 0);
+    assert.deepEqual(gone.data, { exists: false, size: 0, chunk: '' });
   } finally {
     await cleanup(ctx);
   }

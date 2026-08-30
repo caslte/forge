@@ -166,15 +166,15 @@ test('E-CV-007 @P0 @mock-backend：时间线横条标记正序展示、条目数
 });
 
 // =====================================================================
-// E-CV-007b 横条纵向居中 + 悬停伸长动画（ZCode 风格，AC-CV-014/016 视觉细化）
+// E-CV-007b 横条纵向居中 + 悬停波浪衰减（ZCode 风格，AC-CV-014/016 视觉细化）
 // =====================================================================
-test('E-CV-007b @P1 @mock-backend：横条纵向居中、悬停平滑伸长、选中保持加长', async ({ page }) => {
+test('E-CV-007b @P1 @mock-backend：横条纵向居中、悬停波浪衰减、选中保持突出', async ({ page }) => {
   const health = attachHealthGuards(page);
   const s = mkSession({ alias: '居中与指示条会话' });
   const sid = s.sessionId as string;
 
   const history: Array<Record<string, unknown>> = [];
-  for (let i = 1; i <= 6; i += 1) {
+  for (let i = 1; i <= 8; i += 1) {
     history.push({ role: 'user', content: `提问${i}`, ts: new Date(Date.now() - 100000 + i * 1000).toISOString() });
     history.push({ role: 'assistant', content: `回复${i}。`, ts: new Date(Date.now() - 100000 + i * 1000 + 200).toISOString() });
   }
@@ -182,48 +182,68 @@ test('E-CV-007b @P1 @mock-backend：横条纵向居中、悬停平滑伸长、�
   await boot(page, [s]);
   await seedHistory(page, sid, history);
   await page.locator('.tree-session', { hasText: '居中与指示条会话' }).click();
-  await expect(page.locator('.msg-assistant', { hasText: '回复6' })).toBeVisible({ timeout: 8_000 });
+  await expect(page.locator('.msg-assistant', { hasText: '回复8' })).toBeVisible({ timeout: 8_000 });
 
   const rail = page.locator('[data-testid="history-rail"]');
   const items = page.locator('[data-testid="history-rail-item"]');
   await expect(rail).toBeVisible();
-  await expect(items).toHaveCount(6);
+  await expect(items).toHaveCount(8);
 
   // 垂直居中：条目块的中点与 Rail 可视区中点基本重合（少量条目时不在顶部堆叠）
   const railBox = (await rail.boundingBox())!;
   const firstBox = (await items.nth(0).boundingBox())!;
-  const lastBox = (await items.nth(5).boundingBox())!;
+  const lastBox = (await items.nth(7).boundingBox())!;
   const blockCenter = (firstBox.y + lastBox.y + lastBox.height) / 2;
   const railCenter = railBox.y + railBox.height / 2;
   expect(Math.abs(blockCenter - railCenter)).toBeLessThanOrEqual(30);
 
-  // 悬停伸长动画（ZCode 风格）：默认横条约 12px；hover 后平滑伸长到 ≥20px（带 width 过渡）；
-  // 移开后收缩回默认长度。无独立指示条元素（伸长发生在横条自身上）
+  // 波浪衰减（ZCode 风格）：hover 某条时，该条最长，相邻条按距离递减伸长（波包），
+  // 全程 width 过渡平滑；移开后全部收缩复位；无独立指示条元素
   const barOf = (i: number) => items.nth(i).locator('.history-rail-bar');
   const widthOf = async (i: number) => (await barOf(i).boundingBox())!.width;
-  const defaultWidth = await widthOf(1);
+  const defaultWidth = await widthOf(3);
   expect(defaultWidth).toBeGreaterThanOrEqual(8);
   expect(defaultWidth).toBeLessThanOrEqual(16);
 
-  const hoverTransition = await barOf(1).evaluate((el) => getComputedStyle(el).transitionProperty);
+  const hoverTransition = await barOf(3).evaluate((el) => getComputedStyle(el).transitionProperty);
   expect(hoverTransition).toContain('width');
 
-  await items.nth(1).hover();
+  await items.nth(3).hover();
   await page.waitForTimeout(350); // 等 width 过渡收尾
-  const hoveredWidth = await widthOf(1);
-  expect(hoveredWidth).toBeGreaterThan(20);
-  await page.locator('.conv-messages').hover({ position: { x: 200, y: 60 } });
-  await page.waitForTimeout(350);
-  expect(await widthOf(1)).toBeLessThanOrEqual(16);
+  const w2 = await widthOf(2);
+  const w3 = await widthOf(3);
+  const w4 = await widthOf(4);
+  const w1 = await widthOf(1);
+  const w5 = await widthOf(5);
+  const w0 = await widthOf(0);
+  // 波峰：悬停条最长
+  expect(w3).toBeGreaterThan(20);
+  // 一阶邻居：明显伸长（衰减但不低于默认太多）
+  expect(w2).toBeGreaterThan(defaultWidth + 2);
+  expect(w4).toBeGreaterThan(defaultWidth + 2);
+  // 衰减单调：波峰 > 一阶 > 二阶 > 远端
+  expect(w3).toBeGreaterThan(w2);
+  expect(w2).toBeGreaterThan(w1);
+  expect(w1).toBeGreaterThanOrEqual(w0 - 0.5);
+  expect(Math.abs(w4 - w2)).toBeLessThanOrEqual(1);
+  expect(Math.abs(w5 - w1)).toBeLessThanOrEqual(1);
 
-  // 点击选中（进入回看）：选中条目保持加长（≥14px）且为 brand 色；指针移开后仍保持
-  await items.nth(3).click();
+  // 移开：全部收缩复位
   await page.locator('.conv-messages').hover({ position: { x: 200, y: 60 } });
   await page.waitForTimeout(350);
-  const activeWidth = await widthOf(3);
-  expect(activeWidth).toBeGreaterThan(14);
-  const activeColor = await barOf(3).evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(activeColor).not.toBe(await barOf(1).evaluate((el) => getComputedStyle(el).backgroundColor));
+  expect(await widthOf(3)).toBeLessThanOrEqual(16);
+
+  // 点击选中（进入回看）+ 指针移开：选中条保持突出（brand 色、加长），
+  // 且选中波包带动邻居轻微伸长（非选中条也参与波浪）
+  await items.nth(5).click();
+  await page.locator('.conv-messages').hover({ position: { x: 200, y: 60 } });
+  await page.waitForTimeout(350);
+  const aWidth = await widthOf(5);
+  expect(aWidth).toBeGreaterThan(14);
+  const aColor = await barOf(5).evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(aColor).not.toBe(await barOf(0).evaluate((el) => getComputedStyle(el).backgroundColor));
+  const aPrev = await widthOf(4);
+  expect(aPrev).toBeGreaterThan(defaultWidth + 1);
   await expect(page.locator('[data-testid="history-thumb"]')).toHaveCount(0);
 
   health.assertHealthy();

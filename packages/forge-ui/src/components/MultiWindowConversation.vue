@@ -472,6 +472,7 @@ onUnmounted(() => {
     <SubagentResultView
       v-if="showResultView && activeSubagent"
       :subagent="activeSubagent"
+      :session-id="sessionId"
       @stop="onSubagentStopRequest"
     />
 

@@ -39,6 +39,11 @@ import {
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
+import {
+  SUBAGENT_OUTPUT_TAIL_BYTES,
+  readTail,
+  resolveSubagentOutputFile,
+} from './pi/subagentOutput.ts';
 import { getPiSupportedThinkingLevels, resolvePiModel } from './pi/piModelResolver.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 import { PiTrustStoreAdapter } from './pi/piTrustStoreAdapter.ts';
@@ -393,6 +398,27 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       return result.ok
         ? { code: 0, message: 'success', data: { subagents: result.data } }
         : failEnvelope(result.code, result.message);
+    },
+    // wu-06 v1.1（PRD 06 SA-F04 / AC-SA-025/026）：只读子 agent 执行过程
+    // （扩展任务输出文件尾部）。文件由 pi-subagents 写入，forge 不写不解析格式。
+    'subagent/queryOutput': async (params: unknown) => {
+      const sessionId = readStringParam(params, 'sessionId');
+      const agentId = readStringParam(params, 'agentId');
+      if (sessionId === null || agentId === null) {
+        return failEnvelope(1001, '参数错误：sessionId/agentId 必须为非空字符串');
+      }
+      const session = store.getSession(sessionId);
+      if (session === undefined) {
+        return failEnvelope(1002, `会话不存在: ${sessionId}`);
+      }
+      const maxBytesRaw = (params as { maxBytes?: unknown } | null)?.maxBytes;
+      const maxBytes =
+        typeof maxBytesRaw === 'number' && Number.isFinite(maxBytesRaw) && maxBytesRaw > 0
+          ? Math.min(Math.floor(maxBytesRaw), SUBAGENT_OUTPUT_TAIL_BYTES)
+          : SUBAGENT_OUTPUT_TAIL_BYTES;
+      const file = resolveSubagentOutputFile(session.projectPath, sessionId, agentId);
+      const tail = readTail(file, maxBytes);
+      return { code: 0, message: 'success', data: tail };
     },
     'subagent/stop': async (params: unknown) => {
       const sessionId = readStringParam(params, 'sessionId');

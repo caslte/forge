@@ -39,7 +39,8 @@ export type ForgeMethod =
   | 'model/setSessionThinkingLevel'
   | 'subagent/queryList'
   | 'subagent/stop'
-  | 'subagent/clearFinished';
+  | 'subagent/clearFinished'
+  | 'subagent/queryOutput';
 
 /** 全部事件名 */
 export type ForgeEvent =

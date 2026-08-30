@@ -725,3 +725,70 @@ test('SUB-E2E-010 @P1 E-SA-006：多窗口下 A/B 窗口子 agent 各自隔离�
   // 健康：无跨窗口事件错误
   health.assertHealthy();
 });
+
+// =====================================================================
+// E-SA-010 实时过程查看（AC-SA-025/026）：运行中结果视图显示实时执行过程，
+// 终态提供"执行过程"折叠回看；过程内容来自 subagent/queryOutput（mock）。
+// =====================================================================
+test('SUB-E2E-011 @P1 E-SA-010：运行中实时过程展示 + 终态执行过程回看', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  const a = mkSession({ alias: '会话SA011' });
+  await boot(page, [a]);
+  await page.locator('.tree-session', { hasText: '会话SA011' }).click();
+  await expect(page.locator('.compose-box')).toBeVisible();
+
+  // a1 运行中：排队/运行占位文案 + 实时过程区可见（mock 按时间返回过程行）
+  await page.evaluate((sid) => {
+    window.__forgeMock!.setSubagents(sid, []);
+    window.__forgeMock!.emit(sid, 'subagent.updated', {
+      sessionId: sid,
+      subagent: {
+        agentId: 'a1',
+        agentType: 'Explore',
+        description: '研究子任务',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        result: null,
+        error: null,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+    });
+  }, a.sessionId as string);
+  await expect(page.locator('.subagent-tab', { hasText: '研究子任务' })).toBeVisible({ timeout: 5_000 });
+  await page.locator('.subagent-tab', { hasText: '研究子任务' }).click();
+  await expect(page.locator('.subagent-result-placeholder')).toContainText('正在运行');
+  await expect(page.locator('.srv-process')).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator('.srv-process-head')).toContainText('实时过程');
+  await expect(page.locator('.srv-process-text')).toContainText('研究子任务', { timeout: 5_000 });
+
+  // a1 完成：正文替换为 result 全文；实时过程区消失，出现折叠面板（默认收起）
+  await page.evaluate((sid) => {
+    window.__forgeMock!.emit(sid, 'subagent.updated', {
+      sessionId: sid,
+      subagent: {
+        agentId: 'a1',
+        agentType: 'Explore',
+        description: '研究子任务',
+        status: 'completed',
+        startedAt: new Date(Date.now() - 5000).toISOString(),
+        finishedAt: new Date().toISOString(),
+        result: '完成结果全文。',
+        error: null,
+        usage: { inputTokens: 100, outputTokens: 200 },
+      },
+    });
+  }, a.sessionId as string);
+  await expect(page.locator('.subagent-result-body')).toContainText('完成结果全文', { timeout: 5_000 });
+  await expect(page.locator('.srv-process')).toHaveCount(0);
+  const toggle = page.locator('.srv-process-toggle');
+  await expect(toggle).toBeVisible();
+
+  // 展开回看：执行过程内容可见（mock 终态全文含描述）
+  await toggle.click();
+  await expect(page.locator('.srv-process')).toBeVisible();
+  await expect(page.locator('.srv-process-head')).toContainText('执行过程');
+  await expect(page.locator('.srv-process-text')).toContainText('研究子任务', { timeout: 5_000 });
+
+  health.assertHealthy();
+});

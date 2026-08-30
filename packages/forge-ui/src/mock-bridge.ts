@@ -473,6 +473,30 @@ const bridge: ForgeBridge = {
         persistSubagents();
         return { code: 0, message: 'ok', data: { removed: removedIds } };
       }
+      case 'subagent/queryOutput': {
+        // 模拟过程输出（真实实现读扩展任务输出文件尾部）：按 agentId 生成稳定多行文本，
+        // 运行中的子 agent 模拟"逐步推进"（行数随时间增长），终态返回固定全文
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const agentId = (params as { agentId?: string }).agentId ?? '';
+        const target = (DB.subagents[sid] ?? []).find((s) => s.agentId === agentId);
+        if (!target) return { code: 1002, message: '子 agent 不存在', data: null };
+        const lines = [
+          `[${target.agentType}] 开始执行：${target.description}`,
+          '读取项目目录结构…',
+          '分析 package.json workspaces 配置…',
+          '扫描 packages/* 子包清单…',
+          '汇总扫描结果，生成报告…',
+          `执行完成，共输出 ${target.description.length * 7} 字符。`,
+        ];
+        const chunk = isActive(target.status)
+          ? lines.slice(0, Math.max(1, Math.min(lines.length - 1, Math.floor((Date.now() / 3000) % lines.length)))).join('\n')
+          : lines.join('\n');
+        return {
+          code: 0,
+          message: 'ok',
+          data: { exists: true, size: chunk.length, chunk },
+        };
+      }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };
       case 'model/getSessionModel':

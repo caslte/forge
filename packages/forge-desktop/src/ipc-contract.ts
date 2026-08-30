@@ -52,7 +52,8 @@ export type ForgeMethod =
   // subagent（06）
   | 'subagent/queryList'
   | 'subagent/stop'
-  | 'subagent/clearFinished';
+  | 'subagent/clearFinished'
+  | 'subagent/queryOutput';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -137,6 +138,24 @@ export interface SubagentStopParams {
 /** subagent/clearFinished 请求参数 */
 export interface SubagentClearFinishedParams {
   sessionId: string;
+}
+
+/** subagent/queryOutput 请求参数（wu-06 v1.1 实时过程查看） */
+export interface SubagentQueryOutputParams {
+  sessionId: string;
+  agentId: string;
+  /** 单次读取尾部字节上限（默认/上限 64KB） */
+  maxBytes?: number;
+}
+
+/** subagent/queryOutput 响应 data（扩展任务输出文件只读 tail） */
+export interface SubagentQueryOutputResult {
+  /** 输出文件是否存在（false = 无过程记录） */
+  exists: boolean;
+  /** 文件总字节数（exists 时有效） */
+  size: number;
+  /** 尾部内容（UTF-8，多字节边界安全截断） */
+  chunk: string;
 }
 
 /** subagent/queryList 响应 data（运行中在前，终态按 finishedAt 倒序；无子 agent 时空数组） */

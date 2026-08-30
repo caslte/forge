@@ -576,10 +576,15 @@ const LOCATE_HIGHLIGHT_MS = 1500;
 const NEAR_BOTTOM_PX = 40;
 /** 触底判定去抖：滚动停稳后仍触底才判定（定位平滑滚动途中路过底部不误判退出） */
 const NEAR_BOTTOM_DEBOUNCE_MS = 120;
+/** 定位后触底抑制窗口：定位平滑滚动结束若贴近底部（目标靠后时被钳制在底部附近），
+ *  属于程序化定位而非"手动滚到底"，窗口内触底信号不退出回看（否则选中突出立即丢失） */
+const LOCATE_NEAR_BOTTOM_SUPPRESS_MS = 800;
 
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 let highlightedMsgEl: HTMLElement | null = null;
 let nearBottomTimer: ReturnType<typeof setTimeout> | null = null;
+/** 最近一次定位进入回看的时刻（触底抑制窗口起点） */
+let lastLocateAt = 0;
 
 function clearLocateHighlight(): void {
   if (highlightTimer !== null) {
@@ -618,6 +623,7 @@ function locateMessage(index: number): void {
   if (!el) return;
   reviewCtrl.enter(index); // browse→review；review 中重复点击仅更新目标
   syncReview();
+  lastLocateAt = Date.now(); // 开启触底抑制窗口（程序化定位滚动 ≠ 手动触底）
   clearLocateHighlight();
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.classList.add('msg-locate-highlight');
@@ -641,6 +647,7 @@ function onMessagesScroll(): void {
     nearBottomTimer = null;
     const el = scrollRef.value;
     if (!el || !isReviewing.value) return;
+    if (Date.now() - lastLocateAt < LOCATE_NEAR_BOTTOM_SUPPRESS_MS) return; // 定位滚动贴底不退出
     if (el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX) {
       reviewCtrl.nearBottom();
       syncReview();
@@ -800,9 +807,9 @@ watch(
 
 <template>
   <div class="conv-view">
-    <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。时间线与消息区 v-show 同步隐藏；
-         结果视图激活时隐藏（v-show，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
-    <div class="conv-main-row">
+    <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。整行与结果视图 v-show 互斥
+         （结果视图激活时隐藏整行，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
+    <div class="conv-main-row" v-show="!showResultView">
       <ConversationTimelineRail
         v-if="hasTimeline"
         v-show="!showResultView"
@@ -895,6 +902,7 @@ watch(
     <SubagentResultView
       v-if="showResultView && activeSubagent"
       :subagent="activeSubagent"
+      :session-id="props.sessionId ?? createdSessionId ?? ''"
       @stop="onSubagentStopRequest"
     />
 

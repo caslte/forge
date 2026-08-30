@@ -166,7 +166,7 @@ function onClearClick(): void {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 22px;
+  padding: 6px 22px 2px;
   background: var(--background);
   flex-shrink: 0;
 }
@@ -260,8 +260,9 @@ function onClearClick(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 160px;
-  flex-shrink: 0;
+  /* 可收缩：胶囊到达 max-width 时先截断描述名，状态文字与关闭钮不溢出胶囊 */
+  flex: 0 1 auto;
+  min-width: 24px;
 }
 
 .subagent-tab-status {
