@@ -55,6 +55,16 @@
 | AC-CV-018 | CV-S06 浮窗布局 | 布局完整性 | 边界：浮窗不溢出视口 | P1 | U-CV-007 | - | E-CV-011 | 靠边翻转/收拢、超高内滚；窄窗口不溢出 | 定位纯函数 |
 | AC-CV-019 | CV-S06 快照截取 | 字段边界/展示 | 字段边界：截取与码点截断 | P1 | U-CV-006 | - | - | 跳过 tool/图片；码点截断无半代理对；畸形消息不抛异常 | 派生纯函数 |
 
+### 覆盖基线（CV-S07 上下文压缩）
+
+| AC ID | PRD 功能点 | 风险维度 | 场景 | 优先级 | Unit ID | API ID | E2E ID | 核心断言 | 备注 |
+|---|---|---|---|---|---|---|---|---|---|
+| AC-CV-020 | CV-S07 手动压缩 | 前端反馈 | 正常流程：点击压缩并显示结果 | P0 | U-CV-010 | A-CV-008 | E-CV-012 | 返回 `{ok:true, tokensBefore, tokensAfter}`；界面显示「压缩完成：before → after tokens」 | 缺失详情时回退「压缩完成」 |
+| AC-CV-021 | CV-S07 压缩失败 | 错误反馈 | 异常：内容过少/会话未激活 | P1 | U-CV-009 | A-CV-008 | E-CV-012 | 显示失败原因（「Nothing to compact」/「会话未激活，无法压缩」）；不破坏会话历史 | 不静默 |
+| AC-CV-022 | CV-S07 流式保护 | 状态/一致性 | 边界：streaming 期间压缩入口禁用 | P0 | - | - | E-CV-012 | 入口置灰不可点；不静默截断正在生成的回答 | 运行时压缩会先 abort 当前轮 |
+| AC-CV-023 | CV-S07 自动压缩 | 跨模块协作 | 正常流程：自动压缩完成通知 | P0 | - | A-CV-009 | E-CV-013 | 发射 `conversation.compacted`（reason=auto）并携带前后 token；UI 重拉历史并提示 | 无 RPC 入口，事件是唯一通道 |
+| AC-CV-024 | CV-S07 自动压缩失败 | 错误反馈 | 异常：自动压缩异常 | P1 | - | A-CV-010 | - | 走 `conversation.error` 上报 errorMessage；不发射 compacted | 绝不静默 |
+
 ---
 
 ## 用例设计说明
@@ -77,6 +87,13 @@
 | U-CV-007 | AC-CV-018 | 浮窗定位计算 | 布局完整性 | 注入条目/视口/浮窗尺寸矩形组合 | 右侧空间充足；贴右缘；贴上/下缘；两侧都放不下的极窄视口；0 高条目 | 求解坐标 | 右侧优先、空间不足翻左侧、垂直夹取进视口、极窄收拢至最大可用宽；同输入输出稳定 | 坐标恒在视口内（含边距）；无 NaN/Infinity |
 | U-CV-008 | AC-CV-016 | 回看模式状态机 | 状态/一致性 | 消息流 + 流式增量信号（fake） | 点击条目；定位后持续 delta；手动滚到底；点击"回到底部"；会话切换 | 驱动状态流转 | 点击→定位+进入回看（delta 不再强制滚底，提示条出现）；触底或点击提示→退出回看恢复自动滚底；切换会话重置为浏览模式 | 回看模式下任何 delta 不得强制改 scrollTop；退出恰好一次、不重复触发 |
 
+#### unit（CV-S07 上下文压缩）
+
+| 用例 ID | 关联 AC | 测试对象 | 风险维度 | 前置条件 | 输入 | 操作 | 预期结果 | 负向断言 |
+|---|---|---|---|---|---|---|---|---|
+| U-CV-009 | AC-CV-021 | 压缩结果归一化与失败收敛 | 错误反馈 | 已激活会话（lease 存在）/未激活会话；pi compaction_end 载荷 | 成功载荷（manual/threshold/overflow）；`errorMessage` 载荷；`aborted:true` 载荷；compact 抛错；会话不存在 | 驱动 handleEvent / compact | 成功→回调 onCompacted（manual→manual，其余→auto，带 tokensBefore/tokensAfter/summary）；失败→onError 上报；aborted→既不回调也不误报；抛错→ok:false 带原因 | 失败绝不静默；aborted 不误报为错误；压缩失败不破坏会话历史 |
+| U-CV-010 | AC-CV-020 | 压缩详情提取（pi CompactionResult） | 字段边界 | compact 返回体 | 完整载荷（summary/tokensBefore/estimatedTokensAfter）；缺字段；非对象 | compact() | 提取为 `{tokensBefore, tokensAfter, summary}`，缺失归一为 null | 不因 pi 无 message 字段而丢失详情；不产生 undefined |
+
 ### api（IPC 契约 + CanonicalEvent）
 
 | 用例 ID | 关联 AC | 接口 | 前置条件 | 请求数据 | 预期响应/错误码 | 数据落地 | 断言点 |
@@ -88,6 +105,14 @@
 | A-CV-005 | AC-CV-009/010 | conversation/cancelStream | 会话 runnin g | { sessionId } | 200 | 保留已生成，标记 cancelled | 可再次发送 |
 | A-CV-006 | AC-CV-011/012 | session/queryHistory | 会话含历史 | { sessionId } | 返回全部历史 | 无 | 角色区分正确、顺序正确 |
 | A-CV-007 | AC-CV-013 | conversation/sendMessage（带图） | 会话存在 + 纯文本模型 | { sessionId, content, attachments:[image] } | 200 + data.skippedImages=1 | 图片不写入请求 | 内容追加跳过说明；不触发 API 报错；多模态模型场景 data=null 且图片透传 |
+
+#### api（CV-S07 上下文压缩）
+
+| 用例 ID | 关联 AC | 接口 | 前置条件 | 请求数据 | 预期响应/错误码 | 数据落地 | 断言点 |
+|---|---|---|---|---|---|---|---|
+| A-CV-008 | AC-CV-020/021 | conversation/compact | 会话已激活（发过消息） | { sessionId } | 200 + `data.result.{ok,tokensBefore,tokensAfter,summary}`；会话不存在 1002；参数缺失 1001 | 压缩写 pi session transcript | 详情逐层透传到 UI；失败返回 ok=false + 原因且不破坏历史 |
+| A-CV-009 | AC-CV-023 | conversation.compacted 事件 | 会话已激活；运行时 emit compaction_end | reason=threshold/overflow/manual + result | 事件发射 `conversation.compacted`（reason 归一为 auto/manual） | 无 | payload 含 sessionId/reason/tokensBefore/tokensAfter/summary；UI 据此重拉历史 |
+| A-CV-010 | AC-CV-024 | conversation.compacted 失败路径 | 会话已激活；emit compaction_end 带 errorMessage | reason=overflow + errorMessage | 发射 `conversation.error`，不发射 compacted | 无 | 失败必上报；不静默 |
 
 ### e2e
 
@@ -109,5 +134,12 @@
 | E-CV-009 | AC-CV-016 | 对话区+时间线 | 长会话 + 流式进行中 | mock 流式事件序列 | mock-backend | 点击中部条目→观察滚动态→等待 delta→点击"回到底部" | 定位准确+高亮；回看模式 delta 不强制滚底；点击提示/手动触底恢复自动滚底 |
 | E-CV-010 | AC-CV-017 | 对话区 | 草稿态 / 空会话 | 新建会话未发消息；已打开但无 user 消息 | mock-backend | 观察左缘 | 无时间线、无占位、无 console error |
 | E-CV-011 | AC-CV-018 | 时间线浮窗 | 窄视口 | 视口设最小支持尺寸；条目贴边 | mock-backend | hover 贴边条目；resize 极窄重复 | 浮窗完整在视口内（翻转/收拢）；超高内滚；无布局报错 |
+
+#### e2e（CV-S07 上下文压缩）
+
+| 用例 ID | 关联 AC | 页面 | 前置场景 | 测试数据 | 自动化等级 | 操作 | 断言 |
+|---|---|---|---|---|---|---|---|
+| E-CV-012 | AC-CV-020/021/022 | 输入框用量区 | 会话已选中 | seed 覆盖 compact 成功/失败响应；emit statusChanged=streaming | mock-backend | 点「压缩」→观察提示；streaming 下观察入口状态 | 成功显示「压缩完成：before → after tokens」；失败显示原因原文；streaming 期间入口 disabled；无 pageerror |
+| E-CV-013 | AC-CV-023 | 消息区 | 会话已加载历史 | emit conversation.compacted（reason=auto） | mock-backend（emit 事件） | emit 压缩事件→观察提示条与历史重拉 | 出现「上下文已自动压缩」提示条；queryHistory 被重新调用；无 pageerror |
 
 > E-CV-004 用 manual（安全边界，需人工确认无脚本执行，无法由 mock 自动判定）——已注明。可另配合禁用 CSP 的专用用例做自动化安全断言（P2 补充）。

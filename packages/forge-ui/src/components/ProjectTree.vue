@@ -696,9 +696,7 @@ onUnmounted(() => {
   background: var(--surface-hover);
 }
 
-.tree-project.active {
-  background: var(--surface-active);
-}
+/* 项目选中不再使用背景色（仅 hover 有底色），避免与会话选中态视觉打架 */
 
 .tree-arrow {
   width: 16px;

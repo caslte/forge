@@ -50,6 +50,9 @@ export type {
   ConversationStatusOptions,
   ConversationServiceOptions,
   ConversationResult,
+  CompactReason,
+  ConversationCompactResult,
+  ConversationCompactedPayload,
 } from './conversation/conversationService.ts';
 
 // 对话与消息 RPC 方法层（wu-03-rpc）

@@ -49,7 +49,84 @@
 
 ---
 
-## 3. 事件（流式推送）
+## 3. 查询历史
+
+### conversation/queryHistory
+
+**参数**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| sessionId | string | 是 | 会话 ID |
+
+**响应 data**
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "你好", "ts": "2026-08-31T09:00:00.000Z" }
+  ]
+}
+```
+
+---
+
+## 4. 上下文用量
+
+### conversation/getContextUsage
+
+**参数**：`{ sessionId }`
+
+**响应 data**
+
+```json
+{
+  "usage": { "tokens": 42000, "contextWindow": 128000, "percent": 32.8 }
+}
+```
+
+`usage` 为 `null` 表示当前无法获取用量（会话未激活或运行时不支持），UI 显示未知。
+
+> 压缩边界之后、尚无新的助手响应前，运行时无法给出可信用量，此时返回
+> `{ "tokens": null, "contextWindow": 128000, "percent": null }`。
+> UI 须显示「未知」而非 0，否则用户会误判压缩未生效。
+
+---
+
+## 5. 手动压缩
+
+### conversation/compact
+
+**参数**：`{ sessionId }`
+
+**响应 data**
+
+```json
+{
+  "result": {
+    "ok": true,
+    "tokensBefore": 90000,
+    "tokensAfter": 12000,
+    "summary": "上下文摘要…"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| result.ok | boolean | 是否压缩成功 |
+| result.message | string? | 失败原因（仅 ok=false；如「会话未激活，无法压缩」） |
+| result.tokensBefore | number? | 压缩前 token 数；未知为 null |
+| result.tokensAfter | number? | 压缩后估算 token 数；未知为 null |
+| result.summary | string? | 压缩摘要；未知为 null |
+
+**错误码**：1001 参数错误 / 1002 会话不存在 / 5000 压缩异常（不破坏会话历史）。
+
+**流式限制**：运行时压缩会先中止当前轮（`abort`），因此 UI 在 streaming 期间禁用压缩入口，避免静默截断正在生成的回答。
+
+---
+
+## 6. 事件（流式推送）
 
 所有流式内容由事件单向推送，前端增量渲染 DOM。
 
@@ -104,15 +181,43 @@
 
 流转时中断标记：出现 `conversation.error` 后保留已收内容，不再接收该轮增量。
 
+### conversation.compacted
+
+**触发**：一次上下文压缩完成（手动压缩，或运行时按阈值/溢出自动触发）。
+自动压缩没有 RPC 入口，本事件是 UI 感知它的唯一通道。
+
+```json
+{
+  "sessionId": "sess_xxx",
+  "reason": "auto",
+  "tokensBefore": 88000,
+  "tokensAfter": 9000,
+  "summary": "上下文摘要…"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| reason | string | `manual` = 用户点击压缩；`auto` = 运行时自动触发 |
+| tokensBefore | number? | 压缩前 token 数；未知为 null |
+| tokensAfter | number? | 压缩后估算 token 数；未知为 null |
+| summary | string? | 压缩摘要；未知为 null |
+
+**UI 契约**：收到本事件必须重拉 `conversation/queryHistory`——压缩会把 transcript
+替换为摘要，不重拉则界面显示的仍是压缩前的旧内容，与真实上下文不一致。
+`reason: auto` 时还应给出可见提示（历史已被自动压缩）。
+
+> 自动压缩失败不会发射本事件，而是走 `conversation.error`（绝不静默）。
+
 ---
 
-## 4. Markdown / Mermaid 渲染
+## 7. Markdown / Mermaid 渲染
 
 渲染由前端完成（复用 ai-coding：marked / prismjs / mermaid），接口不涉及；`conversation.delta` 只携带纯文本或代码块结构，`message.content` 为原始 markdown 字符串，前端白名单渲染（CV-S03）。
 
 ---
 
-## 5. 错误码
+## 8. 错误码
 
 | code | 说明 |
 |------|------|

@@ -23,6 +23,12 @@ interface MinimalEvent {
   args?: unknown;
   result?: unknown;
   isError?: boolean;
+  /** compaction_start / compaction_end：触发原因（manual / threshold / overflow） */
+  reason?: string;
+  /** compaction_end：失败原因（成功时缺省） */
+  errorMessage?: string;
+  /** compaction_end：是否被中止 */
+  aborted?: boolean;
 }
 
 /** 工具事件捕获器（P1-A 映射验证） */
@@ -54,6 +60,12 @@ class FakePiSession {
   setModelCalls: unknown[] = [];
   /** setThinkingLevel 调用记录（默认思考级别应用） */
   setThinkingLevelCalls: string[] = [];
+  /** P3-A 压缩：compact() 调次数 */
+  compactCalls = 0;
+  /** P3-A 压缩：compact() 返回值（pi CompactionResult 形态，无 message 字段） */
+  compactResult: { summary: string; tokensBefore: number; estimatedTokensAfter: number } | null = null;
+  /** P3-A 压缩：compact() 抛出的错误（非空时优先抛出） */
+  compactError: Error | null = null;
 
   subscribe(listener: (event: MinimalEvent) => void): () => void {
     this.listeners.add(listener);
@@ -100,6 +112,13 @@ class FakePiSession {
   /** 思考级别调用记录（默认 off 策略） */
   async setThinkingLevel(level: string): Promise<void> {
     this.setThinkingLevelCalls.push(level);
+  }
+
+  /** P3-A 手动压缩：返回真实 pi 的 CompactionResult 形态（不含 message 字段） */
+  async compact(): Promise<unknown> {
+    this.compactCalls += 1;
+    if (this.compactError !== null) throw this.compactError;
+    return this.compactResult;
   }
 
   /** 测试辅助：向订阅者广播任意事件 */
@@ -692,4 +711,138 @@ test('未注入 subagentService 时静默降级：不订阅事件、无副作用
   // 不抛错即通过（事件总线被忽略）
   await adapter.sendMessage('s-plain', '普通问题');
   assert.equal(fake.promptCalls.length, 1);
+});
+
+// ===== 上下文压缩（P3-A / CV-S07）=====
+
+/** 压缩事件捕获器 */
+interface CompactionCapture {
+  compacted: Array<{
+    sessionId: string;
+    reason: string;
+    tokensBefore: number | null;
+    tokensAfter: number | null;
+    summary: string | null;
+  }>;
+  errors: Array<{ sessionId: string; message: string }>;
+}
+
+/** 挂上压缩/错误事件捕获 */
+function compactionCapture(adapter: PiConversationAdapter): CompactionCapture {
+  const cap: CompactionCapture = { compacted: [], errors: [] };
+  adapter.setEventHandlers({
+    onCompacted: (sid, info) =>
+      cap.compacted.push({
+        sessionId: sid,
+        reason: info.reason,
+        tokensBefore: info.tokensBefore,
+        tokensAfter: info.tokensAfter,
+        summary: info.summary,
+      }),
+    onError: (sid, e) => cap.errors.push({ sessionId: sid, message: e.message }),
+  });
+  return cap;
+}
+
+/** 已激活会话（发过消息、lease 存在）+ 压缩事件捕获 */
+async function activeAdapterWithCompactionCapture(): Promise<{
+  fake: FakePiSession;
+  adapter: PiConversationAdapter;
+  cap: CompactionCapture;
+}> {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  const cap = compactionCapture(adapter);
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '问题');
+  return { fake, adapter, cap };
+}
+
+test('自动压缩完成（threshold）回调 onCompacted 且 reason=auto（自动压缩可被 UI 感知）', async () => {
+  const { fake, cap } = await activeAdapterWithCompactionCapture();
+
+  fake.emit({
+    type: 'compaction_end',
+    reason: 'threshold',
+    result: { summary: '已压缩摘要', tokensBefore: 90000, estimatedTokensAfter: 12000 },
+    aborted: false,
+  });
+
+  assert.equal(cap.compacted.length, 1, '自动压缩完成应回调一次 onCompacted');
+  const info = cap.compacted[0]!;
+  assert.equal(info.sessionId, 's1');
+  assert.equal(info.reason, 'auto', '阈值触发的自动压缩应标记为 auto');
+  assert.equal(info.tokensBefore, 90000);
+  assert.equal(info.tokensAfter, 12000);
+  assert.equal(info.summary, '已压缩摘要');
+  assert.deepEqual(cap.errors, [], '成功时不应上报错误');
+});
+
+test('手动压缩完成（manual）回调 onCompacted 且 reason=manual', async () => {
+  const { fake, cap } = await activeAdapterWithCompactionCapture();
+
+  fake.emit({
+    type: 'compaction_end',
+    reason: 'manual',
+    result: { summary: '手动摘要', tokensBefore: 40000, estimatedTokensAfter: 6000 },
+    aborted: false,
+  });
+
+  assert.equal(cap.compacted.length, 1);
+  assert.equal(cap.compacted[0]!.reason, 'manual');
+  assert.equal(cap.compacted[0]!.tokensBefore, 40000);
+  assert.equal(cap.compacted[0]!.tokensAfter, 6000);
+});
+
+test('自动压缩失败（errorMessage）走 onError 上报，不回调 onCompacted', async () => {
+  const { fake, cap } = await activeAdapterWithCompactionCapture();
+
+  fake.emit({
+    type: 'compaction_end',
+    reason: 'overflow',
+    result: undefined,
+    aborted: false,
+    errorMessage: 'Auto-compaction failed: provider timeout',
+  });
+
+  assert.deepEqual(cap.compacted, [], '失败不应回调 onCompacted');
+  assert.equal(cap.errors.length, 1, '自动压缩失败必须上报，不能静默');
+  assert.equal(cap.errors[0]!.sessionId, 's1');
+  assert.match(cap.errors[0]!.message, /Auto-compaction failed/);
+});
+
+test('压缩被中止（aborted 且无 errorMessage）不回调 onCompacted 也不误报错误', async () => {
+  const { fake, cap } = await activeAdapterWithCompactionCapture();
+
+  fake.emit({ type: 'compaction_end', reason: 'manual', result: undefined, aborted: true });
+
+  assert.deepEqual(cap.compacted, [], '中止不算压缩完成');
+  assert.deepEqual(cap.errors, [], '用户中止不是错误');
+});
+
+test('compact 返回 pi 压缩详情（tokensBefore/tokensAfter/summary），不再恒空', async () => {
+  const fake = new FakePiSession();
+  fake.compactResult = { summary: '摘要', tokensBefore: 50000, estimatedTokensAfter: 8000 };
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '问题');
+
+  const res = await adapter.compact('s1');
+  assert.equal(res.ok, true);
+  assert.equal(fake.compactCalls, 1);
+  assert.equal(res.tokensBefore, 50000);
+  assert.equal(res.tokensAfter, 8000);
+  assert.equal(res.summary, '摘要');
+});
+
+test('compact 抛错返回 ok:false 与错误信息，不抛出（不破坏会话历史）', async () => {
+  const fake = new FakePiSession();
+  fake.compactError = new Error('Nothing to compact (session too small)');
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '问题');
+
+  const res = await adapter.compact('s1');
+  assert.equal(res.ok, false);
+  assert.match(res.message ?? '', /Nothing to compact/);
 });

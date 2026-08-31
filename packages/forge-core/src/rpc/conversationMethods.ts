@@ -32,6 +32,7 @@ import type {
   ConversationStatus,
   ConversationMessage,
   ConversationDelta,
+  ConversationCompactedPayload,
 } from '../conversation/conversationService.ts';
 
 /** 构造成功信封 */
@@ -241,6 +242,19 @@ export class ConversationApi {
    */
   emitError(sessionId: string, code: number, message: string): void {
     this.events.emit('conversation.error', { sessionId, code, message });
+  }
+
+  /**
+   * 压缩完成推送（非 RPC 方法）：发射 conversation.compacted。
+   * 手动与自动压缩都经此通知 UI——自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，
+   * UI 只能靠本事件感知并重拉历史，否则会看到历史被摘要替换却毫无提示。
+   * @param sessionId 会话 ID
+   * @param info 压缩详情（触发来源 + 压缩前后 token 数 + 摘要）
+   * @returns 无返回值；触发事件 conversation.compacted { sessionId, reason, tokensBefore, tokensAfter, summary }
+   */
+  emitCompacted(sessionId: string, info: Omit<ConversationCompactedPayload, 'sessionId'>): void {
+    const payload: ConversationCompactedPayload = { sessionId, ...info };
+    this.events.emit('conversation.compacted', payload);
   }
 }
 

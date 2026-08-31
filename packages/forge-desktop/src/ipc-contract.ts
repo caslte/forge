@@ -10,7 +10,7 @@
  * - UI 侧：`window.forge.invoke('project/queryProjectList')` / `window.forge.on('tool.started', fn)`
  * - 主进程侧：见 `preload.ts`（bridge）与 `main.ts`（路由 + 事件转发）
  */
-import type { RpcResult } from '@forge/core';
+import type { RpcResult, ConversationCompactedPayload } from '@forge/core';
 
 /** 全部可调用方法（= forge-core 各 Api 的 methods map 键并集） */
 export type ForgeMethod =
@@ -76,6 +76,7 @@ export type ForgeEvent =
   | 'conversation.delta'
   | 'conversation.message'
   | 'conversation.error'
+  | 'conversation.compacted'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -94,6 +95,7 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'conversation.delta',
   'conversation.message',
   'conversation.error',
+  'conversation.compacted',
   'tool.started',
   'tool.completed',
   'tool.error',
@@ -180,6 +182,12 @@ export interface SubagentRemovedPayload {
   agentIds: string[];
 }
 
+/**
+ * conversation.compacted 事件 payload（P3-A）：一次上下文压缩完成。
+ * 手动压缩与运行时自动压缩都会发射；UI 收到后应重拉会话历史并提示用户。
+ */
+export type { ConversationCompactedPayload };
+
 /** IPC 主通道：渲染进程发起方法调用 */
 export const IPC_INVOKE = 'forge:invoke';
 
@@ -206,6 +214,7 @@ export interface ForgeBridge {
    * - conversation.delta: { sessionId, delta }
    * - conversation.message: { sessionId, message }
    * - conversation.error: { sessionId, code, message }
+   * - conversation.compacted: ConversationCompactedPayload（{ sessionId, reason, tokensBefore, tokensAfter, summary }）
    * - tool.started: ToolDescriptor / tool.completed: ToolResult / tool.error: ToolErrorInfo
    * - model.providersChanged: { providers }
    * - subagent.updated: SubagentUpdatedPayload（{ sessionId, subagent } 完整记录）

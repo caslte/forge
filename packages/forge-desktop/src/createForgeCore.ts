@@ -365,6 +365,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       pokeMainTurnActivity(sessionId);
       toolApi.emitToolError(sessionId, event.toolEventId, event.error);
     },
+    // P3-A：压缩完成（手动 + 运行时自动）→ conversation.compacted，UI 据此重拉历史。
+    // 自动压缩没有 RPC 入口，这是 UI 感知它的唯一通道。
+    onCompacted: (sessionId, info) => {
+      pokeMainTurnActivity(sessionId); // 压缩也是会话活动，避免看门狗误判卡死
+      conversationApi.emitCompacted(sessionId, info);
+    },
   });
 
   // setCompletionHandler 不再调用：done 由 subagentService.notifyMainTurnEnd 门控

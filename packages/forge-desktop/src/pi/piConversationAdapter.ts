@@ -1,5 +1,10 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import type { ConversationAttachment, ConversationMessage } from '@forge/core';
+import type {
+  ConversationAttachment,
+  ConversationMessage,
+  ConversationCompactResult,
+  ConversationCompactedPayload,
+} from '@forge/core';
 import { stripThinkingContent } from './thinkingFilter.ts';
 import type { SubagentEventBus } from './createPiAgentSessionFactory.ts';
 
@@ -119,6 +124,17 @@ export interface PiConversationError {
   message: string;
 }
 
+/**
+ * 压缩完成回调载荷（P3-A）：复用 core 契约，去掉事件层才有的 sessionId。
+ */
+export type CompactionInfo = Omit<ConversationCompactedPayload, 'sessionId'>;
+
+/**
+ * 手动压缩返回（P3-A）：与 core `ConversationCompactResult` 同构。
+ * 注意 pi CompactionResult 本身不含 message 字段，该字段只在失败时由适配层填充。
+ */
+export type CompactOutcome = ConversationCompactResult;
+
 /** 工具开始事件载荷（映射 pi tool_execution_start） */
 export interface PiToolStartedPayload {
   toolEventId: string;
@@ -145,6 +161,12 @@ export interface PiConversationEventHandlers {
   onToolStarted?: (sessionId: string, event: PiToolStartedPayload) => void;
   onToolCompleted?: (sessionId: string, event: PiToolCompletedPayload) => void;
   onToolError?: (sessionId: string, event: PiToolErrorPayload) => void;
+  /**
+   * 上下文压缩完成（P3-A）：手动与自动压缩均回调，UI 据此刷新消息列表。
+   * 自动压缩（pi 按阈值/溢出触发）没有 RPC 入口，只能靠本回调让 UI 感知，
+   * 否则用户会看到历史被摘要替换却毫无提示。
+   */
+  onCompacted?: (sessionId: string, info: CompactionInfo) => void;
 }
 
 type TurnCompletionHandler = (sessionId: string) => void;
@@ -169,6 +191,10 @@ type MinimalPiEvent = {
   // agent_end / turn_end 可能携带错误
   errorMessage?: string;
   willRetry?: boolean;
+  // compaction_start / compaction_end：触发原因（manual / threshold / overflow）
+  reason?: string;
+  // compaction_end：是否被中止
+  aborted?: boolean;
 };
 
 export class PiConversationAdapter {  private readonly leases = new Map<string, PiAgentSessionLease<MinimalPiSession>>();
@@ -452,7 +478,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
    * 手动压缩上下文（P3-A）：委托会话 compact()；无 lease / 不支持时返回
    * 明确失败信息（不破坏会话历史）。
    */
-  async compact(sessionId: string): Promise<{ ok: boolean; message?: string }> {
+  async compact(sessionId: string): Promise<CompactOutcome> {
     const lease = this.leases.get(sessionId);
     if (lease === undefined) {
       return { ok: false, message: '会话未激活，无法压缩' };
@@ -461,8 +487,11 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       return { ok: false, message: '当前会话不支持手动压缩' };
     }
     try {
-      const result = (await lease.session.compact()) as { message?: string } | undefined;
-      return { ok: true, message: result?.message };
+      // pi CompactionResult 为 { summary, firstKeptEntryId, tokensBefore,
+      // estimatedTokensAfter, usage, details }，不含 message 字段——详情必须从这里取，
+      // 否则 UI 只能显示「压缩完成」而丢失压缩前后的 token 变化。
+      const raw = await lease.session.compact();
+      return { ok: true, ...extractCompactionDetails(raw) };
     } catch (err) {
       const message = err instanceof Error ? err.message : '压缩失败';
       return { ok: false, message };
@@ -696,6 +725,27 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       }
     }
 
+    // 上下文压缩收敛（P3-A）：手动与自动压缩都在此汇合。自动压缩（reason 为
+    // threshold / overflow）没有 RPC 入口，UI 只能靠本回调感知——否则历史被摘要
+    // 替换却毫无提示；压缩失败必须上报，不能静默。
+    if (event.type === 'compaction_end') {
+      const failure =
+        typeof event.errorMessage === 'string' && event.errorMessage.length > 0
+          ? event.errorMessage
+          : undefined;
+      if (failure !== undefined) {
+        this.errorEmittedThisTurn.add(sessionId);
+        this.errorListeners.get(sessionId)?.({ message: failure });
+        this.eventHandlers.onError?.(sessionId, { message: failure });
+        return;
+      }
+      // 被中止（用户取消 / 无可压缩内容）既不算完成也不算错误
+      if (event.aborted === true || !isRecord(event.result)) return;
+      const info = normalizeCompactionInfo(event.reason, event.result);
+      this.eventHandlers.onCompacted?.(sessionId, info);
+      return;
+    }
+
     if (event.type === 'tool_execution_start' && typeof event.toolCallId === 'string') {
       this.eventHandlers.onToolStarted?.(sessionId, {
         toolEventId: event.toolCallId,
@@ -727,6 +777,36 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
 /** 类型守卫：对象（含数组） */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/**
+ * 从 pi 压缩载荷提取展示用详情。
+ * pi CompactionResult 形如 `{ summary, firstKeptEntryId, tokensBefore, estimatedTokensAfter,
+ * usage, details }`；缺失字段归一为 null，避免 UI 出现 undefined。
+ */
+function extractCompactionDetails(raw: unknown): {
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  summary: string | null;
+} {
+  if (!isRecord(raw)) return { tokensBefore: null, tokensAfter: null, summary: null };
+  return {
+    tokensBefore: typeof raw.tokensBefore === 'number' ? raw.tokensBefore : null,
+    tokensAfter: typeof raw.estimatedTokensAfter === 'number' ? raw.estimatedTokensAfter : null,
+    summary: typeof raw.summary === 'string' ? raw.summary : null,
+  };
+}
+
+/**
+ * 归一化 pi `compaction_end` 载荷为 CompactionInfo。
+ * @param reason pi 触发原因：manual / threshold / overflow；非 manual 一律归为 auto
+ * @param result pi CompactionResult
+ */
+function normalizeCompactionInfo(reason: string | undefined, result: unknown): CompactionInfo {
+  return {
+    reason: reason === 'manual' ? 'manual' : 'auto',
+    ...extractCompactionDetails(result),
+  };
 }
 
 /**

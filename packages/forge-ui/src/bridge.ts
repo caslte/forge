@@ -53,6 +53,7 @@ export type ForgeEvent =
   | 'conversation.delta'
   | 'conversation.message'
   | 'conversation.error'
+  | 'conversation.compacted'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -65,6 +66,39 @@ export interface ForgeResult<T = unknown> {
   code: number;
   message: string;
   data: T | null;
+}
+
+/**
+ * 上下文压缩触发来源：manual = 用户点击压缩；auto = 运行时按阈值/溢出自动触发。
+ * 与 @forge/core CompactReason 一致（本地声明避免浏览器打包引入 node:events）。
+ */
+export type CompactReason = 'manual' | 'auto';
+
+/**
+ * conversation/compact 的压缩结果（P3-A）。
+ * 成功时 ok=true 并携带压缩前后 token 数（未知为 null）；失败时 ok=false 且 message
+ * 为原因。与 @forge/core ConversationCompactResult 一致。
+ */
+export interface ConversationCompactResult {
+  ok: boolean;
+  /** 失败原因（成功时缺省） */
+  message?: string;
+  tokensBefore?: number | null;
+  tokensAfter?: number | null;
+  summary?: string | null;
+}
+
+/**
+ * conversation.compacted 事件 payload（P3-A）：一次压缩完成（手动或自动）。
+ * 自动压缩没有 RPC 入口，UI 靠本事件感知并重拉会话历史。
+ * 与 @forge/core ConversationCompactedPayload 一致。
+ */
+export interface ConversationCompactedPayload {
+  sessionId: string;
+  reason: CompactReason;
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  summary: string | null;
 }
 
 /** preload 注入的 window.forge 桥 */

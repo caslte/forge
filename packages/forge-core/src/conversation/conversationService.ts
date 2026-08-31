@@ -78,6 +78,38 @@ export type ConversationRuntimeOptions = {
   attachments?: ConversationAttachment[];
 };
 
+/** 上下文压缩触发来源：manual = 用户点击压缩；auto = 运行时按阈值/溢出自动触发 */
+export type CompactReason = 'manual' | 'auto';
+
+/**
+ * 手动压缩结果（P3-A）。
+ * 压缩成功时 ok=true 并携带压缩前后 token 数（未知为 null）；失败时 ok=false 且
+ * message 为原因（如「会话未激活」「Nothing to compact」）。
+ */
+export interface ConversationCompactResult {
+  ok: boolean;
+  /** 失败原因（成功时缺省） */
+  message?: string;
+  /** 压缩前 token 数；未知为 null */
+  tokensBefore?: number | null;
+  /** 压缩后估算 token 数；未知为 null */
+  tokensAfter?: number | null;
+  /** 压缩摘要；未知为 null */
+  summary?: string | null;
+}
+
+/**
+ * conversation.compacted 事件载荷：一次压缩完成（手动或自动）。
+ * 自动压缩没有 RPC 入口，UI 只能靠本事件感知并刷新消息列表。
+ */
+export interface ConversationCompactedPayload {
+  sessionId: string;
+  reason: CompactReason;
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  summary: string | null;
+}
+
 export interface PiConversationAdapter {
   sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void>;
   loadHistory(sessionId: string): Promise<ConversationMessage[]>;
@@ -87,7 +119,7 @@ export interface PiConversationAdapter {
     sessionId: string,
   ): { tokens: number | null; contextWindow: number; percent: number | null } | null;
   /** 手动压缩（P3-A） */
-  compact?(sessionId: string): Promise<{ ok: boolean; message?: string }>;
+  compact?(sessionId: string): Promise<ConversationCompactResult>;
 }
 
 /** 会话流式状态（每会话内存态，含内存累积文本） */
@@ -320,7 +352,7 @@ export class ConversationService {
    * @param sessionId 会话 ID
    * @returns { ok: true, data: { result } }；会话不存在 1002；adapter 异常 5000
    */
-  async compact(sessionId: string): Promise<ConversationResult<{ result: { ok: boolean; message?: string } }>> {
+  async compact(sessionId: string): Promise<ConversationResult<{ result: ConversationCompactResult }>> {
     if (typeof sessionId !== 'string' || sessionId.trim() === '') {
       return { ok: false, code: 1001, message: '会话 ID 不能为空' };
     }

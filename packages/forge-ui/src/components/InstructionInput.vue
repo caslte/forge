@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel } from '../types';
-import { call, type AttachmentFile } from '../bridge';
+import { call, subscribe, type AttachmentFile, type ConversationCompactResult } from '../bridge';
 
 /**
  * 指令输入框。
@@ -67,6 +67,8 @@ const usage = ref<ContextUsageInfo | null>(null);
 const usageError = ref<string | null>(null);
 const compacting = ref(false);
 const compactResult = ref<string | null>(null);
+/** 最近一次压缩是否失败（失败提示用告警色） */
+const compactFailed = ref(false);
 let compactResultTimer: ReturnType<typeof setTimeout> | null = null;
 
 const usagePercent = computed(() => {
@@ -81,6 +83,29 @@ const usageLabel = computed(() => {
   return `${pct}%`;
 });
 const usageWarning = computed(() => usagePercent.value !== null && usagePercent.value >= 80);
+
+/**
+ * 流式期间禁止压缩：pi 的 compact() 会先 abort 当前轮，导致正在生成的回答被
+ * 静默截断（以 stopReason=aborted 入库）。宁可禁用，也不让用户莫名丢回答。
+ */
+const compactDisabled = computed(() => compacting.value || isStreaming.value);
+const compactLabel = computed(() => (compacting.value ? '压缩中…' : '压缩'));
+const compactTitle = computed(() => {
+  if (compacting.value) return '压缩中…';
+  if (isStreaming.value) return '回答生成中，暂不支持压缩';
+  return '压缩上下文';
+});
+
+/** 压缩结果文案：有前后 token 时展示变化量（pi 在压缩边界后可能仍返回 null） */
+function formatCompactResult(r: ConversationCompactResult): string {
+  if (!r.ok) return r.message ?? '压缩失败';
+  const before = r.tokensBefore;
+  const after = r.tokensAfter;
+  if (typeof before === 'number' && typeof after === 'number') {
+    return `压缩完成：${before} → ${after} tokens`;
+  }
+  return '压缩完成';
+}
 
 /** 拉取当前会话上下文用量（P3-A） */
 async function refreshUsage(): Promise<void> {
@@ -99,17 +124,20 @@ async function refreshUsage(): Promise<void> {
 
 /** 手动压缩（P3-A）：成功后刷新用量 */
 async function onCompact(): Promise<void> {
-  if (!props.sessionId || compacting.value) return;
+  if (!props.sessionId || compacting.value || isStreaming.value) return;
   compacting.value = true;
   compactResult.value = null;
+  compactFailed.value = false;
   try {
-    const res = await call<{ result: { ok: boolean; message?: string } }>('conversation/compact', {
+    const res = await call<{ result: ConversationCompactResult }>('conversation/compact', {
       sessionId: props.sessionId,
     });
     const r = res.result;
-    compactResult.value = r.ok ? '压缩完成' : (r.message ?? '压缩失败');
+    compactFailed.value = !r.ok;
+    compactResult.value = formatCompactResult(r);
     await refreshUsage();
   } catch (e) {
+    compactFailed.value = true;
     compactResult.value = e instanceof Error ? e.message : '压缩失败';
   } finally {
     compacting.value = false;
@@ -443,15 +471,25 @@ function focus(): void {
 
 defineExpose({ focus });
 
+/** 压缩完成事件订阅（自动压缩后刷新用量显示） */
+let unsubCompacted: (() => void) | null = null;
+
 onMounted(() => {
   nextTick(autoGrow);
   document.addEventListener('click', onDocClick);
   if (props.sessionId) void refreshUsage();
   void loadThinkingState();
+  // 自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，只能靠事件刷新用量显示
+  unsubCompacted = subscribe('conversation.compacted', (payload) => {
+    const p = payload as { sessionId?: string };
+    if (p.sessionId !== props.sessionId) return;
+    void refreshUsage();
+  });
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
+  unsubCompacted?.();
   if (compactResultTimer) clearTimeout(compactResultTimer);
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
   if (shimmerTimer) clearTimeout(shimmerTimer);
@@ -623,26 +661,34 @@ watch(
       </div>
 
       <div class="compose-actions">
-        <div
-          class="ctx"
-          :class="{ 'ctx-warn': usageWarning }"
-          :title="usageError || '上下文用量，接近上限可压缩'"
-          data-tooltip="上下文用量"
-        >
-          <span class="ctx-num">{{ usageLabel }}</span>
-          <div class="ctx-track">
-            <div
-              class="ctx-fill"
-              :class="{ warn: usageWarning }"
-              :style="{ width: usagePct + '%' }"
-            ></div>
+        <div class="ctx-wrap">
+          <div
+            class="ctx"
+            :class="{ 'ctx-warn': usageWarning }"
+            :title="usageError || '上下文用量，接近上限可压缩'"
+            data-tooltip="上下文用量"
+          >
+            <span class="ctx-num">{{ usageLabel }}</span>
+            <div class="ctx-track">
+              <div
+                class="ctx-fill"
+                :class="{ warn: usageWarning }"
+                :style="{ width: usagePct + '%' }"
+              ></div>
+            </div>
+            <span
+              class="ctx-cmp"
+              :class="{ disabled: compactDisabled }"
+              :title="compactTitle"
+              @click="onCompact"
+            >{{ compactLabel }}</span>
           </div>
+          <!-- 压缩结果提示：绝对定位，避免挤压输入框布局 -->
           <span
-            class="ctx-cmp"
-            :class="{ disabled: compacting }"
-            :title="compacting ? '压缩中…' : '压缩上下文'"
-            @click="onCompact"
-          >{{ compacting ? '压缩中…' : '压缩' }}</span>
+            v-if="compactResult"
+            class="compact-result"
+            :class="{ error: compactFailed }"
+          >{{ compactResult }}</span>
         </div>
 
         <!-- 发送/停止 -->
@@ -1008,6 +1054,13 @@ watch(
   gap: 8px;
 }
 
+/* 上下文用量容器：压缩结果提示相对它绝对定位，避免挤压输入框布局 */
+.ctx-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
 /* 上下文用量（发送左侧、去边框） */
 .ctx {
   display: inline-flex;
@@ -1064,6 +1117,26 @@ watch(
 .ctx-cmp.disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 压缩结果提示（绝对定位浮在用量条上方，4s 后自动消失） */
+.compact-result {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 5;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--popover);
+  color: var(--success);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.compact-result.error {
+  color: var(--destructive);
 }
 
 /* 发送/停止（对齐原型：常显品牌色，禁用态灰） */

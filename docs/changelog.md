@@ -1,5 +1,17 @@
 # 变更日志
 
+## v3.9 (CV-S07 上下文压缩：自动压缩可感知 + 手动压缩反馈修复)
+
+- 背景：检查上下文压缩功能时发现链路「通但不可用」——单测全绿却未覆盖压缩的真实行为。
+- **修复 1（P0，dev 预览直接报错）**：`mock-bridge.ts` 未实现 `conversation/compact`，落 default 返回 `data:null`，UI 侧对 null 取值抛 TypeError。补齐该分支，返回与真实链路同构的 `{result:{ok,tokensBefore,tokensAfter,summary}}`，并让 mock 用量压缩后按 40% 回落。
+- **修复 2（P1，自动压缩完全静默）**：`piConversationAdapter.handleEvent` 只处理 message/tool/agent 事件，**不处理 compaction_start/compaction_end**——而运行时自动压缩（阈值/溢出触发）只能靠这两个事件感知。新增 `conversation.compacted` 事件（reason 归一为 manual/auto + 前后 token + 摘要），经 `createForgeCore` 转发到 eventBus；UI 订阅后重拉 `conversation/queryHistory` 并显示提示条（压缩会把 transcript 替换为摘要，不重拉则界面与真实上下文不一致）。自动压缩失败改走 `conversation.error` 上报，绝不静默。
+- **修复 3（P2，静默截断当前轮）**：压缩按钮此前仅在「压缩中」禁用，流式期间仍可点，而运行时 `compact()` 会先 `abort` 当前轮。改为 streaming 期间一并禁用并给出「回答生成中，暂不支持压缩」。
+- **修复 4（P3，结果与详情丢失）**：`compactResult` 只在 script 赋值、**模板从未渲染**，压缩成功/失败在界面上毫无反馈；且适配层取 `result?.message`，而 pi `CompactionResult` 并无 message 字段，压缩前后 token 变化被丢弃。现渲染结果提示（成功显示「压缩完成：90000 → 12000 tokens」，失败显示原因原文），并从 `tokensBefore/estimatedTokensAfter/summary` 透传详情。
+- 契约：新增 `conversation.compacted` 事件（`ipc-contract.ts` / `bridge.ts` 同步）；core 新增 `CompactReason` / `ConversationCompactResult` / `ConversationCompactedPayload` 并从 index 导出；`ConversationApi.emitCompacted`。
+- 测试（TDD，先 RED 后 GREEN）：适配器层 6 例（自动/手动/失败/中止/详情/异常），集成层 4 例（自动压缩事件、自动压缩失败上报、compact 详情透传、会话不存在 1002），E2E 5 例（mock 默认实现可用、详情展示、失败不静默、流式禁用、自动压缩重拉历史并提示）。全量：core 305、desktop 139、UI e2e 46 全过；core/desktop/UI typecheck 通过。
+- 注意：`npm test` 的裸 `node --test` 匹配不到 `.ts`（实跑 0 用例），需用 `node --experimental-strip-types --test "test/**/*.test.ts"`；desktop 测试依赖 `@forge/core` 的 dist，改 core 后须 `npm run build` 才生效。
+- 文档同步：PRD 03 新增 CV-S07 场景与 AC-CV-020~024；API 03 补齐查询历史/上下文用量/手动压缩三节与 `conversation.compacted` 事件；`test/03_conversation` 覆盖矩阵与 e2e 新增 E-CV-012/013、U-CV-009/010、A-CV-008~010。
+
 ## v3.8 (真实验收状态更新 + forge v1.1 计划草案)
 
 - 验收状态（2026-08-30 用户确认）：真实 provider 内测基本通过（真实对话可正常进行）；PIC-005（思考级别真实链路 + 1M 上下文运行时）、PIC-006（子 agent 真实事件链路）确认 OK。`pi-integration-status.md` 关键风险 1 标记解除，`overview.md` §8 风险项同步；E-SM-001/002 已修复（全量 e2e 41/41 通过，已实测复核）。

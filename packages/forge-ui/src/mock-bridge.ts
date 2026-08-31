@@ -230,7 +230,8 @@ interface MockControl {
       | 'tool.error'
       | 'subagent.updated'
       | 'subagent.removed'
-      | 'conversation.statusChanged',
+      | 'conversation.statusChanged'
+      | 'conversation.compacted',
     payload: Record<string, unknown>,
   ): void;
   /** 注入查询会话列表/历史的种子覆盖 */
@@ -253,6 +254,16 @@ declare global {
     __forgeMock?: MockControl;
   }
 }
+
+/** mock 上下文窗口（与真实模型量级一致，用于百分比计算） */
+const CONTEXT_WINDOW = 128000;
+/** 会话默认上下文用量（tokens） */
+const DEFAULT_USAGE_TOKENS = 4200;
+/** 压缩后用量回落比例（mock 模拟：压到原来的 40%） */
+const COMPACT_SHRINK_RATIO = 0.4;
+
+/** 每会话当前上下文用量（支持压缩后回落，默认 DEFAULT_USAGE_TOKENS） */
+const mockUsage = new Map<string, number>();
 
 const seedHandlers = new Map<string, (params: Record<string, unknown>) => Record<string, unknown> | null>();
 const sendScripts = new Map<string, MockScriptItem[]>();
@@ -427,8 +438,41 @@ const bridge: ForgeBridge = {
           message: 'ok',
           data: { messages: HISTORY[(params as { sessionId: string }).sessionId] ?? [] },
         };
-      case 'conversation/getContextUsage':
-        return { code: 0, message: 'ok', data: { usage: { tokens: 4200, contextWindow: 128000, percent: 3.3 } } };
+      case 'conversation/getContextUsage': {
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const tokens = mockUsage.get(sid) ?? DEFAULT_USAGE_TOKENS;
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            usage: {
+              tokens,
+              contextWindow: CONTEXT_WINDOW,
+              percent: (tokens / CONTEXT_WINDOW) * 100,
+            },
+          },
+        };
+      }
+      case 'conversation/compact': {
+        // 与真实链路同构（{ result: { ok, tokensBefore, tokensAfter, summary } }）。
+        // 缺失该分支时会落到 default 返回 data:null，UI 侧对 null 取值抛 TypeError。
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const before = mockUsage.get(sid) ?? DEFAULT_USAGE_TOKENS;
+        const after = Math.max(1, Math.round(before * COMPACT_SHRINK_RATIO));
+        mockUsage.set(sid, after);
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            result: {
+              ok: true,
+              tokensBefore: before,
+              tokensAfter: after,
+              summary: '上下文已压缩（mock）',
+            },
+          },
+        };
+      }
       case 'subagent/queryList': {
         // 返回该会话的子 agent 列表（按展示顺序：运行中在前，终态按 finishedAt desc）
         const sid = (params as { sessionId?: string }).sessionId ?? '';

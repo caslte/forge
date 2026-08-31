@@ -157,6 +157,30 @@
 
 ---
 
+## E-CV-012 手动上下文压缩（AC-CV-020/021/022）
+
+- **关联 AC**：AC-CV-020/021/022 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：会话已选中；`window.__forgeMock.seed('conversation/compact', …)` 可编程覆盖
+- **操作**：点击用量区「压缩」按钮；分别注入成功（带 token 详情）与失败（ok=false）响应；
+  再注入 `conversation.statusChanged {status:'streaming'}` 观察入口状态
+- **断言**：
+  - 成功：显示「压缩完成：90000 → 12000 tokens」（详情缺失时回退「压缩完成」）；
+  - 失败：显示失败原因原文（如 `Nothing to compact`），不静默；
+  - streaming 期间：压缩入口带 `disabled` 且不可点；
+  - 全程无 console error / pageerror（dev 预览走 mock-bridge，曾因缺失该方法抛 TypeError）
+- **证据**：screenshot
+
+## E-CV-013 自动压缩感知（AC-CV-023）
+
+- **关联 AC**：AC-CV-023 | **优先级**：P0 | **自动化等级**：mock-backend（emit conversation.compacted）
+- **前置**：会话已选中并加载过历史
+- **操作**：`window.__forgeMock.emit(sid, 'conversation.compacted', { reason:'auto', tokensBefore, tokensAfter, summary })`
+- **断言**：消息区顶部出现「上下文已自动压缩」提示条；`conversation/queryHistory` 被调用
+  （历史已重拉，避免界面仍显示压缩前的旧内容）；无 console error / pageerror
+- **证据**：screenshot
+
+---
+
 ## 覆盖汇总
 
 | 用例 | AC | 优先级 | 自动化等级 | 触发展开项 |
@@ -172,3 +196,5 @@
 | E-CV-009 | 016 | P0 | mock-backend | 定位/回看模式与滚动时序 |
 | E-CV-010 | 017 | P1 | mock-backend | 空态 |
 | E-CV-011 | 018 | P2 | mock-backend（窄视口） | 极端尺寸布局 |
+| E-CV-012 | 020/021/022 | P0 | mock-backend | 压缩结果反馈 + 流式禁用 |
+| E-CV-013 | 023 | P0 | mock-backend（emit 事件） | 自动压缩感知与历史重拉 |

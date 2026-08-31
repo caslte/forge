@@ -73,6 +73,12 @@ interface FakeEvent {
   args?: unknown;
   result?: unknown;
   isError?: boolean;
+  /** compaction_start / compaction_end：触发原因（manual / threshold / overflow） */
+  reason?: string;
+  /** compaction_end：失败原因 */
+  errorMessage?: string;
+  /** compaction_end：是否被中止 */
+  aborted?: boolean;
 }
 
 /** 模拟真实 pi 会话：prompt 时按 pi 事件流发出增量和最终助手消息 */
@@ -84,6 +90,10 @@ class FakePiSession {
   toolEvents: FakeEvent[] = [];
   /** message_end 后 prompt resolve 前的延迟（毫秒） */
   completionDelayMs = 0;
+  /** P3-A：compact() 调用次数 */
+  compactCalls = 0;
+  /** P3-A：compact() 返回值（真实 pi CompactionResult 形态，无 message 字段） */
+  compactResult: unknown = { summary: '手动摘要', tokensBefore: 60000, estimatedTokensAfter: 7000 };
 
   subscribe(listener: (event: FakeEvent) => void): () => void {
     this.listeners.add(listener);
@@ -113,6 +123,17 @@ class FakePiSession {
   }
 
   async abort(): Promise<void> {}
+
+  /** P3-A：手动压缩，返回真实 pi CompactionResult 形态 */
+  async compact(): Promise<unknown> {
+    this.compactCalls += 1;
+    return this.compactResult;
+  }
+
+  /** 测试辅助：向订阅者广播任意事件（如 pi 自动触发的 compaction_end） */
+  emit(event: FakeEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
 }
 
 function fakeSessionFactory(): PiAgentSessionFactory<FakePiSession> {
@@ -939,6 +960,117 @@ test('主轮看门狗：活动刷新窗口——窗口内持续有 delta 时不�
     await new Promise((resolve) => setTimeout(resolve, 500));
     const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
     assert.equal(doneEvents.length, 1, '静默超窗后看门狗应放行恰好一次 done');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+// ===== 上下文压缩（P3-A）=====
+
+interface CompactFixture {
+  root: string;
+  sessionId: string;
+  methodTable: ReturnType<typeof createForgeCore>['methodTable'];
+  eventBus: import('node:events').EventEmitter;
+  session: FakePiSession;
+}
+
+/** 压缩测试装配：建项目+会话并跑完一轮对话，返回可手动 emit 事件的 fake 会话 */
+async function makeCompactFixture(): Promise<CompactFixture> {
+  const { root, storeFile, projectDir } = makeTempProject();
+  const session = new FakePiSession();
+  const factory: PiAgentSessionFactory<FakePiSession> = async () => ({
+    session,
+    dispose: () => undefined,
+  });
+  const core = createForgeCore(storeFile, {
+    ...(await seededModelDeps()),
+    piAgentSessionFactory: factory,
+  });
+  await invoke(core.methodTable, 'project/addProject', { path: projectDir });
+  const created = await invoke(core.methodTable, 'session/createSession', { projectPath: projectDir });
+  const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+  await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: '你好' });
+  await waitForReply(); // 等助手回复完成，会话处于可压缩状态
+  return { root, sessionId, methodTable: core.methodTable, eventBus: core.eventBus, session };
+}
+
+test('自动压缩完成时 eventBus 发射 conversation.compacted（UI 可感知自动压缩）', async () => {
+  const fx = await makeCompactFixture();
+  try {
+    const compacted: unknown[] = [];
+    fx.eventBus.on('conversation.compacted', (p: unknown) => compacted.push(p));
+
+    // 模拟 pi 运行时按阈值触发的自动压缩
+    fx.session.emit({
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: { summary: '自动压缩摘要', tokensBefore: 88000, estimatedTokensAfter: 9000 },
+      aborted: false,
+    });
+
+    assert.equal(compacted.length, 1, '自动压缩应发射一次 conversation.compacted');
+    assert.deepEqual(compacted[0], {
+      sessionId: fx.sessionId,
+      reason: 'auto',
+      tokensBefore: 88000,
+      tokensAfter: 9000,
+      summary: '自动压缩摘要',
+    });
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('自动压缩失败时 eventBus 发射 conversation.error，不静默', async () => {
+  const fx = await makeCompactFixture();
+  try {
+    const errors: { sessionId: string; code: number; message: string }[] = [];
+    fx.eventBus.on('conversation.error', (p: unknown) => {
+      errors.push(p as { sessionId: string; code: number; message: string });
+    });
+    const compacted: unknown[] = [];
+    fx.eventBus.on('conversation.compacted', (p: unknown) => compacted.push(p));
+
+    fx.session.emit({
+      type: 'compaction_end',
+      reason: 'overflow',
+      result: undefined,
+      aborted: false,
+      errorMessage: 'Auto-compaction failed: provider timeout',
+    });
+
+    assert.deepEqual(compacted, [], '失败不应发射 compressed');
+    assert.equal(errors.length, 1, '自动压缩失败必须上报，不能静默');
+    assert.equal(errors[0]!.sessionId, fx.sessionId);
+    assert.match(errors[0]!.message, /Auto-compaction failed/);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('conversation/compact 返回压缩详情（tokensBefore/tokensAfter/summary）', async () => {
+  const fx = await makeCompactFixture();
+  try {
+    const res = await invoke(fx.methodTable, 'conversation/compact', { sessionId: fx.sessionId });
+
+    assert.equal(res.code, 0, `compact 应成功，message: ${res.message}`);
+    assert.equal(fx.session.compactCalls, 1, '应委托 pi 会话 compact');
+    const result = (res.data as { result: { ok: boolean; tokensBefore: number | null; tokensAfter: number | null; summary: string | null } }).result;
+    assert.equal(result.ok, true);
+    assert.equal(result.tokensBefore, 60000, '压缩前 token 应透传到 UI');
+    assert.equal(result.tokensAfter, 7000, '压缩后 token 应透传到 UI');
+    assert.equal(result.summary, '手动摘要');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('conversation/compact 会话不存在返回 1002，不抛异常', async () => {
+  const fx = await makeCompactFixture();
+  try {
+    const res = await invoke(fx.methodTable, 'conversation/compact', { sessionId: 'sess-not-exist' });
+    assert.equal(res.code, 1002);
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }
