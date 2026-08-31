@@ -965,6 +965,94 @@ test('主轮看门狗：活动刷新窗口——窗口内持续有 delta 时不�
   }
 });
 
+// ===== wu-06 回归：门控按轮重置（notifyMainTurnStart）=====
+
+test('同一会话连续两轮：每轮主轮结束各发一次 done（门控按轮重置）', async () => {
+  const fx = await makeGateFixture();
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+
+    // 第一轮：streaming → done
+    const send1 = invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '第一轮' });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fx.sessions.get(fx.sessionId)!.finish('第一轮回答');
+    await send1;
+    assert.equal(
+      statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done').length,
+      1,
+      `第一轮应发 done，实际: ${JSON.stringify(statuses)}`,
+    );
+
+    // 第二轮（同一会话）：修复前 doneSent 跨轮保留，notifyMainTurnEnd 被短路，
+    // done 永不发射，conversationService 状态永久卡在 streaming
+    const send2 = invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '第二轮' });
+    for (let i = 0; i < 100 && fx.sessions.get(fx.sessionId)!.promptCalls.length < 2; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fx.sessions.get(fx.sessionId)!.finish('第二轮回答');
+    await send2;
+    const doneCount = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done').length;
+    assert.equal(doneCount, 2, `第二轮应再发一次 done（共 2 次），实际: ${JSON.stringify(statuses)}`);
+    // 第二轮状态链完整：进入过 streaming（done 缺席即卡「进行中」的回归形态）
+    assert.ok(
+      statuses.some((e) => e.sessionId === fx.sessionId && e.status === 'streaming'),
+      '第二轮应进入 streaming',
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('第二轮子 agent 活跃：done 延迟至子 agent 完成后收敛（重置后的门控仍按判据工作）', async () => {
+  const fx = await makeGateFixture();
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+
+    // 第一轮：普通完成（建立上一轮 doneSent=true 的门控状态）
+    const send1 = invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '第一轮' });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fx.sessions.get(fx.sessionId)!.finish('第一轮回答');
+    await send1;
+    assert.equal(statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done').length, 1);
+
+    // 第二轮：主轮结束时有活跃子 agent → done 延迟；子 agent 完成 → 收敛
+    const send2 = invoke(fx.methodTable, 'conversation/sendMessage', { sessionId: fx.sessionId, content: '第二轮' });
+    for (let i = 0; i < 100 && fx.sessions.get(fx.sessionId)!.promptCalls.length < 2; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fx.buses.get(fx.sessionId)!.emit('subagents:created', { id: 'ag-2', type: 'general-purpose', description: '研究' });
+    fx.buses.get(fx.sessionId)!.emit('subagents:started', { id: 'ag-2', type: 'general-purpose', description: '研究' });
+    fx.sessions.get(fx.sessionId)!.finish('第二轮回答');
+    await send2;
+    assert.equal(
+      statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done').length,
+      1,
+      `子 agent 活跃时第二轮不应立即 done（此时仅第一轮的 done），实际: ${JSON.stringify(statuses)}`,
+    );
+    fx.buses
+      .get(fx.sessionId)!
+      .emit('subagents:completed', { id: 'ag-2', type: 'general-purpose', status: 'completed', result: '结论' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(
+      statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done').length,
+      2,
+      `两轮各发一次 done，实际: ${JSON.stringify(statuses)}`,
+    );
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
 // ===== 上下文压缩（P3-A）=====
 
 interface CompactFixture {

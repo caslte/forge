@@ -167,14 +167,17 @@ function isMessageStreaming(index: number): boolean {
 /** 加载历史消息 */
 async function loadHistory(): Promise<void> {
   if (props.sessionId === null) return; // 草稿态无会话，无需加载
+  // 请求发起时的会话 id：返回后与之比较以丢弃过期结果。
+  // 不能与"当前会话 id"比较——切换会话后两者恒等，守卫失效会把旧会话历史写进新会话视图
+  const sid = props.sessionId;
   loadingHistory.value = true;
   errorMsg.value = null;
   try {
     const res = await call<{ messages: ConversationMessage[] }>('conversation/queryHistory', {
-      sessionId: props.sessionId,
+      sessionId: sid,
     });
-    // 仅在会话未切换时应用结果
-    if (inputSessionId === props.sessionId) {
+    // 仅在仍停留于发起会话时应用结果
+    if (sid === props.sessionId) {
       // 拷贝为本地数组：mock-backend 的 queryHistory 返回内部 HISTORY 数组引用，
       // 直接持有会被 mock 后续写入（sendMessage/runScript push）原地污染，出现重复消息
       messages.value = [...(res.messages ?? [])];
@@ -189,17 +192,20 @@ async function loadHistory(): Promise<void> {
       autoScrollToBottom();
     }
   } catch (e) {
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+    // 过期请求的错误不显示（属于已离开的会话）
+    if (sid === props.sessionId) {
+      errorMsg.value = e instanceof Error ? e.message : String(e);
+    }
   } finally {
-    if (inputSessionId === props.sessionId) {
+    // 过期请求不清加载态（当前会话若有自己的加载由它收尾）；
+    // 切到草稿态等无新请求接管的场景由 resetForSession 归位
+    if (sid === props.sessionId) {
       loadingHistory.value = false;
       autoScrollToBottom();
     }
   }
 }
 
-// 用于判断异步结果是否仍属于当前会话
-let inputSessionId = '';
 /**
  * 草稿态发送首条消息时本次创建的会话 id：
  * 上层绑定 currentSessionId 后 props 变化，据此跳过 reset+reload（消息流已在本地）。
@@ -207,12 +213,14 @@ let inputSessionId = '';
 let createdSessionId: string | null = null;
 
 /** 会话切换：重置状态并重新加载 */
-function resetForSession(sid: string): void {
-  inputSessionId = sid;
+function resetForSession(): void {
   messages.value = [];
   toolEventIndex.clear();
   toolGroupCollapsed.clear();
   isStreaming.value = false;
+  // 在途历史请求的结果按发起会话丢弃（见 loadHistory），加载态在此归位：
+  // 切到草稿态后没有新的 loadHistory 接管，不清会把"加载历史消息"永久卡在消息区顶部
+  loadingHistory.value = false;
   errorMsg.value = null;
   // 压缩提示随会话切换清除（避免上一会话的提示残留到新会话）
   compactBanner.value = null;
@@ -249,7 +257,6 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
       });
       const sid = res.session.sessionId;
       createdSessionId = sid;
-      inputSessionId = sid;
       // 创建会话前捕获当前展示模型（全局默认或草稿态已切换），随后写入会话覆盖，
       // 保证首条消息按用户所见模型发送（写覆盖失败不阻塞，回退全局默认）
       const draftModel = props.currentModel;
@@ -787,7 +794,7 @@ watch(
 let unsubs: Array<(() => void) | null> = [];
 
 onMounted(() => {
-  resetForSession(props.sessionId ?? '');
+  resetForSession();
   if (props.sessionId !== null) void loadHistory();
   void loadSubagents();
   // 回看模式触底判定（scrollRef 元素常驻，仅 v-show 切换）
@@ -830,7 +837,10 @@ watch(
       createdSessionId = null;
       return;
     }
-    resetForSession(sid ?? '');
+    resetForSession();
+    // 切回仍在流式的会话时恢复流式标记：后端不会对进行中的轮次重发 streaming 事件，
+    // 不恢复则"助手正在思考"指示器消失、输入框却仍显示流式中（两处状态源不一致）
+    isStreaming.value = props.session?.status === 'streaming';
     void loadHistory();
     activeAgentId.value = null; // 切换会话回主会话 Tab
     void loadSubagents();

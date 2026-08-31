@@ -13,3 +13,4 @@ playwright-report/
 
 # 打包产物
 release/
+.workbuddy/memory/

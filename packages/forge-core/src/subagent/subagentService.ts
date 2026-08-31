@@ -14,7 +14,10 @@
  *    重复事件无字段变化时 changed=false，不重复发射 subagent.updated。
  * 3. done 门控（AC-SA-004/005）：主会话 done = 主轮结束 且 活跃计数（queued+running）
  *    为 0。notifyMainTurnEnd 时计数为 0 立即发 done，否则延迟到计数归零；done 经
- *    EventSink 以 conversation.statusChanged { status: 'done' } 发射且每会话恰好一次。
+ *    EventSink 以 conversation.statusChanged { status: 'done' } 发射且每轮恰好一次。
+ *    notifyMainTurnStart 在新一轮发送（状态转 streaming）时重置门控（清残留兜底
+ *    计时器与上一轮未终态孤儿记录）：门控标记若跨轮保留，第二轮起 done 被短路
+ *    永不发射，会话状态将永久卡在 streaming。
  * 4. 超时兜底（AC-SA-006）：主轮结束且计数>0 时启动 timeoutMs（默认 30 分钟）计时，
  *    窗口内任意子 agent 事件重置计时；到时发 done 并记兜底日志。兜底后迟到事件只
  *    更新子 agent 记录，不得把会话拉回 running 或重发 done。
@@ -242,6 +245,26 @@ export class SubagentRegistry {
     this.sessions.delete(sessionId);
   }
 
+  /**
+   * 移除会话内全部未终态记录（notifyMainTurnStart 清理上一轮孤儿用）：
+   * 终止失败 / 超时兜底后仍处 queued/running 的记录不再参与新一轮门控计数。
+   * 返回被移除的 agentId 列表（插入序）。
+   */
+  removeActive(sessionId: string): string[] {
+    const sessionMap = this.sessions.get(sessionId);
+    if (sessionMap === undefined) {
+      return [];
+    }
+    const removed: string[] = [];
+    for (const [agentId, record] of sessionMap) {
+      if (!isTerminalStatus(record.status)) {
+        sessionMap.delete(agentId);
+        removed.push(agentId);
+      }
+    }
+    return removed;
+  }
+
   /** 由事件建档（首次出现的 agentId） */
   private createRecord(event: SubagentEventInput): SubagentRecord {
     const nowIso = this.toIso(this.clock.now());
@@ -321,11 +344,11 @@ export interface SubagentServiceOptions {
   logger?: SubagentLogger;
 }
 
-/** 会话门控状态（每会话内存态） */
+/** 会话门控状态（每会话内存态，按轮重置） */
 interface GateState {
   /** 主轮是否已结束（notifyMainTurnEnd 已达） */
   mainTurnEnded: boolean;
-  /** done 是否已发出（每会话恰好一次） */
+  /** done 是否已发出（本轮恰好一次；notifyMainTurnStart 重置） */
   doneSent: boolean;
   /** 超时兜底计时器句柄（null = 未启动） */
   timeoutTimer: unknown | null;
@@ -498,6 +521,37 @@ export class SubagentService {
       this.sink.emit(sessionId, 'subagent.removed', { agentIds: removed });
     }
     return { ok: true, data: removed };
+  }
+
+  /**
+   * 新一轮主轮开始（done 门控重置入口）：把门控恢复为「未结束、未发 done」，并
+   * 清掉残留兜底计时器与上一轮未终态的孤儿子 agent 记录（终止失败 / 超时兜底后
+   * 仍 running 的记录不再参与新一轮门控计数，经 sink 发 subagent.removed 通知
+   * UI 剪枝）。使 done 按「每轮恰好一次」发射：门控标记若跨轮保留，第二轮起
+   * notifyMainTurnEnd 被 doneSent 短路，done 永不发射，会话状态卡在 streaming。
+   * 重复调用幂等（已是重置态无操作）；已销毁会话忽略。
+   */
+  notifyMainTurnStart(sessionId: string): void {
+    if (sessionId === '' || this.disposedSessions.has(sessionId)) {
+      return;
+    }
+    const gate = this.gates.get(sessionId);
+    if (gate !== undefined) {
+      if (!gate.mainTurnEnded && !gate.doneSent && gate.timeoutTimer === null) {
+        return; // 已是重置态，幂等
+      }
+      this.clearTimeoutTimer(gate);
+      gate.mainTurnEnded = false;
+      gate.doneSent = false;
+    } else {
+      // 首轮：新建门控即重置态（仍需走下方孤儿清理）
+      this.gates.set(sessionId, { mainTurnEnded: false, doneSent: false, timeoutTimer: null });
+    }
+    // 上一轮遗留的未终态孤儿记录移出注册表并通知 UI 剪枝（不发 subagent.updated）
+    const orphanIds = this.registry.removeActive(sessionId);
+    if (orphanIds.length > 0) {
+      this.sink.emit(sessionId, 'subagent.removed', { agentIds: orphanIds });
+    }
   }
 
   /**

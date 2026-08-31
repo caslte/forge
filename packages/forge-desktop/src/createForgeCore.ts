@@ -162,7 +162,9 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // wu-06：子 agent 管理服务 + 事件汇转发。sink 把 subagent.updated / subagent.removed
   // 接到 eventBus，把 conversation.statusChanged {status:'done'} 转到 conversationService
   // （经过 onStatusChange 回调→conversationApi.pushStatus→eventBus 链）。done 门控入口
-  // （notifyMainTurnEnd）在 setCompletionHandler 调用；活跃计数>0 时延迟，超时兜底。
+  // （notifyMainTurnEnd）由适配器在 prompt 返回时经 onMainTurnEnd 调用；活跃计数>0 时
+  // 延迟，超时兜底。每轮开始（状态转 streaming）由 onStatusChange 调
+  // notifyMainTurnStart 重置门控（每轮恰好一次，见下方 onStatusChange）。
   let subagentService: SubagentService;
   const buildSubagentStopPort = (): SubagentStopPort => ({
     async stop(sessionId: string, agentId: string): Promise<void> {
@@ -304,6 +306,14 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       };
     },
     onStatusChange: (sid, status) => {
+      // wu-06 done 门控按轮生效：新一轮发送进入 streaming 时重置门控（清上一轮
+      // doneSent / 主轮结束标记 / 兜底计时器与未终态孤儿记录）。不重置则第二轮起
+      // notifyMainTurnEnd 被 doneSent 短路，done 永不发射，状态卡在「进行中」。
+      // 选在 onStatusChange('streaming') 而非 sendMessage RPC 入口重置：被校验
+      // 拒绝的发送（如流式中重复发送 1001）不会误清仍在等待中的门控。
+      if (status === 'streaming') {
+        subagentService.notifyMainTurnStart(sid);
+      }
       conversationApi.pushStatus(sid, status);
       // 会话树状态圆点数据源：conversation 状态流转同步到 session 运行时表
       //（streaming→running，canceled/done→done），sessionApi 内部发射

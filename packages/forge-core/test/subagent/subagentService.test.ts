@@ -514,3 +514,62 @@ test('forceDone：已销毁会话忽略；重复调用幂等', () => {
   service.forceDone('s2');
   assert.equal(sink.doneCount('s2'), 1, '重复 forceDone 应幂等');
 });
+
+// ===== U-SA-008 门控按轮重置（notifyMainTurnStart）：修复多轮对话第二轮起 done 永不发射 =====
+
+test('U-SA-008.1 notifyMainTurnStart 重置门控：新一轮再次发 done（多轮各一次）', () => {
+  const { service, sink } = makeService();
+  // 第一轮：无子 agent，主轮结束立即 done
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 1);
+  // 新一轮：门控重置后主轮结束可再次 done（修复前 doneSent 跨轮保留，done 被短路）
+  service.notifyMainTurnStart('s1');
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 2);
+  // 同轮内重复信号不重发（每轮恰好一次语义不变）
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 2);
+});
+
+test('U-SA-008.2 notifyMainTurnStart 清残留兜底计时器：重置后超时不再发 done', () => {
+  const { service, sink, clock } = makeService();
+  service.ingest('s1', { agentId: 'a1', agentType: 'T', description: 'd', status: 'running', startedAt: iso(0) });
+  service.notifyMainTurnEnd('s1');
+  assert.equal(clock.pendingCount, 1, '计数>0 应启动兜底计时');
+  service.notifyMainTurnStart('s1'); // 新一轮：重置门控并清计时器
+  assert.equal(clock.pendingCount, 0, '残留兜底计时器应被清空');
+  clock.advance(30 * 60_000);
+  assert.equal(sink.doneCount('s1'), 0, '上一轮残留计时器超时不得发 done');
+});
+
+test('U-SA-008.3 notifyMainTurnStart 移除上一轮未终态孤儿记录并发 subagent.removed，终态保留', () => {
+  const { service, sink } = makeService();
+  service.ingest('s1', { agentId: 'a1', agentType: 'T', description: 'd', status: 'running', startedAt: iso(0) });
+  service.ingest('s1', { agentId: 'a2', agentType: 'T', description: 'd', status: 'completed', result: 'R', finishedAt: iso(1) });
+  service.notifyMainTurnStart('s1');
+  const removed = sink.all('subagent.removed');
+  assert.equal(removed.length, 1);
+  assert.deepEqual(removed[0].payload, { agentIds: ['a1'] });
+  const list = service.queryList('s1');
+  assert.ok(list.ok);
+  if (list.ok) {
+    assert.equal(list.data.length, 1, '终态记录应保留');
+    assert.equal(list.data[0].agentId, 'a2');
+  }
+  // 孤儿清掉后新一轮门控计数从 0 起算：主轮结束立即 done
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 1);
+});
+
+test('U-SA-008.4 已销毁会话 notifyMainTurnStart 忽略（不重建门控）；重复调用幂等', () => {
+  const { service, sink } = makeService();
+  service.disposeSession('s1');
+  service.notifyMainTurnStart('s1');
+  service.notifyMainTurnEnd('s1');
+  assert.equal(sink.doneCount('s1'), 0, '已销毁会话的门控信号应丢弃');
+
+  // 未产生任何门控信号的会话上重复调用为无操作
+  service.notifyMainTurnStart('s2');
+  service.notifyMainTurnStart('s2');
+  assert.equal(sink.doneCount('s2'), 0);
+});
