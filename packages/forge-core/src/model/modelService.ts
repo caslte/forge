@@ -628,25 +628,28 @@ export class ModelService {
 
   /**
    * 查询会话当前生效思考级别（MP-S05，docs/api/05_model.md §9）：优先会话覆盖，
-   * 否则继承全局默认（settings.thinkingLevel）。
-   * @param sessionId 会话 ID
+   * 否则继承全局默认（settings.thinkingLevel）；sessionId 传 null 表示草稿态
+   * （新会话未创建，docs/api/05_model.md §9），直接查全局默认。
+   * @param sessionId 会话 ID；null 查全局默认
    * @returns 成功返回 { level, effective }；会话不存在返回 1002
    */
   async getSessionThinkingLevel(
-    sessionId: string,
+    sessionId: string | null,
   ): Promise<ModelResult<{ level: ThinkingLevel | null; effective: 'session' | 'global' }>> {
-    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
-      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
-    }
-    const session = this.deps.store.getSession(sessionId.trim());
-    if (session === undefined) {
-      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
-    }
-    if (session.thinkingLevel !== null) {
-      return {
-        ok: true,
-        data: { level: session.thinkingLevel as ThinkingLevel, effective: 'session' },
-      };
+    if (sessionId !== null) {
+      if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+        return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+      }
+      const session = this.deps.store.getSession(sessionId.trim());
+      if (session === undefined) {
+        return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+      }
+      if (session.thinkingLevel !== null) {
+        return {
+          ok: true,
+          data: { level: session.thinkingLevel as ThinkingLevel, effective: 'session' },
+        };
+      }
     }
     const global = this.deps.store.getSetting('thinkingLevel');
     // 旧数据缺失该键（getSetting 返回 null/非法值）时按 'off' 兜底（schema.md settings 表）

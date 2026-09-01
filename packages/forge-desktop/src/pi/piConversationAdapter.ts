@@ -124,6 +124,13 @@ export interface PiConversationError {
   message: string;
 }
 
+/** pi 自动重试开始事件载荷（attempt/maxAttempts 由 pi 提供，每轮独立计数） */
+export interface PiAutoRetryInfo {
+  attempt: number;
+  maxAttempts: number;
+  errorMessage: string;
+}
+
 /**
  * 压缩完成回调载荷（P3-A）：复用 core 契约，去掉事件层才有的 sessionId。
  */
@@ -158,6 +165,12 @@ export interface PiConversationEventHandlers {
   onDelta?: (sessionId: string, text: string) => void;
   onMessage?: (sessionId: string, message: ConversationMessage) => void;
   onError?: (sessionId: string, error: PiConversationError) => void;
+  /**
+   * pi 自动重试开始（可重试错误后触发）：轮次仍在运行。此前 message_end(error)
+   * 已把会话置为 error（红点），上层应恢复 streaming 并提示，否则红点永不恢复、
+   * UI 与真实轮次脱节（重试成功后轮次继续跑，界面却显示已断）。
+   */
+  onAutoRetryStart?: (sessionId: string, info: PiAutoRetryInfo) => void;
   onToolStarted?: (sessionId: string, event: PiToolStartedPayload) => void;
   onToolCompleted?: (sessionId: string, event: PiToolCompletedPayload) => void;
   onToolError?: (sessionId: string, event: PiToolErrorPayload) => void;
@@ -191,6 +204,11 @@ type MinimalPiEvent = {
   // agent_end / turn_end 可能携带错误
   errorMessage?: string;
   willRetry?: boolean;
+  // auto_retry_start / auto_retry_end：pi 自动重试事件（可重试错误如 network_error/429/5xx）
+  attempt?: number;
+  maxAttempts?: number;
+  success?: boolean;
+  finalError?: string;
   // compaction_start / compaction_end：触发原因（manual / threshold / overflow）
   reason?: string;
   // compaction_end：是否被中止
@@ -723,6 +741,39 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         this.eventHandlers.onError?.(sessionId, { message });
         return;
       }
+    }
+
+    // pi 自动重试开始：可重试错误后 pi 内部自动重试，轮次并未终止。此前
+    // message_end(stopReason=error) 已把状态打成 error（红点），这里做两件事：
+    // 1) 清 errorEmittedThisTurn——重试成功后 prompt 正常返回时 hadError 必须为
+    //    false，done 门控（notifyMainTurnEnd）才能照常触发，否则 done 被跳过、
+    //    会话卡死到看门狗兜底；
+    // 2) 通知上层恢复 streaming（红点回进行中）。
+    if (event.type === 'auto_retry_start') {
+      this.errorEmittedThisTurn.delete(sessionId);
+      this.eventHandlers.onAutoRetryStart?.(sessionId, {
+        attempt: typeof event.attempt === 'number' ? event.attempt : 0,
+        maxAttempts: typeof event.maxAttempts === 'number' ? event.maxAttempts : 0,
+        errorMessage: typeof event.errorMessage === 'string' ? event.errorMessage : '未知错误',
+      });
+      return;
+    }
+    // 重试耗尽：终态错误，走既有错误上报（最后一次 message_end(error) 已上报过
+    // 则跳过，避免重复推送）
+    if (event.type === 'auto_retry_end' && event.success === false) {
+      if (!this.errorEmittedThisTurn.has(sessionId)) {
+        const raw =
+          typeof event.finalError === 'string' && event.finalError !== ''
+            ? event.finalError
+            : '对话处理失败';
+        const message = /No API key found/i.test(raw)
+          ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
+          : raw;
+        this.errorEmittedThisTurn.add(sessionId);
+        this.errorListeners.get(sessionId)?.({ message });
+        this.eventHandlers.onError?.(sessionId, { message });
+      }
+      return;
     }
 
     // 上下文压缩收敛（P3-A）：手动与自动压缩都在此汇合。自动压缩（reason 为

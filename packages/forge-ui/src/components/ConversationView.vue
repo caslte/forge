@@ -260,6 +260,17 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
       // 创建会话前捕获当前展示模型（全局默认或草稿态已切换），随后写入会话覆盖，
       // 保证首条消息按用户所见模型发送（写覆盖失败不阻塞，回退全局默认）
       const draftModel = props.currentModel;
+      // 草稿态思考级别（继承全局默认的回显或用户已选）：先于 session-created 写入会话覆盖，
+      // 保证首条消息按输入框所示级别发送，且避免与输入框对 sid 的级别查询竞态
+      // （写覆盖失败不阻塞，回退全局默认）
+      const draftLevel = inputRef.value?.currentLevel ?? null;
+      if (draftLevel) {
+        await call('model/setSessionThinkingLevel', { sessionId: sid, level: draftLevel }).catch(
+          (e) => {
+            console.warn('[draft] 写入会话思考级别失败，回退全局默认', e);
+          },
+        );
+      }
       emit('session-created', sid);
       if (draftModel) {
         await call('model/setSessionModel', { sessionId: sid, model: draftModel }).catch((e) => {
@@ -376,13 +387,18 @@ function onConversationStatusChanged(payload: unknown): void {
     isStreaming.value = true;
   } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
     isStreaming.value = false;
+    // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
+    // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
+    if (p.status !== 'error') errorMsg.value = null;
   }
 }
 
 function onConversationError(payload: unknown): void {
   const p = payload as { sessionId: string; code?: number; message?: string };
   if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  isStreaming.value = false;
+  // 不在此处置 isStreaming=false：终态错误必伴随 status='error' 事件（由
+  // onConversationStatusChanged 收尾）；conversation.error 还承载自动重试提示
+  // （轮次仍在 streaming），此处置假会误断进行中状态
   errorMsg.value = p.message ?? `对话错误（${p.code ?? 'unknown'}）`;
 }
 

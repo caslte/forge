@@ -193,13 +193,13 @@
 
 ### `model/getSessionThinkingLevel`
 
-**用途**：查看会话当前生效思考级别（模块 05 MP-S05；优先会话覆盖，其次全局默认）。
+**用途**：查看会话当前生效思考级别（模块 05 MP-S05；优先会话覆盖，其次全局默认）；sessionId 缺省时查全局默认思考级别（草稿态/新建会话未创建时，新会话继承全局）。
 
 请求参数：
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| sessionId | string | 是 | 会话 ID |
+| sessionId | string | 否 | 会话 ID；缺省查询全局默认（草稿态，`effective: "global"`） |
 
 响应：
 
@@ -207,7 +207,7 @@
 { "level": "high", "effective": "session" }
 ```
 
-`effective`: `session`（会话已存值）/ `global`（继承全局默认后快照）。
+`effective`: `session`（会话已存值）/ `global`（继承全局默认后快照；sessionId 缺省时恒为 `global`）。
 
 ### `model/setSessionThinkingLevel`
 

@@ -81,7 +81,7 @@ export { buildSideBySideDiff } from './tool/sideBySideDiff.ts';
 export type { SideBySideRow, SideBySideCell } from './tool/sideBySideDiff.ts';
 
 // 安全 Markdown 渲染（P2-B）
-export { renderMarkdown, renderMarkdownPartial, looksLikeMermaid } from './markdown/renderMarkdown.ts';
+export { renderMarkdown, looksLikeMermaid, hasOpenFence } from './markdown/renderMarkdown.ts';
 
 // 多窗口画布几何（P3-C）
 export {

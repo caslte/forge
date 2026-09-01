@@ -104,7 +104,7 @@
 | A-MP-010 | AC-MP-016/017 | model/saveProvider | 存量 contextWindow=200000 | contextWindow=null → 字段移除，其余字段保留 |
 | A-MP-011 | AC-MP-018 | model/queryProviderList | 已配 1000000/缺失各一 | providers[].contextWindow 回显 1000000，缺失为 null |
 | A-MP-012 | AC-MP-010 | model/getModelThinkingLevels | 推理/非推理模型各一 | 推理返回可用级别列表且不含 off（MP-S07 过滤，含存量缺省 off 配置）、顺序固定；非推理仅 ["off"]；未知模型 1004 |
-| A-MP-013 | AC-MP-012 | model/getSessionThinkingLevel | 会话已设/未设 | 已设 effective=session；未设继承全局快照 effective=global |
+| A-MP-013 | AC-MP-012 | model/getSessionThinkingLevel | 会话已设/未设/草稿态 | 已设 effective=session；未设继承全局快照 effective=global；sessionId 缺省（草稿态）查全局默认 effective=global |
 | A-MP-014 | AC-MP-011/012 | model/setSessionThinkingLevel | 多会话 | 写当前会话+同步全局默认；其他会话不变；下一轮生效 |
 | A-MP-015 | AC-MP-019 | model/saveProvider + 会话创建 | 已配 1M 模型 | 新会话上下文窗口/压缩阈值按 1000000（真实 pi 集成见 PIC-005） |
 | A-MP-016 | AC-MP-020 | model/saveProvider（vision=true） | 单模型 | models.json 首模型出现 input:["text","image"]；queryProviderList 回显 vision=true |
@@ -122,7 +122,7 @@
 | E-MP-004 | AC-MP-007 | 设置页 | 已保存配置 | - | real | 重启应用 | 配置与全局默认仍显示 |
 | E-MP-005 | AC-MP-015/016/019 | 设置页 | 已配模型 | 勾选/取消 1M | mock（写真实 models.json 文件） | 勾选→保存；取消→保存；新建会话 | contextWindow=1000000 写入；取消后字段移除；编辑回显一致；新会话上下文按 1M 显示 |
 | E-MP-006 | AC-MP-010 | 对话输入框 | 推理/非推理模型各一 | - | mock | 打开会话查看切换器 | 推理模型显示切换器且选项与接口返回一致；非推理不显示；页面无 console error/pageerror/requestfailed（B3 冒烟） |
-| E-MP-007 | AC-MP-011/012 | 对话输入框 | 多会话 | 会话1切 high + 新建会话 | mock | 会话1切级别→下一轮对话；新建会话 | 会话1下一轮按 high 发送且进行中回复不被中断；新会话继承全局默认；会话2 不受影响；无多余 toast |
+| E-MP-007 | AC-MP-011/012 | 对话输入框 | 多会话 | 会话1切 high + 新建会话 | mock | 会话1切级别→下一轮对话；新建会话（草稿态显示切换器并回显全局默认）→发送 | 会话1下一轮按 high 发送且进行中回复不被中断；草稿态回显全局默认且随会话创建写入；新会话继承全局默认；会话2 不受影响；无多余 toast |
 | E-MP-008 | AC-MP-014 | 对话输入框 | 模型支持 max | 切 max / 切 high | visual | 切 max → 观察输入框；切回 high | 金色流光动画约 2-3s 出现并消失；其他级别无动画、无 toast；关键元素可见（B1 内容正确性） |
 | E-MP-006v | AC-MP-020/021/022 | 设置页 | 已配模型 | 勾选/取消「支持图片输入」 | mock（写真实 models.json 文件） | 勾选→保存；取消→保存；编辑回显；列表标签 | 保存后 models.json 首模型 input:["text","image"]；取消后字段移除；回显勾选一致；列表显示「多模态」；页面无 console error（B3 冒烟） |
 | E-MP-009 | AC-MP-023/024/025/027 | 设置页+对话输入框 | 已配推理模型 | 勾选/取消思考强度；勾选 off/high/max | mock（写真实 models.json 文件） | 勾选→保存；取消→保存；编辑回显；打开对话框切换器 | 保存后 models.json 首模型 reasoning:true + thinkingLevelMap（选中=级别名，未选=null）；取消后 reasoning:false 且 map 移除；回显一致；对话框切换器可选挡位与白名单一致（未选挡位不出现）；页面无 console error（B3 冒烟） |

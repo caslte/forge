@@ -275,13 +275,16 @@ function onStatus(payload: unknown): void {
   const p = payload as { sessionId: string; status: string };
   if (p.sessionId !== props.sessionId) return;
   if (p.status === 'streaming') isStreaming.value = true;
-  else if (['done', 'idle', 'canceled', 'error'].includes(p.status)) isStreaming.value = false;
+  else if (['done', 'idle', 'canceled', 'error'].includes(p.status)) {
+    isStreaming.value = false;
+    if (p.status !== 'error') errorMsg.value = null; // 重试提示在轮次正常结束时消失
+  }
 }
 
 function onError(payload: unknown): void {
   const p = payload as { sessionId: string; code?: number; message?: string };
   if (p.sessionId !== props.sessionId) return;
-  isStreaming.value = false;
+  // 同 ConversationView：终态由 status 事件收尾；本事件还承载自动重试提示（轮次仍在 streaming）
   errorMsg.value = p.message ?? `对话错误（${p.code ?? 'unknown'}）`;
 }
 

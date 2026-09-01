@@ -135,6 +135,10 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // conversation（03）：先声明 conversationApi 以便 onStatusChange 闭包引用，
   // createConversationApi 返回后赋值（闭包执行时已初始化）
   let conversationApi: ReturnType<typeof createConversationApi>;
+  // 自动重试恢复标记：adapter onAutoRetryStart 置位，onStatusChange('streaming') 消费。
+  // 区分「重试恢复的 streaming」（主轮仍在进行，不得重置 done 门控）与「新发送的
+  // streaming」（照常 notifyMainTurnStart）。非 streaming 状态统一清理防标记泄漏到下一轮。
+  const retryRestorePending = new Set<string>();
   const piAgentSessionFactory =
     deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir: deps.piAgentDir });
   // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件（agentDir/sessions/<cwd>/forge-<id>.jsonl）
@@ -312,7 +316,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       // 选在 onStatusChange('streaming') 而非 sendMessage RPC 入口重置：被校验
       // 拒绝的发送（如流式中重复发送 1001）不会误清仍在等待中的门控。
       if (status === 'streaming') {
-        subagentService.notifyMainTurnStart(sid);
+        // 自动重试恢复的 streaming 不走 notifyMainTurnStart：主轮仍在进行，重置会
+        // 清掉未终态子 agent 记录（removeActive），done 门控计数提前归零会提前发 done
+        if (!retryRestorePending.delete(sid)) {
+          subagentService.notifyMainTurnStart(sid);
+        }
+      } else {
+        retryRestorePending.delete(sid);
       }
       conversationApi.pushStatus(sid, status);
       // 会话树状态圆点数据源：conversation 状态流转同步到 session 运行时表
@@ -362,6 +372,19 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       pokeMainTurnActivity(sessionId);
       conversationService.setStatus(sessionId, 'error');
       conversationApi.emitError(sessionId, 5000, error?.message ?? '对话处理失败');
+    },
+    onAutoRetryStart: (sessionId, info) => {
+      pokeMainTurnActivity(sessionId); // 重试等待期也是会话活动，刷新看门狗
+      // 先恢复 streaming（红点回进行中、composer 恢复、取消/重复发送门禁重新生效；
+      // pi 的 abort() 会连带取消挂起重试，停止按钮全程有效），再推提示条：
+      // status 事件不清提示条，顺序不能反
+      retryRestorePending.add(sessionId);
+      conversationService.setStatus(sessionId, 'streaming');
+      conversationApi.emitError(
+        sessionId,
+        5000,
+        `模型连接中断，正在自动重试（第 ${info.attempt}/${info.maxAttempts} 次）…`,
+      );
     },
     onToolStarted: (sessionId, event) => {
       pokeMainTurnActivity(sessionId);

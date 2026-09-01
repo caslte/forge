@@ -1,5 +1,32 @@
 # 变更日志
 
+## v3.12 (草稿态思考级别切换器：新建会话即可见可选，级别随会话创建写入)
+
+- 用户反馈：新建会话时输入框模型选择旁无思考级别切换器，发送首条消息后才出现。
+- 根因（`InstructionInput.vue`）：`loadThinkingState` 要求 `sessionId` 与 `currentModel` 同时存在，草稿态（新会话未创建）无 sessionId → 切换器隐藏。而级别列表只依赖模型（`model/getModelThinkingLevels` 不需要会话），草稿的生效模型（全局默认）是可用的。
+- 修复：
+  - `forge-core`：`model/getSessionThinkingLevel` 的 `sessionId` 改为可选（`modelService.getSessionThinkingLevel(sessionId: string | null)`；RPC 层缺省时传 null）——缺省直接查全局默认（`effective: "global"`），供草稿态回显「新会话将继承的级别」；显式空串/非法值仍 1001，未知会话仍 1002。
+  - `forge-ui`：`loadThinkingState` 拆分守卫——级别列表仅需 `currentModel`；级别回显草稿态传空参查全局默认，有会话则查会话。
+  - 草稿态所选级别不丢失：`selectLevel` 在草稿态仅本地记录（原逻辑），`ConversationView.onSend` 草稿分支创建会话后、`session-created` 事件前先 `setSessionThinkingLevel` 落库（与既有 draftModel 写入对称）——保证首条消息按输入框所示级别发送，且先写后 emit 避免与输入框对 sid 的级别查询竞态。`InstructionInput` 经 `defineExpose` 暴露 `currentLevel`。
+- 测试：core 新增 `sessionId=null` 查全局默认（service 层）与 `{}` 缺省 sessionId（RPC 层，含空串 1001）用例；E2E TLEVEL-E2E-002 草稿态断言改为「切换器可见 + 回显全局默认 + flush 调用断言」，种子 `getModelThinkingLevels` 对未列入映射的已配模型回退推理级别（修 boot 期 queryModels 未 seed 的全局默认模型无级别问题）。全量：core 311、desktop 141、UI e2e 46 全过；core/desktop/UI typecheck 通过。
+- 文档同步：`docs/api/05_model.md` §9 sessionId 改可选；`docs/test/05_model/coverage-matrix.md` A-MP-013 补草稿态用例、E-MP-007 操作/断言同步。
+
+## v3.11 (消息正文块间距统一：修复 pre-wrap 把 markdown 标签间换行渲染成隐形空行)
+
+- 用户需求：对话正文的行距/块间距忽宽忽窄（截图反馈：段落↔标题、列表项、文字卡↔工具条间隙不一致）。
+- 根因（无头 Chromium + 真实 renderMarkdown 实测复现，脚本 `prototypes/spacing-repro/`）：`MessageCard.vue` 的 `.msg-content` 带 `white-space: pre-wrap`（本为用户消息纯文本保留换行），但 assistant 消息走 marked 渲染，输出的 HTML 标签间带 `\n`（`</p>\n<h2>`、`</li>\n<li>`、结尾 `\n`），pre-wrap 把这些排版换行渲染成 ~21px 隐形空行：块间 6px 外边距被撑到 25~27px、列表项间 10px（ul 的 `line-height:10px` 压小了空行）、消息尾部多 27px；文字卡↔工具条视觉间隙 45px vs 18px 不对称。
+- 修复（均在 `MessageCard.vue`）：① `pre-wrap` 只作用于纯文本消息（user/system/tool），markdown 消息用 normal（breaks:true 已把段内换行转 `<br>`，段内换行不受影响）；② 删除 ul/ol 的 `line-height:10px` 与 `margin-block-end:4px` 覆盖；③ 标题 `margin-block-start:18px`（首块除外，外边距塌陷后标题上方实际 18px）；④ 首块无顶边距、末块无底边距（消息内部不拖空隙）；⑤ 密度校准：基础块间距 6px→**12px**（修复 bug 后用户反馈历史消息过密：同条消息 1077px→614px，密度近翻倍；用会话 JSONL 里的真实历史消息实测后定 12px 档，代码块/表格 margin 同步 12px）。
+- 修复后实测（含代码块/表格全场景）：块间 12px / 标题上 18px / 列表项 0（行距即行高）/ 尾部 0px / 文字卡↔工具条上下均 18px 对称；历史消息总高 1077→714px。
+- 验证：forge-ui + forge-core 310 测试全过，`vue-tsc` typecheck 通过；复现/验证脚本在 `prototypes/spacing-repro/`（`repro.mjs` 根因对比、`compare-styles.mjs` 三档密度对比+截图、`verify-final.mjs` 终版全场景）。
+
+## v3.10 (图片展示优化：输入框纯缩略图 + 对话框正方形图 + 弹窗看原图)
+
+- 用户需求：①输入框图片附件不再「缩略图+文件名」胶囊，只留固定缩略图；②消息图片固定正方形；③点击放大改为全屏弹窗看原图（取消原气泡内 zoomed class 放大缩小），弹窗支持滚轮缩放。
+- 新增共用组件 `ImageLightbox.vue`：全屏遮罩 + 居中原图（初始 fit 屏幕内），滚轮缩放 1x~8x（以光标位置为中心，缩回 1x 自动复位居中），Esc / 点击遮罩关闭；单窗口/多窗口共用（经 MessageCard）。
+- `MessageCard.vue`：消息图片改 120px 正方形缩略图（object-fit: cover，多图横排 wrap），点击开弹窗；删除原 `zoomedImage`/`toggleZoom` 气泡内放大逻辑。
+- `InstructionInput.vue`：图片附件改 64px 正方形缩略图卡片（无文件名，hover 右上角浮 × 移除），点击开弹窗预览；文本等其他附件胶囊 chip（icon+文件名）保持不变。
+- 验证：forge-ui `vue-tsc` typecheck 通过。
+
 ## v3.9 (CV-S07 上下文压缩：自动压缩可感知 + 手动压缩反馈修复)
 
 - 背景：检查上下文压缩功能时发现链路「通但不可用」——单测全绿却未覆盖压缩的真实行为。

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed } from 'vue';
 import type { ConversationMessage } from '../types';
-import { renderMarkdown, renderMarkdownPartial } from '@forge/core/markdown';
+import { renderMarkdown, hasOpenFence } from '@forge/core/markdown';
 import MermaidBlock from './MermaidBlock.vue';
+import ImageLightbox from './ImageLightbox.vue';
 
 const props = defineProps<{
   message: ConversationMessage;
@@ -36,18 +37,17 @@ async function copy(): Promise<void> {
 }
 
 /**
- * 安全 Markdown 渲染（P2-B）：
- * - 流式期间用增量渲染（低成本：仅转义 + 行内 code + 粗体，避免半截代码块闪动）
- * - 流式结束后完整格式化（marked + hljs 高亮 + sanitize-html 白名单，mermaid 块留占位）
+ * Markdown 安全渲染（P2-B）：流式与结束后统一用完整渲染（marked + hljs + sanitize 白名单），
+ * 保证两种状态样式一致（此前流式用简化渲染导致紧凑/正常样式跳变）。
+ * ponytail: 每 chunk 全量解析，长文+多代码块若流式卡顿再上节流（100ms 重渲染一次）。
  */
-const mdReady = computed(() => !props.streaming);
 const renderedContent = computed(() => {
   const raw = props.message.content;
   if (isUser.value || isSystem.value || isTool.value) {
     // 用户/系统/工具消息保持纯文本渲染（无 markdown 语义，避免误伤）
     return escapeHtml(raw);
   }
-  return mdReady.value ? renderMarkdown(raw) : renderMarkdownPartial(raw);
+  return renderMarkdown(raw);
 });
 
 /** 纯文本转义（用户消息等不使用 markdown 渲染） */
@@ -66,32 +66,33 @@ const imageSrcs = computed(() =>
   ),
 );
 
-/** 图片点击放大态：当前放大的图片索引（null 为未放大） */
-const zoomedImage = ref<number | null>(null);
-
-/** 点击图片切换放大/还原 */
-function toggleZoom(i: number): void {
-  zoomedImage.value = zoomedImage.value === i ? null : i;
-}
+/** 当前弹窗查看的图片 data URL（null = 关闭）；点缩略图开弹窗，不在气泡内放大 */
+const lightboxSrc = ref<string | null>(null);
 
 /** 从渲染好的 HTML 中提取 mermaid 占位，并把占位 pre 从正文中摘除（MermaidBlock 列表单独渲染） */
 const mermaidBlocks = computed<{ key: string; encoded: string }[]>(() => {
   const blocks: { key: string; encoded: string }[] = [];
-  if (mdReady.value) {
-    const re = /data-md-mermaid="([^"]+)"/g;
-    let m: RegExpExecArray | null;
-    let i = 0;
-    while ((m = re.exec(renderedContent.value)) !== null) {
-      blocks.push({ key: `${i++}-${m[1]?.slice(0, 8) ?? ''}`, encoded: m[1] ?? '' });
-    }
+  const re = /data-md-mermaid="([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = re.exec(renderedContent.value)) !== null) {
+    blocks.push({ key: `${i++}-${m[1]?.slice(0, 8) ?? ''}`, encoded: m[1] ?? '' });
   }
+  // 末围栏未闭合（流式中 mermaid 只写了一半）：末块先不渲染图表，避免半截源码反复渲染失败报错闪现
+  if (hasOpenFence(props.message.content) && blocks.length > 0) blocks.pop();
   return blocks;
 });
 
 /** 正文 HTML：摘除 mermaid 占位 pre（原占位含 base64 源码，避免泄漏到文本区） */
-const bodyHtml = computed(() =>
-  renderedContent.value.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, ''),
-);
+const bodyHtml = computed(() => {
+  const html = renderedContent.value;
+  // 末围栏未闭合时保留最后一个占位 pre（含转义源码，按普通代码块展示），其余照常摘除
+  const keepLast = hasOpenFence(props.message.content);
+  const lastIdx = keepLast ? html.lastIndexOf('<pre class="md-mermaid-wrap">') : -1;
+  return html.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, (match, offset: number) =>
+    keepLast && offset === lastIdx ? match : '',
+  );
+});
 
 const timeLabel = computed(() => {
   try {
@@ -102,28 +103,24 @@ const timeLabel = computed(() => {
   }
 });
 
-// 流式结束时触发一次完整格式化（content 变化且不再 streaming）
-watch(mdReady, (ready) => {
-  if (ready) void nextTick();
-});
 </script>
 
 <template>
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
     <div class="msg-bubble">
       <div class="msg-content" v-html="bodyHtml"></div>
-      <!-- 消息附带图片（P3-B：用户粘贴截图/上传，点击放大） -->
+      <!-- 消息附带图片（P3-B）：固定正方形缩略图，点击弹窗看原图 -->
       <div v-if="imageSrcs.length > 0" class="msg-images">
         <img
           v-for="(src, i) in imageSrcs"
           :key="i"
           :src="src"
-          :class="{ zoomed: zoomedImage === i }"
           class="msg-image"
           alt=""
-          @click="toggleZoom(i)"
+          @click="lightboxSrc = src"
         />
       </div>
+      <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
       <!-- 多模态门控：当前模型不支持图片输入，附件已跳过未发送 -->
       <div v-if="isUser && message.imageSkipped" class="msg-image-skipped">
         图片未发送：当前模型不支持图片输入
@@ -188,9 +185,17 @@ watch(mdReady, (ready) => {
   font-size: 14px;
   line-height: 1.5;
   color: var(--foreground);
-  white-space: pre-wrap;
   word-break: break-word;
   user-select: text; /* 对话内容允许鼠标选择 */
+}
+
+/* 纯文本消息（用户/系统/工具）保留手打换行。markdown 消息绝不能 pre-wrap：
+   marked 输出的 HTML 标签间带 \n（</p>\n<h2>、结尾 \n），pre-wrap 会把它们
+   渲染成 ~21px 隐形空行，导致块间距忽宽忽窄（实测 6px 外边距被撑到 25~27px） */
+.msg-user .msg-content,
+.msg-system .msg-content,
+.msg-tool .msg-content {
+  white-space: pre-wrap;
 }
 
 /* 消息附带图片（P3-B）：缩略图网格，点击放大 */
@@ -222,20 +227,15 @@ watch(mdReady, (ready) => {
   text-align: right;
 }
 
+/* 消息图片：固定 120px 正方形缩略图（cover 裁剪填满），点击弹窗看原图 */
 .msg-image {
-  max-width: 240px;
-  max-height: 180px;
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
   border-radius: 10px;
   border: 1px solid var(--border);
-  object-fit: contain;
   cursor: zoom-in;
-  transition: transform var(--transition-fast);
-}
-
-.msg-image.zoomed {
-  max-width: min(560px, 100%);
-  max-height: 420px;
-  cursor: zoom-out;
+  user-select: none;
 }
 
 .msg-footer {
@@ -305,7 +305,7 @@ watch(mdReady, (ready) => {
 .msg-content :deep(ol),
 .msg-content :deep(table) {
   margin: 0;
-  margin-block-end: 6px;
+  margin-block-end: 12px;
 }
 
 .msg-content :deep(.md-code-block) {
@@ -313,7 +313,7 @@ watch(mdReady, (ready) => {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 10px 12px;
-  margin: 6px 0;
+  margin: 12px 0;
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -333,8 +333,26 @@ watch(mdReady, (ready) => {
 .msg-content :deep(ol) {
   padding-left: 0;
   list-style-position: inside;
-  margin-block-end: 4px;
-  line-height: 10px;
+}
+
+/* 标题上方留白（块间外边距塌陷取 max，标题上实际 18px）；首块不另加顶部空隙 */
+.msg-content :deep(h1),
+.msg-content :deep(h2),
+.msg-content :deep(h3),
+.msg-content :deep(h4),
+.msg-content :deep(h5),
+.msg-content :deep(h6) {
+  margin-block-start: 18px;
+}
+
+/* 首块无顶部外边距、末块无底部外边距：消息内部上下不拖空隙，
+   文字卡与工具条上下间隙对称（均为 flex gap 16px + .msg padding 2px） */
+.msg-content :deep(:first-child) {
+  margin-block-start: 0;
+}
+
+.msg-content :deep(:last-child) {
+  margin-block-end: 0;
 }
 
 .msg-content :deep(li) {
@@ -370,7 +388,7 @@ watch(mdReady, (ready) => {
 /* Markdown 表格 */
 .msg-content :deep(table) {
   border-collapse: collapse;
-  margin: 6px 0;
+  margin: 12px 0;
   font-size: 13px;
   line-height: 1.45;
   display: block;

@@ -8,8 +8,8 @@
  *   - 危险协议链接：javascript:/data:/vbscript: 等 href/src 被清除。
  * - mermaid 块：语言为 mermaid 时输出带 `data-md-mermaid` 的占位 div（源码经 base64 编码），
  *   前端扫描该标记后异步渲染为图表（渲染失败时该 div 内已含转义原文，直接可读）。
- * - 增量渲染：renderMarkdownPartial 用于流式期间的低成本渲染（仅转义 + 行内 code + 粗体，
- *   不解析块级结构，避免半截代码块闪烁）；消息结束后用 renderMarkdown 完整格式化一次。
+ * - 统一渲染：流式与结束后均用本函数完整渲染，保证两种状态样式一致
+ *   （曾用流式简化渲染导致紧凑/正常样式跳变，已移除）。
  *
  * 纯 Node 模块：不 import Electron / Vue / pi，可在 node:test 下直接回归（含 XSS 用例）。
  */
@@ -155,21 +155,19 @@ function sanitizeClass(cls: string | undefined): string | undefined {
 }
 
 /**
- * 增量渲染（流式期间）：仅转义 + 行内 code + 粗体，不做块级结构解析。
- * 避免半截代码块/列表在流式过程中闪动；结束后调用 renderMarkdown 完整格式化。
- */
-export function renderMarkdownPartial(source: string): string {
-  let html = htmlEscape(source ?? '');
-  html = html.replace(/`([^`\n]+)`/g, '<code class="md-inline-code">$1</code>');
-  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  return html;
-}
-
-/**
  * 校验字符串是否为可安全渲染的 mermaid 源码（前端渲染前粗校验，防止奇形输入）。
  * 失败不阻止显示原文，仅影响是否尝试渲染图表。
  */
 export function looksLikeMermaid(source: string): boolean {
   const s = (source ?? '').trim();
   return s.length > 0 && s.length <= 8192;
+}
+
+/**
+ * 围栏是否未闭合（``` 计数为奇数）：未闭合围栏会吞到文末，故末块必是未闭合的那个。
+ * 流式期间用于：末尾 mermaid 块先按源码展示，闭合后再渲染图表，避免半截源码反复渲染失败。
+ * ponytail: 按计数奇偶判断，正文里出现行内三反引号（非围栏）会误判，聊天场景罕见，可接受。
+ */
+export function hasOpenFence(source: string): boolean {
+  return ((source ?? '').match(/```/g)?.length ?? 0) % 2 === 1;
 }

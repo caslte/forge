@@ -84,9 +84,18 @@ async function applySeeds(
       window.__forgeMock!.seed('model/getModelThinkingLevels', (p) => ({
         code: 0,
         message: 'ok',
-        data: { levels: levelsByModel[String(p.model)] ?? ['off'] },
+        // 未列入映射的已配模型（如 boot 期未 seed 时 queryModels 返回的全局默认模型）按推理模型处理
+        data: { levels: levelsByModel[String(p.model)] ?? (lvReason as string[]) },
       }));
       window.__forgeMock!.seed('model/getSessionThinkingLevel', (p) => {
+        // 草稿态（新会话未创建）：无 sessionId，直接返回全局默认（新会话继承全局）
+        if (p.sessionId === undefined) {
+          return {
+            code: 0,
+            message: 'ok',
+            data: { level: state.global, effective: 'global' },
+          };
+        }
         const sid = String(p.sessionId);
         const stored = state.stored[sid];
         return {
@@ -198,15 +207,20 @@ test('TLEVEL-E2E-002 @P0 @mock-backend E-MP-007：切换提交参数、新会话
   await expect(page.locator('.level-wrap .meta-link')).toContainText('low');
 
   // 新会话（无存储值）继承全局默认：会话一切到 high 已同步全局 → 新会话默认 high。
-  // 草稿输入态尚未创建会话（level 切换器不渲染）；发送首条消息后才创建会话并回显全局默认。
+  // 草稿态：切换器已渲染（无 sessionId，查询全局默认回显）；发送首条消息才真正创建会话。
   await page.locator('.app-toolbar-btn', { hasText: '新会话' }).click();
-  // 草稿态：输入区出现，会话未真正创建，level 切换器暂不渲染
   await expect(page.locator('.compose-box')).toBeVisible();
-  await expect(page.locator('.level-wrap')).toHaveCount(0);
-  // 发送首条消息：此刻真正创建会话，新会话继承全局默认 high
+  await expect(page.locator('.level-wrap .meta-link')).toContainText('high');
+  // 发送首条消息：此刻真正创建会话，草稿态回显的全局默认级别随会话创建写入（flush），
+  // 首条消息即按所示级别发送；新会话继承全局默认 high
   await page.locator('.compose-input').fill('测试继承全局级别');
   await page.locator('.compose-input').press('Enter');
   await expect(page.locator('.level-wrap .meta-link')).toContainText('high');
+  // flush 断言：setSessionThinkingLevel 被新会话调用且 level = high
+  await page.waitForFunction(() => (window.__tlCalls?.length ?? 0) >= 2);
+  const draftFlush = (await page.evaluate(() => window.__tlCalls))![1]!;
+  expect(draftFlush.level).toBe('high');
+  expect(draftFlush.sessionId).not.toBe(s1.sessionId);
 
   health.assertHealthy();
 });

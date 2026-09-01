@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel } from '../types';
 import { call, subscribe, type AttachmentFile, type ConversationCompactResult } from '../bridge';
+import ImageLightbox from './ImageLightbox.vue';
 
 /**
  * 指令输入框。
@@ -348,6 +349,14 @@ function removeAttachment(index: number): void {
   attachments.value = attachments.value.filter((_, i) => i !== index);
 }
 
+/** 图片附件 data URL（缩略图与弹窗预览共用） */
+function imageDataUrl(att: AttachmentFile): string {
+  return `data:${att.mimeType ?? 'image/png'};base64,${att.data}`;
+}
+
+/** 待发图片预览弹窗（点击缩略图打开，null = 关闭） */
+const lightboxSrc = ref<string | null>(null);
+
 function showAttachError(msg: string): void {
   attachError.value = msg;
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
@@ -378,11 +387,13 @@ function selectModel(m: string): void {
  * 加载当前会话的思考级别状态：
  * - model/getModelThinkingLevels 得可用级别（失败 → 隐藏切换器，降级不阻塞输入）
  * - model/getSessionThinkingLevel 得当前生效级别（失败仅降级回显，不隐藏切换器）
- * 仅当 sessionId 与 currentModel 都存在时才查询（缺少任一回退空态）。
+ * 草稿态（新会话未创建，sessionId 缺省）同样渲染切换器：级别列表只依赖模型
+ * （草稿用全局默认模型）；级别回显传空参查全局默认（新会话继承全局，TD-MP-05）。
+ * 仅当 currentModel 不存在时回退空态。
  */
 async function loadThinkingState(): Promise<void> {
   const gen = ++tlGen;
-  if (!props.sessionId || !props.currentModel) {
+  if (!props.currentModel) {
     availableLevels.value = [];
     currentLevel.value = null;
     return;
@@ -401,9 +412,11 @@ async function loadThinkingState(): Promise<void> {
     return;
   }
   try {
-    const res = await call<SessionThinkingLevel>('model/getSessionThinkingLevel', {
-      sessionId: props.sessionId,
-    });
+    // 草稿态无 sessionId：传空参查全局默认（后端语义见 docs/api/05_model.md §9）
+    const res = await call<SessionThinkingLevel>(
+      'model/getSessionThinkingLevel',
+      props.sessionId ? { sessionId: props.sessionId } : {},
+    );
     if (gen !== tlGen) return;
     currentLevel.value = res.level ?? null;
   } catch (e) {
@@ -442,14 +455,15 @@ function triggerShimmer(): void {
   });
 }
 
-/** 选择思考级别：乐观更新本地 + 写当前会话（同步全局默认由后端处理）；切换 max 触发金色流光动画 */
+/** 选择思考级别：乐观更新本地 + 写当前会话（同步全局默认由后端处理）；
+ *  草稿态（无 sessionId）仅本地记录，随会话创建由 ConversationView 落库（见其草稿发送分支）；切换 max 触发金色流光动画 */
 function selectLevel(level: ThinkingLevel): void {
   levelMenuOpen.value = false;
   const prev = currentLevel.value;
   if (level === prev) return;
   currentLevel.value = level; // 乐观更新，不弹 toast
   if (level === 'max') triggerShimmer();
-  if (!props.sessionId) return;
+  if (!props.sessionId) return; // 草稿态：无会话可写，留给发送时随会话创建落库
   call('model/setSessionThinkingLevel', { sessionId: props.sessionId, level }).catch((e) => {
     console.warn('[thinkingLevel] 切换思考级别失败（静默降级）', e);
   });
@@ -469,7 +483,8 @@ function focus(): void {
   textareaRef.value?.focus();
 }
 
-defineExpose({ focus });
+// currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
+defineExpose({ focus, currentLevel });
 
 /** 压缩完成事件订阅（自动压缩后刷新用量显示） */
 let unsubCompacted: (() => void) | null = null;
@@ -547,33 +562,47 @@ watch(
     <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
       <span class="max-text">M A X</span>
     </div>
-    <!-- 附件待发区（P3-B：选择/粘贴/拖入后展示，可移除） -->
+    <!-- 附件待发区（P3-B：选择/粘贴/拖入后展示，可移除）：
+         图片 = 固定正方形缩略图（无文件名，点击弹窗预览，× 悬浮右上角）；
+         文本等其他类型 = 胶囊 chip（icon + 文件名） -->
     <div ref="attachRowRef" class="attach-row">
-      <div v-for="(att, i) in attachments" :key="att.path + i" class="attach-chip">
-        <span
-          v-if="att.kind === 'image' && att.data"
-          class="attach-thumb"
-          :style="{ backgroundImage: `url(data:${att.mimeType ?? 'image/png'};base64,${att.data})` }"
-        ></span>
-        <span v-else class="attach-icon">
-          <svg v-if="att.kind === 'image'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <circle cx="8.5" cy="8.5" r="1.5" />
-            <polyline points="21 15 16 10 5 21" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-          </svg>
-        </span>
-        <span class="attach-name" :title="att.path">{{ att.name }}</span>
-        <button class="attach-remove" title="移除附件" @click="removeAttachment(i)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
+      <template v-for="(att, i) in attachments" :key="att.path + i">
+        <div v-if="att.kind === 'image' && att.data" class="attach-image" :title="att.name">
+          <img
+            class="attach-image-img"
+            :src="imageDataUrl(att)"
+            alt=""
+            draggable="false"
+            @click="lightboxSrc = imageDataUrl(att)"
+          />
+          <button class="attach-remove" title="移除附件" @click.stop="removeAttachment(i)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div v-else class="attach-chip">
+          <span class="attach-icon">
+            <svg v-if="att.kind === 'image'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+          </span>
+          <span class="attach-name" :title="att.path">{{ att.name }}</span>
+          <button class="attach-remove" title="移除附件" @click="removeAttachment(i)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      </template>
       <div v-if="attachError" class="attach-error">{{ attachError }}</div>
     </div>
 
@@ -710,6 +739,9 @@ watch(
         </button>
       </div>
     </div>
+
+    <!-- 图片预览弹窗（待发缩略图点击打开，滚轮缩放，Esc/点遮罩关闭） -->
+    <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
   </div>
 </template>
 
@@ -785,16 +817,46 @@ watch(
   flex-shrink: 0;
 }
 
-/* 图片附件缩略图：base64 直接渲染，直观确认粘贴/拖入的截图内容 */
-.attach-thumb {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background-size: cover;
-  background-position: center;
-  background-color: var(--muted);
+/* 图片附件：固定 64px 正方形缩略图卡片，无文件名；点击弹窗预览，× 悬浮右上角（hover 显示） */
+.attach-image {
+  position: relative;
+  width: 64px;
+  height: 64px;
   border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
   flex-shrink: 0;
+}
+
+.attach-image-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: zoom-in;
+  user-select: none;
+}
+
+.attach-image .attach-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  background: color-mix(in oklab, var(--background) 75%, transparent);
+  color: var(--foreground);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.attach-image:hover .attach-remove,
+.attach-image .attach-remove:focus-visible {
+  opacity: 1;
+}
+
+.attach-image .attach-remove:hover {
+  color: var(--destructive);
+  background: color-mix(in oklab, var(--destructive) 18%, var(--background));
 }
 
 .attach-icon svg {

@@ -1165,3 +1165,86 @@ test('conversation/compact 会话不存在返回 1002，不抛异常', async () 
 });
 
 
+
+// ===== 自动重试状态同步（可重试错误如 network_error：pi 内部自动重试，轮次未终止）=====
+
+/** 向 fake 会话的订阅者广播原始 pi 事件（DeferredPiSession.listeners 为公开只读集合） */
+function emitRaw(session: DeferredPiSession, event: Record<string, unknown>): void {
+  for (const listener of session.listeners) {
+    listener(event as never);
+  }
+}
+
+test('自动重试恢复：可重试错误后 auto_retry_start 恢复 streaming，轮次正常 done', async () => {
+  const fx = await makeGateFixture();
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+    const sending = invoke(fx.methodTable, 'conversation/sendMessage', {
+      sessionId: fx.sessionId,
+      content: '研究一下',
+    });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const session = fx.sessions.get(fx.sessionId)!;
+
+    // ① 中途可重试错误（pi 真实形态：message_end + stopReason=error）→ error 状态
+    emitRaw(session, {
+      type: 'message_end',
+      message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Provider finish_reason: network_error' },
+    });
+    // ② pi 决定自动重试 → 状态应恢复 streaming
+    emitRaw(session, { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, errorMessage: 'Provider finish_reason: network_error' });
+    // ③ 重试成功，轮次正常结束
+    session.finish('恢复后的回答');
+    await sending;
+
+    const seq = statuses.filter((e) => e.sessionId === fx.sessionId).map((e) => e.status);
+    assert.ok(seq.includes('error'), `错误状态应出现，实际: ${JSON.stringify(seq)}`);
+    assert.ok(
+      seq.indexOf('streaming', seq.indexOf('error') + 1) > -1,
+      `error 后应恢复 streaming（红点回进行中），实际: ${JSON.stringify(seq)}`,
+    );
+    const doneEvents = seq.filter((s) => s === 'done');
+    assert.equal(doneEvents.length, 1, `恢复的轮次应正常 done 恰好一次（不被 errorEmittedThisTurn 短路），实际: ${JSON.stringify(seq)}`);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('自动重试耗尽：auto_retry_end(success=false) 后进入终态 error，不卡 streaming', async () => {
+  const fx = await makeGateFixture();
+  try {
+    const statuses: Array<{ sessionId: string; status: string }> = [];
+    fx.eventBus.on('conversation.statusChanged', (p: unknown) =>
+      statuses.push(p as { sessionId: string; status: string }),
+    );
+    const sending = invoke(fx.methodTable, 'conversation/sendMessage', {
+      sessionId: fx.sessionId,
+      content: '长任务',
+    });
+    for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const session = fx.sessions.get(fx.sessionId)!;
+
+    // ① 错误 → ② 重试启动（状态恢复 streaming）→ ③ 重试耗尽 → 轮次以错误终止
+    emitRaw(session, {
+      type: 'message_end',
+      message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Provider finish_reason: network_error' },
+    });
+    emitRaw(session, { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, errorMessage: 'Provider finish_reason: network_error' });
+    emitRaw(session, { type: 'auto_retry_end', success: false, attempt: 1, finalError: 'Provider finish_reason: network_error' });
+    session.finish(''); // 无正文：仅结束 prompt（错误轮次不产生助手消息）
+    await sending;
+
+    const seq = statuses.filter((e) => e.sessionId === fx.sessionId).map((e) => e.status);
+    assert.equal(seq[seq.length - 1], 'error', `重试耗尽应终态 error（不能卡 streaming），实际: ${JSON.stringify(seq)}`);
+    assert.ok(!seq.includes('done'), `错误轮次不应发 done，实际: ${JSON.stringify(seq)}`);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});

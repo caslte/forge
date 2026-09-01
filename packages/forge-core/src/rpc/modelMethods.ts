@@ -321,8 +321,11 @@ export class ModelApi {
     return this.call('getModelThinkingLevels', () => this.service.getModelThinkingLevels(model));
   }
 
-  /** model/getSessionThinkingLevel：查询会话当前生效思考级别（MP-S05），未知会话由服务层返回 1002 */
+  /** model/getSessionThinkingLevel：查询会话当前生效思考级别（MP-S05）；sessionId 缺省时查全局默认（草稿态，新会话继承全局），未知会话由服务层返回 1002 */
   private getSessionThinkingLevel(params: unknown): Promise<RpcResult> {
+    if (!isRecord(params) || params.sessionId === undefined) {
+      return this.call('getSessionThinkingLevel', () => this.service.getSessionThinkingLevel(null));
+    }
     const sessionId = requireString(params, 'sessionId');
     if (sessionId === null) {
       return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));

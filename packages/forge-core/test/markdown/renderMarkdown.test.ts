@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderMarkdown, renderMarkdownPartial, looksLikeMermaid } from '../../src/markdown/renderMarkdown.ts';
+import { renderMarkdown, looksLikeMermaid, hasOpenFence } from '../../src/markdown/renderMarkdown.ts';
 
 test('常见 Markdown 结构正确渲染', () => {
   const html = renderMarkdown('# 标题\n\n**加粗** *斜体* `行内码`\n\n- 列表项\n- 第二项\n\n> 引用');
@@ -90,23 +90,29 @@ test('空输入安全', () => {
   assert.ok(renderMarkdown('') !== '<script>');
 });
 
-test('增量渲染：流式片段只转义与行内格式', () => {
-  const html = renderMarkdownPartial('半截代码块 ```js\nconst a =');
-  assert.doesNotMatch(html, /<pre/);
-  assert.match(html, /```js/);
+test('流式片段（半截代码块）走完整渲染，样式与结束后一致', () => {
+  // 未闭合围栏解析为到末尾的代码块，不崩溃、安全转义，且与最终渲染同一套输出
+  const html = renderMarkdown('前文\n\n```js\nconst a =');
+  assert.match(html, /<pre class="md-code-block"/);
+  assert.match(html, /language-js/);
+  assert.match(html, /a =/);
   assert.doesNotMatch(html, /<script/i);
-});
-
-test('增量渲染：合法的行内 code / 加粗保留', () => {
-  const html = renderMarkdownPartial('用 `x` 表示 **重要**');
-  assert.match(html, /md-inline-code/);
-  assert.match(html, /<strong>重要<\/strong>/);
 });
 
 test('looksLikeMermaid 边界', () => {
   assert.ok(looksLikeMermaid('graph TD\n  A --> B'));
   assert.ok(!looksLikeMermaid(''));
   assert.ok(!looksLikeMermaid('x'.repeat(9000)));
+});
+
+test('hasOpenFence：围栏闭合检测（流式 mermaid 展示源码的依据）', () => {
+  assert.ok(!hasOpenFence(''));
+  assert.ok(!hasOpenFence('```js\nconst a = 1;\n```'));
+  assert.ok(hasOpenFence('```mermaid\ngraph TD\n  A --> B'));
+  // 前块已闭合 + 末块未闭合 → 5 个 ```，奇数 → 未闭合
+  assert.ok(hasOpenFence('```js\na;\n```\n\n```mermaid\ngraph TD'));
+  // 两个已闭合块 → 偶数 → 全闭合
+  assert.ok(!hasOpenFence('```js\na;\n```\n\n```py\nb;\n```'));
 });
 
 test('XSS：非 hljs/md 前缀的 class 被剥离', () => {

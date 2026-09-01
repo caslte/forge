@@ -614,6 +614,17 @@ test('getSessionThinkingLevel：未知会话返回 1002', async () => {
   }
 });
 
+test('getSessionThinkingLevel：sessionId=null 查全局默认（草稿态，新会话继承全局）', async () => {
+  const { service, store } = makeService();
+  store.setSetting('thinkingLevel', 'medium');
+  const res = await service.getSessionThinkingLevel(null);
+  assert.ok(res.ok);
+  if (res.ok) {
+    assert.equal(res.data.level, 'medium');
+    assert.equal(res.data.effective, 'global');
+  }
+});
+
 test('getSessionThinkingLevel：settings 缺失 thinkingLevel（旧数据兜底）按 off 处理', async () => {
   const { service, store } = makeService();
   // 不写入 thinkingLevel —— 模拟旧数据缺失该键

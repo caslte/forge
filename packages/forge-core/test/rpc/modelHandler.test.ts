@@ -627,7 +627,15 @@ test('getSessionThinkingLevel：会话覆盖生效；无覆盖继承全局；未
   const unknown = await api.methods['model/getSessionThinkingLevel']({ sessionId: 'nope' });
   assert.equal(unknown.code, 1002);
   assert.equal(unknown.data, null);
-  assert.equal((await api.methods['model/getSessionThinkingLevel']({})).code, 1001);
+  // sessionId 缺省（草稿态）：查全局默认；空串仍 1001
+  const global = await api.methods['model/getSessionThinkingLevel']({});
+  assert.equal(global.code, 0);
+  if (global.data !== null) {
+    const info = global.data as { level: string | null; effective: 'session' | 'global' };
+    assert.equal(info.level, 'medium');
+    assert.equal(info.effective, 'global');
+  }
+  assert.equal((await api.methods['model/getSessionThinkingLevel']({ sessionId: '' })).code, 1001);
 });
 
 test('setSessionThinkingLevel：写会话并同步全局默认；其他会话不变；错误码 1001/1002（A-MP-014）', async () => {
