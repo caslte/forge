@@ -427,7 +427,10 @@ class DeferredPiSession {
     this.pending = null;
   }
 
+  abortCalls = 0;
+
   abort(): Promise<void> {
+    this.abortCalls += 1;
     return Promise.resolve();
   }
 }
@@ -891,7 +894,7 @@ test('活跃子 agent 超时兜底（注入小窗口）到期自动发 done 且�
   }
 });
 
-test('主轮看门狗：prompt 挂起（主轮结束信号丢失）且无活动时注入窗口到期强制放行 done 恰好一次', async () => {
+test('主轮看门狗：prompt 挂起（主轮结束信号丢失）且无活动时到期真中断 pi run 并置 canceled', async () => {
   const fx = await makeGateFixture({ subagentMainTurnTimeoutMs: 120 });
   try {
     const statuses: Array<{ sessionId: string; status: string }> = [];
@@ -913,12 +916,18 @@ test('主轮看门狗：prompt 挂起（主轮结束信号丢失）且无活动�
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.ok(!statuses.some((e) => e.status === 'done'), '看门狗窗口内不应发 done');
 
-    // 窗口到期（布防起 120ms 无任何活动）强制放行 done
+    // 窗口到期（布防起 120ms 无任何活动）真中断：abort pi run + 状态置 canceled
     await new Promise((resolve) => setTimeout(resolve, 400));
-    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
-    assert.equal(doneEvents.length, 1, `看门狗应强制放行 done 恰好一次，实际: ${JSON.stringify(statuses)}`);
+    const cancelEvents = statuses.filter(
+      (e) => e.sessionId === fx.sessionId && e.status === 'canceled',
+    );
+    assert.equal(cancelEvents.length, 1, `看门狗应真中断恰好一次，实际: ${JSON.stringify(statuses)}`);
+    assert.ok(
+      fx.sessions.get(fx.sessionId)!.abortCalls >= 1,
+      '看门狗必须真正 abort pi 侧 run（不得只改 forge 状态留下僵尸轮）',
+    );
 
-    // 迟到的主轮结束（prompt 最终返回）不得重复发 done（forceDone 已标记门控收敛）
+    // 迟到的主轮结束（prompt 最终返回）照常收敛 done（恰好一次，不重复）
     fx.sessions.get(fx.sessionId)!.finish('迟到回答');
     await new Promise((resolve) => setTimeout(resolve, 50));
     const doneAfter = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
@@ -956,10 +965,13 @@ test('主轮看门狗：活动刷新窗口——窗口内持续有 delta 时不�
       `持续活动期间看门狗不应触发，实际: ${JSON.stringify(statuses)}`,
     );
 
-    // 静默超过窗口后放行
+    // 静默超过窗口后真中断（abort + canceled）
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const doneEvents = statuses.filter((e) => e.sessionId === fx.sessionId && e.status === 'done');
-    assert.equal(doneEvents.length, 1, '静默超窗后看门狗应放行恰好一次 done');
+    const cancelEvents = statuses.filter(
+      (e) => e.sessionId === fx.sessionId && e.status === 'canceled',
+    );
+    assert.equal(cancelEvents.length, 1, '静默超窗后看门狗应真中断恰好一次');
+    assert.ok(session.abortCalls >= 1, '静默超窗后必须真正 abort pi 侧 run');
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }

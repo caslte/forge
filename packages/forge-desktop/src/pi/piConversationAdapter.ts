@@ -370,10 +370,20 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+      // 撞车自愈：forge 状态已收敛但 pi run 仍挂着（如看门狗前的竞态窗口）时，
+      // prompt 会被 pi 以 "Agent is already processing" 拒绝。abort 掉僵尸轮，
+      // 会话即恢复可用，再报错提示重发。
+      if (/already processing/i.test(error.message)) {
+        try {
+          await lease.session.abort();
+        } catch {}
+      }
       // 保留 pi 原始错误的 provider 名（便于定位是哪条配置缺凭据）
-      const message = /No API key found/i.test(error.message)
-        ? `模型凭据未配置（${error.message}）：请在设置中为对应模型填写并保存 API Key 后重试`
-        : error.message;
+      const message = /already processing/i.test(error.message)
+        ? '上一轮任务仍在后台执行，已将其结束，请重新发送'
+        : /No API key found/i.test(error.message)
+          ? `模型凭据未配置（${error.message}）：请在设置中为对应模型填写并保存 API Key 后重试`
+          : error.message;
       // 若本轮已通过 handleEvent 上报过同类错误（如 message_end error），避免重复
       if (!this.errorEmittedThisTurn.has(sessionId)) {
         this.errorListeners.get(sessionId)?.({ message });

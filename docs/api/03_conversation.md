@@ -47,6 +47,10 @@
 
 响应：`data: null`。
 
+**变更**：主轮看门狗改用真中断（SA-F02 修正）：pi 侧 run 挂起且连续 30 分钟无任何会话事件（delta/消息/工具/子 agent）时，看门狗调用本接口语义执行 `session.abort()` 并置 `canceled`，保证 forge 状态与 pi 一致。此前经 forceDone 只把 forge 状态打成 `done`（假结束），pi run 仍挂着，下一次发送会被 pi 以 "Agent is already processing" 拒绝且无法自愈。
+
+**变更**：sendMessage 撞车自愈：若发送时 pi 侧仍有残留 run（返回 "Agent is already processing"），适配器先 `abort()` 结束僵尸轮再报错提示重新发送，会话不再砖化。
+
 ---
 
 ## 3. 查询历史

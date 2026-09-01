@@ -208,8 +208,10 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // pi 侧 run 生命周期异常（扩展 followUp/triggerTurn 异步续跑竞态）可能使 prompt
   // 永不 resolve，信号整体丢失且 done 门控的子 agent 兜底（依赖 notifyMainTurnEnd
   // 先到达）不会启动。看门狗在 sendMessage 期间布防：窗口内无任何会话事件活动
-  // （delta/消息/工具/子 agent）且会话仍处 streaming 时，经 forceDone 强制放行
-  // done（PRD 1.3：信号丢失不得永久卡「运行中」）。
+  // （delta/消息/工具/子 agent）且会话仍处 streaming 时，经 conversationService.cancelStream
+  // 真正 abort pi 侧 run 并置 canceled（PRD 1.3：信号丢失不得永久卡「运行中」）。
+  // 判死必须即真中断：此前经 forceDone 只把 forge 状态打成 done（假结束），pi run
+  // 仍挂着，下一次发送会被 pi 以 "Agent is already processing" 拒绝且无法自愈。
   const mainTurnWatchdogMs = deps.subagentMainTurnTimeoutMs ?? SUBAGENT_DONE_TIMEOUT_MS;
   const mainTurnLastActivity = new Map<string, number>();
   const mainTurnWatchdogs = new Map<string, ReturnType<typeof setInterval>>();
@@ -239,7 +241,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       console.warn(
         `[createForgeCore] main turn watchdog fired (session=${sessionId}, timeoutMs=${mainTurnWatchdogMs})`,
       );
-      subagentService.forceDone(sessionId); // sink → conversationService.setStatus('done')
+      void conversationService.cancelStream(sessionId); // 真中断：abort pi run + 状态置 canceled
     }, tickMs);
     mainTurnWatchdogs.set(sessionId, timer);
   };
