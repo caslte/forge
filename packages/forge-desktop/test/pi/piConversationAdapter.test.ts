@@ -675,57 +675,21 @@ test('P2-D：removeSession 中止执行并 dispose lease，幂等可重复调用
   assert.equal(fake.promptCalls.length, 2, '重建后新会话执行 prompt');
 });
 
-// ===== P3-B：附件 =====
+// ===== 附件统一给路径：adapter 不再透传 images =====
 
-test('P3-B：图片附件经 normalizeImages 转为 pi image content 随 prompt 透传', async () => {
-  const fake = new FakePiSession();
-  const adapter = new PiConversationAdapter(
-    async () => ({ session: fake, dispose: () => fake.dispose() }),
-    { resolveModel: async (model) => ({ resolved: model }) },
-  );
-  await adapter.sendMessage('session-att', '看图', {
-    attachments: [
-      { kind: 'image', name: 'photo.png', mimeType: 'image/png', data: 'aGVsbG8=' },
-    ],
-  });
-  assert.equal(fake.imageCalls.length, 1, '附图时应传 images 参数');
-  const images = fake.imageCalls[0] as { images: Array<{ type: string; data: string; mimeType: string }> };
-  assert.deepEqual(images.images, [
-    { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
-  ]);
-});
-
-test('P3-B：无附件时不传 images（与旧行为一致），文本附件不转图片', async () => {
+test('附件统一给路径：prompt 恒单参调用，残留 attachments 选项不转图片', async () => {
   const fake = new FakePiSession();
   const adapter = new PiConversationAdapter(
     async () => ({ session: fake, dispose: () => fake.dispose() }),
     { resolveModel: async (model) => ({ resolved: model }) },
   );
   await adapter.sendMessage('session-plain', '纯文本');
-  assert.equal(fake.imageCalls.length, 0, '纯文本不带 images 参数');
-  await adapter.sendMessage('session-text-att', '带文本附件', {
-    attachments: [{ kind: 'text', name: 'a.txt', content: '附件内容' }],
-  });
-  assert.equal(fake.imageCalls.length, 0, '文本附件不转图片');
-});
-
-test('P3-B：无效图片附件（空 data / 非 image）被过滤不抛错', async () => {
-  const fake = new FakePiSession();
-  const adapter = new PiConversationAdapter(
-    async () => ({ session: fake, dispose: () => fake.dispose() }),
-    { resolveModel: async (model) => ({ resolved: model }) },
-  );
-  await adapter.sendMessage('session-bad-att', '带坏附件', {
-    attachments: [
-      { kind: 'text', name: 't.md', content: 'x' },
-      { kind: 'image', name: 'empty.png', mimeType: 'image/png', data: '' },
-      { kind: 'image', name: 'ok.png', mimeType: 'image/png', data: 'ZGF0YQ==' },
-    ],
-  });
-  assert.equal(fake.imageCalls.length, 1, '空 data 图片过滤，有效图片保留');
-  const images = fake.imageCalls[0] as { images: Array<{ data: string }> };
-  assert.equal(images.images.length, 1);
-  assert.equal(images.images[0]?.data, 'ZGF0YQ==');
+  // 路径行已随正文发送；即使 options 残留旧附件键也不转图片（给路径后 adapter 不读该键）
+  await adapter.sendMessage('session-legacy-att', '带路径附件\nC:\\repo\\a.ts', {
+    attachments: [{ kind: 'image', name: 'a.png', mimeType: 'image/png', data: 'aGVsbG8=' }],
+  } as never);
+  assert.equal(fake.promptCalls.length, 2);
+  assert.equal(fake.imageCalls.length, 0, '任何情况下不再传 images 参数');
 });
 
 // ===== wu-06：子 agent 事件映射、终止通道与删除清理 =====

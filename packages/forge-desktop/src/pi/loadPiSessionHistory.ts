@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 
 import type { ConversationMessage } from '@forge/core';
-import { TEXT_ATTACHMENT_PREAMBLE } from '@forge/core';
 import { stripThinkingContent } from './thinkingFilter.ts';
 
 type PiContentPart = {
@@ -20,25 +19,6 @@ type PiMessage = {
   toolCallId?: string;
   toolName?: string;
 };
-
-/**
- * 剥离文本附件受控片段（P3-B）：RPC 层把文件内容以 `[附件：<name>]\n<内容>` 拼进消息
- * 发给模型（上下文需要全文），展示层只保留文件名占位。多附件以「空行+片段头」切分。
- * ponytail: 按固定格式解析；附件内容自身含 `\n\n[附件：x]\n` 会被误切，真遇到再上结构化存储。
- */
-const ATTACHMENT_SPLIT = /\n\n(?=\[附件：[^\]\n]+\]\n)/;
-const ATTACHMENT_HEAD = /^\[附件：([^\]\n]+)\]\n/;
-
-function extractAttachmentFiles(content: string): { text: string; files: string[] } {
-  const parts = content.split(ATTACHMENT_SPLIT);
-  if (parts.length < 2) return { text: content, files: [] };
-  const files: string[] = [];
-  for (let i = 1; i < parts.length; i++) {
-    const name = ATTACHMENT_HEAD.exec(parts[i] ?? '')?.[1];
-    if (name) files.push(name);
-  }
-  return { text: parts[0] ?? '', files };
-}
 
 export async function loadPiSessionHistory(sessionFile: string): Promise<ConversationMessage[]> {
   if (!fs.existsSync(sessionFile) || fs.statSync(sessionFile).size === 0) {
@@ -93,21 +73,7 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
       : message.role === 'assistant' ? 'assistant'
       : 'tool';
 
-    // 文本附件片段只留文件名占位（内容已随 prompt 进入模型上下文，气泡里不重复展示全文）
-    let files: string[] | undefined;
-    if (role === 'user') {
-      const parsed = extractAttachmentFiles(content);
-      if (parsed.files.length > 0) {
-        // 同步剥离 RPC 层前置的不可信数据声明，避免气泡里展示给用户看
-        let text = parsed.text;
-        if (text.endsWith(TEXT_ATTACHMENT_PREAMBLE)) {
-          text = text.slice(0, text.length - TEXT_ATTACHMENT_PREAMBLE.length).trimEnd();
-        }
-        content = text;
-        files = parsed.files;
-      }
-    }
-
+    // 附件统一给路径：消息正文就是含路径行的原文，不再做附件片段剥离/占位
     if (role === 'tool') {
       const toolEventId = message.toolCallId ?? raw.id ?? `tool-${raw.timestamp}`;
       messages.push({
@@ -124,7 +90,6 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
         content,
         ts: raw.timestamp,
         images,
-        files,
       });
     }
   }

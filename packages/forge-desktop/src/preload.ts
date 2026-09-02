@@ -6,7 +6,7 @@
  *
  * contextIsolation: true + nodeIntegration: false，渲染进程只能通过此桥访问 Node/IPC。
  */
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {
   IPC_INVOKE,
   IPC_EVENT,
@@ -16,6 +16,9 @@ import {
   IPC_WINDOW_IS_MAXIMIZED,
   IPC_DIALOG_OPEN_DIRECTORY,
   IPC_DIALOG_OPEN_FILE,
+  IPC_ATTACHMENT_SCAN,
+  IPC_CLIPBOARD_SAVE_IMAGE,
+  IPC_FILE_READ_IMAGE,
   type ForgeMethod,
   type ForgeEvent,
 } from './ipc-contract.ts';
@@ -41,8 +44,28 @@ const dialogControl = {
   async selectDirectory(): Promise<string | null> {
     return ipcRenderer.invoke(IPC_DIALOG_OPEN_DIRECTORY) as Promise<string | null>;
   },
-  async selectFiles(): Promise<Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }>> {
-    return ipcRenderer.invoke(IPC_DIALOG_OPEN_FILE) as Promise<Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }>>;
+  async selectFiles(): Promise<string[]> {
+    return ipcRenderer.invoke(IPC_DIALOG_OPEN_FILE) as Promise<string[]>;
+  },
+};
+
+/** window.forge.file 附件能力：路径解析 / 密钥嗅探 / 截图落盘（统一给路径） */
+const fileControl = {
+  getPathForFile(file: File): string {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return '';
+    }
+  },
+  async scanAttachments(paths: string[]): Promise<Array<{ path: string; name: string; flagged: boolean }>> {
+    return ipcRenderer.invoke(IPC_ATTACHMENT_SCAN, paths) as Promise<Array<{ path: string; name: string; flagged: boolean }>>;
+  },
+  async savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null> {
+    return ipcRenderer.invoke(IPC_CLIPBOARD_SAVE_IMAGE, base64Data, ext) as Promise<{ path: string; name: string } | null>;
+  },
+  async readImage(p: string): Promise<string | null> {
+    return ipcRenderer.invoke(IPC_FILE_READ_IMAGE, p) as Promise<string | null>;
   },
 };
 
@@ -91,6 +114,7 @@ const forgeBridge = {
   },
   window: windowControl,
   dialog: dialogControl,
+  file: fileControl,
 };
 
 contextBridge.exposeInMainWorld('forge', forgeBridge);

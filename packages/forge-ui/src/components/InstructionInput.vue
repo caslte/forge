@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel } from '../types';
-import { call, subscribe, type AttachmentFile, type ConversationCompactResult } from '../bridge';
+import { call, subscribe, type PendingAttachment, type ConversationCompactResult } from '../bridge';
+import { isImagePath } from '../attachmentText';
 import ImageLightbox from './ImageLightbox.vue';
 
 /**
  * 指令输入框。
  * 参考 ai-coding 的 composer 视觉，但精简为 textarea（非 contenteditable）。
- * P3-B：附件上传（文件选择 / Ctrl+V 粘贴截图 / 拖拽图片），随消息一起发送。
+ * 附件统一给路径：选择/粘贴/拖入只收集绝对路径随消息发送，内容由模型自行 read；
+ * 剪贴板截图不在盘上，先由主进程落盘临时文件再给路径。
  * 模型切换为点击浮窗菜单（对齐原型 .menu 机制：点字样开、点外部关）。
  * P3-A：底部上下文用量区读取 conversation/getContextUsage，压缩按钮调用 compact。
  */
@@ -25,14 +27,14 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'send', text: string, attachments?: AttachmentFile[]): void;
+  (e: 'send', text: string): void;
   (e: 'cancel'): void;
   (e: 'model-change', model: string): void;
 }>();
 
 const text = ref('');
-/** P3-B：待发附件（图片 base64 / 文本 content，随消息一起发送） */
-const attachments = ref<AttachmentFile[]>([]);
+/** 待发附件（统一给路径）：只存路径与嗅探标记 */
+const attachments = ref<PendingAttachment[]>([]);
 const attachError = ref<string | null>(null);
 let attachErrorTimer: ReturnType<typeof setTimeout> | null = null;
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -221,79 +223,68 @@ function onSend(): void {
   if (!canSend.value) return;
   const t = text.value.trim();
   const atts = attachments.value;
+  // 密钥嗅探确认：flagged 附件（路径对应文件含疑似凭据）出域前需确认
+  const flagged = atts.filter((a) => a.flagged);
+  if (flagged.length > 0 && !window.confirm(
+    `检测到疑似密钥/凭据：\n${flagged.map((a) => a.name).join('、')}\n\n附件会被模型读取并发送给模型服务商，确认仍要附带吗？`,
+  )) {
+    return;
+  }
+  const paths = atts.map((a) => a.path);
   text.value = '';
   attachments.value = [];
   attachError.value = null;
   nextTick(autoGrow);
-  emit('send', t, atts.length > 0 ? atts : undefined);
+  // 路径行追加在正文后（换行分隔），模型据此自行 read；纯附件消息就是纯路径行
+  emit('send', paths.length > 0 ? `${t}\n${paths.join('\n')}` : t);
 }
 
-/** P3-B：选择附件并加入待发区（图片/文本由主进程读取） */
+/** 把一批路径加入待发区（主进程密钥嗅探后返回标记）；返回是否全部成功 */
+async function addPaths(paths: string[]): Promise<boolean> {
+  if (paths.length === 0) return true;
+  const all = [...attachments.value, ...paths];
+  if (all.length > MAX_ATTACHMENTS) {
+    showAttachError(`附件最多 ${MAX_ATTACHMENTS} 个，已跳过`);
+    return false;
+  }
+  try {
+    const scanned = await window.forge.file.scanAttachments(paths);
+    // 图片附加载缩略图（点击放大用）；非图片/读取失败保持 icon chip
+    const entries: PendingAttachment[] = [];
+    for (const s of scanned) {
+      const dataUrl = isImagePath(s.name) ? await window.forge.file.readImage(s.path).catch(() => null) : null;
+      entries.push({ ...s, dataUrl: dataUrl ?? undefined });
+    }
+    attachments.value = [...attachments.value, ...entries];
+    attachError.value = null;
+    return true;
+  } catch (e) {
+    showAttachError(e instanceof Error ? e.message : '附件嗅探失败');
+    return false;
+  }
+}
+
+/** 选择附件（统一给路径：只拿路径，不读内容） */
 async function pickAttachments(): Promise<void> {
   if (isStreaming.value) return;
   try {
-    let files = await window.forge.dialog.selectFiles();
+    const files = await window.forge.dialog.selectFiles();
     if (files.length === 0) return;
-    // 密钥嗅探：文本附件命中疑似凭据时需确认（内容会发送给模型服务商，出域风险）
-    const flagged = files.filter((f) => f.kind === 'text' && SECRET_PATTERNS.some((re) => re.test(f.content ?? '')));
-    if (flagged.length > 0 && !window.confirm(
-      `检测到疑似密钥/凭据：\n${flagged.map((f) => f.name).join('、')}\n\n附件内容会发送给模型服务商，确认仍要附带吗？`,
-    )) {
-      files = files.filter((f) => !flagged.includes(f));
-      if (files.length === 0) {
-        showAttachError('已取消附带疑似含密钥的附件');
-        return;
-      }
-      showAttachError(`已跳过疑似含密钥附件：${flagged.map((f) => f.name).join('、')}`);
-    }
-    const limit = attachmentsOverLimit(files);
-    if (limit) {
-      showAttachError(limit);
-      return;
-    }
-    attachments.value = [...attachments.value, ...files];
-    attachError.value = null;
+    await addPaths(files);
   } catch (e) {
     showAttachError(e instanceof Error ? e.message : '读取附件失败');
   }
 }
 
-// ===== 截图图片上传：粘贴（Ctrl+V）+ 拖拽 =====
-/** 图片大小上限，与主进程 selectFiles 的 10MB 一致 */
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+// ===== 截图/文件 粘贴（Ctrl+V）+ 拖拽：统一收集路径 =====
 
-// ===== 附件安全限制 =====
-/** 疑似密钥/凭据特征（高置信度，避免对源码误报）：私钥块 / AWS / GitHub / OpenAI / Slack */
-const SECRET_PATTERNS: RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
-  /\bsk-[A-Za-z0-9_-]{20,}\b/,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
-];
+/** 待发图片预览弹窗（点击缩略图打开，null = 关闭） */
+const lightboxSrc = ref<string | null>(null);
 
 /** 单条消息附件总数上限 */
 const MAX_ATTACHMENTS = 10;
-/** 单条消息附件总大小上限（图片按 base64 长度折回原始字节估算） */
-const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
 
-const attachmentBytes = (a: AttachmentFile): number =>
-  a.kind === 'image' ? Math.ceil(((a.data?.length ?? 0) * 3) / 4) : (a.content?.length ?? 0);
-
-/** 现有附件 + 待加入一起算，超限返回提示文案，未超返回 null */
-function attachmentsOverLimit(incoming: AttachmentFile[]): string | null {
-  const all = [...attachments.value, ...incoming];
-  if (all.length > MAX_ATTACHMENTS) return `附件最多 ${MAX_ATTACHMENTS} 个，已跳过`;
-  const total = all.reduce((sum, a) => sum + attachmentBytes(a), 0);
-  if (total > MAX_TOTAL_BYTES) return '附件总大小超过 30MB 上限，已跳过';
-  return null;
-}
-
-/** 拖拽悬停高亮态 */
-const dragOver = ref(false);
-
-/** Blob 读取为纯 base64（去掉 data URL 前缀，与主进程附件 data 格式一致） */
+/** Blob 读取为纯 base64（去掉 data URL 前缀，供主进程落盘） */
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -311,57 +302,63 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /**
- * 把剪贴板/拖入的图片 Blob 加入附件待发区。
- * @param file 图片 Blob（粘贴截图无文件名，自动按时间生成）
- * @param fallbackName 已知文件名（拖入场景），缺省生成「截图-HHmmss.ext」
+ * 单个文件加入待发区：有盘路径直接给路径；无盘图片（粘贴截图）先落盘再给路径。
+ * 返回是否已受理（路径收集成功/已入队）。
  */
-async function addImageFromBlob(file: Blob, fallbackName?: string): Promise<void> {
-  if (file.size > MAX_IMAGE_BYTES) {
-    showAttachError('图片超过 10MB 上限，已跳过');
+async function collectFile(f: File, paths: string[]): Promise<void> {
+  const diskPath = window.forge.file.getPathForFile(f);
+  if (diskPath !== '') {
+    paths.push(diskPath);
     return;
   }
-  const mimeType = file.type || 'image/png';
+  // 无盘文件：仅支持图片（剪贴板截图），先落盘临时文件
+  if (!f.type.startsWith('image/')) return;
+  const mimeType = f.type || 'image/png';
   const ext = (mimeType.split('/')[1] ?? 'png').split('+')[0] ?? 'png';
-  const now = new Date();
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mm = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-  const name = fallbackName ?? `截图-${hh}${mm}${ss}.${ext}`;
-  try {
-    const data = await blobToBase64(file);
-    const entry: AttachmentFile = { path: `clipboard:${name}`, name, kind: 'image' as const, mimeType, data };
-    const limit = attachmentsOverLimit([entry]);
-    if (limit) {
-      showAttachError(limit);
-      return;
-    }
-    attachments.value = [...attachments.value, entry];
-    attachError.value = null;
-  } catch (e) {
-    showAttachError(e instanceof Error ? e.message : '图片读取失败');
+  const data = await blobToBase64(f);
+  const saved = await window.forge.file.savePasteImage(data, ext);
+  if (!saved) {
+    showAttachError('截图落盘失败，已跳过');
+    return;
   }
+  // base64 已在手，缩略图直接本地拼 data URL，不再走 IPC 回读
+  attachments.value = [
+    ...attachments.value,
+    { path: saved.path, name: saved.name, flagged: false, dataUrl: `data:${mimeType};base64,${data}` },
+  ];
 }
 
 /**
  * 粘贴事件：剪贴板含文本时优先走默认文本粘贴（如从 Excel 复制）；
- * 纯截图（Win+Shift+S 等）拦截为图片附件。
+ * 否则拦截文件/截图为路径附件。
  */
-function onPaste(ev: ClipboardEvent): void {
+async function onPaste(ev: ClipboardEvent): Promise<void> {
   if (isStreaming.value) return;
   const cd = ev.clipboardData;
   if (!cd) return;
   if (cd.getData('text/plain').trim() !== '') return;
-  const images: File[] = [];
+  const files: File[] = [];
   for (const item of cd.items) {
-    if (item.kind === 'file' && item.type.startsWith('image/')) {
+    if (item.kind === 'file') {
       const f = item.getAsFile();
-      if (f) images.push(f);
+      if (f) files.push(f);
     }
   }
-  if (images.length === 0) return;
+  if (files.length === 0) return;
   ev.preventDefault();
-  for (const f of images) void addImageFromBlob(f);
+  const diskPaths: string[] = [];
+  for (const f of files) {
+    try {
+      await collectFile(f, diskPaths);
+    } catch (e) {
+      showAttachError(e instanceof Error ? e.message : '图片读取失败');
+    }
+  }
+  await addPaths(diskPaths);
 }
+
+/** 拖拽悬停高亮态 */
+const dragOver = ref(false);
 
 /** 拖拽悬停：仅当拖入的是文件时高亮并允许放置 */
 function onDragOver(ev: DragEvent): void {
@@ -380,30 +377,28 @@ function onDragLeave(ev: DragEvent): void {
   dragOver.value = false;
 }
 
-/** 放置：读取拖入的图片文件（非图片类型忽略） */
-function onDrop(ev: DragEvent): void {
+/** 放置：拖入的文件统一收集路径（截图类无盘文件先落盘） */
+async function onDrop(ev: DragEvent): Promise<void> {
   if (isStreaming.value) return;
   dragOver.value = false;
   const files = Array.from(ev.dataTransfer?.files ?? []);
   if (files.length === 0) return;
   ev.preventDefault();
+  const diskPaths: string[] = [];
   for (const f of files) {
-    if (f.type.startsWith('image/')) void addImageFromBlob(f, f.name);
+    try {
+      await collectFile(f, diskPaths);
+    } catch (e) {
+      showAttachError(e instanceof Error ? e.message : '图片读取失败');
+    }
   }
+  await addPaths(diskPaths);
 }
 
-/** 从待发区移除附件（P3-B 失败/误选可移除重试） */
+/** 从待发区移除附件（失败/误选可移除重试） */
 function removeAttachment(index: number): void {
   attachments.value = attachments.value.filter((_, i) => i !== index);
 }
-
-/** 图片附件 data URL（缩略图与弹窗预览共用） */
-function imageDataUrl(att: AttachmentFile): string {
-  return `data:${att.mimeType ?? 'image/png'};base64,${att.data}`;
-}
-
-/** 待发图片预览弹窗（点击缩略图打开，null = 关闭） */
-const lightboxSrc = ref<string | null>(null);
 
 function showAttachError(msg: string): void {
   attachError.value = msg;
@@ -610,18 +605,16 @@ watch(
     <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
       <span class="max-text">M A X</span>
     </div>
-    <!-- 附件待发区（P3-B：选择/粘贴/拖入后展示，可移除）：
-         图片 = 固定正方形缩略图（无文件名，点击弹窗预览，× 悬浮右上角）；
-         文本等其他类型 = 胶囊 chip（icon + 文件名） -->
+    <!-- 附件待发区（统一给路径）：图片 = 64px 缩略图（点击放大）；其他 = 胶囊 chip（icon+文件名）；可移除 -->
     <div ref="attachRowRef" class="attach-row">
       <template v-for="(att, i) in attachments" :key="att.path + i">
-        <div v-if="att.kind === 'image' && att.data" class="attach-image" :title="att.name">
+        <div v-if="att.dataUrl" class="attach-image" :title="att.name">
           <img
             class="attach-image-img"
-            :src="imageDataUrl(att)"
+            :src="att.dataUrl"
             alt=""
             draggable="false"
-            @click="lightboxSrc = imageDataUrl(att)"
+            @click="lightboxSrc = att.dataUrl ?? null"
           />
           <button class="attach-remove" title="移除附件" @click.stop="removeAttachment(i)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -630,9 +623,9 @@ watch(
             </svg>
           </button>
         </div>
-        <div v-else class="attach-chip">
+        <div v-else class="attach-chip" :class="{ flagged: att.flagged }" :title="att.path">
           <span class="attach-icon">
-            <svg v-if="att.kind === 'image'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg v-if="isImagePath(att.name)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <circle cx="8.5" cy="8.5" r="1.5" />
               <polyline points="21 15 16 10 5 21" />
@@ -642,7 +635,7 @@ watch(
               <polyline points="14 2 14 8 20 8" />
             </svg>
           </span>
-          <span class="attach-name" :title="att.path">{{ att.name }}</span>
+          <span class="attach-name" :title="att.flagged ? `${att.name}（疑似含密钥）` : att.name">{{ att.name }}</span>
           <button class="attach-remove" title="移除附件" @click="removeAttachment(i)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
@@ -859,13 +852,18 @@ watch(
   color: var(--foreground);
 }
 
+/* 命中密钥嗅探的附件：警示色边框提醒 */
+.attach-chip.flagged {
+  border-color: color-mix(in oklab, var(--warning, #d97706) 60%, var(--border));
+}
+
 .attach-icon {
   display: inline-flex;
   color: var(--muted-foreground);
   flex-shrink: 0;
 }
 
-/* 图片附件：固定 64px 正方形缩略图卡片，无文件名；点击弹窗预览，× 悬浮右上角（hover 显示） */
+/* 图片附件：固定 64px 正方形缩略图卡片；点击弹窗预览，× 悬浮右上角（hover 显示） */
 .attach-image {
   position: relative;
   width: 64px;

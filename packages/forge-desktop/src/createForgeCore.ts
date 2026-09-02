@@ -24,7 +24,6 @@ import {
   createModelApi,
   SubagentService,
   SUBAGENT_DONE_TIMEOUT_MS,
-  TEXT_ATTACHMENT_PREAMBLE,
   type RpcResult,
   type ModelsFileAdapter,
   type KeychainAdapter,
@@ -341,16 +340,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       sessionApi.setSessionStatus(sid, sessionStatus);
     },
     onDelta: (sid, delta) => conversationApi.pushDelta(sid, delta.text),
-    // 多模态门控：模型 input 能力含 "image" 才允许透传图片附件；解析失败按不支持
-    // 降级（跳过图片仅发送文字），避免 pi 占位文本或对方 API 报错的不友好体验
-    modelSupportsImages: async (model: string) => {
-      try {
-        const piModel = await resolvePiModel(model, deps.piModelsPath);
-        return Array.isArray(piModel.input) && (piModel.input as string[]).includes('image');
-      } catch {
-        return false;
-      }
-    },
+    // 附件统一给路径：非视觉模型遇图片由 pi-ai 传输层降级占位，无需门控端口
     // 首条用户消息：从问题内容生成标题并写入会话 alias
     onFirstUserMessage: (sid: string, content: string) => {
       const alias = generateSessionTitle(content);
@@ -562,17 +552,16 @@ function readStringParam(params: unknown, key: string): string | null {
 
 /**
  * 从首条用户消息生成会话标题。
- * 规则：剥离拼在正文后的附件片段（P3-B：不可信声明 + [附件：<name>] 块，附件占位不进标题），
- * 再去除换行与首尾空白，按句号/问号/感叹号/分号截断第一句，
+ * 规则：取首行（附件统一给路径后，路径行随正文换行追加，天然不进标题），
+ * 去除首尾空白，按句号/问号/感叹号/分号截断第一句，
  * 超过 30 字符截断并加省略号，全空则回退为「新会话」。
  */
 export function generateSessionTitle(rawContent: string): string {
-  // ponytail: 按固定拼接格式截断；若用户正文自身恰好含「\n\n[附件：」会被误切，真遇到再上结构化传递
-  const bare = (rawContent.split(TEXT_ATTACHMENT_PREAMBLE)[0] ?? rawContent)
-    .replace(/\n\n\[附件：[^\]\n]*\]\n[\s\S]*$/, '');
-  const cleaned = bare.replace(/\s+/g, ' ').trim();
+  const firstLine = rawContent.split('\n', 1)[0] ?? rawContent;
+  const cleaned = firstLine.replace(/\s+/g, ' ').trim();
   if (cleaned.length === 0) return '新会话';
-  const firstSentenceMatch = cleaned.match(/^(.+?)[。！？!?.;；]/);
+  // 首句切分：英文句点后跟字母/数字时不切（路径 a.ts、版本号 1.2 不被腰斩）
+  const firstSentenceMatch = cleaned.match(/^(.+?)[。！？!?.;；](?![A-Za-z0-9_])/);
   const firstSentence = firstSentenceMatch && firstSentenceMatch[1] !== undefined
     ? firstSentenceMatch[1].trim()
     : cleaned;

@@ -255,32 +255,4 @@ test('SESSION-E2E-006 @P1 @mock-backend E-SM-003 负向：首次点击不删除�
   health.assertHealthy();
 });
 
-// ===== 多模态门控：模型不支持图片时气泡标记「图片未发送」（E-CV-006/AC-CV-013） =====
-test('SESSION-E2E-007 @P1 @mock-backend E-CV-006：sendMessage 返回 skippedImages 时用户气泡显示「图片未发送」', async ({ page }) => {
-  const health = attachHealthGuards(page);
-  const sess = mkSession({ alias: '图片会话' });
-  await boot(page, [sess]);
-
-  // 打开会话；门控生效：sendMessage 返回 skippedImages=1（模拟纯文本模型跳过图片）
-  await page.locator('.tree-session', { hasText: '图片会话' }).click();
-  await expect(page.locator('.compose-input')).toBeVisible();
-  await page.evaluate(() => {
-    window.__forgeMock!.seed('conversation/sendMessage', () => ({
-      code: 0,
-      message: 'ok',
-      data: { skippedImages: 1 },
-    }));
-  });
-
-  // 发送带图消息（图片附件路径由后端门控处理，此处断言 UI 标记渲染）
-  await page.locator('.compose-input').fill('看看这张图');
-  await page.locator('.compose-input').press('Enter');
-
-  // 用户气泡出现「图片未发送」标记
-  await expect(page.locator('.msg-user .msg-image-skipped')).toContainText(
-    '图片未发送：当前模型不支持图片输入',
-  );
-  health.assertHealthy();
-});
-
 void waitForMock;

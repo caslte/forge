@@ -65,6 +65,11 @@ export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
 export const IPC_DIALOG_OPEN_DIRECTORY = 'forge:dialog:openDirectory';
 export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 
+/** preload ↔ main 附件通道（统一给路径：嗅探 + 截图落盘 + 缩略图读取） */
+export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';
+export const IPC_CLIPBOARD_SAVE_IMAGE = 'forge:clipboard:saveImage';
+export const IPC_FILE_READ_IMAGE = 'forge:file:readImage';
+
 /** 全部事件名（与 forge-core 各 Api events.emit 的 channel 一致） */
 export type ForgeEvent =
   | 'project.opened'
@@ -235,10 +240,22 @@ export interface ForgeDialog {
    */
   selectDirectory(): Promise<string | null>;
   /**
-   * 打开系统文件选择框（多选，图片 + 文本过滤，P3-B 附件）。
-   * @returns 附件载荷数组：图片含 base64 data + mimeType，文本含 utf8 content；取消返回空数组。
+   * 打开系统文件选择框（多选，图片 + 文本过滤，附件）。
+   * @returns 选中文件的绝对路径数组（不读内容，模型自行 read）；取消返回空数组。
    */
-  selectFiles(): Promise<Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }>>;
+  selectFiles(): Promise<string[]>;
+}
+
+/** window.forge.file：附件统一给路径能力 */
+export interface ForgeFile {
+  /** 解析拖拽/粘贴的 File 对象对应磁盘绝对路径（剪贴板截图等无盘文件返回空串） */
+  getPathForFile(file: File): string;
+  /** 附件密钥嗅探：文本文件命中凭据特征 → flagged=true，发送前需用户确认 */
+  scanAttachments(paths: string[]): Promise<Array<{ path: string; name: string; flagged: boolean }>>;
+  /** 粘贴截图落盘：base64 图片写入系统临时目录，返回真实路径；失败返回 null */
+  savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null>;
+  /** 磁盘图片读为 data URL（仅输入框缩略图/预览用）；缺失/超大/非图片返回 null */
+  readImage(path: string): Promise<string | null>;
 }
 
 /** IPC invoke 的返回信封（透传 forge-core RpcResult） */

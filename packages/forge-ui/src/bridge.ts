@@ -114,18 +114,28 @@ export interface ForgeBridge {
   };
   dialog: {
     selectDirectory(): Promise<string | null>;
-    selectFiles(): Promise<AttachmentFile[]>;
+    selectFiles(): Promise<string[]>;
+  };
+  file: {
+    /** 拖拽/粘贴 File 对象 → 磁盘绝对路径；无盘文件（剪贴板截图）返回空串 */
+    getPathForFile(file: File): string;
+    /** 附件密钥嗅探：文本文件命中凭据特征 → flagged=true */
+    scanAttachments(paths: string[]): Promise<Array<{ path: string; name: string; flagged: boolean }>>;
+    /** 粘贴截图落盘到系统临时目录，返回真实路径；失败返回 null */
+    savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null>;
+    /** 磁盘图片读为 data URL（仅缩略图/预览用）；缺失/超大/非图片返回 null */
+    readImage(path: string): Promise<string | null>;
   };
 }
 
-/** 附件文件（P3-B）：图片含 base64 data + mimeType，文本含 utf8 content */
-export interface AttachmentFile {
+/** 待发附件（统一给路径）：只持路径与嗅探标记，不读内容 */
+export interface PendingAttachment {
   path: string;
   name: string;
-  kind: 'image' | 'text';
-  mimeType?: string;
-  data?: string;
-  content?: string;
+  /** 命中疑似密钥/凭据：发送前需用户确认 */
+  flagged: boolean;
+  /** 图片缩略图 data URL（仅图片附件，加载后填充；预览/放大用） */
+  dataUrl?: string;
 }
 
 /**

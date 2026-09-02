@@ -26,7 +26,6 @@
 
 import { EventEmitter } from 'node:events';
 import type { RpcResult, EventSink } from './projectMethods.ts';
-import { TEXT_ATTACHMENT_PREAMBLE } from '../conversation/conversationService.ts';
 import type {
   ConversationService,
   ConversationResult,
@@ -137,29 +136,10 @@ export class ConversationApi {
         options.model = model;
       }
     }
-    // P3-B：附件透传（图片/文本，由 adapter 转 pi image content / 受控 prompt 片段）
-    if (typeof params === 'object' && params !== null && Array.isArray((params as { attachments?: unknown }).attachments)) {
-      options.attachments = (params as { attachments?: unknown }).attachments;
-    }
-    // 文本附件转受控 prompt 片段：追加到内容末尾，由 adapter 透传图片，文本随消息进入上下文。
-    // 前置不可信数据声明（提示注入防线）：附件内容可能含恶意指令，明确告知模型不要执行。
-    const attachments = Array.isArray(options.attachments) ? (options.attachments as Array<{ kind?: string; name?: string; content?: string }>) : [];
-    const textParts = attachments.filter((a) => a.kind === 'text' && typeof a.content === 'string');
+    // 附件统一给路径：路径行已随 content 由 UI 拼好，此处不再读取/拼接任何附件参数
 
     const result = await this.call('sendMessage', () =>
-      this.service.sendMessage(
-        sessionId,
-        // 文本附件以受控片段拼入消息（P3-B）：
-        // <不可信数据声明>
-        // [附件：<name>]
-        // <content> …
-        textParts.length > 0
-          ? `${content}\n\n${TEXT_ATTACHMENT_PREAMBLE}\n\n${textParts
-              .map((a) => `[附件：${a.name ?? 'file'}]\n${a.content ?? ''}`)
-              .join('\n\n')}`
-          : content,
-        options,
-      ),
+      this.service.sendMessage(sessionId, content, options),
     );
     if (result.code === 0) {
       this.pushStatus(sessionId, this.service.getStatus(sessionId));

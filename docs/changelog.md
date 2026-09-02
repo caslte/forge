@@ -2,6 +2,17 @@
 
 # 变更日志
 
+## v3.17 (附件统一给路径)
+
+- 背景：附件原为「读内容内联」机制——图片转 base64 经 `prompt(images)` 直出、文本 ≤200KB 以受控片段拼入正文，与 pi 原生「路径进消息、模型自行 read」机制并存，两套逻辑维护成本高。
+- 变更：附件统一给路径——选择/粘贴/拖入只收集绝对路径，以独立行追加在正文后随消息发送；文件内容由模型自行用 read 工具读取（图片自动转 image 块）。剪贴板截图（无盘文件）由主进程落盘系统临时目录（`forge-paste-HHmmss.png`）再给路径。
+- 删除：文本内联拼装与 `TEXT_ATTACHMENT_PREAMBLE` 防注入前导（forge-core）、多模态门控与 `skippedImages`（forge-core + UI 标记；非视觉模型遇图片由 pi-ai 传输层 `downgradeUnsupportedImages` 自动降级占位，不报错）、历史回显的附件片段剥离（loadPiSessionHistory）、base64/文本内容读取与 10MB/200KB/30MB 限制（forge-desktop）。
+- 保留：附件密钥嗅探（移至主进程 `attachments.ts`，文本文件命中凭据特征 → 待发区警示边框 + 发送前确认，覆盖选择/粘贴/拖拽三个入口）、附件数上限 10。
+- UI 还原（v3.17 追加，用户实测反馈）：① 用户气泡内附件不再显示路径——图片出缩略图（120px，点击灯箱放大，异步读 data URL），非图片出文件占位 chip（icon+文件名，title 显示完整路径）；解析覆盖三种形态：forge 发送的尾部路径行、markdown 链接图片（单层/双层方括号）、pi 会话消息的裸 `[Image #N]` 占位行；**同一条消息同时含 base64 image part 时，文本里的链接/占位符只剥离不渲染（pi 存储格式是链接+base64 双份引用同一张图，否则同一张图出现两遍——v3.17 首版的回归，`hasEmbeddedImages` 修复）**；`attachmentText.ts` `parseUserContent` 纯函数 + 11 单测；② 输入框图片附件恢复 64px 缩略图 + 点击灯箱放大（磁盘图片新增 `file.readImage` IPC 读 data URL（≤10MB），粘贴截图直接复用手上 base64 不回读）。
+- 附带修正：`generateSessionTitle` 改取首行（路径行不进标题）；首句切分修正英文句点后跟字母/数字不切（`a.ts`、`1.2` 不被腰斩）。
+- 测试：新增 forge-desktop `attachments.test.ts`（嗅探/落盘 5 例）；改写门控/拼片段/剥离相关用例为新契约（RED→GREEN 全过）；三包 typecheck + build 通过。
+- 文档同步：`api/03_conversation.md` §1（attachments 参数与 skippedImages 响应移除，补路径行约定）；coverage-matrix AC-CV-013/U-CV-005/A-CV-007/E-CV-006 重写为路径化行为。
+
 ## v3.16 (首条消息自动命名不再包含附件占位)
 
 - 用户反馈：带附件发送首条消息时，会话树标题变成「这个文件能识别吗[附件：build_docker_or…]」——附件拼片段被当作标题的一部分。

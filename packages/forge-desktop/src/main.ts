@@ -11,12 +11,12 @@
  * 单窗口（v1 MVP）；多窗口多会话为后续迭代。
  */
 import { app, BrowserWindow, ipcMain, dialog, safeStorage } from 'electron';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE } from './ipc-contract.ts';
+import { scanAttachments, savePasteImage, readImageDataUrl } from './attachments.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -106,7 +106,7 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     }
     return res.filePaths[0] ?? null;
   });
-  // 原生文件选择（P3-B 附件）：多选，支持图片与文本；返回已读取的附件载荷，取消返回空数组
+  // 附件统一给路径：文件选择只返回绝对路径，不读内容（模型自行 read）；取消返回空数组
   ipcMain.handle(IPC_DIALOG_OPEN_FILE, async () => {
     const options = {
       title: '选择附件',
@@ -121,45 +121,32 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     if (res.canceled) {
       return [];
     }
-    const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-    const MIME: Record<string, string> = {
-      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-      webp: 'image/webp',
-    };
-    const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
-    const MAX_TEXT_BYTES = 200 * 1024; // 200KB
-    const out: Array<{ path: string; name: string; kind: 'image' | 'text'; mimeType?: string; data?: string; content?: string }> = [];
-    for (const filePath of res.filePaths) {
-      const ext = (path.extname(filePath) || '').slice(1).toLowerCase();
-      const base = path.basename(filePath);
-      try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) continue;
-        if (IMAGE_EXT.has(ext)) {
-          if (stat.size > MAX_IMAGE_BYTES) continue; // 超大图片跳过（UI 提示用）
-          const buf = fs.readFileSync(filePath);
-          out.push({
-            path: filePath,
-            name: base,
-            kind: 'image',
-            mimeType: MIME[ext] ?? 'image/png',
-            data: buf.toString('base64'),
-          });
-        } else {
-          if (stat.size > MAX_TEXT_BYTES) continue;
-          const buf = fs.readFileSync(filePath);
-          out.push({
-            path: filePath,
-            name: base,
-            kind: 'text',
-            content: buf.toString('utf8').slice(0, MAX_TEXT_BYTES),
-          });
-        }
-      } catch {
-        // 单个文件读取失败跳过，不阻塞其余附件
-      }
+    return res.filePaths;
+  });
+  // 附件密钥嗅探：文本文件命中凭据特征 → flagged（发送前 UI 弹确认，出域防线）
+  ipcMain.handle(IPC_ATTACHMENT_SCAN, (_e, paths: unknown) => {
+    if (!Array.isArray(paths)) {
+      return [];
     }
-    return out;
+    return scanAttachments(paths.filter((p): p is string => typeof p === 'string' && p !== ''));
+  });
+  // 粘贴截图落盘：剪贴板图片不在盘上，给路径前先写成临时文件
+  ipcMain.handle(IPC_CLIPBOARD_SAVE_IMAGE, (_e, base64Data: unknown, ext: unknown) => {
+    if (typeof base64Data !== 'string' || base64Data === '') {
+      return null;
+    }
+    try {
+      return savePasteImage(base64Data, typeof ext === 'string' ? ext : 'png');
+    } catch {
+      return null;
+    }
+  });
+  // 缩略图读取：磁盘图片 → data URL（仅输入框缩略图/预览用）
+  ipcMain.handle(IPC_FILE_READ_IMAGE, (_e, p: unknown) => {
+    if (typeof p !== 'string' || p === '') {
+      return null;
+    }
+    return readImageDataUrl(p);
   });
 }
 

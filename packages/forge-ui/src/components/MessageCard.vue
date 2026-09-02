@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { ConversationMessage } from '../types';
 import { renderMarkdown, hasOpenFence } from '@forge/core/markdown';
+import { parseUserContent, baseName, isImagePath } from '../attachmentText';
 import MermaidBlock from './MermaidBlock.vue';
 import ImageLightbox from './ImageLightbox.vue';
 
@@ -37,12 +38,41 @@ async function copy(): Promise<void> {
 }
 
 /**
+ * 附件解析（仅用户消息）：尾部路径行 + markdown 链接图片 → 图片出缩略图（不显示路径），
+ * 非图片出文件占位 chip。pi 会话消息带独立 image part（msg.images）时，正文里的
+ * 裸 [Image #N] 占位行一并剥离（缩略图已另行渲染）。
+ */
+const userParsed = computed(() =>
+  isUser.value
+    ? parseUserContent(props.message.content, {
+        hasEmbeddedImages: (props.message.images?.length ?? 0) > 0,
+      })
+    : { body: props.message.content, files: [] as string[], images: [] as string[] },
+);
+
+/** 图片路径 → data URL 缩略图（异步读，加载完成后渲染） */
+const userThumbs = ref<Record<string, string>>({});
+watch(
+  () => userParsed.value.images,
+  (images) => {
+    for (const img of images) {
+      if (userThumbs.value[img] !== undefined) continue;
+      userThumbs.value[img] = ''; // 占位：加载中不渲染
+      void window.forge.file.readImage(img).then((dataUrl) => {
+        if (dataUrl) userThumbs.value[img] = dataUrl;
+      });
+    }
+  },
+  { immediate: true },
+);
+
+/**
  * Markdown 安全渲染（P2-B）：流式与结束后统一用完整渲染（marked + hljs + sanitize 白名单），
  * 保证两种状态样式一致（此前流式用简化渲染导致紧凑/正常样式跳变）。
  * ponytail: 每 chunk 全量解析，长文+多代码块若流式卡顿再上节流（100ms 重渲染一次）。
  */
 const renderedContent = computed(() => {
-  const raw = props.message.content;
+  const raw = isUser.value ? userParsed.value.body : props.message.content;
   if (isUser.value || isSystem.value || isTool.value) {
     // 用户/系统/工具消息保持纯文本渲染（无 markdown 语义，避免误伤）
     return escapeHtml(raw);
@@ -109,7 +139,44 @@ const timeLabel = computed(() => {
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
     <div class="msg-bubble">
       <div class="msg-content" v-html="bodyHtml"></div>
-      <!-- 消息附带图片（P3-B）：固定正方形缩略图，点击弹窗看原图 -->
+      <!-- 附件图片缩略图（统一给路径：图片不显示路径，点击放大） -->
+      <div
+        v-if="userParsed.images.some((img) => userThumbs[img])"
+        class="msg-images"
+      >
+        <template v-for="img in userParsed.images" :key="img">
+          <img
+            v-if="userThumbs[img]"
+            :src="userThumbs[img]"
+            class="msg-image"
+            alt=""
+            @click="lightboxSrc = userThumbs[img] ?? null"
+          />
+        </template>
+      </div>
+      <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->
+      <div v-if="userParsed.files.length > 0" class="msg-att-files">
+        <span
+          v-for="f in userParsed.files"
+          :key="f"
+          class="msg-att-chip"
+          :title="f"
+        >
+          <span class="msg-att-icon">
+            <svg v-if="isImagePath(f)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+          </span>
+          <span class="msg-att-name">{{ baseName(f) }}</span>
+        </span>
+      </div>
+      <!-- 消息附带图片（旧会话历史遗留）：固定正方形缩略图，点击弹窗看原图 -->
       <div v-if="imageSrcs.length > 0" class="msg-images">
         <img
           v-for="(src, i) in imageSrcs"
@@ -120,23 +187,7 @@ const timeLabel = computed(() => {
           @click="lightboxSrc = src"
         />
       </div>
-      <!-- 消息附带文本文件（P3-B）：占位 chip（icon+文件名）；内容已随 prompt 进入模型上下文，不展示全文 -->
-      <div v-if="isUser && message.files?.length" class="msg-files">
-        <span v-for="name in message.files" :key="name" class="msg-file-chip" :title="name">
-          <span class="msg-file-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-            </svg>
-          </span>
-          <span class="msg-file-name">{{ name }}</span>
-        </span>
-      </div>
       <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
-      <!-- 多模态门控：当前模型不支持图片输入，附件已跳过未发送 -->
-      <div v-if="isUser && message.imageSkipped" class="msg-image-skipped">
-        图片未发送：当前模型不支持图片输入
-      </div>
       <!-- Mermaid 图表（完整格式化后提取的占位，逐个渲染） -->
       <div v-for="block in mermaidBlocks" :key="block.key" class="msg-mermaid">
         <MermaidBlock :encoded="block.encoded" />
@@ -225,19 +276,19 @@ const timeLabel = computed(() => {
   display: none;
 }
 
-/* 消息附带文本文件（P3-B）：胶囊 chip，与输入框附件 chip 同款 */
-.msg-files {
+/* 附件文件占位 chip（用户消息尾部路径行）：胶囊样式，与输入框附件 chip 同款 */
+.msg-att-files {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }
 
-.msg-files:empty {
+.msg-att-files:empty {
   display: none;
 }
 
-.msg-file-chip {
+.msg-att-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -250,38 +301,21 @@ const timeLabel = computed(() => {
   color: var(--foreground);
 }
 
-.msg-file-icon {
+.msg-att-icon {
   display: inline-flex;
   color: var(--muted-foreground);
   flex-shrink: 0;
 }
 
-.msg-file-icon svg {
+.msg-att-icon svg {
   width: 14px;
   height: 14px;
 }
 
-.msg-file-name {
+.msg-att-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 多模态门控：图片未发送的提示（模型不支持图片输入） */
-.msg-image-skipped {
-  margin-top: 6px;
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: color-mix(in oklab, var(--muted-foreground) 75%, var(--foreground));
-  background: color-mix(in oklab, var(--warning, #b58900) 8%, transparent);
-  border: 1px solid color-mix(in oklab, var(--warning, #b58900) 22%, transparent);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  user-select: none;
-}
-
-.msg-user .msg-image-skipped {
-  text-align: right;
 }
 
 /* 消息图片：固定 120px 正方形缩略图（cover 裁剪填满），点击弹窗看原图 */

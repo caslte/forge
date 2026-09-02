@@ -17,7 +17,6 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { ConversationService } from '../../src/conversation/conversationService.ts';
 import { ConversationApi } from '../../src/rpc/conversationMethods.ts';
-import { TEXT_ATTACHMENT_PREAMBLE } from '../../src/conversation/conversationService.ts';
 import type { PiConversationAdapter, ConversationMessage } from '../../src/conversation/conversationService.ts';
 import type { RpcResult } from '../../src/rpc/projectMethods.ts';
 
@@ -241,11 +240,11 @@ test('信封：所有方法返回 { code, message, data }', async () => {
   }
 });
 
-test('conversation/sendMessage：文本附件拼入受控 prompt 片段，图片附件透传（P3-B）', async () => {
+test('conversation/sendMessage：附件统一给路径，不再读取 params.attachments 拼接片段', async () => {
   const { api, adapter } = makeApi();
   const result = await api.methods['conversation/sendMessage']({
     sessionId: 'sess-1',
-    content: '读一下',
+    content: '读一下\nC:\\repo\\readme.md',
     attachments: [
       { kind: 'text', name: 'readme.md', content: '项目说明' },
       { kind: 'image', name: 'pic.png', mimeType: 'image/png', data: 'YWJj' },
@@ -254,6 +253,6 @@ test('conversation/sendMessage：文本附件拼入受控 prompt 片段，图片
   assert.equal(result.code, 0);
   assert.equal(adapter.sendCalls.length, 1);
   const call0 = adapter.sendCalls[0]!;
-  // 文本附件以「不可信数据声明 + [附件：name] 片段」拼入 content；图片附件仅在 options 透传
-  assert.match(call0.content, new RegExp(`^读一下\\n\\n${TEXT_ATTACHMENT_PREAMBLE}\\n\\n\\[附件：readme\\.md\\]\\n项目说明$`));
+  // 路径行已是消息文本的一部分：content 原样透传，不追加任何受控片段
+  assert.equal(call0.content, '读一下\nC:\\repo\\readme.md');
 });

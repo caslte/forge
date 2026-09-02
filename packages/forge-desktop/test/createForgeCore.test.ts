@@ -18,7 +18,6 @@ import {
   generateSessionTitle,
   invoke,
 } from '../src/createForgeCore.ts';
-import { TEXT_ATTACHMENT_PREAMBLE } from '@forge/core';
 import { MockModelsFileAdapter, MockKeychainAdapter } from '../src/mock/modelAdapters.ts';
 import type {
   PiAgentSessionFactory,
@@ -1266,14 +1265,12 @@ test('自动重试耗尽：auto_retry_end(success=false) 后进入终态 error�
   }
 });
 
-test('generateSessionTitle：附件拼片段不进标题', () => {
-  // 现格式：正文 + 不可信声明 + [附件：name] 块
-  const composed = `这个文件能识别吗\n\n${TEXT_ATTACHMENT_PREAMBLE}\n\n[附件：build.sh]\n#!/bin/bash\necho hi`;
-  assert.equal(generateSessionTitle(composed), '这个文件能识别吗');
-  // 兼容：无声明、正文后直接 [附件：name] 块
-  assert.equal(generateSessionTitle('能看到吗\n\n[附件：a.txt]\nhello'), '能看到吗');
-  // 纯附件消息：回退「新会话」
-  assert.equal(generateSessionTitle(`\n\n${TEXT_ATTACHMENT_PREAMBLE}\n\n[附件：a.txt]\nx`), '新会话');
+test('generateSessionTitle：附件路径行的消息取首行生成标题', () => {
+  // 统一给路径后路径行随正文换行追加，标题只取首行
+  assert.equal(generateSessionTitle('解释一下\nC:\\repo\\a.ts'), '解释一下');
+  assert.equal(generateSessionTitle('看看\nC:\\Users\\x\\AppData\\Local\\Temp\\forge-paste-143025.png'), '看看');
+  // 纯路径消息（无正文）：用路径本身
+  assert.equal(generateSessionTitle('C:\\repo\\a.ts'), 'C:\\repo\\a.ts');
   // 无附件消息行为不变
   assert.equal(generateSessionTitle('第一句。第二句'), '第一句');
 });

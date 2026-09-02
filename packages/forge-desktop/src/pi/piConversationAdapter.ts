@@ -7,7 +7,6 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 import type {
-  ConversationAttachment,
   ConversationMessage,
   ConversationCompactResult,
   ConversationCompactedPayload,
@@ -32,8 +31,6 @@ export interface PiAgentSessionFactoryOptions {
   cwd?: string;
   /** forge 模型 ID 字符串，或已解析的 pi Model 对象（热切换时由适配器解析后传入） */
   model?: unknown;
-  /** 附件（P3-B）：与 core ConversationAttachment 结构一致，adapter 转 pi image content */
-  attachments?: ConversationAttachment[];
   /** 会话生效思考级别（MP-S05）：创建会话时应用；与当前已应用级别不同时运行时调整 */
   thinkingLevel?: string;
 }
@@ -57,13 +54,6 @@ export type MinimalPiSession = {
    * 使已保存的 API Key 引用立即生效；真实 AgentSession 经 modelRuntime 暴露。
    */
   modelRuntime?: { refresh(options?: unknown): Promise<unknown> };
-};
-
-/** pi 图片附件最小结构（真实 ImageContent 兼容：{ type:'image', data, mimeType }） */
-export type MinimalImageContent = {
-  type: 'image';
-  data: string;
-  mimeType: string;
 };
 
 /** 适配器构造选项（模型解析器可注入；缺省走真实 pi models.json 解析） */
@@ -383,13 +373,9 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     // lease.events 缺失（扩展未激活）时跳过；每个会话独立订阅，removeSession 时退订。
     this.bindSubagentBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     try {
-      // P3-B：附件图片随 prompt 透传（pi prompt 第二参为 PromptOptions.images）
-      const images = normalizeImages(options.attachments);
-      if (images.length > 0) {
-        await lease.session.prompt(content, { images });
-      } else {
-        await lease.session.prompt(content);
-      }
+      // 附件统一给路径：路径行已随 content 发送，模型自行 read；
+      // 非视觉模型遇图片时 pi-ai 传输层自动降级占位，adapter 恒单参调用
+      await lease.session.prompt(content);
     } catch (err) {
       // 轮次已结束（无论成败）：进行中快照不再需要，避免与已落盘消息重复
       this.livePartial.delete(sessionId);
@@ -1009,23 +995,6 @@ function extractToolResultText(result: unknown): string | null {
     .filter((t) => t !== '')
     .join('\n');
   return text === '' ? null : text;
-}
-
-/** 从附件中提取图片内容（P3-B）：仅 kind=image 的附件转 pi image content */
-function normalizeImages(
-  attachments: ConversationAttachment[] | undefined,
-): MinimalImageContent[] {
-  if (!Array.isArray(attachments)) {
-    return [];
-  }
-  return attachments
-    .filter((a): a is { kind: 'image'; name: string; mimeType: string; data: string } => a.kind === 'image')
-    .map((a) => ({
-      type: 'image' as const,
-      data: a.data,
-      mimeType: a.mimeType,
-    }))
-    .filter((a) => a.data.length > 0);
 }
 
 /**

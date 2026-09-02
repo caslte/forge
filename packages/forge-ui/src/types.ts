@@ -29,12 +29,8 @@ export interface ConversationMessage {
   content: string;
   ts: string;
   id?: string;
-  /** 消息附带图片（P3-B：用户粘贴截图/上传图片，base64 数据） */
+  /** 消息附带图片（旧会话历史：P3-B 时代的 base64 图片；新会话附件走路径+read，不再产生） */
   images?: Array<{ data: string; mimeType: string }>;
-  /** 消息附带文本文件名列表（P3-B：占位 chip 展示，内容不展示） */
-  files?: string[];
-  /** 前端本地标记：该用户消息的图片因当前模型不支持图片输入而未发送（多模态门控） */
-  imageSkipped?: boolean;
   /** 工具调用附带（role=tool 时） */
   toolName?: string;
   toolEventId?: string;

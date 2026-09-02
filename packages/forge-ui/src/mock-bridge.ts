@@ -601,14 +601,23 @@ const bridge: ForgeBridge = {
     selectDirectory: async () => 'D:/work/aiwork',
     selectFiles: async () => [],
   },
+  file: {
+    // 浏览器 dev 下无 Electron webUtils，拿不到盘上路径
+    getPathForFile: () => '',
+    scanAttachments: async (paths) =>
+      paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() ?? p, flagged: false })),
+    savePasteImage: async () => null,
+    readImage: async () => null,
+  },
 };
 
 /**
  * 首条用户消息生成会话标题（与 forge-desktop generateSessionTitle 同规则的精简版）：
- * 去换行空白 → 按首句截断 → 超 30 字符加省略号。
+ * 取首行（附件路径行不进标题）→ 按首句截断 → 超 30 字符加省略号。
  */
 function generateMockTitle(rawContent: string): string {
-  const cleaned = rawContent.replace(/\s+/g, ' ').trim();
+  const firstLine = rawContent.split('\n', 1)[0] ?? rawContent;
+  const cleaned = firstLine.replace(/\s+/g, ' ').trim();
   if (cleaned.length === 0) return '新会话';
   const m = cleaned.match(/^(.+?)[。！？!?.;；]/);
   const first = m && m[1] !== undefined ? m[1].trim() : cleaned;
