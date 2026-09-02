@@ -1,5 +1,46 @@
 # 变更日志
 
+# 变更日志
+
+## v3.16 (首条消息自动命名不再包含附件占位)
+
+- 用户反馈：带附件发送首条消息时，会话树标题变成「这个文件能识别吗[附件：build_docker_or…]」——附件拼片段被当作标题的一部分。
+- 根因（`createForgeCore.ts` `generateSessionTitle`）：RPC 层把文本附件以「不可信声明 + [附件：<name>] 块」拼在正文末尾后才进 `onFirstUserMessage`，标题生成直接对拼接后全文截首句，附件块（及其文件内容）随入标题。
+- 修复：`generateSessionTitle` 先剥离拼接的附件片段（按声明标记截断 + 兼容旧格式裸 `[附件：<name>]` 块）再取首句；纯附件消息（无正文）回退「新会话」。已有会话的脏标题可右键重命名修正。
+- 测试：forge-desktop `createForgeCore.test.ts` 新增「generateSessionTitle：附件拼片段不进标题」（现格式/旧格式/纯附件/无附件不变共 4 断言）；forge-desktop 150 全过 + typecheck 通过。
+- 文档同步：PRD 02 跨模块影响补附件不进标题规则；docs/test/02_session/e2e.md E-SM-001 断言补充。
+
+## v3.15 (子 agent 视图三处体验修正 + 状态回退 bug)
+
+- 用户实测反馈三问题：1) 运行中顶部占位文案"子 Agent 排队中，开始运行后此处将显示进展"多余，且跑了 11 秒状态仍显示"排队中"；2) 消息流外层套边框容器太丑；3) 完成后正文是原始 markdown 源码（pre 纯文本），与过程中的渲染效果不一致。
+- 根因与修复：
+  - **状态回退 bug（forge-core）**：pi-subagents 实际事件序为 started（spawn 内部）先于 created（工具处理器后补），`SubagentService.applyEvent` 原本允许活跃态任意互转，迟到的 created(queued) 把 running 拉回 queued → 全程误显"排队中"。修复：活跃态只前进不回退（running→queued 回退忽略），新增 U-SA-010 单测。
+  - **占位与外框（forge-ui）**：删除占位文案块与 `.srv-stream` 边框容器；改为底部无边框"正在思考…/正在输出…"指示（与主会话一致），消息流直接排版。
+  - **终态一致性（forge-ui）**：终态不再切换视图——同一条消息流保留（末条 assistant 正文即 result），指示消失、附 Token 用量；无过程数据时 completed 兜底用 result 全文同源 markdown 渲染。补终态切换时的 tail 补拉（watch isActive），否则完成瞬间拿不到含 result 的完整尾部。
+- **尾部悬挂围栏清理（v3.15 追加，用户实测反馈）**：子 agent 嵌套代码块时常把围栏写不配平，渲染成空代码块框或把收尾语套进代码框。`subagentStream.ts` 新增 `stripDanglingFence`（CommonMark 语义模拟开合；消息以未闭合围栏收尾时丢弃该行围栏，其后内容转普通文本），消息流 flush 与 result 兜底路径共用；配平围栏不受影响。
+- **工具折叠分组（v3.15 追加，用户实测反馈）**：子 agent 连续工具摘要行刷屏（截图一长串 grep/bash）观感复杂。对齐主会话 tool-group 交互：`subagentStream.ts` 新增 `groupStreamNodes`（连续 ≥2 工具聚组，纯函数），视图渲染折叠头（"工具调用 N 次"+工具名×次数 chips，默认收起，点击展开），单工具行不分组。
+- 测试：forge-core 310（+1）、forge-ui 58（+3）全过；subagent e2e 11/11（SUB-E2E-005/011 断言改为新视图语义，mock 终态末条正文=result、双工具连发触发分组，对齐真实链路）；vue-tsc 通过。
+- 文档同步：PRD 06 SA-F04 业务规则/AC-SA-013/025/026 改版；docs/test/06_subagent E-SA-010 重写、U-SA-010 新增、coverage-matrix 同步。
+
+## v3.14 (子 agent 实时过程改为可读消息流)
+
+- 用户反馈：切到子 agent 后"实时过程"区显示原始 JSON 协议流与命令输出（如 grep 结果、{"type":"toolResult",...}），用户看不懂；期望与主会话一致看渲染后的文字，大概了解子 agent 在干什么。
+- 根因（`SubagentResultView.vue`）：把 `subagent/queryOutput` 返回的输出文件尾部当纯文本 `<pre>` 渲染。该文件是 pi-subagents 写的 JSONL（type=user/assistant/toolResult 条目），内容是 SDK 协议对象而非给人看的过程；主会话的渲染链路（pushDelta→renderMarkdown）与它完全不相通。
+- 修复：
+  - forge-ui 新增 `utils/subagentStream.ts`：把输出文件尾部按 JSONL 行解析成时间线——assistant 文本块 → markdown 正文条目；toolCall/toolResult → 工具摘要行（工具名+参数预览+running/ok/error，按 toolCallId 配对，切断时从 result 合成）；thinking/user 条目与解析失败行（尾部切断首行残片）静默跳过。
+  - `SubagentResultView.vue`：运行中正文改为消息流渲染（renderMarkdown 与主会话同源 + 工具摘要行 + 自动滚动）；删除终态"执行过程"折叠面板与文件大小显示（终态直接看 result 正文）。
+  - `mock-bridge.ts` queryOutput 改返回真实 JSONL 格式（运行中按 startedAt 逐步推进，不含末条终态正文）。
+- 测试：新增 `test/subagentStream.test.ts`（6 用例）；E2E SUB-E2E-011 重写为消息流断言，subagent 套件 11 用例全过；vue-tsc 通过。
+- 文档同步：PRD 06 SA-F04 业务规则与 AC-SA-025/026 改版；docs/test/06_subagent 补 E-SA-010（e2e.md）、U-SA-009（unit.md）、coverage-matrix 两行。
+
+## v3.13 (运行中会话状态点选中态一致性)
+
+- 用户反馈：会话运行中时选中该会话，会话树的状态点（黄点/脉动）不显示；移开（切到其他会话）后状态点才出现。状态可见性与选中态耦合，同一会话表现不一致。
+- 根因（`ProjectTree.vue` `shouldShowDot`）：函数首位写死 `currentId === s.sessionId return false`——把"选中高亮"与"状态点"绑在一起，隐含假设高亮已携带状态信息。实际上高亮只表达选中、不表达状态；运行中/出错的状态点必须独立可见，否则用户看不到会话在跑。
+- 修复：删除该特判，`shouldShowDot` 不再依赖 `currentSessionId`。done 状态的「查看后隐藏绿点」语义仍由 `doneReadSessions` + `selectSession` / `streaming→done` watcher 兜底，与选中态无关。
+- 验证：UI e2e 新增 SESSION-E2E-002b（选中 running 会话→状态点存在；切走→状态点仍存在），全量 47 用例通过；`vue-tsc` typecheck 通过。
+- 文档同步：`docs/test/02_session/coverage-matrix.md` 新增 E-SM-002b（AC-SM-010 正交一致性回归）。
+
 ## v3.12 (草稿态思考级别切换器：新建会话即可见可选，级别随会话创建写入)
 
 - 用户反馈：新建会话时输入框模型选择旁无思考级别切换器，发送首条消息后才出现。

@@ -60,11 +60,14 @@
       "lastActiveAt": "...",
       "createdAt": "...",
       "modelOverride": null,
+      "doneReadAt": null,
       "status": "idle"
     }
   ]
 }
 ```
+
+`doneReadAt`：最近一次查看完成结果时间（会话树绿点已读落盘，见 §5）；null/缺省 = 完成结果未读。
 
 ---
 
@@ -101,7 +104,25 @@
 
 ---
 
-## 5. 会话状态
+## 5. 标记完成结果已读
+
+### session/markSessionRead
+
+**说明**：标记会话完成结果已读（会话树绿点落盘，SM-S04/SM-S05）。前端在**查看中的会话完成结果未读**时调用（点击已完成会话、正查看时会话完成、多窗口画布聚焦）。已读标记存 forge-store `session.doneReadAt`，跨窗口/重启一致；新一轮完成（状态非 done→done 转入）时由 forge-core 自动清回 null，绿点重新提示。
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| sessionId | string | 是 | 会话 ID |
+
+响应：更新后的会话对象（含 `doneReadAt`）。
+
+**事件**：成功后发射 `session.updated`（各窗口会话树刷新绿点）。
+
+---
+
+## 6. 会话状态
 
 ### session/getSessionStatus
 
@@ -126,7 +147,7 @@
 
 ---
 
-## 6. 多窗口会话订阅
+## 7. 多窗口会话订阅
 
 ### session/attachSessionWindow
 
@@ -159,7 +180,7 @@
 
 ---
 
-## 7. 事件
+## 8. 事件
 
 ### session.statusChanged
 
@@ -181,9 +202,17 @@
 { "sessionId": "sess_xxx" }
 ```
 
+### session.updated
+
+**触发**：会话元数据变更（重命名、首条消息自动命名、标记完成结果已读）。
+
+```json
+{ "session": { "sessionId": "sess_xxx", "doneReadAt": "..." } }
+```
+
 ---
 
-## 8. 错误码
+## 9. 错误码
 
 | code | 说明 |
 |------|------|

@@ -312,15 +312,23 @@ test('queryModels：返回 { models, defaultModel }（A-MP-005 前置）', async
   }
 });
 
-test('setDefault：合法模型 → code 0 data null 并持久化；未知模型 → 1004（A-MP-005）', async () => {
-  const { api, modelsFile, store } = makeApi();
+test('setDefault：合法模型 → code 0 data null 并持久化 + 发射 providersChanged；未知模型 → 1004（A-MP-005）', async () => {
+  const { api, modelsFile, store, events } = makeApi();
   modelsFile.modelNames = ['gpt-4o'];
+  const changed: unknown[] = [];
+  events.on('model.providersChanged', (payload) => changed.push(payload));
   const ok = await api.methods['model/setDefault']({ model: 'gpt-4o' });
   assert.equal(ok.code, 0);
   assert.equal(ok.data, null);
   assert.equal(store.getSetting('defaultModel'), 'gpt-4o');
+  // 成功后发射 providersChanged（同步草稿态全局默认展示）；清除默认同样发射
+  assert.equal(changed.length, 1);
+  await api.methods['model/setDefault']({ model: null });
+  assert.equal(changed.length, 2);
+  // 失败（未知模型）不发射
   const unknown = await api.methods['model/setDefault']({ model: 'nope' });
   assert.equal(unknown.code, 1004);
+  assert.equal(changed.length, 2);
   // 参数校验：model 缺失/空白/非字符串/null 之外的值 → 1001
   assert.equal((await api.methods['model/setDefault']({})).code, 1001);
   assert.equal((await api.methods['model/setDefault']({ model: '  ' })).code, 1001);

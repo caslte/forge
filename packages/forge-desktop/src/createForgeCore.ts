@@ -24,6 +24,7 @@ import {
   createModelApi,
   SubagentService,
   SUBAGENT_DONE_TIMEOUT_MS,
+  TEXT_ATTACHMENT_PREAMBLE,
   type RpcResult,
   type ModelsFileAdapter,
   type KeychainAdapter,
@@ -248,6 +249,11 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
 
   conversationAdapter = new PiConversationAdapter(piAgentSessionFactory, {
     resolveSessionFile,
+    // P3-A 重启恢复：无 lease 时磁盘估算用量需要会话模型（DB 持久化）解析 contextWindow
+    resolveSessionModel: async (sessionId) => {
+      const modelResult = await modelService.getSessionModel(sessionId);
+      return modelResult.ok ? modelResult.data.model ?? undefined : undefined;
+    },
     resolveDefaultThinkingLevel: readDefaultThinkingLevel,
     subagentService,
     onMainTurnEnd: (sessionId: string) => subagentService.notifyMainTurnEnd(sessionId),
@@ -556,11 +562,15 @@ function readStringParam(params: unknown, key: string): string | null {
 
 /**
  * 从首条用户消息生成会话标题。
- * 规则：去除换行与首尾空白，按句号/问号/感叹号/分号截断第一句，
+ * 规则：剥离拼在正文后的附件片段（P3-B：不可信声明 + [附件：<name>] 块，附件占位不进标题），
+ * 再去除换行与首尾空白，按句号/问号/感叹号/分号截断第一句，
  * 超过 30 字符截断并加省略号，全空则回退为「新会话」。
  */
 export function generateSessionTitle(rawContent: string): string {
-  const cleaned = rawContent.replace(/\s+/g, ' ').trim();
+  // ponytail: 按固定拼接格式截断；若用户正文自身恰好含「\n\n[附件：」会被误切，真遇到再上结构化传递
+  const bare = (rawContent.split(TEXT_ATTACHMENT_PREAMBLE)[0] ?? rawContent)
+    .replace(/\n\n\[附件：[^\]\n]*\]\n[\s\S]*$/, '');
+  const cleaned = bare.replace(/\s+/g, ' ').trim();
   if (cleaned.length === 0) return '新会话';
   const firstSentenceMatch = cleaned.match(/^(.+?)[。！？!?.;；]/);
   const firstSentence = firstSentenceMatch && firstSentenceMatch[1] !== undefined

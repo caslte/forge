@@ -1,5 +1,5 @@
 /**
- * 子 Agent 管理 E2E（docs/test/06_subagent/e2e.md E-SA-001..009）。
+ * 子 Agent 管理 E2E（docs/test/06_subagent/e2e.md E-SA-001..010）。
  * 自动化等级：mock-backend（window.__forgeMock 注入 subagent 事件序列）。
  *
  * P0 上线门禁用例：每条用例包含 UI 断言 + 负向断言 + 健康守卫。
@@ -329,10 +329,10 @@ test('SUB-E2E-005 @P0 E-SA-007：点子 agent Tab 切换结果视图 + 完成后
 
   await expect(page.locator('.subagent-tab', { hasText: '研究子任务' })).toBeVisible({ timeout: 5_000 });
 
-  // 点 a1 Tab → 切到结果视图
+  // 点 a1 Tab → 切到结果视图（运行中无占位文案，仅思考指示）
   await page.locator('.subagent-tab', { hasText: '研究子任务' }).click();
   await expect(page.locator('.subagent-result-view')).toBeVisible();
-  await expect(page.locator('.subagent-result-placeholder')).toBeVisible();
+  await expect(page.locator('.srv-indicator', { hasText: '正在' })).toBeVisible();
   // 消息流区 v-show 隐藏（元素仍挂载但不可见）
   await expect(page.locator('.conv-messages')).toBeHidden();
 
@@ -368,7 +368,7 @@ test('SUB-E2E-005 @P0 E-SA-007：点子 agent Tab 切换结果视图 + 完成后
     { sid: a.sessionId as string, big },
   );
 
-  await expect(page.locator('.subagent-result-body').first()).toContainText('这是完成结果');
+  await expect(page.locator('.srv-stream-text', { hasText: '这是完成结果' })).toBeVisible();
   await expect(page.locator('.subagent-result-usage')).toContainText('1,000');
   await expect(page.locator('.subagent-result-usage')).toContainText('2,000');
 
@@ -727,17 +727,18 @@ test('SUB-E2E-010 @P1 E-SA-006：多窗口下 A/B 窗口子 agent 各自隔离�
 });
 
 // =====================================================================
-// E-SA-010 实时过程查看（AC-SA-025/026）：运行中结果视图显示实时执行过程，
-// 终态提供"执行过程"折叠回看；过程内容来自 subagent/queryOutput（mock）。
+// E-SA-010 实时过程查看（AC-SA-025/026）：运行中结果视图显示实时消息流
+// （assistant 正文 markdown 渲染 + 工具摘要行），终态直接看 result 正文；
+// 过程内容来自 subagent/queryOutput（mock 返回真实 JSONL 格式）。
 // =====================================================================
-test('SUB-E2E-011 @P1 E-SA-010：运行中实时过程展示 + 终态执行过程回看', async ({ page }) => {
+test('SUB-E2E-011 @P1 E-SA-010：运行中实时消息流展示 + 终态正文', async ({ page }) => {
   const health = attachHealthGuards(page);
   const a = mkSession({ alias: '会话SA011' });
   await boot(page, [a]);
   await page.locator('.tree-session', { hasText: '会话SA011' }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
 
-  // a1 运行中：排队/运行占位文案 + 实时过程区可见（mock 按时间返回过程行）
+  // a1 运行中：占位文案 + 实时消息流可见（mock 返回 JSONL，已运行 10s → 全部中间条目）
   await page.evaluate((sid) => {
     window.__forgeMock!.setSubagents(sid, []);
     window.__forgeMock!.emit(sid, 'subagent.updated', {
@@ -747,7 +748,7 @@ test('SUB-E2E-011 @P1 E-SA-010：运行中实时过程展示 + 终态执行过�
         agentType: 'Explore',
         description: '研究子任务',
         status: 'running',
-        startedAt: new Date().toISOString(),
+        startedAt: new Date(Date.now() - 10_000).toISOString(),
         finishedAt: null,
         result: null,
         error: null,
@@ -757,12 +758,24 @@ test('SUB-E2E-011 @P1 E-SA-010：运行中实时过程展示 + 终态执行过�
   }, a.sessionId as string);
   await expect(page.locator('.subagent-tab', { hasText: '研究子任务' })).toBeVisible({ timeout: 5_000 });
   await page.locator('.subagent-tab', { hasText: '研究子任务' }).click();
-  await expect(page.locator('.subagent-result-placeholder')).toContainText('正在运行');
-  await expect(page.locator('.srv-process')).toBeVisible({ timeout: 5_000 });
-  await expect(page.locator('.srv-process-head')).toContainText('实时过程');
-  await expect(page.locator('.srv-process-text')).toContainText('研究子任务', { timeout: 5_000 });
+  // 无占位文案；底部思考/输出指示（有内容 → 正在输出）
+  await expect(page.locator('.subagent-result-placeholder')).toHaveCount(0);
+  await expect(page.locator('.srv-indicator', { hasText: '正在输出' })).toBeVisible({ timeout: 5_000 });
+  // 连续工具聚为折叠组（默认收起，与主会话一致）：头部计数 + 工具名 chips
+  const groupHead = page.locator('.stg-head');
+  await expect(groupHead).toBeVisible();
+  await expect(groupHead).toContainText('工具调用');
+  await expect(groupHead).toContainText('2 次');
+  // 展开后可见逐条工具摘要行（含状态）；正文 markdown 渲染不受影响
+  await groupHead.click();
+  const lsRow = page.locator('.srv-stream-tool', { hasText: 'ls' });
+  await expect(lsRow).toBeVisible();
+  await expect(lsRow).toContainText('✓');
+  await expect(page.locator('.srv-stream-tool', { hasText: 'grep' })).toBeVisible();
+  await expect(page.locator('.srv-stream-text', { hasText: '正在扫描' })).toBeVisible();
 
-  // a1 完成：正文替换为 result 全文；实时过程区消失，出现折叠面板（默认收起）
+  // a1 完成：同一条消息流保留（末条 assistant 正文 = result，与过程中视图一致），
+  // 指示消失，附 Token 用量；无执行过程回看入口
   await page.evaluate((sid) => {
     window.__forgeMock!.emit(sid, 'subagent.updated', {
       sessionId: sid,
@@ -779,16 +792,10 @@ test('SUB-E2E-011 @P1 E-SA-010：运行中实时过程展示 + 终态执行过�
       },
     });
   }, a.sessionId as string);
-  await expect(page.locator('.subagent-result-body')).toContainText('完成结果全文', { timeout: 5_000 });
-  await expect(page.locator('.srv-process')).toHaveCount(0);
-  const toggle = page.locator('.srv-process-toggle');
-  await expect(toggle).toBeVisible();
-
-  // 展开回看：执行过程内容可见（mock 终态全文含描述）
-  await toggle.click();
-  await expect(page.locator('.srv-process')).toBeVisible();
-  await expect(page.locator('.srv-process-head')).toContainText('执行过程');
-  await expect(page.locator('.srv-process-text')).toContainText('研究子任务', { timeout: 5_000 });
+  await expect(page.locator('.srv-indicator')).toHaveCount(0);
+  await expect(page.locator('.srv-stream-text', { hasText: '完成结果全文' })).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator('.subagent-result-usage')).toContainText('100');
+  await expect(page.locator('.srv-process-toggle')).toHaveCount(0);
 
   health.assertHealthy();
 });

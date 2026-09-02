@@ -18,6 +18,7 @@ export type ForgeMethod =
   | 'session/querySessionList'
   | 'session/deleteSession'
   | 'session/updateSessionAlias'
+  | 'session/markSessionRead'
   | 'session/getSessionStatus'
   | 'session/attachSessionWindow'
   | 'session/detachSessionWindow'

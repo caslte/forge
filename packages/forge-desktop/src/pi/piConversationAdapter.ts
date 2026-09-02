@@ -1,4 +1,11 @@
-import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import fs from 'node:fs';
+
+import {
+  SessionManager,
+  calculateContextTokens,
+  estimateTokens,
+  type AgentSession,
+} from '@earendil-works/pi-coding-agent';
 import type {
   ConversationAttachment,
   ConversationMessage,
@@ -67,6 +74,12 @@ export interface PiConversationAdapterOptions {
    * 重启后内存 sessionFiles 为空，命中磁盘 JSONL 时据此恢复历史。
    */
   resolveSessionFile?: (sessionId: string) => string | undefined;
+  /**
+   * 由 forge sessionId 解析会话模型字符串（P3-A 重启恢复）：无 lease 时磁盘估算
+   * 用量需要模型元数据（contextWindow）。数据源为 DB 持久化的会话模型，
+   * 由 createForgeCore 注入（modelService.getSessionModel）。
+   */
+  resolveSessionModel?: (sessionId: string) => Promise<string | undefined>;
   /**
  * 全局默认思考级别（默认 'off'：thinking 内容默认不产生不展示）。
  * 每次发送前应用到会话（幂等；pi 内部按模型能力 clamp，级别未变化不写
@@ -218,6 +231,11 @@ type MinimalPiEvent = {
 export class PiConversationAdapter {  private readonly leases = new Map<string, PiAgentSessionLease<MinimalPiSession>>();
   private readonly callbacks = new Map<string, SessionCallbacks>();
   private readonly partialContent = new Map<string, string>();
+  /** 当前未完成 assistant 消息的清洗后累计文本（message_end/轮次结束即清空）。
+   *  pi 仅在 message_end 时把 assistant 消息写入会话 JSONL，流式进行中切回会话时
+   *  loadHistory 从磁盘读不到这条消息，后续 delta 会失去追加基点（界面内容截断，
+   *  直到 message_end 才被完整消息覆盖自愈）。loadHistory 用它补上未完成快照。 */
+  private readonly livePartial = new Map<string, string>();
   /** 流式清洗后已转发的累计文本（供增量求差，思考块剥除后仍能正确续传） */
   private readonly forwardedClean = new Map<string, string>();
   private readonly errorListeners = new Map<string, (error: PiConversationError) => void>();
@@ -242,6 +260,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly factory: PiAgentSessionFactory<MinimalPiSession>;
   private readonly resolveModel: (model: string) => Promise<unknown>;
   private readonly resolveSessionFile: ((sessionId: string) => string | undefined) | undefined;
+  /** 会话模型解析（P3-A 磁盘估算用量用）；未注入时无 lease 会话返回未知用量 */
+  private readonly resolveSessionModel: ((sessionId: string) => Promise<string | undefined>) | undefined;
   /** 全局默认思考级别；缺省 'off'（thinking 内容默认不产生不展示） */
   private readonly defaultThinkingLevel: string;
   /** 实时读取全局默认思考级别（MP-QA-G01 修复）；未注入则用 defaultThinkingLevel 常量兜底 */
@@ -257,6 +277,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.defaultThinkingLevel = options.defaultThinkingLevel ?? 'off';
     this.resolveDefaultThinkingLevel = options.resolveDefaultThinkingLevel;
     this.resolveSessionFile = options.resolveSessionFile;
+    this.resolveSessionModel = options.resolveSessionModel;
     this.subagentService = options.subagentService;
     this.mainTurnEndHandler = options.onMainTurnEnd;
     this.resolveModel =
@@ -319,6 +340,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     }
     this.partialContent.set(sessionId, '');
     this.forwardedClean.set(sessionId, '');
+    this.livePartial.set(sessionId, '');
     this.errorEmittedThisTurn.delete(sessionId);
     // 思考级别应用（MP-S05）：目标级别 = options.thinkingLevel（会话生效级别，
     // 由上层 resolveSendOptions 计算：session.thinkingLevel ?? settings，兜底 off），
@@ -369,6 +391,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         await lease.session.prompt(content);
       }
     } catch (err) {
+      // 轮次已结束（无论成败）：进行中快照不再需要，避免与已落盘消息重复
+      this.livePartial.delete(sessionId);
       const error = err instanceof Error ? err : new Error(String(err));
       // 撞车自愈：forge 状态已收敛但 pi run 仍挂着（如看门狗前的竞态窗口）时，
       // prompt 会被 pi 以 "Agent is already processing" 拒绝。abort 掉僵尸轮，
@@ -392,6 +416,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       this.errorEmittedThisTurn.delete(sessionId);
       throw new Error(message);
     }
+    // 轮次正常结束：进行中快照不再需要（终态消息已由 message_end 清理/落盘）
+    this.livePartial.delete(sessionId);
     const hadError = this.errorEmittedThisTurn.has(sessionId);
     this.errorEmittedThisTurn.delete(sessionId);
 
@@ -469,11 +495,18 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     }
     if (sessionFile) {
       const { loadPiSessionHistory } = await import('./loadPiSessionHistory.ts');
-      return await loadPiSessionHistory(sessionFile);
+      const messages = await loadPiSessionHistory(sessionFile);
+      // 流式进行中切回：磁盘还没有这条未完成消息，补上快照作为后续 delta 的追加基点
+      const partial = this.livePartial.get(sessionId);
+      if (partial) {
+        messages.push({ role: 'assistant', content: partial, ts: new Date().toISOString() });
+      }
+      return messages;
     }
     const messages = [...(this.transcripts.get(sessionId) ?? [])];
     if (!messages.some((message) => message.role === 'assistant')) {
-      const content = this.partialContent.get(sessionId);
+      // 优先用清洗后的进行中快照（partialContent 为未清洗原始累计，混流思考未剥除）
+      const content = this.livePartial.get(sessionId) || this.partialContent.get(sessionId);
       if (content) {
         messages.push({ role: 'assistant', content, ts: new Date().toISOString() });
       }
@@ -482,24 +515,88 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   }
 
   /**
-   * 查询会话上下文用量（P3-A）：委托会话 getContextUsage()；无 lease / 不支持时
-   * 返回 null（UI 显示未知，不报错）。
+   * 查询会话上下文用量（P3-A）：优先委托活跃 lease 的 getContextUsage()；
+   * 无 lease（重启后仅加载历史）时回落磁盘估算——pi 的用量本身就是「最后一条
+   * 有效 assistant usage + 尾部字符估算」，会话 JSONL 里都有，不必激活运行时。
+   * 无文件/无模型元数据/无法解析时返回 null（UI 显示未知，不报错）。
    */
-  getContextUsage(
+  async getContextUsage(
     sessionId: string,
-  ): { tokens: number | null; contextWindow: number; percent: number | null } | null {
+  ): Promise<{ tokens: number | null; contextWindow: number; percent: number | null } | null> {
     const lease = this.leases.get(sessionId);
-    if (lease === undefined || typeof lease.session.getContextUsage !== 'function') {
+    if (lease !== undefined && typeof lease.session.getContextUsage === 'function') {
+      const raw = lease.session.getContextUsage();
+      if (raw !== null && raw !== undefined) {
+        const usage = raw as { tokens?: number | null; contextWindow?: number; percent?: number | null };
+        return {
+          tokens: typeof usage.tokens === 'number' ? usage.tokens : null,
+          contextWindow: typeof usage.contextWindow === 'number' ? usage.contextWindow : 0,
+          percent: typeof usage.percent === 'number' ? usage.percent : null,
+        };
+      }
+    }
+    return this.estimateUsageFromDisk(sessionId);
+  }
+
+  /**
+   * 无活跃 lease 时的磁盘用量估算（P3-A 重启恢复）：读会话 JSONL 分支条目，
+   * 按 pi AgentSession.getContextUsage 同一规则计算——最后一条有效 assistant
+   * 用量（totalTokens）+ 之后消息的字符估算；全无用量时逐条估算。压缩边界
+   * 之后没有新 assistant 用量时 tokens 不可信（pi 同样返回 null）。
+   * 解析失败静默降级为 null：用量查询不能破坏历史加载主流程。
+   */
+  private async estimateUsageFromDisk(
+    sessionId: string,
+  ): Promise<{ tokens: number | null; contextWindow: number; percent: number | null } | null> {
+    let sessionFile = this.sessionFiles.get(sessionId);
+    if (sessionFile === undefined && this.resolveSessionFile !== undefined) {
+      sessionFile = this.resolveSessionFile(sessionId);
+    }
+    if (sessionFile === undefined || !fs.existsSync(sessionFile)) return null;
+    const modelString = this.leaseModels.get(sessionId) ?? (await this.resolveSessionModel?.(sessionId));
+    if (typeof modelString !== 'string' || modelString === '') return null;
+
+    try {
+      // 模型解析也在 try 内：会话模型可能已从 models.json 删除，解析失败降级为
+      // 未知用量而非 5000 错误（用量查询不能比历史加载更躁）
+      const piModel = (await this.resolveModel(modelString)) as { contextWindow?: unknown } | undefined;
+      const contextWindow = typeof piModel?.contextWindow === 'number' ? piModel.contextWindow : 0;
+      if (contextWindow <= 0) return null;
+      const entries = SessionManager.open(sessionFile, undefined, undefined).getBranch();
+      // 最后一条有效 assistant（stopReason 非 aborted/error 且 usage>0）的真实用量
+      let usageTokens = 0;
+      let usageIndex = -1;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (entry?.type !== 'message' || entry.message.role !== 'assistant') continue;
+        const assistant = entry.message;
+        if (assistant.stopReason === 'aborted' || assistant.stopReason === 'error') continue;
+        if (!assistant.usage || calculateContextTokens(assistant.usage) <= 0) continue;
+        usageTokens = calculateContextTokens(assistant.usage);
+        usageIndex = i;
+        break;
+      }
+      // 压缩边界守卫（与 pi 一致）：压缩后上下文已重建，边界前的 usage 只会虚报；
+      // 边界之后没有新 assistant 用量则视为未知
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (entries[i]?.type === 'compaction') {
+          if (usageIndex < i) return { tokens: null, contextWindow, percent: null };
+          break;
+        }
+      }
+      // 尾部消息（最后真实用量之后）按字符估算；无任何用量时全量估算
+      let trailing = 0;
+      for (let i = usageIndex + 1; i < entries.length; i++) {
+        const entry = entries[i];
+        if (entry?.type !== 'message') continue;
+        trailing += estimateTokens(entry.message);
+      }
+      const tokens = usageIndex >= 0 ? usageTokens + trailing : trailing;
+      return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
+    } catch {
+      // 损坏/无法解析的会话文件：用量未知（历史加载已有稳定错误提示，此处不重复报错）
       return null;
     }
-    const raw = lease.session.getContextUsage();
-    if (raw === null || raw === undefined) return null;
-    const usage = raw as { tokens?: number | null; contextWindow?: number; percent?: number | null };
-    return {
-      tokens: typeof usage.tokens === 'number' ? usage.tokens : null,
-      contextWindow: typeof usage.contextWindow === 'number' ? usage.contextWindow : 0,
-      percent: typeof usage.percent === 'number' ? usage.percent : null,
-    };
   }
 
   /**
@@ -561,6 +658,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.callbacks.delete(sessionId);
     this.errorListeners.delete(sessionId);
     this.partialContent.delete(sessionId);
+    this.livePartial.delete(sessionId);
     this.forwardedClean.delete(sessionId);
     this.transcripts.delete(sessionId);
     this.sessionFiles.delete(sessionId);
@@ -666,6 +764,9 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       const clean = stripThinkingContent(raw);
       const prev = this.forwardedClean.get(sessionId) ?? '';
       this.forwardedClean.set(sessionId, clean);
+      // 维护未完成快照（loadHistory 切回补齐用）；值为清洗后全文，与持续挂载的
+      // UI 收到的内容严格一致（增量 = clean 相对 prev 的新增部分）
+      this.livePartial.set(sessionId, clean);
       if (prev === clean) return;
       const inc = clean.length >= prev.length ? clean.slice(prev.length) : '';
       if (inc === '') return;
@@ -694,6 +795,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
           : raw;
         if (content !== '') this.partialContent.set(sessionId, content);
+        this.livePartial.delete(sessionId);
         this.errorEmittedThisTurn.add(sessionId);
         this.errorListeners.get(sessionId)?.({ message });
         this.eventHandlers.onError?.(sessionId, { message });
@@ -702,6 +804,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       // pi AssistantMessage.content 为内容块数组（或字符串），提取纯文本
       const content = extractAssistantText(event.message.content);
       this.forwardedClean.set(sessionId, content);
+      // 消息已终态落盘：清掉进行中快照，避免 loadHistory 与文件内容重复
+      this.livePartial.delete(sessionId);
       if (content !== '') {
         this.partialContent.set(sessionId, content);
         const message: ConversationMessage = {

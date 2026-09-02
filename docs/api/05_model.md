@@ -159,7 +159,7 @@
 
 ### model.providersChanged
 
-**触发**：provider 列表变化（新增/修改/删除）。
+**触发**：provider 列表变化（新增/修改/删除），以及全局默认模型变化（`model/setDefault` 成功后，含清除默认；主会话模型变化需同步各视图草稿态展示）。
 
 ```json
 { "providers": [ ... ] }

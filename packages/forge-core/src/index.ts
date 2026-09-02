@@ -54,6 +54,8 @@ export type {
   ConversationCompactResult,
   ConversationCompactedPayload,
 } from './conversation/conversationService.ts';
+// 附件不可信数据声明（值导出：RPC 拼接 + 历史剥离共用同一常量）
+export { TEXT_ATTACHMENT_PREAMBLE } from './conversation/conversationService.ts';
 
 // 对话与消息 RPC 方法层（wu-03-rpc）
 export { ConversationApi, createConversationApi } from './rpc/conversationMethods.ts';

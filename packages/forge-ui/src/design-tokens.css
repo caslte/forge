@@ -80,8 +80,8 @@
 }
 
 :root[data-theme='dark'] {
-  --background: oklch(0.215 0.006 286.2);
-  --foreground: oklch(0.97 0.002 286.3);
+  --background: oklch(0.26 0.006 286.2);
+  --foreground: oklch(0.88 0.002 286.3);
   --card: oklch(0.26 0.006 286.2);
   --card-foreground: var(--foreground);
   --popover: var(--card);

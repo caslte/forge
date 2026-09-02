@@ -283,15 +283,17 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
     }
   }
   const sessionId = props.sessionId ?? createdSessionId!;
-  // 图片附件进本地消息（实时显示；历史回显由 loadPiSessionHistory 解析 JSONL）
+  // 图片/文本附件进本地消息（实时显示占位；历史回显由 loadPiSessionHistory 解析 JSONL）
   const images = (attachments ?? [])
     .filter((a) => a.kind === 'image' && typeof a.data === 'string')
     .map((a) => ({ data: a.data as string, mimeType: a.mimeType ?? 'image/png' }));
+  const files = (attachments ?? []).filter((a) => a.kind === 'text').map((a) => a.name);
   messages.value.push({
     role: 'user',
     content: text,
     ts: new Date().toISOString(),
     images: images.length > 0 ? images : undefined,
+    files: files.length > 0 ? files : undefined,
   });
   isStreaming.value = true;
   autoScrollToBottom();

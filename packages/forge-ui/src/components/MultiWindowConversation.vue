@@ -209,7 +209,12 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
   const t = text.trim();
   if (!t || isStreaming.value) return;
   errorMsg.value = null;
-  messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
+  messages.value.push({
+    role: 'user',
+    content: t,
+    ts: new Date().toISOString(),
+    files: (attachments ?? []).filter((a) => a.kind === 'text').map((a) => a.name),
+  });
   isStreaming.value = true;
   nextTick(scrollToBottom);
   try {

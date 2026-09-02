@@ -13,7 +13,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createForgeCore, invoke } from '../src/createForgeCore.ts';
+import {
+  createForgeCore,
+  generateSessionTitle,
+  invoke,
+} from '../src/createForgeCore.ts';
+import { TEXT_ATTACHMENT_PREAMBLE } from '@forge/core';
 import { MockModelsFileAdapter, MockKeychainAdapter } from '../src/mock/modelAdapters.ts';
 import type {
   PiAgentSessionFactory,
@@ -1259,4 +1264,16 @@ test('自动重试耗尽：auto_retry_end(success=false) 后进入终态 error�
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }
+});
+
+test('generateSessionTitle：附件拼片段不进标题', () => {
+  // 现格式：正文 + 不可信声明 + [附件：name] 块
+  const composed = `这个文件能识别吗\n\n${TEXT_ATTACHMENT_PREAMBLE}\n\n[附件：build.sh]\n#!/bin/bash\necho hi`;
+  assert.equal(generateSessionTitle(composed), '这个文件能识别吗');
+  // 兼容：无声明、正文后直接 [附件：name] 块
+  assert.equal(generateSessionTitle('能看到吗\n\n[附件：a.txt]\nhello'), '能看到吗');
+  // 纯附件消息：回退「新会话」
+  assert.equal(generateSessionTitle(`\n\n${TEXT_ATTACHMENT_PREAMBLE}\n\n[附件：a.txt]\nx`), '新会话');
+  // 无附件消息行为不变
+  assert.equal(generateSessionTitle('第一句。第二句'), '第一句');
 });

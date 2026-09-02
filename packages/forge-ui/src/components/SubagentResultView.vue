@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { call } from '../bridge';
+import { parseSubagentStream, stripDanglingFence, groupStreamNodes } from '../utils/subagentStream';
+import { renderMarkdown } from '@forge/core/markdown';
 import type { Subagent } from '../types';
 
 /**
- * 子 Agent 结果视图（PRD 06 SA-F04）。
+ * 子 Agent 结果视图（PRD 06 SA-F04，v1.2 改版）。
  *
  * 头部：图标 + 描述名 + 类型徽标 + 状态点 + 状态文字 + 实时耗时（运行中每秒刷新，终态停止）。
- * 正文：
- * - running/queued → 占位提示（状态区分文案）+ 实时执行过程（只读 tail，每秒刷新、自动滚动）
- * - completed → result 全文 + Token 用量
- * - failed/stopped → error 信息 + Token 用量（如有）
- * - 空 result → "无结果输出"
- * 终态附"执行过程"折叠面板回看（读取扩展任务输出文件尾部；无文件显示"无过程记录"）。
+ * 正文（与主会话一致的流式阅读体验，运行中与终态共用同一条消息流）：
+ * - 解析输出文件 JSONL → assistant 文本按主会话同源 markdown 渲染，
+ *   工具调用显示摘要行（名称+参数预览+状态）；thinking/user 条目不展示
+ * - 运行中底部“正在思考…/正在输出…”指示（无边框），完成后指示消失、附 Token 用量
+ * - failed/stopped 附错误信息；无过程数据时 completed 用 result 全文兑底（markdown）
  *
- * 头部"终止"按钮：仅当子 agent 活跃（queued/running）时显示，点击抛出 stop 事件由父组件二次确认。
+ * 头部“终止”按钮：仅当子 agent 活跃（queued/running）时显示，点击抛出 stop 事件由父组件二次确认。
  */
 const props = defineProps<{
   subagent: Subagent;
@@ -33,22 +34,27 @@ const isActive = computed(() =>
   props.subagent.status === 'queued' || props.subagent.status === 'running',
 );
 
-// ===== 执行过程（wu-06 v1.1：扩展任务输出文件只读 tail）=====
+// ===== 实时过程（wu-06 v1.2：输出文件 JSONL → 消息流渲染，运行中/终态共用）=====
 
 const outputChunk = ref('');
-const outputExists = ref<boolean | null>(null); // null = 未加载
-const outputSize = ref(0);
-/** 终态"执行过程"折叠面板展开状态（运行中恒展开） */
-const showProcess = ref(false);
-const processTextEl = ref<HTMLElement | null>(null);
+const streamTextEl = ref<HTMLElement | null>(null);
 let loadingOutput = false;
 
-const outputSizeText = computed(() => {
-  if (outputSize.value >= 1024) return `${(outputSize.value / 1024).toFixed(1)} KB`;
-  return `${outputSize.value} B`;
-});
+/** 输出文件尾部 → 渲染时间线（正文条目 + 工具摘要行，连续工具聚为折叠组） */
+const streamItems = computed(() => parseSubagentStream(outputChunk.value));
+const streamNodes = computed(() => groupStreamNodes(streamItems.value));
 
-/** 拉取过程尾部（每秒 tick / 终态展开时调用） */
+/** 展开的工具组（按组内首个工具下标，默认全部收起，与主会话一致） */
+const expandedGroups = ref(new Set<number>());
+
+function toggleGroup(start: number): void {
+  const next = new Set(expandedGroups.value);
+  if (next.has(start)) next.delete(start);
+  else next.add(start);
+  expandedGroups.value = next;
+}
+
+/** 拉取过程尾部（运行中每秒 tick；挂载时终态也拉一次供回看） */
 async function refreshOutput(): Promise<void> {
   if (loadingOutput) return;
   loadingOutput = true;
@@ -57,13 +63,11 @@ async function refreshOutput(): Promise<void> {
       sessionId: props.sessionId,
       agentId: props.subagent.agentId,
     });
-    outputExists.value = res.exists;
-    outputSize.value = res.size;
     if (res.chunk !== outputChunk.value) {
       outputChunk.value = res.chunk;
       // 自动滚动到底（运行中跟随最新输出）
       void nextTick(() => {
-        const el = processTextEl.value;
+        const el = streamTextEl.value;
         if (el) el.scrollTop = el.scrollHeight;
       });
     }
@@ -73,11 +77,6 @@ async function refreshOutput(): Promise<void> {
     loadingOutput = false;
   }
 }
-
-/** 终态展开折叠面板时加载一次（终态文件不再变化） */
-watch(showProcess, (open) => {
-  if (open && !isActive.value && outputExists.value === null) void refreshOutput();
-});
 
 const elapsedMs = computed(() => {
   const start = Date.parse(props.subagent.startedAt);
@@ -118,16 +117,20 @@ function onStop(): void {
   emit('stop', props.subagent.agentId);
 }
 
+/** 终态切换补拉一次：完成后/终止后 tail 才含完整内容（含 result 末条），运行中的 tick 已停 */
+watch(isActive, (active, prev) => {
+  if (prev && !active) void refreshOutput();
+});
+
 onMounted(() => {
-  // 运行中每秒刷新耗时 + 过程；终态停止（elapsedText 取 finishedAt 静态值）
+  // 挂载即拉一次（终态重新打开 Tab 也能回看消息流）；运行中每秒刷新耗时 + 过程
+  void refreshOutput();
   tickTimer = setInterval(() => {
     if (isActive.value) {
       now.value = Date.now();
       void refreshOutput();
     }
   }, 1000);
-  // 运行中挂载即拉一次过程（不等首个 tick）
-  if (isActive.value) void refreshOutput();
 });
 
 onUnmounted(() => {
@@ -164,69 +167,76 @@ onUnmounted(() => {
       >终止</button>
     </header>
 
-    <div class="srv-body">
-      <!-- 运行中/排队占位（状态区分文案） -->
-      <div v-if="isActive" class="subagent-result-placeholder">
-        <span class="thinking-dot"></span>
-        <span class="thinking-dot"></span>
-        <span class="thinking-dot"></span>
-        <span>{{ subagent.status === 'queued'
-          ? '子 Agent 排队中，开始运行后此处将显示进展'
-          : '子 Agent 正在运行，最终结果将在完成时显示' }}</span>
-      </div>
-
-      <!-- 运行中：实时执行过程（只读 tail，每秒刷新、自动滚动） -->
-      <div v-if="isActive" class="srv-process">
-        <div class="srv-process-head">
-          <span>实时过程</span>
-          <span v-if="outputExists" class="srv-process-size">{{ outputSizeText }}</span>
-        </div>
-        <pre v-if="outputExists !== false" ref="processTextEl" class="srv-process-text">{{ outputChunk !== '' ? outputChunk : '加载中…' }}</pre>
-        <div v-else class="srv-process-empty">暂无过程输出</div>
-      </div>
-
-      <!-- 失败 / 终止 -->
-      <template v-else-if="subagent.status === 'failed' || subagent.status === 'stopped'">
-        <div class="subagent-result-error">
-          <div class="srv-error-title">{{ subagent.status === 'failed' ? '执行失败' : '已终止' }}</div>
-          <div class="srv-error-msg">{{ subagent.error ?? '无错误信息' }}</div>
-        </div>
-      </template>
-
-      <!-- completed：result 全文（空 → 无结果输出） -->
-      <template v-else-if="subagent.status === 'completed'">
-        <div v-if="subagent.result === null || subagent.result === ''" class="subagent-result-empty">
-          无结果输出
-        </div>
-        <div v-else class="subagent-result-body">
-          <pre class="subagent-result-text">{{ subagent.result }}</pre>
-        </div>
-      </template>
-
-      <!-- 终态：回看执行过程（折叠面板，读取输出文件尾部） -->
-      <div v-if="!isActive" class="srv-process-panel">
-        <button
-          type="button"
-          class="srv-process-toggle"
-          :aria-expanded="showProcess"
-          @click="showProcess = !showProcess"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" :class="{ expanded: showProcess }">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-          <span>执行过程</span>
-        </button>
-        <div v-if="showProcess" class="srv-process">
-          <div class="srv-process-head">
-            <span>执行过程</span>
-            <span v-if="outputExists" class="srv-process-size">{{ outputSizeText }}</span>
+    <div ref="streamTextEl" class="srv-body">
+      <!-- 消息流：运行中与终态共用同一条流（完成后不切换视图，只停指示 + 附用量）；连续工具聚为折叠组 -->
+      <template v-if="streamNodes.length > 0">
+        <template v-for="(node, ni) in streamNodes" :key="ni">
+          <div
+            v-if="node.kind === 'text'"
+            class="srv-stream-text"
+            v-html="renderMarkdown(node.text)"
+          ></div>
+          <div v-else-if="node.kind === 'tool-group'" class="srv-tool-group">
+            <button class="stg-head" @click="toggleGroup(node.start)">
+              <svg class="stg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /><path d="M5 21l1.5-4.5" /></svg>
+              <span class="stg-label">工具调用</span>
+              <span class="stg-count">{{ node.total }} 次</span>
+              <span class="stg-names">
+                <span v-for="tc in node.counts" :key="tc.name" class="stg-chip">
+                  {{ tc.name }}<span v-if="tc.count > 1" class="stg-chip-count">×{{ tc.count }}</span>
+                </span>
+              </span>
+              <span class="stg-collapse">{{ expandedGroups.has(node.start) ? '▾' : '▸' }}</span>
+            </button>
+            <div class="stg-shell" :class="{ 'is-collapsed': !expandedGroups.has(node.start) }">
+              <div class="stg-body">
+                <div
+                  v-for="(t, ti) in node.items"
+                  :key="ti"
+                  class="srv-stream-tool"
+                  :class="t.status"
+                >
+                  <span class="srv-tool-status" aria-hidden="true">
+                    <span v-if="t.status === 'running'" class="srv-tool-spinner"></span>
+                    <template v-else>{{ t.status === 'ok' ? '✓' : '✗' }}</template>
+                  </span>
+                  <span class="srv-tool-name">{{ t.name }}</span>
+                  <span v-if="t.args" class="srv-tool-args">{{ t.args }}</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <pre v-if="outputExists !== false" ref="processTextEl" class="srv-process-text">{{ outputChunk !== '' ? outputChunk : '加载中…' }}</pre>
-          <div v-else class="srv-process-empty">无过程记录</div>
-        </div>
+          <div v-else class="srv-stream-tool" :class="node.item.status">
+            <span class="srv-tool-status" aria-hidden="true">
+              <span v-if="node.item.status === 'running'" class="srv-tool-spinner"></span>
+              <template v-else>{{ node.item.status === 'ok' ? '✓' : '✗' }}</template>
+            </span>
+            <span class="srv-tool-name">{{ node.item.name }}</span>
+            <span v-if="node.item.args" class="srv-tool-args">{{ node.item.args }}</span>
+          </div>
+        </template>
+      </template>
+
+      <!-- 无过程数据兑底：completed 用 result 全文（同源 markdown 渲染，与过程视图一致） -->
+      <template v-else>
+        <div v-if="subagent.result" class="srv-stream-text" v-html="renderMarkdown(stripDanglingFence(subagent.result))"></div>
+        <div v-else-if="subagent.status === 'completed'" class="subagent-result-empty">无结果输出</div>
+      </template>
+
+      <!-- 运行中指示（无边框，随内容滚动，与主会话一致） -->
+      <div v-if="isActive" class="srv-indicator">
+        <span class="thinking-dot"></span>
+        <span class="thinking-dot"></span>
+        <span class="thinking-dot"></span>
+        <span>{{ streamItems.length > 0 ? '正在输出…' : '正在思考…' }}</span>
+      </div>
+      <!-- 失败 / 终止错误信息 -->
+      <div v-if="subagent.status === 'failed' || subagent.status === 'stopped'" class="subagent-result-error">
+        <div class="srv-error-title">{{ subagent.status === 'failed' ? '执行失败' : '已终止' }}</div>
+        <div class="srv-error-msg">{{ subagent.error ?? '无错误信息' }}</div>
       </div>
 
-      <!-- 终态：token 用量（result 视图 footer） -->
+      <!-- 终态：token 用量 -->
       <div v-if="!isActive && subagent.usage" class="subagent-result-usage">
         <span>输入 {{ subagent.usage.inputTokens.toLocaleString() }} tokens</span>
         <span class="srv-usage-sep">·</span>
@@ -353,13 +363,14 @@ onUnmounted(() => {
   gap: 14px;
 }
 
-.subagent-result-placeholder {
+/* 运行中指示（无边框，与主会话同风格） */
+.srv-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--muted-foreground);
   font-size: 13px;
-  padding: 10px 0;
+  padding: 2px 0;
 }
 
 .thinking-dot {
@@ -386,23 +397,6 @@ onUnmounted(() => {
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
   text-align: center;
-}
-
-.subagent-result-body {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 14px 18px;
-}
-
-.subagent-result-text {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: var(--foreground);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .subagent-result-error {
@@ -444,83 +438,116 @@ onUnmounted(() => {
   color: var(--border);
 }
 
-/* ===== 执行过程（实时 tail / 终态回看）===== */
-.srv-process {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
-  overflow: hidden;
-}
-
-.srv-process-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted-foreground);
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in oklab, var(--muted) 6%, var(--card));
-}
-
-.srv-process-size {
-  font-variant-numeric: tabular-nums;
-  font-weight: 400;
-}
-
-.srv-process-text {
-  margin: 0;
-  padding: 10px 14px;
-  max-height: 260px;
-  overflow-y: auto;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.6;
+/* ===== 实时消息流（输出文件 JSONL → 正文 + 工具摘要行，无边框直接排版）===== */
+/* 正文条目：与主会话 assistant 消息同源的 markdown 渲染 */
+.srv-stream-text {
+  font-size: 13px;
+  line-height: 1.7;
   color: var(--foreground);
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
-.srv-process-empty {
-  padding: 12px 14px;
-  font-size: 12.5px;
-  color: var(--muted-foreground);
+.srv-stream-text :deep(p) { margin: 0 0 8px; }
+.srv-stream-text :deep(p:last-child) { margin-bottom: 0; }
+.srv-stream-text :deep(pre) {
+  background: color-mix(in oklab, var(--muted) 12%, var(--card));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
+.srv-stream-text :deep(code) { font-family: var(--font-mono); font-size: 12px; }
+.srv-stream-text :deep(ul),
+.srv-stream-text :deep(ol) { margin: 4px 0; padding-left: 20px; }
 
-.srv-process-panel {
+/* 工具摘要行：单行紧凑展示（状态 + 名称 + 参数预览） */
+.srv-stream-tool {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--muted) 6%, var(--card));
+  min-width: 0;
 }
 
-.srv-process-toggle {
+.srv-stream-tool.ok .srv-tool-status { color: #10b981; }
+.srv-stream-tool.error .srv-tool-status { color: var(--destructive); }
+
+.srv-tool-status {
+  width: 14px;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
+  justify-content: center;
+}
+
+.srv-tool-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid color-mix(in oklab, var(--muted-foreground) 30%, transparent);
+  border-top-color: var(--brand);
   border-radius: 999px;
-  background: var(--card);
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
+  animation: srv-spin 0.9s linear infinite;
 }
 
-.srv-process-toggle:hover {
-  border-color: var(--brand);
+@keyframes srv-spin {
+  to { transform: rotate(360deg); }
+}
+
+.srv-tool-name {
+  font-weight: 600;
   color: var(--foreground);
+  flex-shrink: 0;
 }
 
-.srv-process-toggle svg {
-  width: 12px;
-  height: 12px;
-  transition: transform var(--transition-fast);
+.srv-tool-args {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.srv-process-toggle svg.expanded {
-  transform: rotate(90deg);
+/* 工具组折叠（与主会话 tool-group 同交互：默认收起，头部计数 + 工具名 chips） */
+.srv-tool-group {
+  border: none;
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--muted) 58%, transparent);
+  overflow: hidden;
 }
+
+.stg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  user-select: none;
+  text-align: left;
+}
+
+.stg-head:hover { background: var(--muted); }
+.stg-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--muted-foreground); }
+.stg-label { font-weight: 600; color: var(--foreground); white-space: nowrap; }
+.stg-count { font-weight: 500; color: var(--muted-foreground); white-space: nowrap; }
+.stg-names { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; flex-wrap: nowrap; }
+.stg-chip { display: inline-flex; align-items: center; gap: 1px; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted) 55%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.stg-chip-count { font-weight: 600; color: var(--foreground); }
+.stg-collapse { flex-shrink: 0; color: var(--muted-foreground); font-size: 12px; }
+.stg-shell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 200ms cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; }
+.stg-shell.is-collapsed { grid-template-rows: 0fr; }
+.stg-body { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 10px; transition: padding 200ms cubic-bezier(0.4, 0, 0.2, 1), gap 200ms cubic-bezier(0.4, 0, 0.2, 1); }
+.stg-shell.is-collapsed .stg-body { padding-top: 0; padding-bottom: 0; gap: 0; }
 </style>

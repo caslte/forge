@@ -112,7 +112,7 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
       title: '选择附件',
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: '图片与文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'txt', 'md', 'json', 'log', 'csv', 'yaml', 'yml', 'toml', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'sh', 'ps1'] },
+        { name: '图片与文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'txt', 'md', 'json', 'log', 'csv', 'yaml', 'yml', 'toml', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h'] },
       ],
     } as Electron.OpenDialogOptions;
     const res = mainWindow
@@ -121,10 +121,10 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     if (res.canceled) {
       return [];
     }
-    const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+    const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
     const MIME: Record<string, string> = {
       png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-      webp: 'image/webp', bmp: 'image/bmp',
+      webp: 'image/webp',
     };
     const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
     const MAX_TEXT_BYTES = 200 * 1024; // 200KB

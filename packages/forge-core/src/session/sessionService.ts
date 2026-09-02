@@ -9,7 +9,7 @@
  * 注入的 PiSessionAdapter 适配器完成，测试注入 mock。
  *
  * 设计决策：
- * 1. 错误码映射（docs/api/02_session.md §8）：
+ * 1. 错误码映射（docs/api/02_session.md §9）：
  *    - 1001 参数错误：projectPath / sessionId 为空、别名空。
  *    - 1002 会话/项目不存在：createSession 项目未注册，其余方法会话未注册。
  *    - 1004 会话重复开窗（TD-SM-04：一会话至多一个观察窗口）。
@@ -35,7 +35,7 @@ import path from 'node:path';
 import { ForgeStore, normalizeProjectPath } from '../store/index.ts';
 import type { SessionRecord } from '../types/forge-store.ts';
 
-/** 会话运行状态（docs/api/02_session.md §5：idle / running / done / error） */
+/** 会话运行状态（docs/api/02_session.md §6：idle / running / done / error） */
 export type SessionStatus = 'idle' | 'running' | 'done' | 'error';
 
 /**
@@ -124,6 +124,7 @@ export class SessionService {
       createdAt: now,
       modelOverride: null,
       thinkingLevel: null,
+      doneReadAt: null,
     };
     this.store.saveSession(session);
     return { ok: true, data: { session } };
@@ -269,12 +270,41 @@ export class SessionService {
   /**
    * 会话运行时状态驱动（内部辅助，供 rpc 层 / 测试驱动状态）。
    * 直接写入内存状态表；本层不发射事件（事件接线在 rpc 层）。
+   * 附带：非 done→done 的完成转进入口清除已读标记（doneReadAt→null），
+   * 会话树在新一轮完成后重新提示绿点；done→done 重复写不清（避免同轮重复
+   * 事件把已读会话重新点亮）。
    * @param sessionId 会话 ID
    * @param status 目标状态
    * @param opts 预留选项（当前忽略，供 rpc 层扩展事件发射等行为）
    */
   setSessionStatus(sessionId: string, status: SessionStatus, opts?: SessionStatusOptions): void {
     void opts;
+    const prev = this.sessionRuntimeStates.get(sessionId);
     this.sessionRuntimeStates.set(sessionId, status);
+    if (status === 'done' && prev !== 'done') {
+      const session = this.store.getSession(sessionId);
+      if (session?.doneReadAt) {
+        this.store.saveSession({ ...session, doneReadAt: null });
+      }
+    }
+  }
+
+  /**
+   * 标记完成结果已读（会话树绿点落盘，SM-S05）：写 doneReadAt=now。
+   * 跨窗口/重启一致（存 forge-store，替代原 UI 内存态 doneReadSessions）。
+   * @param sessionId 会话 ID
+   * @returns 成功返回更新后的会话；空 ID 返回 1001；会话不存在返回 1002
+   */
+  markSessionRead(sessionId: string): SessionResult<{ session: SessionRecord }> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    const session = this.store.getSession(sessionId);
+    if (session === undefined) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    const updated: SessionRecord = { ...session, doneReadAt: new Date().toISOString() };
+    this.store.saveSession(updated);
+    return { ok: true, data: { session: updated } };
   }
 }

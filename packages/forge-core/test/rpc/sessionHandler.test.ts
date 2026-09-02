@@ -409,3 +409,28 @@ test('信封：所有方法返回 { code, message, data }', async () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+test('A-SM-009：markSessionRead → code 0 + doneReadAt 落库 + session.updated 发射；1001/1002', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { api, store, events } = makeApi(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const id = await createSessionUnder(api, key);
+
+    const updatedPayloads: unknown[] = [];
+    events.on('session.updated', (p: unknown) => updatedPayloads.push(p));
+
+    const result = await api.methods['session/markSessionRead']({ sessionId: id });
+    assert.equal(result.code, 0);
+    const record = store.getSession(id);
+    assert.ok(record?.doneReadAt);
+    assert.equal(updatedPayloads.length, 1);
+
+    // 参数校验 / 会话不存在
+    assert.equal((await api.methods['session/markSessionRead']({ sessionId: '' })).code, 1001);
+    assert.equal((await api.methods['session/markSessionRead']({ sessionId: 'sess-nope' })).code, 1002);
+    assert.equal((await api.methods['session/markSessionRead']({})).code, 1001);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

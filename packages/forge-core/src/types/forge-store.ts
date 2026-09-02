@@ -35,6 +35,9 @@ export interface ProjectRecord {
  * @param createdAt 创建时间（ISO8601）
  * @param modelOverride 会话级模型覆盖（模块 05；空则用全局默认）
  * @param thinkingLevel 会话级思考级别覆盖（模块 05 MP-S05：off/minimal/low/medium/high/xhigh/max；空则用全局默认）
+ * @param doneReadAt 最近一次查看完成结果时间（ISO8601，会话树绿点已读落盘）。
+ *   null/缺省=完成结果未读（绿点显示）；新一轮完成（状态转 done）时由服务层清回 null。
+ *   可选字段：旧数据无此字段，视为未读。
  */
 export interface SessionRecord {
   sessionId: string;
@@ -44,6 +47,7 @@ export interface SessionRecord {
   createdAt: string;
   modelOverride: string | null;
   thinkingLevel: string | null;
+  doneReadAt?: string | null;
 }
 
 /** settings 表当前键集合（schema.md 设计说明） */

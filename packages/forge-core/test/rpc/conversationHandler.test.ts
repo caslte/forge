@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { ConversationService } from '../../src/conversation/conversationService.ts';
 import { ConversationApi } from '../../src/rpc/conversationMethods.ts';
+import { TEXT_ATTACHMENT_PREAMBLE } from '../../src/conversation/conversationService.ts';
 import type { PiConversationAdapter, ConversationMessage } from '../../src/conversation/conversationService.ts';
 import type { RpcResult } from '../../src/rpc/projectMethods.ts';
 
@@ -253,6 +254,6 @@ test('conversation/sendMessage：文本附件拼入受控 prompt 片段，图片
   assert.equal(result.code, 0);
   assert.equal(adapter.sendCalls.length, 1);
   const call0 = adapter.sendCalls[0]!;
-  // 文本附件以 [附件：name] 片段拼入 content；图片附件仅在 options 透传
-  assert.match(call0.content, /^读一下\n\n\[附件：readme\.md\]\n项目说明$/);
+  // 文本附件以「不可信数据声明 + [附件：name] 片段」拼入 content；图片附件仅在 options 透传
+  assert.match(call0.content, new RegExp(`^读一下\\n\\n${TEXT_ATTACHMENT_PREAMBLE}\\n\\n\\[附件：readme\\.md\\]\\n项目说明$`));
 });

@@ -18,10 +18,11 @@
  * 4. 异常隔离：服务层意外抛错（如 adapter 异常、store 落盘失败）被捕获并返回 5000，
  *    不向调用方泄漏异常细节；错误日志用英文 + `[方法名]` 前缀（docs/specs/common/
  *    coding-style.md）。
- * 5. 事件：model.providersChanged 在 saveProvider / deleteProvider 成功后发射，载荷
- *    为重新查询后的 provider 列表（docs/api/05_model.md §7）；事件汇（EventSink）
- *    为 EventEmitter 兼容接口（仅需 emit），默认使用 node:events EventEmitter，
- *    调用方可注入自定义汇（如跨进程转发）。
+ * 5. 事件：model.providersChanged 在 saveProvider / deleteProvider / setDefault 成功后发射，载荷
+ *    为重新查询后的 provider 列表（docs/api/05_model.md §7）；setDefault 也发射是因为
+ *    主会话模型变化需同步草稿态展示（App.vue 仅经该事件刷新全局默认模型）；事件汇
+ *    （EventSink）为 EventEmitter 兼容接口（仅需 emit），默认使用 node:events
+ *    EventEmitter，调用方可注入自定义汇（如跨进程转发）。
  * 6. 异步方法统一经 call 包装，返回 Promise<RpcResult>；方法映射签名兼容同步/异步
  *    handler。
  */
@@ -271,18 +272,22 @@ export class ModelApi {
     return this.call('queryModels', () => this.service.queryModels());
   }
 
-  /** model/setDefault：设置全局默认模型（MP-S02），未知模型由服务层返回 1004 */
-  private setDefault(params: unknown): Promise<RpcResult> {
+  /** model/setDefault：设置全局默认模型（MP-S02），未知模型由服务层返回 1004；成功后发射 providersChanged（同步草稿态全局默认展示） */
+  private async setDefault(params: unknown): Promise<RpcResult> {
     if (!isRecord(params)) {
-      return Promise.resolve(fail(1001, '参数错误：model 必须为字符串或 null'));
+      return fail(1001, '参数错误：model 必须为字符串或 null');
     }
     const model = params.model;
     if (model !== null && (typeof model !== 'string' || model.trim() === '')) {
-      return Promise.resolve(fail(1001, '参数错误：model 必须为字符串或 null'));
+      return fail(1001, '参数错误：model 必须为字符串或 null');
     }
-    return this.call('setDefault', () =>
+    const result = await this.call('setDefault', () =>
       this.service.setDefault(model === null ? null : model.trim()),
     );
+    if (result.code === 0) {
+      await this.emitProvidersChanged();
+    }
+    return result;
   }
 
   /** model/getSessionModel：查询会话生效模型（MP-S02），未知会话由服务层返回 1002 */

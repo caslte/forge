@@ -117,3 +117,16 @@ mock-bridge 需扩展（开发期实现）：
   1. 无子 agent 会话：Tab 栏不渲染；发送→流式→停止，行为与改造前一致（停止即 done，已生成内容保留）
   2. 历史含完成通知的会话重开（setHistory 含通知消息）：通知正常渲染、Tab 栏不出现（列表内存态为空）
   3. 页面健康：两场景无 console error / pageerror，无残留 streaming cursor
+
+## E-SA-010 实时消息流与终态一致视图（AC-SA-025/026）
+
+- **优先级**：P1 | **门禁**：上线必过 | **自动化**：mock-backend
+- **前置**：会话 A 空闲；seed 子 agent 列表空；mock `subagent/queryOutput` 返回真实 JSONL 格式（user/assistant/toolResult 条目，运行中按 startedAt 逐步推进，终态末条 assistant 正文 = result）
+- **操作**：
+  1. `emit('subagent.updated', { agentId: 'a1', status: 'running', startedAt: 10s 前 })` → 点 a1 Tab
+  2. 观察实时消息流 → `emit('subagent.updated', { agentId: 'a1', status: 'completed', result: '完成结果全文。' })`
+- **断言**：
+  - 运行中：无占位文案（count 0）；底部无边框"正在输出…"指示；连续工具聚为折叠组（头部"工具调用 2 次"+chips，默认收起）→ 点击展开后逐条工具摘要行（ls/grep，✓ 状态）；消息流 markdown 渲染（含"正在扫描"正文）；无原始 JSON 协议文本、无外框容器
+  - 完成：指示消失（count 0）；同一条消息流保留且末条正文 = result（"完成结果全文"可见，视图不切换）；附 Token 用量；无执行过程回看入口
+  - 健康：无 console error
+- **失败证据**：screenshot + trace

@@ -329,6 +329,12 @@ function onOpenedChange(sessionIds: string[]): void {
   openedSessionIds.value = sessionIds;
 }
 
+// 退出多窗口（画布卸载）时清掉会话树"已开窗"标记；
+// 布局已持久化，重进多窗口时 restoreLayout 会重开窗并重新同步该集合
+watch(multiWindow, (v) => {
+  if (!v) openedSessionIds.value = [];
+});
+
 function requestExit(): void {
   showExitDialog.value = true;
 }
@@ -353,6 +359,19 @@ let unsubProvidersChanged: (() => void) | null = null;
 watch(currentSessionId, (sid) => {
   if (sid !== null) void loadSessionModel(sid);
   else currentSessionModel.value = defaultModel.value;
+});
+
+// 查看中的会话完成结果未读 → 调 session/markSessionRead 落盘已读（forge-store，
+// 跨窗口/重启一致）。覆盖三种路径：点击已完成会话；正查看时会话 streaming→done
+//（session.statusChanged → loadSessions 触发本 watch）；多窗口画布聚焦。
+watch([sessions, currentSessionId], () => {
+  if (currentSessionId.value === null) return;
+  const s = sessions.value.find((it) => it.sessionId === currentSessionId.value);
+  if (s && s.status === 'done' && !s.doneReadAt) {
+    call('session/markSessionRead', { sessionId: s.sessionId }).catch(() => {
+      // 标记失败不阻断会话视图（绿点会在下次触发时重试）
+    });
+  }
 });
 
 onMounted(() => {

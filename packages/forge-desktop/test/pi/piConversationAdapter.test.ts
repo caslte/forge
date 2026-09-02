@@ -332,6 +332,105 @@ test('发送完成后无 session 文件时回退内存历史（user + assistant�
   assert.equal(history[1]?.content, '你好，forge');
 });
 
+/** 可挂起 prompt 的会话：模拟流式进行中（轮次未结束）的切回场景 */
+class HeldPromptSession {
+  readonly listeners = new Set<(event: MinimalEvent) => void>();
+  /** 释放挂起的 prompt（轮次结束） */
+  release!: () => void;
+
+  subscribe(listener: (event: MinimalEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async prompt(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  async abort(): Promise<void> {}
+
+  dispose(): void {}
+
+  /** 测试辅助：向订阅者广播任意事件 */
+  emit(event: MinimalEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
+
+test('流式进行中 loadHistory 追加未完成助手消息（切回会话不截断，内存路径）', async () => {
+  const fake = new HeldPromptSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const send = adapter.sendMessage('session-live', '讲个故事', {});
+  // 让 sendMessage 完成 lease 创建与事件订阅（首个 await 后同步执行到 prompt 挂起）
+  await new Promise((resolve) => setImmediate(resolve));
+  // 轮次进行中：增量已到达，message_end 未到
+  fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '从前' } });
+  fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '有座山' } });
+
+  // 此时切回会话：历史末尾应带上进行中的助手消息，后续 delta 才有正确的追加基点
+  const mid = await adapter.loadHistory('session-live');
+  assert.equal(mid.length, 2);
+  assert.equal(mid[0]?.role, 'user');
+  assert.equal(mid[0]?.content, '讲个故事');
+  assert.equal(mid[1]?.role, 'assistant');
+  assert.equal(mid[1]?.content, '从前有座山');
+
+  // 轮次正常结束后：最终消息已在历史中，进行中快照不得重复出现
+  fake.emit({
+    type: 'message_end',
+    message: { role: 'assistant', content: [{ type: 'text', text: '从前有座山，山里有庙。' }] },
+  });
+  fake.release();
+  await send;
+
+  const done = await adapter.loadHistory('session-live');
+  assert.equal(done.length, 2, '结束后不重复追加进行中快照');
+  assert.equal(done[done.length - 1]?.content, '从前有座山，山里有庙。');
+});
+
+test('流式进行中 loadHistory 追加未完成助手消息（切回会话不截断，磁盘 JSONL 路径）', async () => {
+  const fsMod = await import('node:fs');
+  const osMod = await import('node:os');
+  const pathMod = await import('node:path');
+  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'forge-live-'));
+  const file = pathMod.join(tmp, 'session-live-file.jsonl');
+  const header = { type: 'session', version: 3, id: 'forge-session-live-file', timestamp: '2026-01-01T00:00:00.000Z', cwd: tmp };
+  const entry1 = { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: '历史一' } };
+  fsMod.writeFileSync(file, [header, entry1].map((x) => JSON.stringify(x)).join('\n'), 'utf8');
+
+  try {
+    const fake = new HeldPromptSession();
+    const adapter = new PiConversationAdapter(async () => ({
+      session: fake,
+      dispose: () => fake.dispose(),
+      handle: { sessionFile: file },
+    }));
+    const send = adapter.sendMessage('session-live-file', '继续', {});
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '正在生成' } });
+
+    // pi 仅在 message_end 时落盘 assistant 消息；切回时磁盘历史不含进行中消息，
+    // loadHistory 必须补上未完成快照，否则后续 delta 追加丢失基点（切回后内容截断）
+    const mid = await adapter.loadHistory('session-live-file');
+    assert.equal(mid.length, 2);
+    assert.equal(mid[0]?.role, 'user');
+    assert.equal(mid[0]?.content, '历史一');
+    assert.equal(mid[1]?.role, 'assistant');
+    assert.equal(mid[1]?.content, '正在生成');
+
+    fake.emit({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: '正在生成完毕' }] },
+    });
+    fake.release();
+    await send;
+  } finally {
+    fsMod.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('工具开始与成功结束映射为 started/completed 回调', async () => {
   const fake = new FakePiSession();
   const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
@@ -471,6 +570,77 @@ test('P2-D：重启后 loadHistory 经 resolveSessionFile 从磁盘 JSONL 恢复
     assert.equal(messages[0]?.content, '历史一');
     assert.equal(messages[1]?.role, 'assistant');
     assert.equal(messages[1]?.content, '历史二');
+  } finally {
+    fsMod.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ===== P3-A：无 lease 时磁盘用量估算（重启恢复后进入会话即可见用量） =====
+
+test('P3-A：无 lease 时经 resolveSessionFile 从磁盘估算用量（最后 assistant usage + 尾部估算）', async () => {
+  const fsMod = await import('node:fs');
+  const osMod = await import('node:os');
+  const pathMod = await import('node:path');
+  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'forge-usage-'));
+  const file = pathMod.join(tmp, 'session-usage.jsonl');
+  const header = { type: 'session', version: 3, id: 'forge-session-usage', timestamp: '2026-01-01T00:00:00.000Z', cwd: tmp };
+  const m1 = { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: '历史一' } };
+  const m2 = { type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: '回复' }], stopReason: 'stop', usage: { totalTokens: 1234 } } };
+  const m3 = { type: 'message', id: 'm3', parentId: 'm2', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'user', content: '随后追问' } };
+  fsMod.writeFileSync(file, [header, m1, m2, m3].map((x) => JSON.stringify(x)).join('\n'), 'utf8');
+
+  try {
+    const fake = new FakePiSession();
+    const base = {
+      resolveModel: async () => ({ contextWindow: 100000 }),
+      resolveSessionFile: (sessionId: string) => (sessionId === 'session-usage' ? file : undefined),
+    };
+    // 注入会话模型解析 → 磁盘估算：最后 assistant usage(1234) + 尾部 user 消息(ceil(4/4)=1)
+    const adapter = new PiConversationAdapter(
+      async () => ({ session: fake, dispose: () => fake.dispose() }),
+      { ...base, resolveSessionModel: async () => 'test-model' },
+    );
+    const usage = await adapter.getContextUsage('session-usage');
+    assert.equal(usage?.tokens, 1235, '应为 1234 + 尾部估算 1');
+    assert.equal(usage?.contextWindow, 100000);
+    assert.ok(Math.abs((usage?.percent ?? 0) - 1.235) < 1e-9, 'percent 应为 tokens/contextWindow 百分比');
+
+    // 未注入 resolveSessionModel（无 lease 且无模型信息）→ 未知，不报错
+    const noModel = new PiConversationAdapter(
+      async () => ({ session: fake, dispose: () => fake.dispose() }),
+      base,
+    );
+    assert.equal(await noModel.getContextUsage('session-usage'), null, '无模型元数据时应返回 null');
+  } finally {
+    fsMod.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('P3-A：压缩边界之后无新 assistant 用量时磁盘估算返回 tokens 未知（与 pi 行为一致）', async () => {
+  const fsMod = await import('node:fs');
+  const osMod = await import('node:os');
+  const pathMod = await import('node:path');
+  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'forge-usage-compact-'));
+  const file = pathMod.join(tmp, 'session-usage-compact.jsonl');
+  const header = { type: 'session', version: 3, id: 'forge-session-usage-compact', timestamp: '2026-01-01T00:00:00.000Z', cwd: tmp };
+  const m1 = { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: '压缩前' } };
+  const m2 = { type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: '回复' }], stopReason: 'stop', usage: { totalTokens: 1234 } } };
+  const c1 = { type: 'compaction', id: 'c1', parentId: 'm2', timestamp: '2026-01-01T00:00:02.000Z', summary: '摘要', tokensBefore: 1234 };
+  const m3 = { type: 'message', id: 'm3', parentId: 'c1', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'user', content: '压缩后追问' } };
+  fsMod.writeFileSync(file, [header, m1, m2, c1, m3].map((x) => JSON.stringify(x)).join('\n'), 'utf8');
+
+  try {
+    const fake = new FakePiSession();
+    const adapter = new PiConversationAdapter(
+      async () => ({ session: fake, dispose: () => fake.dispose() }),
+      {
+        resolveModel: async () => ({ contextWindow: 100000 }),
+        resolveSessionFile: (sessionId) => (sessionId === 'session-usage-compact' ? file : undefined),
+        resolveSessionModel: async () => 'test-model',
+      },
+    );
+    const usage = await adapter.getContextUsage('session-usage-compact');
+    assert.deepEqual(usage, { tokens: null, contextWindow: 100000, percent: null }, '压缩前的 usage 会虚报压缩后上下文，应视为未知');
   } finally {
     fsMod.rmSync(tmp, { recursive: true, force: true });
   }

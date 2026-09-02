@@ -315,7 +315,12 @@ export class SubagentRegistry {
       existing.result = event.result ? event.result : null;
       existing.error = event.error ? event.error : null;
     } else if (event.status !== existing.status) {
-      existing.status = event.status; // queued→running 推进
+      // 活跃态只前进不回退（v3.15）：pi-subagents 实际事件序为 started 先于
+      // created（spawn 内部先发 started，工具处理器后发 created），若允许任意
+      // 活跃态互转，created(queued) 会把 running 拉回排队中，UI 全程误显“排队中”。
+      if (!(existing.status === 'running' && event.status === 'queued')) {
+        existing.status = event.status; // queued→running 推进
+      }
     }
   }
 

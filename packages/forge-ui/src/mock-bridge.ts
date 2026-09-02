@@ -23,6 +23,8 @@ interface MockSessionSeed {
   alias: string | null;
   status: string;
   lastActiveAt: string;
+  /** 最近查看完成结果时间（与真实 forge-store SessionRecord 字段一致） */
+  doneReadAt: string | null;
 }
 
 /** mock 侧子 agent 记录（含 sessionId 以便按会话归组） */
@@ -50,6 +52,7 @@ const DB: {
       sessionId: 'sess-code-review',
       projectPath: 'D:/work/aiwork/forge',
       alias: '代码审查',
+      doneReadAt: null,
       status: 'idle',
       lastActiveAt: new Date().toISOString(),
     },
@@ -57,6 +60,7 @@ const DB: {
       sessionId: 'sess-sse',
       projectPath: 'D:/work/aiwork/forge',
       alias: '修 SSE 断流',
+      doneReadAt: null,
       status: 'done',
       lastActiveAt: new Date().toISOString(),
     },
@@ -65,6 +69,7 @@ const DB: {
       sessionId: 'sess-demo-pending',
       projectPath: 'D:/work/aiwork/forge',
       alias: '跑在途分析',
+      doneReadAt: null,
       status: 'streaming',
       lastActiveAt: new Date().toISOString(),
     },
@@ -73,6 +78,7 @@ const DB: {
       sessionId: 'sess-demo-done',
       projectPath: 'D:/work/aiwork/forge',
       alias: '数据清洗已完成',
+      doneReadAt: null,
       status: 'done',
       lastActiveAt: new Date().toISOString(),
     },
@@ -363,8 +369,18 @@ const bridge: ForgeBridge = {
           alias: null,
           status: 'idle',
           lastActiveAt: new Date().toISOString(),
+          doneReadAt: null,
         });
         return { code: 0, message: 'ok', data: { session: { sessionId } } };
+      }
+      case 'session/markSessionRead': {
+        // 绿点已读落盘（与真实 forge-core SessionService.markSessionRead 一致）
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const sess = DB.sessions.find((s) => s.sessionId === sid);
+        if (!sess) return { code: 1002, message: '会话不存在: ' + sid, data: null };
+        sess.doneReadAt = new Date().toISOString();
+        emit('session.updated', { session: sess });
+        return { code: 0, message: 'ok', data: { session: sess } };
       }
       case 'session/deleteSession': {
         const sid = (params as { sessionId?: string }).sessionId;
@@ -518,23 +534,42 @@ const bridge: ForgeBridge = {
         return { code: 0, message: 'ok', data: { removed: removedIds } };
       }
       case 'subagent/queryOutput': {
-        // 模拟过程输出（真实实现读扩展任务输出文件尾部）：按 agentId 生成稳定多行文本，
-        // 运行中的子 agent 模拟"逐步推进"（行数随时间增长），终态返回固定全文
+        // 模拟过程输出（真实实现读扩展任务输出文件 JSONL 尾部）：
+        // 按真实格式返回 JSONL（每行 type=user/assistant/toolResult），
+        // 运行中模拟"逐步推进"（条目数随已运行时长增长，不含末条终态正文），终态返回全文
         const sid = (params as { sessionId?: string }).sessionId ?? '';
         const agentId = (params as { agentId?: string }).agentId ?? '';
         const target = (DB.subagents[sid] ?? []).find((s) => s.agentId === agentId);
         if (!target) return { code: 1002, message: '子 agent 不存在', data: null };
-        const lines = [
-          `[${target.agentType}] 开始执行：${target.description}`,
-          '读取项目目录结构…',
-          '分析 package.json workspaces 配置…',
-          '扫描 packages/* 子包清单…',
-          '汇总扫描结果，生成报告…',
-          `执行完成，共输出 ${target.description.length * 7} 字符。`,
+        const desc = target.description;
+        const entries: object[] = [
+          { type: 'user', message: { role: 'user', content: desc } },
+          { type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'toolCall', id: 'call_1', name: 'ls', arguments: { path: 'packages' } },
+            { type: 'toolCall', id: 'call_2', name: 'grep', arguments: { pattern: 'subagent' } },
+          ] } },
+          { type: 'toolResult', message: { role: 'toolResult', toolCallId: 'call_1', toolName: 'ls', content: [{ type: 'text', text: 'forge-core\nforge-ui' }], isError: false } },
+          { type: 'toolResult', message: { role: 'toolResult', toolCallId: 'call_2', toolName: 'grep', content: [{ type: 'text', text: '6 matches' }], isError: false } },
+          { type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'text', text: `正在扫描 packages/* 子包清单，查找与“${desc}”相关的内容…` },
+            { type: 'toolCall', id: 'call_3', name: 'read', arguments: { path: 'package.json' } },
+          ] } },
+          { type: 'toolResult', message: { role: 'toolResult', toolCallId: 'call_3', toolName: 'read', content: [{ type: 'text', text: '{ "name": "forge" }' }], isError: false } },
+          { type: 'assistant', message: { role: 'assistant', content: [
+            { type: 'text', text: target.result ?? `扫描完成，共 **2** 个子包，输出 ${desc.length * 7} 字符。` },
+          ] } },
         ];
-        const chunk = isActive(target.status)
-          ? lines.slice(0, Math.max(1, Math.min(lines.length - 1, Math.floor((Date.now() / 3000) % lines.length)))).join('\n')
-          : lines.join('\n');
+        const toLine = (entry: object): string => JSON.stringify({
+          isSidechain: true,
+          agentId,
+          timestamp: new Date().toISOString(),
+          cwd: 'C:\\works\\ai_work\\forge',
+          ...entry,
+        });
+        const visible = isActive(target.status)
+          ? Math.max(2, Math.min(entries.length - 1, 2 + Math.floor((Date.now() - Date.parse(target.startedAt)) / 2000)))
+          : entries.length;
+        const chunk = entries.slice(0, Math.min(visible, entries.length)).map(toLine).join('\n');
         return {
           code: 0,
           message: 'ok',
@@ -607,6 +642,7 @@ async function runScript(sessionId: string, script: MockScriptItem[]): Promise<v
     // 真实后端会在所有子 agent 终态后才发 done；mock 简化：脚本结束即视为活跃计数已收敛，
     // 因为本 mock 默认无任何子 agent 种子（无 setSubagents → 计数恒为 0）。
     doneSess.status = 'done';
+    doneSess.doneReadAt = null; // 新一轮完成 → 清已读，未打开的会话重新显示绿点
     emit('session.updated', { session: doneSess });
   }
 }

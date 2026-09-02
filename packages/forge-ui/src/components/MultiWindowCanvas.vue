@@ -64,57 +64,83 @@ interface PersistedWin {
   h: number;
 }
 
+/** 持久化布局：连同画布尺寸一起存，恢复时按比例缩放，避免画布尺寸变化后贴边/并排关系丢失 */
+interface PersistedLayout {
+  canvas?: { w: number; h: number };
+  wins: PersistedWin[];
+}
+
 function saveLayout(): void {
   try {
-    const data: PersistedWin[] = wins.value.map((w) => ({
-      sessionId: w.sessionId,
-      x: w.x,
-      y: w.y,
-      w: w.w,
-      h: w.h,
-    }));
+    const canvas = canvasRef.value;
+    const data: PersistedLayout = {
+      canvas: canvas ? { w: canvas.clientWidth, h: canvas.clientHeight } : undefined,
+      wins: wins.value.map((w) => ({
+        sessionId: w.sessionId,
+        x: w.x,
+        y: w.y,
+        w: w.w,
+        h: w.h,
+      })),
+    };
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(data));
   } catch {
     // 存储失败忽略（不影响运行）
   }
 }
 
-function loadLayout(): PersistedWin[] {
+function loadLayout(): PersistedLayout {
   try {
     const raw = localStorage.getItem(LAYOUT_KEY);
-    if (!raw) return [];
+    if (!raw) return { wins: [] };
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (p): p is PersistedWin =>
-        typeof p === 'object' &&
-        p !== null &&
-        typeof (p as PersistedWin).sessionId === 'string' &&
-        typeof (p as PersistedWin).x === 'number' &&
-        typeof (p as PersistedWin).y === 'number' &&
-        typeof (p as PersistedWin).w === 'number' &&
-        typeof (p as PersistedWin).h === 'number',
-    );
+    const isWin = (p: unknown): p is PersistedWin =>
+      typeof p === 'object' &&
+      p !== null &&
+      typeof (p as PersistedWin).sessionId === 'string' &&
+      typeof (p as PersistedWin).x === 'number' &&
+      typeof (p as PersistedWin).y === 'number' &&
+      typeof (p as PersistedWin).w === 'number' &&
+      typeof (p as PersistedWin).h === 'number';
+    // 旧格式：纯数组（无画布尺寸，恢复时不缩放）
+    if (Array.isArray(parsed)) return { wins: parsed.filter(isWin) };
+    if (typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as PersistedLayout).wins)) {
+      const layout = parsed as PersistedLayout;
+      const canvas =
+        typeof layout.canvas === 'object' &&
+        layout.canvas !== null &&
+        typeof layout.canvas.w === 'number' &&
+        typeof layout.canvas.h === 'number' &&
+        layout.canvas.w > 0 &&
+        layout.canvas.h > 0
+          ? { w: layout.canvas.w, h: layout.canvas.h }
+          : undefined;
+      return { canvas, wins: layout.wins.filter(isWin) };
+    }
+    return { wins: [] };
   } catch {
-    return [];
+    return { wins: [] };
   }
 }
 
 /**
- * 恢复已持久化布局：仅在会话仍存在时开窗，位置/尺寸按画布 clamp；
- * 避免超出画布/太小不可见。
+ * 恢复已持久化布局：仅在会话仍存在时开窗。
+ * 画布尺寸与保存时不同则先等比缩放（与运行中 reflowOnResize 行为一致，
+ * 保留贴边/并排关系），再按当前画布 clamp，避免越出画布/太小不可见。
  */
 function restoreLayout(): void {
   const saved = loadLayout();
-  if (saved.length === 0) return;
+  if (saved.wins.length === 0) return;
   const cw = canvasRef.value?.clientWidth ?? 600;
   const ch = canvasRef.value?.clientHeight ?? 400;
-  for (const item of saved) {
+  const sx = saved.canvas ? cw / saved.canvas.w : 1;
+  const sy = saved.canvas ? ch / saved.canvas.h : 1;
+  for (const item of saved.wins) {
     if (!sessionOf(item.sessionId)) continue;
-    const w = Math.max(MW_MIN_W, Math.min(item.w, cw - G * 2));
-    const h = Math.max(MW_MIN_H, Math.min(item.h, ch - G * 2));
-    const x = Math.max(0, Math.min(item.x, Math.max(0, cw - w)));
-    const y = Math.max(0, Math.min(item.y, Math.max(0, ch - h)));
+    const w = Math.max(MW_MIN_W, Math.min(Math.round(item.w * sx), cw - G * 2));
+    const h = Math.max(MW_MIN_H, Math.min(Math.round(item.h * sy), ch - G * 2));
+    const x = Math.max(0, Math.min(Math.round(item.x * sx), Math.max(0, cw - w)));
+    const y = Math.max(0, Math.min(Math.round(item.y * sy), Math.max(0, ch - h)));
     openWindow(item.sessionId, x, y, { w, h });
   }
   // 恢复后写回一次（吸收 clamp 变更），并通知会话池

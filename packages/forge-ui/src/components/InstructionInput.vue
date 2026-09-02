@@ -232,8 +232,25 @@ function onSend(): void {
 async function pickAttachments(): Promise<void> {
   if (isStreaming.value) return;
   try {
-    const files = await window.forge.dialog.selectFiles();
+    let files = await window.forge.dialog.selectFiles();
     if (files.length === 0) return;
+    // 密钥嗅探：文本附件命中疑似凭据时需确认（内容会发送给模型服务商，出域风险）
+    const flagged = files.filter((f) => f.kind === 'text' && SECRET_PATTERNS.some((re) => re.test(f.content ?? '')));
+    if (flagged.length > 0 && !window.confirm(
+      `检测到疑似密钥/凭据：\n${flagged.map((f) => f.name).join('、')}\n\n附件内容会发送给模型服务商，确认仍要附带吗？`,
+    )) {
+      files = files.filter((f) => !flagged.includes(f));
+      if (files.length === 0) {
+        showAttachError('已取消附带疑似含密钥的附件');
+        return;
+      }
+      showAttachError(`已跳过疑似含密钥附件：${flagged.map((f) => f.name).join('、')}`);
+    }
+    const limit = attachmentsOverLimit(files);
+    if (limit) {
+      showAttachError(limit);
+      return;
+    }
     attachments.value = [...attachments.value, ...files];
     attachError.value = null;
   } catch (e) {
@@ -244,6 +261,34 @@ async function pickAttachments(): Promise<void> {
 // ===== 截图图片上传：粘贴（Ctrl+V）+ 拖拽 =====
 /** 图片大小上限，与主进程 selectFiles 的 10MB 一致 */
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+// ===== 附件安全限制 =====
+/** 疑似密钥/凭据特征（高置信度，避免对源码误报）：私钥块 / AWS / GitHub / OpenAI / Slack */
+const SECRET_PATTERNS: RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+];
+
+/** 单条消息附件总数上限 */
+const MAX_ATTACHMENTS = 10;
+/** 单条消息附件总大小上限（图片按 base64 长度折回原始字节估算） */
+const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
+
+const attachmentBytes = (a: AttachmentFile): number =>
+  a.kind === 'image' ? Math.ceil(((a.data?.length ?? 0) * 3) / 4) : (a.content?.length ?? 0);
+
+/** 现有附件 + 待加入一起算，超限返回提示文案，未超返回 null */
+function attachmentsOverLimit(incoming: AttachmentFile[]): string | null {
+  const all = [...attachments.value, ...incoming];
+  if (all.length > MAX_ATTACHMENTS) return `附件最多 ${MAX_ATTACHMENTS} 个，已跳过`;
+  const total = all.reduce((sum, a) => sum + attachmentBytes(a), 0);
+  if (total > MAX_TOTAL_BYTES) return '附件总大小超过 30MB 上限，已跳过';
+  return null;
+}
 
 /** 拖拽悬停高亮态 */
 const dragOver = ref(false);
@@ -284,10 +329,13 @@ async function addImageFromBlob(file: Blob, fallbackName?: string): Promise<void
   const name = fallbackName ?? `截图-${hh}${mm}${ss}.${ext}`;
   try {
     const data = await blobToBase64(file);
-    attachments.value = [
-      ...attachments.value,
-      { path: `clipboard:${name}`, name, kind: 'image' as const, mimeType, data },
-    ];
+    const entry: AttachmentFile = { path: `clipboard:${name}`, name, kind: 'image' as const, mimeType, data };
+    const limit = attachmentsOverLimit([entry]);
+    if (limit) {
+      showAttachError(limit);
+      return;
+    }
+    attachments.value = [...attachments.value, entry];
     attachError.value = null;
   } catch (e) {
     showAttachError(e instanceof Error ? e.message : '图片读取失败');

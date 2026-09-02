@@ -60,6 +60,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 | createdAt | string(ISO8601) | 否 | - | 创建时间 |
 | modelOverride | string | 是 | null | 会话级模型覆盖（模块 05；空则用全局默认） |
 | thinkingLevel | string | 是 | null | 会话级思考级别覆盖（模块 05 MP-S05；枚举同 pi：off/minimal/low/medium/high/xhigh/max；空则用全局默认） |
+| doneReadAt | string(ISO8601) | 是 | null | 最近一次查看完成结果时间（会话树绿点已读落盘，跨窗口/重启一致；新一轮完成时由服务层清回 null；旧数据无此字段视为未读） |
 
 - 主键：`sessionId`
 - 索引：`projectPath`、`lastActiveAt`
@@ -74,6 +75,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 - 消息、工具事件全部由 pi 存储，本表不承载。
 - 窗口为展示层（会话输出与窗口解耦），不按窗口持久化；窗口崩溃后从会话与 forge-core 输出流重建（PRD02 §3.5）。
 - `thinkingLevel` 语义（PRD05 MP-S05）：会话有已存值则用已存值（运行时按模型能力 clamp），无已存值则继承 `settings.thinkingLevel` 全局默认；切换思考级别时**同时写本字段并同步全局默认**，已存在会话各自保持本字段，互不影响。
+- `doneReadAt` 语义：替代原 UI 内存态已读集合（doneReadSessions，每个窗口独立、刷新即丢，导致点过的会话重新亮绿点）。绿点规则：status=done 且 doneReadAt 为空 → 显示；点击/查看/画布聚焦经 `session/markSessionRead` 落盘；新一轮完成（状态非 done→done 转入）时清回 null，重新提示。
 
 ---
 

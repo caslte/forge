@@ -120,6 +120,18 @@ const timeLabel = computed(() => {
           @click="lightboxSrc = src"
         />
       </div>
+      <!-- 消息附带文本文件（P3-B）：占位 chip（icon+文件名）；内容已随 prompt 进入模型上下文，不展示全文 -->
+      <div v-if="isUser && message.files?.length" class="msg-files">
+        <span v-for="name in message.files" :key="name" class="msg-file-chip" :title="name">
+          <span class="msg-file-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+          </span>
+          <span class="msg-file-name">{{ name }}</span>
+        </span>
+      </div>
       <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
       <!-- 多模态门控：当前模型不支持图片输入，附件已跳过未发送 -->
       <div v-if="isUser && message.imageSkipped" class="msg-image-skipped">
@@ -162,6 +174,9 @@ const timeLabel = computed(() => {
 .msg-user {
   align-self: flex-end;
   margin-left: auto;
+  /* 长段落 fit-content 会取满整行（中文任意断行 max-content 巨大），
+     限宽 78% 让左侧留空，视觉上与 assistant 回复区分层次 */
+  max-width: 78%;
 }
 
 .msg-user .msg-bubble {
@@ -183,7 +198,7 @@ const timeLabel = computed(() => {
 
 .msg-content {
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.8;
   color: var(--foreground);
   word-break: break-word;
   user-select: text; /* 对话内容允许鼠标选择 */
@@ -208,6 +223,48 @@ const timeLabel = computed(() => {
 
 .msg-images:empty {
   display: none;
+}
+
+/* 消息附带文本文件（P3-B）：胶囊 chip，与输入框附件 chip 同款 */
+.msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.msg-files:empty {
+  display: none;
+}
+
+.msg-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--foreground);
+}
+
+.msg-file-icon {
+  display: inline-flex;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.msg-file-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.msg-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 多模态门控：图片未发送的提示（模型不支持图片输入） */
@@ -357,7 +414,7 @@ const timeLabel = computed(() => {
 
 .msg-content :deep(li) {
   padding-left: 4px;
-  line-height: 1.5;
+  line-height: 1.8;
 }
 
 /* li 内部的段落/子列表不再产生块间距（marked 默认 <li><p>xxx</p></li> 会撑开） */

@@ -518,3 +518,56 @@ test('多会话并行：10 会话交错 setStatus + attach/detach 无串扰（TD
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+test('markSessionRead + 完成：doneReadAt 落盘，新一轮 done 清已读、done→done 重复写不清', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store } = makeService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const id = await createSessionUnder(service, key);
+
+    // 初始无已读标记（新会话 doneReadAt = null）
+    let list = service.querySessionList();
+    assert.ok(list.ok);
+    if (list.ok) {
+      assert.equal(list.data.sessions.find((s) => s.sessionId === id)?.doneReadAt ?? null, null);
+    }
+
+    // 完成一轮 → 标记已读 → 列表携带 doneReadAt
+    service.setSessionStatus(id, 'running');
+    service.setSessionStatus(id, 'done');
+    const marked = service.markSessionRead(id);
+    assert.ok(marked.ok);
+    list = service.querySessionList();
+    assert.ok(list.ok);
+    let readAt: string | null | undefined;
+    if (list.ok) {
+      readAt = list.data.sessions.find((s) => s.sessionId === id)?.doneReadAt;
+    }
+    assert.ok(typeof readAt === 'string' && readAt !== '');
+
+    // 新一轮完成（running→done 转进入口）：已读标记清回 null（绿点重新提示）
+    service.setSessionStatus(id, 'running');
+    service.setSessionStatus(id, 'done');
+    list = service.querySessionList();
+    assert.ok(list.ok);
+    if (list.ok) {
+      assert.equal(list.data.sessions.find((s) => s.sessionId === id)?.doneReadAt ?? null, null);
+    }
+
+    // 同轮重复 done（done→done）：不清已读（避免重复完成事件重新点亮绿点）
+    assert.ok(service.markSessionRead(id).ok);
+    service.setSessionStatus(id, 'done');
+    list = service.querySessionList();
+    assert.ok(list.ok);
+    if (list.ok) {
+      assert.ok(list.data.sessions.find((s) => s.sessionId === id)?.doneReadAt);
+    }
+
+    // 参数校验 1001 / 会话不存在 1002
+    assert.equal(service.markSessionRead('').ok, false);
+    assert.equal(service.markSessionRead('sess-nope').ok, false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

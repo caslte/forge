@@ -64,6 +64,7 @@
 | AC-CV-022 | CV-S07 流式保护 | 状态/一致性 | 边界：streaming 期间压缩入口禁用 | P0 | - | - | E-CV-012 | 入口置灰不可点；不静默截断正在生成的回答 | 运行时压缩会先 abort 当前轮 |
 | AC-CV-023 | CV-S07 自动压缩 | 跨模块协作 | 正常流程：自动压缩完成通知 | P0 | - | A-CV-009 | E-CV-013 | 发射 `conversation.compacted`（reason=auto）并携带前后 token；UI 重拉历史并提示 | 无 RPC 入口，事件是唯一通道 |
 | AC-CV-024 | CV-S07 自动压缩失败 | 错误反馈 | 异常：自动压缩异常 | P1 | - | A-CV-010 | - | 走 `conversation.error` 上报 errorMessage；不发射 compacted | 绝不静默 |
+| AC-CV-025 | CV-S07 用量显示（重启恢复） | 状态/一致性 | 正常流程：无 lease 时磁盘估算用量 | P2 | - | A-CV-008 | - | 重启后仅加载历史的会话查询用量：最后有效 assistant usage + 尾部估算（与 pi 同规则）；contextWindow 取会话模型；压缩边界后无新用量时 tokens/percent 为 null | 发出首条消息后回落运行时实时读数；无文件/无模型时返回 null |
 
 ---
 
@@ -105,6 +106,7 @@
 | A-CV-005 | AC-CV-009/010 | conversation/cancelStream | 会话 runnin g | { sessionId } | 200 | 保留已生成，标记 cancelled | 可再次发送 |
 | A-CV-006 | AC-CV-011/012 | session/queryHistory | 会话含历史 | { sessionId } | 返回全部历史 | 无 | 角色区分正确、顺序正确 |
 | A-CV-007 | AC-CV-013 | conversation/sendMessage（带图） | 会话存在 + 纯文本模型 | { sessionId, content, attachments:[image] } | 200 + data.skippedImages=1 | 图片不写入请求 | 内容追加跳过说明；不触发 API 报错；多模态模型场景 data=null 且图片透传 |
+| A-CV-010 | AC-CV-011/012 | conversation/queryHistory（流式中切回） | 会话轮次进行中（message_end 未到，助手消息未落盘） | { sessionId } | 200 | 无写入 | 历史末尾包含未完成 assistant 快照（清洗后全文）；轮次结束后不重复追加；修复切回后内容截断（终态消息覆盖前一直缺前文） |
 
 #### api（CV-S07 上下文压缩）
 

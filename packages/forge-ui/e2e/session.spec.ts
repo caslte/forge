@@ -116,6 +116,31 @@ test('SESSION-E2E-002 @P0 @mock-backend E-SM-002：多会话并行流式互不�
   health.assertHealthy();
 });
 
+// ===== 运行中状态点选中态一致性（bugfix 回归） =====
+// 复现：选中运行中会话不应隐藏状态点——选中与否状态点始终可见，
+// 会话高亮与运行状态点正交，丢任一都会丢信息。
+test('SESSION-E2E-002b @P0 @mock-backend：运行中会话选中后状态点仍可见', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  const a = mkSession({ alias: '会话A', status: 'streaming' });
+  const b = mkSession({ alias: '会话B' });
+  await boot(page, [a, b]);
+
+  const rowA = page.locator('.tree-session', { hasText: '会话A' });
+  // 未选中：A 圆点存在（运行中提示）
+  await expect(rowA.locator('.tree-session-status-dot.tone-streaming')).toHaveCount(1);
+
+  // 选中 A：会话高亮 + 状态点同时可见（修复前选中会隐藏）
+  await rowA.click();
+  await expect(rowA).toHaveClass(/active/);
+  await expect(rowA.locator('.tree-session-status-dot.tone-streaming')).toHaveCount(1);
+
+  // 切到 B：A 仍 running，A 的状态点同样可见（与选中态解耦）
+  await page.locator('.tree-session', { hasText: '会话B' }).click();
+  await expect(rowA.locator('.tree-session-status-dot.tone-streaming')).toHaveCount(1);
+
+  health.assertHealthy();
+});
+
 // ===== E-SM-003 删除会话（含运行中） =====
 test('SESSION-E2E-003 @P0 @mock-backend E-SM-003：删除会话二次确认后可移除', async ({ page }) => {
   const health = attachHealthGuards(page);

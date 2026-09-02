@@ -20,8 +20,8 @@ export interface SessionItem {
   alias: string | null;
   status: SessionStatus;
   lastActiveAt: string;
-  /** 前端本地状态：是否有未读完成 */
-  unread?: boolean;
+  /** 最近查看完成结果时间（已读落盘，来自 forge-store）；空=完成结果未读，绿点显示依据 */
+  doneReadAt?: string | null;
 }
 
 export interface ConversationMessage {
@@ -31,6 +31,8 @@ export interface ConversationMessage {
   id?: string;
   /** 消息附带图片（P3-B：用户粘贴截图/上传图片，base64 数据） */
   images?: Array<{ data: string; mimeType: string }>;
+  /** 消息附带文本文件名列表（P3-B：占位 chip 展示，内容不展示） */
+  files?: string[];
   /** 前端本地标记：该用户消息的图片因当前模型不支持图片输入而未发送（多模态门控） */
   imageSkipped?: boolean;
   /** 工具调用附带（role=tool 时） */

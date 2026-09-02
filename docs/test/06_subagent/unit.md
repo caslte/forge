@@ -99,3 +99,25 @@
   3. 重置移除上一轮未终态孤儿记录（终止失败/超时兜底后仍 running）并发 `subagent.removed`，终态记录保留；新一轮门控计数从 0 起算
   4. 已销毁会话忽略；已是重置态时重复调用幂等
 - **负向断言**：同轮内重复主轮结束信号仍不重发 done（每轮恰好一次语义不变）
+
+## U-SA-009 输出文件 JSONL 尾部解析（AC-SA-025/026）
+
+- **关联 AC**：AC-SA-025/026 | **风险维度**：内容正确性/降级 | **优先级**：P1
+- **背景**：运行中实时消息流由 UI 层解析扩展任务输出文件尾部（JSONL）得到；尾部起点可能切断首行，解析必须容错。
+- **测试对象**：`forge-ui/src/utils/subagentStream.ts` `parseSubagentStream`（纯函数）
+- **操作与预期**：
+  1. assistant 文本/工具混排块按块顺序输出；thinking 块与 user 初始 prompt 条目不展示
+  2. toolResult 按 toolCallId 配对回写状态（isError → ok/error）
+  3. 尾部切断 toolCall 行时从 toolResult 自身合成摘要行
+  4. 非法行（切断残片/非 JSON/空行）静默跳过；空 chunk 返回空数组
+  5. 超长参数预览截断至 ~80 字符
+
+## U-SA-010 活跃态只前进不回退（started 先于 created）
+
+- **关联 AC**：AC-SA-025 | **风险维度**：状态流转/事件乱序 | **优先级**：P0
+- **背景**：pi-subagents 实际事件序为 started（spawn 内部）先于 created（工具处理器后补）；若活跃态允许任意互转，created(queued) 会把 running 拉回 queued，UI 全程误显"排队中"。
+- **测试对象**：`SubagentService.applyEvent`（经 ingest 驱动）
+- **操作与预期**：
+  1. 先 ingest running 再 ingest queued：记录保持 running（subagent.updated 最新状态非 queued）
+  2. 正常 queued → running 推进仍有效
+- **负向断言**：终态不可逆语义不变（终态后活跃态事件仍整体忽略）

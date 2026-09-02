@@ -8,7 +8,7 @@
  *
  * 设计决策：
  * 1. 信封格式：成功 `{ code: 0, message: "success", data }`；失败 `{ code, message,
- *    data: null }`。错误码与 docs/api/02_session.md §8 一致：1001 参数错误 / 1002
+ *    data: null }`。错误码与 docs/api/02_session.md §9 一致：1001 参数错误 / 1002
  *    会话/项目不存在 / 1004 会话重复开窗 / 5000 内部错误。
  * 2. 参数校验：每个 handler 先校验 params（projectPath/sessionId/alias 必须为非空
  *    字符串），非法输入直接返回 1001，不进入服务层。
@@ -81,6 +81,7 @@ export class SessionApi {
       'session/querySessionList': (params) => this.querySessionList(params),
       'session/deleteSession': (params) => this.deleteSession(params),
       'session/updateSessionAlias': (params) => this.updateSessionAlias(params),
+      'session/markSessionRead': (params) => this.markSessionRead(params),
       'session/getSessionStatus': (params) => this.getSessionStatus(params),
       'session/attachSessionWindow': (params) => this.attachSessionWindow(params),
       'session/detachSessionWindow': (params) => this.detachSessionWindow(params),
@@ -151,6 +152,19 @@ export class SessionApi {
       return fail(1001, '参数错误：alias 必须为非空字符串');
     }
     const result = await this.call('updateSessionAlias', () => this.service.updateSessionAlias(sessionId, alias));
+    if (result.code === 0 && result.data !== null) {
+      this.events.emit('session.updated', { session: (result.data as { session: unknown }).session });
+    }
+    return result;
+  }
+
+  /** session/markSessionRead：标记完成结果已读（绿点落盘），成功后发射 session.updated 同步各窗口会话树 */
+  private async markSessionRead(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return fail(1001, '参数错误：sessionId 必须为非空字符串');
+    }
+    const result = await this.call('markSessionRead', () => this.service.markSessionRead(sessionId));
     if (result.code === 0 && result.data !== null) {
       this.events.emit('session.updated', { session: (result.data as { session: unknown }).session });
     }

@@ -48,6 +48,7 @@
 | AC-SM-018 | SM-S05 多窗口观察 | 交互 | 正常流程：4 窗格 | P1 | - | - | E-SM-005 | 点"4 窗格"排列 2×2 严丝合缝 | |
 | AC-SM-019 | SM-S05 多窗口观察 | 交互 | 正常流程：resize | P1 | - | - | E-SM-005 | 拖右下角缩放，受最小尺寸限制 | |
 | AC-SM-020 | SM-S05 多窗口观察 | 可用性/一致性 | 异常：窗口崩溃 | P1 | - | A-SM-008 | E-SM-005 | 崩溃后从其会话重开，恢复已展示内容 | 窗口状态在 forge-core |
+| AC-SM-021 | SM-S04 状态显示（绿点） | 状态/一致性 | 正常流程：完成结果已读落盘 | P1 | U-SM-004 | A-SM-009 | - | 查看后绿点消失且跨窗口/重启一致；新一轮完成重新提示 | 替代 UI 内存态已读集合 |
 
 ---
 
@@ -60,6 +61,7 @@
 | U-SM-001 | AC-SM-006 | sessionService 删除运行中会话 | 状态流转 | 会话 running | sessionId | deleteSession | 先 stop AgentSession 再删除 pi session；状态机合法 | 不经停止直接删除被拦截 |
 | U-SM-002 | AC-SM-008 | sessionManager 并发实例 | 并发 | 10 个会话 | 10 会话并行发消息 | 同时发起 | 各输出流独立；无共享状态串扰 | 资源不足时提示但不强制停止 |
 | U-SM-003 | AC-SM-007 | sessionService 重命名 | 状态 | 会话存在 | alias | updateSessionAlias | forge 侧 alias 更新；pi 消息文件不变 | alias 为空的拒绝 |
+| U-SM-004 | AC-SM-021 | sessionService 已读落盘 | 状态流转 | 会话 done | sessionId | markSessionRead + setSessionStatus(done) | doneReadAt 落库；新一轮 done 转入清已读；done→done 重复写不清 | 空 ID 1001 / 会话不存在 1002 |
 
 ### api（IPC 契约 + pi 对接 + 输出流管理）
 
@@ -72,6 +74,7 @@
 | A-SM-005 | AC-SM-008 | session/queryActiveSessions | 多会话并行 | - | 200 列表 | - | 各会话 status 独立 |
 | A-SM-006 | AC-SM-011/012/016 | session/attachWindow / releaseWindow | 会话存在 | { sessionId } | 0，同 id 重复拦截 | 窗口绑定表唯一约束 | 重复开窗拒绝/聚焦 |
 | A-SM-007 | AC-SM-015 | session/queryAll | 多项目 | 无 | 返回跨项目全部会话 | 无写入 | 跨项目会话可见 |
+| A-SM-009 | AC-SM-021 | session/markSessionRead | 会话存在 | { sessionId } | 0 + session（含 doneReadAt） | forge-store 写 doneReadAt | session.updated 发射；1001/1002 校验 |
 
 ### e2e
 
@@ -79,6 +82,7 @@
 |---|---|---|---|---|---|---|---|
 | E-SM-001 | AC-SM-001 | 项目工作区 | 项目已打开 | 临时项目 | real-backend | 点新建会话→输入框聚焦 | 会话出现在主视图，聚焦输入框 |
 | E-SM-002 | AC-SM-003/008/009/010 | 会话列表+主视图 | ≥2 会话 | 2 个并行会话（mock backend 流式） | mock-backend | 并行发消息→切换→观察 | A 继续 running；切换后 B 有流式输出；列表显示运行数 |
+| E-SM-002b | AC-SM-010 | 会话列表 | ≥2 会话，含 streaming | 1 running + 1 idle（mock backend） | mock-backend | 选中 running→切走→回切 | running 会话选中/未选中状态点都可见（与列表高亮正交） | bugfix 回归：修复前选中态隐藏运行状态点 |
 | E-SM-003 | AC-SM-005/006 | 会话列表 | 含 idle + running 会话 | 2 会话 | mock-backend | 右键删除 idle→取消→确认；右键删除 running→确认 | 确认弹窗出现；删除后不存在；running 先停止 |
 | E-SM-004 | AC-SM-011/012/013/014/015/016 | 画布多窗口 | 跨项目会话存在 | 2 项目各会话 | mock-backend | 拖 A 会话开窗→拖到边缘→再拖 A→关闭 | 开窗+吸附+置顶；重复开窗拒绝；关闭后会话仍在池 |
 | E-SM-005 | AC-SM-017/018/019/020 | 画布多窗口 | 多会话在画布 | 4 会话 | mock-backend | 依次拖到右/上/下/四角→点 4 窗格→拖右下角 resize→模拟窗口崩溃后重开 | 各吸附区预览+吸附；4 窗格 2×2；resize 最小尺寸限制；崩溃后重开恢复内容（无健康断言：无 console error） |

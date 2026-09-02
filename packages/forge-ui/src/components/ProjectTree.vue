@@ -68,14 +68,6 @@ const statusTitleMap: Record<SessionStatus, string> = {
 
 type StatusTone = 'streaming' | 'error' | 'done' | 'none';
 
-/** 已查看过完成结果的会话（完成后点击查看、或正查看时完成），绿点隐藏 */
-const doneReadSessions = ref<Set<string>>(new Set());
-
-function markDoneRead(sessionId: string): void {
-  if (doneReadSessions.value.has(sessionId)) return;
-  doneReadSessions.value = new Set(doneReadSessions.value).add(sessionId);
-}
-
 function projectDisplayName(p: ProjectItem): string {
   if (p.alias) return p.alias;
   const segs = p.path.split(/[\\/]/);
@@ -87,8 +79,27 @@ function sessionDisplayName(s: SessionItem): string {
   return s.alias || '会话 ' + s.sessionId.slice(-6);
 }
 
+// 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序
+const activatedOrder = ref<string[]>([]);
+
+watch(
+  () => props.sessions,
+  (sessions) => {
+    const running = sessions.filter((s) => s.status === 'streaming').map((s) => s.sessionId);
+    if (!running.length) return;
+    activatedOrder.value = [...running, ...activatedOrder.value.filter((id) => !running.includes(id))];
+  },
+  { immediate: true },
+);
+
 function sessionsOf(path: string): SessionItem[] {
-  return props.sessions.filter((s) => s.projectPath === path);
+  const list = props.sessions.filter((s) => s.projectPath === path);
+  // 按激活顺序排（最近激活在前）；从未激活过的保持后端原序（sort 稳定）
+  const rank = (id: string): number => {
+    const i = activatedOrder.value.indexOf(id);
+    return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+  };
+  return [...list].sort((a, b) => rank(a.sessionId) - rank(b.sessionId));
 }
 
 function visibleSessions(path: string): SessionItem[] {
@@ -101,17 +112,15 @@ function hiddenSessionCount(path: string): number {
   return Math.max(0, sessionsOf(path).length - VISIBLE_SESSION_LIMIT);
 }
 
-function shouldShowDot(s: SessionItem, currentId: string | null): boolean {
-  // 当前选中的会话不显示圆点，已有高亮
-  if (currentId === s.sessionId) return false;
+function shouldShowDot(s: SessionItem): boolean {
   // 空闲不显示
   if (s.status === 'idle') return false;
-  // 已完成：完成后未查看过才显示绿点；查看过一次即隐藏
-  //（发送前打开过会话不算已读——完成结果可能还没看过）
+  // 已完成：完成结果未读才显示绿点（已读落盘在 forge-store 的 doneReadAt，
+  // 跨窗口/重启一致；新一轮完成时后端把 doneReadAt 清回 null → 重新提示）
   if (s.status === 'done') {
-    return !doneReadSessions.value.has(s.sessionId);
+    return !s.doneReadAt;
   }
-  // 运行中/错误总是显示
+  // 运行中/错误总是显示——选中态与否一致（运行中状态点需始终可见，与列表高亮解耦）
   return true;
 }
 
@@ -146,26 +155,9 @@ function selectProject(path: string): void {
 }
 
 function selectSession(id: string): void {
-  // 点击已完成会话 → 标记完成结果已读，绿点消失
-  //（仅 done 状态标记：streaming 时点击不算，完成后仍会绿点提示）
-  const s = props.sessions.find((it) => it.sessionId === id);
-  if (s?.status === 'done') markDoneRead(id);
+  // 已读标记由 App 统一处理（session/markSessionRead 落盘，含正查看时完成的场景）
   emit('select-session', id);
 }
-
-// 正在查看的会话完成（streaming→done）视为已读：用户亲眼看过完成过程，
-// 切走后不再用绿点提示
-watch(
-  () => props.sessions,
-  (list) => {
-    for (const s of list) {
-      if (s.status === 'done' && props.currentSessionId === s.sessionId) {
-        markDoneRead(s.sessionId);
-      }
-    }
-  },
-  { deep: true, immediate: true },
-);
 
 // create-session 事件无 path 载荷，先 select-project 让父端知道目标项目，再展开本面板
 function onCreateSession(p: ProjectItem): void {
@@ -524,7 +516,7 @@ onUnmounted(() => {
               @dragstart="onSessionDragStart($event, session)"
             >
               <span
-                v-if="shouldShowDot(session, currentSessionId)"
+                v-if="shouldShowDot(session)"
                 class="tree-session-status-dot"
                 :class="`tone-${sessionTone(session)}`"
                 :title="statusTitle(session)"
@@ -637,6 +629,7 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  overflow-y: auto;
 }
 
 .tree-section {
