@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, reactive, nextTick, onMounted, onUnmounted } from 'vue';
-import { call, subscribe, type AttachmentFile } from '../bridge';
+import { call, subscribe } from '../bridge';
 import type { ConversationMessage, SessionStatus, Subagent } from '../types';
 import { useToast } from '../composables/useToast';
 import InstructionInput from './InstructionInput.vue';
@@ -8,6 +8,7 @@ import MessageListItem, { type DisplayItem, type ToolDiff } from './MessageListI
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
+import { useStreamPhase } from '../composables/useStreamPhase';
 
 /**
  * 多窗口画布内单个窗口的会话视图：加载历史、订阅会话/工具事件、渲染消息流，
@@ -36,6 +37,9 @@ const pendingStopAgentId = ref<string | null>(null);
 
 /** toolEventId -> messages 索引，用于 started→completed 聚合 */
 const toolEventIndex = new Map<string, number>();
+
+/** 流式阶段指示（方案 A）：按 delta/工具事件推断当前动作文案（思考/输出/写入/读取/执行命令…） */
+const { streamPhaseText, reset: resetStreamPhase, markOutputting, markTool, markToolEnd } = useStreamPhase();
 
 /** 工具组折叠状态：key 为工具组稳定 id（首条工具 toolEventId/ts，聚组边界变化不漂移） */
 const toolGroupCollapsed = reactive(new Map<string, boolean>());
@@ -205,7 +209,7 @@ async function loadHistory(): Promise<void> {
   }
 }
 
-async function onSend(text: string, attachments?: AttachmentFile[]): Promise<void> {
+async function onSend(text: string): Promise<void> {
   const t = text.trim();
   if (!t || isStreaming.value) return;
   errorMsg.value = null;
@@ -213,25 +217,13 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
     role: 'user',
     content: t,
     ts: new Date().toISOString(),
-    files: (attachments ?? []).filter((a) => a.kind === 'text').map((a) => a.name),
   });
   isStreaming.value = true;
+  resetStreamPhase();
   nextTick(scrollToBottom);
   try {
     const params: Record<string, unknown> = { sessionId: props.sessionId, content: t };
-    if (attachments && attachments.length > 0) {
-      params.attachments = attachments.map((a) =>
-        a.kind === 'image'
-          ? { kind: 'image', name: a.name, mimeType: a.mimeType, data: a.data }
-          : { kind: 'text', name: a.name, content: a.content },
-      );
-    }
-    const res = await call<{ skippedImages?: number } | null>('conversation/sendMessage', params);
-    // 多模态门控：模型不支持图片时后端已跳过图片附件，气泡上标记提示
-    if (res && typeof res.skippedImages === 'number' && res.skippedImages > 0) {
-      const last = messages.value[messages.value.length - 1];
-      if (last && last.role === 'user') last.imageSkipped = true;
-    }
+    await call<null>('conversation/sendMessage', params);
   } catch (e) {
     isStreaming.value = false;
     errorMsg.value = e instanceof Error ? e.message : String(e);
@@ -267,6 +259,7 @@ function onDelta(payload: unknown): void {
   const p = payload as { sessionId: string; delta: { text?: string } | string };
   if (p.sessionId !== props.sessionId) return;
   const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
+  if (text !== '') markOutputting();
   const last = messages.value[messages.value.length - 1];
   if (last && last.role === 'assistant') {
     last.content += text;
@@ -279,8 +272,10 @@ function onDelta(payload: unknown): void {
 function onStatus(payload: unknown): void {
   const p = payload as { sessionId: string; status: string };
   if (p.sessionId !== props.sessionId) return;
-  if (p.status === 'streaming') isStreaming.value = true;
-  else if (['done', 'idle', 'canceled', 'error'].includes(p.status)) {
+  if (p.status === 'streaming') {
+    isStreaming.value = true;
+    resetStreamPhase();
+  } else if (['done', 'idle', 'canceled', 'error'].includes(p.status)) {
     isStreaming.value = false;
     if (p.status !== 'error') errorMsg.value = null; // 重试提示在轮次正常结束时消失
   }
@@ -297,6 +292,7 @@ function onToolStarted(payload: unknown): void {
   const p = payload as { toolEventId: string; sessionId?: string; toolName?: string };
   if (p.sessionId && p.sessionId !== props.sessionId) return;
   if (toolEventIndex.has(p.toolEventId)) return;
+  markTool(p.toolEventId, p.toolName ?? null);
   messages.value.push({
     role: 'tool',
     content: '',
@@ -314,6 +310,7 @@ function onToolCompleted(payload: unknown): void {
   if (p.sessionId && p.sessionId !== props.sessionId) return;
   const idx = toolEventIndex.get(p.toolEventId);
   if (idx === undefined) return;
+  markToolEnd(p.toolEventId);
   const m = messages.value[idx];
   if (!m) return;
   m.status = 'completed';
@@ -325,6 +322,7 @@ function onToolError(payload: unknown): void {
   if (p.sessionId && p.sessionId !== props.sessionId) return;
   const idx = toolEventIndex.get(p.toolEventId);
   if (idx === undefined) return;
+  markToolEnd(p.toolEventId);
   const m = messages.value[idx];
   if (!m) return;
   m.status = 'error';
@@ -466,7 +464,7 @@ onUnmounted(() => {
           :session-id="props.sessionId"
           @toggle-group="toggleGroup"
         />
-        <div v-if="isStreaming" class="wc-hint thinking-shimmer">助手正在思考</div>
+        <div v-if="isStreaming" class="wc-hint thinking-shimmer">{{ streamPhaseText }}</div>
       </template>
       <div v-if="switchBanner" class="wc-switch-banner">
         <span class="wc-sb-line"></span>
@@ -538,7 +536,7 @@ onUnmounted(() => {
 }
 .wc-hint {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 13px;
   padding: 6px 2px;
   text-align: center;
 }

@@ -3,7 +3,6 @@ import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from
 import {
   call,
   subscribe,
-  type AttachmentFile,
   type ConversationCompactedPayload,
 } from '../bridge';
 import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, Subagent } from '../types';
@@ -14,6 +13,7 @@ import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
+import { useStreamPhase } from '../composables/useStreamPhase';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
@@ -59,6 +59,9 @@ const pendingStopAgentId = ref<string | null>(null);
 
 /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
 const toolEventIndex = new Map<string, number>();
+
+/** 流式阶段指示（方案 A）：按 delta/工具事件推断当前动作文案（思考/输出/写入/读取/执行命令…） */
+const { streamPhaseText, reset: resetStreamPhase, markOutputting, markTool, markToolEnd } = useStreamPhase();
 
 /** 工具组折叠状态：key 为工具组稳定 id（首条工具 toolEventId/ts，聚组边界变化不漂移） */
 const toolGroupCollapsed = reactive(new Map<string, boolean>());
@@ -245,8 +248,8 @@ function scrollToBottom(): void {
   });
 }
 
-/** 发送消息：本地追加 user 消息 + 调后端（P3-B：携带附件；图片同步进本地消息流展示） */
-async function onSend(text: string, attachments?: AttachmentFile[]): Promise<void> {
+/** 发送消息：本地追加 user 消息 + 调后端（附件统一给路径：路径行已在 content 内） */
+async function onSend(text: string): Promise<void> {
   errorMsg.value = null;
   // 草稿态（新建会话未发首条消息）：发送前先真正创建会话，左侧树标签随之创建，
   // 标题由 forge-core 首条消息自动命名生成（见 createForgeCore onFirstUserMessage）。
@@ -283,35 +286,17 @@ async function onSend(text: string, attachments?: AttachmentFile[]): Promise<voi
     }
   }
   const sessionId = props.sessionId ?? createdSessionId!;
-  // 图片/文本附件进本地消息（实时显示占位；历史回显由 loadPiSessionHistory 解析 JSONL）
-  const images = (attachments ?? [])
-    .filter((a) => a.kind === 'image' && typeof a.data === 'string')
-    .map((a) => ({ data: a.data as string, mimeType: a.mimeType ?? 'image/png' }));
-  const files = (attachments ?? []).filter((a) => a.kind === 'text').map((a) => a.name);
   messages.value.push({
     role: 'user',
     content: text,
     ts: new Date().toISOString(),
-    images: images.length > 0 ? images : undefined,
-    files: files.length > 0 ? files : undefined,
   });
   isStreaming.value = true;
+  resetStreamPhase();
   autoScrollToBottom();
   try {
     const params: Record<string, unknown> = { sessionId, content: text };
-    if (attachments && attachments.length > 0) {
-      params.attachments = attachments.map((a) =>
-        a.kind === 'image'
-          ? { kind: 'image', name: a.name, mimeType: a.mimeType, data: a.data }
-          : { kind: 'text', name: a.name, content: a.content },
-      );
-    }
-    const res = await call<{ skippedImages?: number } | null>('conversation/sendMessage', params);
-    // 多模态门控：模型不支持图片时后端已跳过图片附件，气泡上标记提示
-    if (res && typeof res.skippedImages === 'number' && res.skippedImages > 0) {
-      const last = messages.value[messages.value.length - 1];
-      if (last && last.role === 'user') last.imageSkipped = true;
-    }
+    await call<null>('conversation/sendMessage', params);
   } catch (e) {
     isStreaming.value = false;
     errorMsg.value = e instanceof Error ? e.message : String(e);
@@ -368,6 +353,7 @@ function onConversationDelta(payload: unknown): void {
   const p = payload as { sessionId: string; delta: { text?: string } | string };
   if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
   const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
+  if (text !== '') markOutputting();
   // 流式追加到最后一条 assistant 消息；无则新建
   const last = messages.value[messages.value.length - 1];
   if (last && last.role === 'assistant') {
@@ -387,6 +373,7 @@ function onConversationStatusChanged(payload: unknown): void {
   if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
   if (p.status === 'streaming') {
     isStreaming.value = true;
+    resetStreamPhase();
   } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
     isStreaming.value = false;
     // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
@@ -434,6 +421,7 @@ function onToolStarted(payload: unknown): void {
   // tool 事件可能不带 sessionId（按 ToolDescriptor 结构），保守处理：若无 sessionId 则归当前会话
   if (p.sessionId && p.sessionId !== (props.sessionId ?? createdSessionId)) return;
   if (toolEventIndex.has(p.toolEventId)) return;
+  markTool(p.toolEventId, p.tool?.name ?? p.toolName ?? null);
   const msg: ConversationMessage = {
     role: 'tool',
     content: '',
@@ -458,6 +446,7 @@ function onToolCompleted(payload: unknown): void {
   if (p.sessionId && p.sessionId !== (props.sessionId ?? createdSessionId)) return;
   const idx = toolEventIndex.get(p.toolEventId);
   if (idx === undefined) return;
+  markToolEnd(p.toolEventId);
   const msg = messages.value[idx];
   if (msg) {
     msg.status = 'completed';
@@ -477,6 +466,7 @@ function onToolError(payload: unknown): void {
   if (p.sessionId && p.sessionId !== (props.sessionId ?? createdSessionId)) return;
   const idx = toolEventIndex.get(p.toolEventId);
   if (idx === undefined) return;
+  markToolEnd(p.toolEventId);
   const msg = messages.value[idx];
   if (msg) {
     msg.status = 'error';
@@ -922,10 +912,7 @@ watch(
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
             <div v-if="isStreaming" class="conv-thinking">
-              <span class="thinking-dot"></span>
-              <span class="thinking-dot"></span>
-              <span class="thinking-dot"></span>
-              <span class="thinking-text thinking-shimmer">助手正在思考</span>
+              <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
             </div>
           </template>
 
@@ -1093,7 +1080,7 @@ watch(
   gap: 6px;
   padding: 10px 14px;
   color: var(--muted-foreground);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .loading-dot,
@@ -1124,6 +1111,11 @@ watch(
 .loading-text,
 .thinking-text {
   margin-left: 6px;
+}
+
+/* 思考指示器已无前置圆点，取消左移 */
+.conv-thinking .thinking-text {
+  margin-left: 0;
 }
 
 /* Codex 银色流光（ai-coding streaming-working 同款，银色版） */
