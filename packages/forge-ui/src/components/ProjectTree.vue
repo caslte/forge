@@ -632,6 +632,19 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
+.project-tree::-webkit-scrollbar {
+  width: 3px;
+}
+
+.project-tree::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--foreground) 8%, transparent);
+  border-radius: 999px;
+}
+
+.project-tree::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 14%, transparent);
+}
+
 .tree-section {
   display: flex;
   flex-direction: column;
