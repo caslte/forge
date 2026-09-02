@@ -178,6 +178,11 @@ export interface PiConversationEventHandlers {
   onToolCompleted?: (sessionId: string, event: PiToolCompletedPayload) => void;
   onToolError?: (sessionId: string, event: PiToolErrorPayload) => void;
   /**
+   * 上下文压缩开始（P3-A）：手动与自动压缩均回调，UI 据此锁定输入框并
+   * 显示"正在压缩"横幅（与 onCompacted 成对，压缩失败时以 onError 收尾）。
+   */
+  onCompacting?: (sessionId: string, info: { reason: 'manual' | 'auto' }) => void;
+  /**
    * 上下文压缩完成（P3-A）：手动与自动压缩均回调，UI 据此刷新消息列表。
    * 自动压缩（pi 按阈值/溢出触发）没有 RPC 入口，只能靠本回调让 UI 感知，
    * 否则用户会看到历史被摘要替换却毫无提示。
@@ -234,6 +239,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly errorEmittedThisTurn = new Set<string>();
   /** 内存会话记录（无 pi session 文件时的历史回退，含 user 与 assistant） */
   private readonly transcripts = new Map<string, ConversationMessage[]>();
+  /** 每会话最近一次压缩后的估算 token 数（pi 在压缩边界后返回 null 用量时合成百分比） */
+  private readonly lastCompactTokensAfter = new Map<string, number>();
   /** 会话当前生效模型字符串（热切换差异比较用） */
   private readonly leaseModels = new Map<string, string | undefined>();
   /** 每会话最后应用/已生效的思考级别（差异比较用；未应用过则为 undefined） */
@@ -510,18 +517,29 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     sessionId: string,
   ): Promise<{ tokens: number | null; contextWindow: number; percent: number | null } | null> {
     const lease = this.leases.get(sessionId);
+    let usage: { tokens: number | null; contextWindow: number; percent: number | null } | null = null;
     if (lease !== undefined && typeof lease.session.getContextUsage === 'function') {
       const raw = lease.session.getContextUsage();
       if (raw !== null && raw !== undefined) {
-        const usage = raw as { tokens?: number | null; contextWindow?: number; percent?: number | null };
-        return {
-          tokens: typeof usage.tokens === 'number' ? usage.tokens : null,
-          contextWindow: typeof usage.contextWindow === 'number' ? usage.contextWindow : 0,
-          percent: typeof usage.percent === 'number' ? usage.percent : null,
+        const u = raw as { tokens?: number | null; contextWindow?: number; percent?: number | null };
+        usage = {
+          tokens: typeof u.tokens === 'number' ? u.tokens : null,
+          contextWindow: typeof u.contextWindow === 'number' ? u.contextWindow : 0,
+          percent: typeof u.percent === 'number' ? u.percent : null,
         };
       }
     }
-    return this.estimateUsageFromDisk(sessionId);
+    if (usage === null) usage = await this.estimateUsageFromDisk(sessionId);
+    // 压缩边界后 pi 返回 null 用量（边界前 usage 只会虚报）：用最近一次压缩的
+    // tokensAfter 合成百分比，让 UI 压缩后立即显示新的上下文占用而非"? tokens"
+    if (usage !== null && usage.percent === null) {
+      const after = this.lastCompactTokensAfter.get(sessionId);
+      const tokens = usage.tokens ?? (typeof after === 'number' ? after : null);
+      if (typeof tokens === 'number' && usage.contextWindow > 0) {
+        return { tokens, contextWindow: usage.contextWindow, percent: (tokens / usage.contextWindow) * 100 };
+      }
+    }
+    return usage;
   }
 
   /**
@@ -650,6 +668,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.sessionFiles.delete(sessionId);
     this.leaseModels.delete(sessionId);
     this.appliedThinkingLevels.delete(sessionId);
+    this.lastCompactTokensAfter.delete(sessionId);
   }
 
   /**
@@ -876,6 +895,15 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       return;
     }
 
+    // 上下文压缩开始（P3-A）：转发 UI 锁定输入框 / 显示"正在压缩"横幅；
+    // pi reason（manual / threshold / overflow）归一为 manual / auto
+    if (event.type === 'compaction_start') {
+      this.eventHandlers.onCompacting?.(sessionId, {
+        reason: event.reason === 'manual' ? 'manual' : 'auto',
+      });
+      return;
+    }
+
     // 上下文压缩收敛（P3-A）：手动与自动压缩都在此汇合。自动压缩（reason 为
     // threshold / overflow）没有 RPC 入口，UI 只能靠本回调感知——否则历史被摘要
     // 替换却毫无提示；压缩失败必须上报，不能静默。
@@ -893,6 +921,11 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       // 被中止（用户取消 / 无可压缩内容）既不算完成也不算错误
       if (event.aborted === true || !isRecord(event.result)) return;
       const info = normalizeCompactionInfo(event.reason, event.result);
+      // 记录压缩后估算 token：pi 在压缩边界之后无新 assistant 用量时返回 null
+      // 用量，据此合成"压缩后百分比"（否则 UI 只能显示"? tokens"）
+      if (typeof info.tokensAfter === 'number') {
+        this.lastCompactTokensAfter.set(sessionId, info.tokensAfter);
+      }
       this.eventHandlers.onCompacted?.(sessionId, info);
       return;
     }

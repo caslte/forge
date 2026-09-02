@@ -3,6 +3,8 @@ import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel } from '../types';
 import { call, subscribe, type PendingAttachment, type ConversationCompactResult } from '../bridge';
 import { isImagePath } from '../attachmentText';
+import { useToast } from '../composables/useToast';
+import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
 import ImageLightbox from './ImageLightbox.vue';
 
 /**
@@ -43,6 +45,9 @@ const attachRowRef = ref<HTMLElement | null>(null);
 const focused = ref(false);
 const modelMenuOpen = ref(false);
 
+const { success: toastSuccess, error: toastError } = useToast();
+const { markCompacting, markDone, clear: clearCompactBanner } = useCompactBanner();
+
 // ===== MP-S05：思考级别切换器（模型选择旁紧凑下拉；非推理模型隐藏入口） =====
 /** 当前模型可用级别（来自 model/getModelThinkingLevels；仅 ["off"] 时隐藏切换器） */
 const availableLevels = ref<ThinkingLevel[]>([]);
@@ -56,7 +61,6 @@ let shimmerTimer: ReturnType<typeof setTimeout> | null = null;
 let tlGen = 0;
 
 const isStreaming = computed(() => props.sessionStatus === 'streaming');
-const canSend = computed(() => (text.value.trim().length > 0 || attachments.value.length > 0) && !isStreaming.value);
 const charCount = computed(() => text.value.length);
 const MAX_CHARS = 8000;
 
@@ -68,11 +72,10 @@ interface ContextUsageInfo {
 }
 const usage = ref<ContextUsageInfo | null>(null);
 const usageError = ref<string | null>(null);
+/** 手动压缩进行中（点击压缩按钮 → RPC 返回） */
 const compacting = ref(false);
-const compactResult = ref<string | null>(null);
-/** 最近一次压缩是否失败（失败提示用告警色） */
-const compactFailed = ref(false);
-let compactResultTimer: ReturnType<typeof setTimeout> | null = null;
+/** 自动压缩进行中（conversation.compacting → compacted 事件区间） */
+const autoCompacting = ref(false);
 
 const usagePercent = computed(() => {
   if (usage.value === null || usage.value.percent === null) return null;
@@ -87,27 +90,38 @@ const usageLabel = computed(() => {
 });
 const usageWarning = computed(() => usagePercent.value !== null && usagePercent.value >= 80);
 
+/** 压缩期间锁定输入（手动或自动）：上下文重建中发送会造成内容错位 */
+const inputLocked = computed(() => isStreaming.value || compacting.value || autoCompacting.value);
+const canSend = computed(
+  () => (text.value.trim().length > 0 || attachments.value.length > 0) && !inputLocked.value,
+);
+
 /**
  * 流式期间禁止压缩：pi 的 compact() 会先 abort 当前轮，导致正在生成的回答被
  * 静默截断（以 stopReason=aborted 入库）。宁可禁用，也不让用户莫名丢回答。
  */
-const compactDisabled = computed(() => compacting.value || isStreaming.value);
-const compactLabel = computed(() => (compacting.value ? '压缩中…' : '压缩'));
+const compactDisabled = computed(() => compacting.value || autoCompacting.value || isStreaming.value);
+const compactLabel = computed(() =>
+  compacting.value || autoCompacting.value ? '压缩中…' : '压缩',
+);
 const compactTitle = computed(() => {
-  if (compacting.value) return '压缩中…';
+  if (compacting.value || autoCompacting.value) return '压缩中…';
   if (isStreaming.value) return '回答生成中，暂不支持压缩';
   return '压缩上下文';
 });
 
-/** 压缩结果文案：有前后 token 时展示变化量（pi 在压缩边界后可能仍返回 null） */
-function formatCompactResult(r: ConversationCompactResult): string {
-  if (!r.ok) return r.message ?? '压缩失败';
-  const before = r.tokensBefore;
-  const after = r.tokensAfter;
-  if (typeof before === 'number' && typeof after === 'number') {
-    return `压缩完成：${before} → ${after} tokens`;
+/**
+ * 压缩结果 toast 文案：减少百分比优先（用户对比例更有感），
+ * 附带前后 token 变化做细节；数据不足退回简文。
+ */
+function formatCompactToast(r: ConversationCompactResult): string {
+  const pct = compactReductionPct(r.tokensBefore, r.tokensAfter);
+  if (typeof r.tokensBefore === 'number' && typeof r.tokensAfter === 'number') {
+    return pct !== null
+      ? `压缩完成：${r.tokensBefore} → ${r.tokensAfter} tokens（减少 ${pct}%）`
+      : `压缩完成：${r.tokensBefore} → ${r.tokensAfter} tokens`;
   }
-  return '压缩完成';
+  return '压缩完成：上下文已更新';
 }
 
 /** 拉取当前会话上下文用量（P3-A） */
@@ -125,29 +139,45 @@ async function refreshUsage(): Promise<void> {
   }
 }
 
-/** 手动压缩（P3-A）：成功后刷新用量 */
+/** 手动压缩（P3-A）：压缩中锁定输入 + 持久横幅；结果走全局 toast（同切换模型款式） */
 async function onCompact(): Promise<void> {
-  if (!props.sessionId || compacting.value || isStreaming.value) return;
+  if (!props.sessionId || compacting.value || autoCompacting.value || isStreaming.value) return;
   compacting.value = true;
-  compactResult.value = null;
-  compactFailed.value = false;
+  markCompacting(props.sessionId);
   try {
     const res = await call<{ result: ConversationCompactResult }>('conversation/compact', {
       sessionId: props.sessionId,
     });
     const r = res.result;
-    compactFailed.value = !r.ok;
-    compactResult.value = formatCompactResult(r);
+    if (!r.ok) {
+      toastError(r.message ?? '压缩失败');
+      clearCompactBanner(props.sessionId);
+      return;
+    }
     await refreshUsage();
+    // bug 兜底：pi 在压缩边界后可能返回 percent=null（UI 会显示"? tokens"），
+    // 用压缩结果的 tokensAfter 合成压缩后百分比
+    if (
+      usage.value !== null &&
+      usage.value.percent === null &&
+      typeof r.tokensAfter === 'number' &&
+      usage.value.contextWindow > 0
+    ) {
+      usage.value = {
+        tokens: r.tokensAfter,
+        contextWindow: usage.value.contextWindow,
+        percent: (r.tokensAfter / usage.value.contextWindow) * 100,
+      };
+    }
+    toastSuccess(formatCompactToast(r));
+    markDone(props.sessionId, r.tokensBefore ?? null, r.tokensAfter ?? null);
   } catch (e) {
-    compactFailed.value = true;
-    compactResult.value = e instanceof Error ? e.message : '压缩失败';
+    toastError(e instanceof Error ? e.message : '压缩失败');
+    clearCompactBanner(props.sessionId);
   } finally {
     compacting.value = false;
-    if (compactResultTimer) clearTimeout(compactResultTimer);
-    compactResultTimer = setTimeout(() => {
-      compactResult.value = null;
-    }, 4000);
+    // compacting/compacted 事件可能因压缩中止不成对发射，RPC 返回即解锁输入
+    autoCompacting.value = false;
   }
 }
 
@@ -266,7 +296,7 @@ async function addPaths(paths: string[]): Promise<boolean> {
 
 /** 选择附件（统一给路径：只拿路径，不读内容） */
 async function pickAttachments(): Promise<void> {
-  if (isStreaming.value) return;
+  if (inputLocked.value) return;
   try {
     const files = await window.forge.dialog.selectFiles();
     if (files.length === 0) return;
@@ -333,7 +363,7 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
  * 否则拦截文件/截图为路径附件。
  */
 async function onPaste(ev: ClipboardEvent): Promise<void> {
-  if (isStreaming.value) return;
+  if (inputLocked.value) return;
   const cd = ev.clipboardData;
   if (!cd) return;
   if (cd.getData('text/plain').trim() !== '') return;
@@ -362,7 +392,7 @@ const dragOver = ref(false);
 
 /** 拖拽悬停：仅当拖入的是文件时高亮并允许放置 */
 function onDragOver(ev: DragEvent): void {
-  if (isStreaming.value) return;
+  if (inputLocked.value) return;
   const types = ev.dataTransfer?.types;
   if (!types || !Array.from(types).includes('Files')) return;
   ev.preventDefault();
@@ -379,7 +409,7 @@ function onDragLeave(ev: DragEvent): void {
 
 /** 放置：拖入的文件统一收集路径（截图类无盘文件先落盘） */
 async function onDrop(ev: DragEvent): Promise<void> {
-  if (isStreaming.value) return;
+  if (inputLocked.value) return;
   dragOver.value = false;
   const files = Array.from(ev.dataTransfer?.files ?? []);
   if (files.length === 0) return;
@@ -529,47 +559,65 @@ function focus(): void {
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
 defineExpose({ focus, currentLevel });
 
-/** 压缩完成事件订阅（自动压缩后刷新用量显示） */
+/** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;
+let unsubCompacting: (() => void) | null = null;
 
 onMounted(() => {
   nextTick(autoGrow);
   document.addEventListener('click', onDocClick);
   if (props.sessionId) void refreshUsage();
   void loadThinkingState();
-  // 自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，只能靠事件刷新用量显示
-  unsubCompacted = subscribe('conversation.compacted', (payload) => {
+  // 自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，只能靠事件感知：
+  // compacting → 锁定输入 + 持久横幅；compacted → 解锁 + 刷新用量 + 横幅收尾
+  unsubCompacting = subscribe('conversation.compacting', (payload) => {
     const p = payload as { sessionId?: string };
     if (p.sessionId !== props.sessionId) return;
+    autoCompacting.value = true;
+    if (props.sessionId) markCompacting(props.sessionId);
+  });
+  unsubCompacted = subscribe('conversation.compacted', (payload) => {
+    const p = payload as {
+      sessionId?: string;
+      tokensBefore?: number | null;
+      tokensAfter?: number | null;
+    };
+    if (p.sessionId !== props.sessionId) return;
+    autoCompacting.value = false;
     void refreshUsage();
+    // 自动压缩的横幅收尾在此统一处理（手动压缩 RPC 返回时也会再标记一次，幂等）
+    if (props.sessionId) markDone(props.sessionId, p.tokensBefore ?? null, p.tokensAfter ?? null);
   });
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   unsubCompacted?.();
-  if (compactResultTimer) clearTimeout(compactResultTimer);
+  unsubCompacting?.();
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
   if (shimmerTimer) clearTimeout(shimmerTimer);
 });
 
-// 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）
+// 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）。
+// 同时兜底解除自动压缩锁定：compaction 被中止时 compacted 事件不成对发射，
+// 轮次结束即可安全解锁（压缩不可能跨轮次存活）
 watch(
   () => props.sessionStatus,
   (s) => {
     if (s === 'idle' || s === 'done') {
+      autoCompacting.value = false;
       nextTick(focus);
       void refreshUsage();
     }
   },
 );
 
-// 会议切换 / sessionId 变化时重新拉取用量
+// 会议切换 / sessionId 变化时重新拉取用量（横幅状态在 useCompactBanner 内按会话隔离保留）
 watch(
   () => props.sessionId,
   () => {
     usage.value = null;
-    compactResult.value = null;
+    autoCompacting.value = false;
     if (props.sessionId) void refreshUsage();
   },
 );
@@ -651,8 +699,8 @@ watch(
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? '助手正在回复，可点击停止中断…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
-      :disabled="isStreaming"
+      :placeholder="isStreaming ? '助手正在回复，可点击停止中断…' : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
+      :disabled="inputLocked"
       :rows="3"
       @input="onInput"
       @keydown="onKeydown"
@@ -666,7 +714,7 @@ watch(
         <!-- 附件 -->
         <button
           class="meta-link"
-          :disabled="isStreaming"
+          :disabled="inputLocked"
           data-tooltip="添加附件（图片 / 文本）"
           aria-label="附件"
           @click="pickAttachments"
@@ -753,12 +801,6 @@ watch(
               @click="onCompact"
             >{{ compactLabel }}</span>
           </div>
-          <!-- 压缩结果提示：绝对定位，避免挤压输入框布局 -->
-          <span
-            v-if="compactResult"
-            class="compact-result"
-            :class="{ error: compactFailed }"
-          >{{ compactResult }}</span>
         </div>
 
         <!-- 发送/停止 -->
@@ -1162,7 +1204,7 @@ watch(
   gap: 8px;
 }
 
-/* 上下文用量容器：压缩结果提示相对它绝对定位，避免挤压输入框布局 */
+/* 上下文用量容器 */
 .ctx-wrap {
   position: relative;
   display: inline-flex;
@@ -1225,26 +1267,6 @@ watch(
 .ctx-cmp.disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-/* 压缩结果提示（绝对定位浮在用量条上方，4s 后自动消失） */
-.compact-result {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  z-index: 5;
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--popover);
-  color: var(--success);
-  font-size: 12px;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-.compact-result.error {
-  color: var(--destructive);
 }
 
 /* 发送/停止（对齐原型：常显品牌色，禁用态灰） */

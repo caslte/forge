@@ -9,6 +9,7 @@ import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
 import { useStreamPhase } from '../composables/useStreamPhase';
+import { useCompactBanner } from '../composables/useCompactBanner';
 
 /**
  * 多窗口画布内单个窗口的会话视图：加载历史、订阅会话/工具事件、渲染消息流，
@@ -22,6 +23,13 @@ const props = defineProps<{
 }>();
 
 const { success: toastSuccess } = useToast();
+
+/**
+ * 上下文压缩横幅（内存持久，按 sessionId 隔离）：状态由 InstructionInput 的
+ * 事件订阅 / 压缩点击统一维护，本视图只读渲染（与单窗口一致）。
+ */
+const { getBanner: getCompactBanner } = useCompactBanner();
+const compactBanner = computed(() => getCompactBanner(props.sessionId));
 
 const messages = ref<ConversationMessage[]>([]);
 const isStreaming = ref(false);
@@ -288,6 +296,16 @@ function onError(payload: unknown): void {
   errorMsg.value = p.message ?? `对话错误（${p.code ?? 'unknown'}）`;
 }
 
+/**
+ * 上下文压缩完成：重拉历史（压缩会把 transcript 替换为摘要，不重拉界面显示旧内容）。
+ * 手动与自动压缩都处理；持久横幅由 InstructionInput 的事件订阅维护，此处不重复。
+ */
+function onCompacted(payload: unknown): void {
+  const p = payload as { sessionId: string };
+  if (p.sessionId !== props.sessionId) return;
+  void loadHistory();
+}
+
 function onToolStarted(payload: unknown): void {
   const p = payload as { toolEventId: string; sessionId?: string; toolName?: string };
   if (p.sessionId && p.sessionId !== props.sessionId) return;
@@ -433,6 +451,7 @@ onMounted(() => {
     subscribe('conversation.delta', onDelta),
     subscribe('conversation.statusChanged', onStatus),
     subscribe('conversation.error', onError),
+    subscribe('conversation.compacted', onCompacted),
     subscribe('tool.started', onToolStarted),
     subscribe('tool.completed', onToolCompleted),
     subscribe('tool.error', onToolError),
@@ -466,6 +485,19 @@ onUnmounted(() => {
         />
         <div v-if="isStreaming" class="wc-hint thinking-shimmer">{{ streamPhaseText }}</div>
       </template>
+      <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->
+      <div
+        v-if="compactBanner"
+        class="wc-compact-banner"
+        :class="{ working: compactBanner.phase === 'compacting' }"
+      >
+        <span class="wc-cb-line"></span>
+        <span
+          class="wc-cb-text"
+          :class="{ 'thinking-shimmer': compactBanner.phase === 'compacting' }"
+        >{{ compactBanner.phase === 'compacting' ? '正在压缩上下文' : compactBanner.text }}</span>
+        <span class="wc-cb-line"></span>
+      </div>
       <div v-if="switchBanner" class="wc-switch-banner">
         <span class="wc-sb-line"></span>
         <span class="wc-sb-text">{{ switchBanner }}</span>
@@ -554,6 +586,26 @@ onUnmounted(() => {
   padding: 6px 10px;
   border-radius: 8px;
   background: color-mix(in oklab, var(--destructive) 8%, var(--card));
+}
+/* 上下文压缩横幅：切换模型同款横线分隔款式；压缩中文字走微光动画 */
+.wc-compact-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  color: var(--muted-foreground);
+  user-select: none;
+  animation: fadeIn 0.2s ease-out;
+}
+.wc-compact-banner .wc-cb-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+}
+.wc-compact-banner .wc-cb-text {
+  font-size: 11px;
+  white-space: nowrap;
+  font-weight: 500;
 }
 .wc-switch-banner {
   display: flex;

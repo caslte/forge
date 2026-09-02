@@ -237,6 +237,7 @@ interface MockControl {
       | 'subagent.updated'
       | 'subagent.removed'
       | 'conversation.statusChanged'
+      | 'conversation.compacting'
       | 'conversation.compacted',
     payload: Record<string, unknown>,
   ): void;
@@ -472,10 +473,19 @@ const bridge: ForgeBridge = {
       case 'conversation/compact': {
         // 与真实链路同构（{ result: { ok, tokensBefore, tokensAfter, summary } }）。
         // 缺失该分支时会落到 default 返回 data:null，UI 侧对 null 取值抛 TypeError。
+        // 同时模拟真实后端的 compacting/compacted 事件时序（横幅 + 输入锁定依赖）。
         const sid = (params as { sessionId?: string }).sessionId ?? '';
+        emit('conversation.compacting', { sessionId: sid, reason: 'manual' });
         const before = mockUsage.get(sid) ?? DEFAULT_USAGE_TOKENS;
         const after = Math.max(1, Math.round(before * COMPACT_SHRINK_RATIO));
         mockUsage.set(sid, after);
+        emit('conversation.compacted', {
+          sessionId: sid,
+          reason: 'manual',
+          tokensBefore: before,
+          tokensAfter: after,
+          summary: '上下文已压缩（mock）',
+        });
         return {
           code: 0,
           message: 'ok',

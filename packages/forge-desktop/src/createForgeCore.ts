@@ -396,6 +396,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       pokeMainTurnActivity(sessionId);
       toolApi.emitToolError(sessionId, event.toolEventId, event.error);
     },
+    // P3-A：压缩开始（手动 + 运行时自动）→ conversation.compacting，
+    // UI 据此锁定输入框并显示"正在压缩"横幅。
+    onCompacting: (sessionId, info) => {
+      pokeMainTurnActivity(sessionId); // 压缩也是会话活动，避免看门狗误判卡死
+      conversationApi.emitCompacting(sessionId, info.reason);
+    },
     // P3-A：压缩完成（手动 + 运行时自动）→ conversation.compacted，UI 据此重拉历史。
     // 自动压缩没有 RPC 入口，这是 UI 感知它的唯一通道。
     onCompacted: (sessionId, info) => {

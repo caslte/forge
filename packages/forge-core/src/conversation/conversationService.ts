@@ -95,6 +95,15 @@ export interface ConversationCompactResult {
 }
 
 /**
+ * conversation.compacting 事件载荷：一次上下文压缩开始（手动或自动）。
+ * UI 据此锁定输入框并显示"正在压缩"横幅；与 compacted 成对出现。
+ */
+export interface ConversationCompactingPayload {
+  sessionId: string;
+  reason: CompactReason;
+}
+
+/**
  * conversation.compacted 事件载荷：一次压缩完成（手动或自动）。
  * 自动压缩没有 RPC 入口，UI 只能靠本事件感知并刷新消息列表。
  */

@@ -14,6 +14,7 @@ import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { computeTurnFooters } from '../composables/useTurnFooter';
 import { useStreamPhase } from '../composables/useStreamPhase';
+import { useCompactBanner } from '../composables/useCompactBanner';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
@@ -44,9 +45,13 @@ const messages = ref<ConversationMessage[]>([]);
 const isStreaming = ref(false);
 const loadingHistory = ref(false);
 const errorMsg = ref<string | null>(null);
-/** 上下文压缩提示（自动压缩时提示历史已更新） */
-const compactBanner = ref<string | null>(null);
-let compactBannerTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * 上下文压缩横幅（内存持久，按 sessionId 隔离）：压缩中「正在压缩上下文…」，
+ * 完成「上下文已压缩（减少 x%）」。切换会话再回来仍保留；重启 App 丢失。
+ * 状态由 InstructionInput 的事件订阅 / 压缩点击统一维护，视图只读渲染。
+ */
+const { getBanner: getCompactBanner } = useCompactBanner();
+const compactBanner = computed(() => getCompactBanner(props.sessionId));
 const scrollRef = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 
@@ -225,9 +230,7 @@ function resetForSession(): void {
   // 切到草稿态后没有新的 loadHistory 接管，不清会把"加载历史消息"永久卡在消息区顶部
   loadingHistory.value = false;
   errorMsg.value = null;
-  // 压缩提示随会话切换清除（避免上一会话的提示残留到新会话）
-  compactBanner.value = null;
-  if (compactBannerTimer) clearTimeout(compactBannerTimer);
+  // 压缩横幅按 sessionId 在 useCompactBanner 内隔离保留（切换回来仍可见，内存态）
   // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
   reviewCtrl.reset();
   syncReview();
@@ -392,23 +395,15 @@ function onConversationError(payload: unknown): void {
 }
 
 /**
- * 上下文压缩完成（P3-A）：重拉历史 + 自动压缩时给出提示。
+ * 上下文压缩完成（P3-A）：重拉历史。
  * 压缩会把 transcript 替换为摘要，若不重拉，界面显示的是压缩前的旧内容，
  * 与真实上下文不一致。自动压缩没有 RPC 入口，本事件是 UI 感知它的唯一通道。
+ * 持久横幅（压缩中→已完成）由 InstructionInput 的事件订阅统一维护，此处不重复。
  */
 function onConversationCompacted(payload: unknown): void {
   const p = payload as ConversationCompactedPayload;
   if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
   void loadHistory();
-  if (p.reason !== 'auto') return; // 手动压缩已有按钮侧反馈，不重复打扰
-  compactBanner.value =
-    typeof p.tokensAfter === 'number'
-      ? `上下文已自动压缩（约 ${p.tokensAfter} tokens），历史已更新`
-      : '上下文已自动压缩，历史已更新';
-  if (compactBannerTimer) clearTimeout(compactBannerTimer);
-  compactBannerTimer = setTimeout(() => {
-    compactBanner.value = null;
-  }, 5000);
 }
 
 function onToolStarted(payload: unknown): void {
@@ -825,7 +820,6 @@ onUnmounted(() => {
   unsubs.forEach((u) => u?.());
   unsubs = [];
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
-  if (compactBannerTimer) clearTimeout(compactBannerTimer);
   window.removeEventListener('keydown', onPopoverKeydown);
   // 回看模式清理：触底判定去抖计时器 + 定位高亮
   if (nearBottomTimer !== null) {
@@ -873,14 +867,6 @@ watch(
       <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
       <div ref="scrollRef" v-show="!showResultView" class="conv-messages">
         <div class="conv-messages-inner">
-          <!-- 上下文压缩提示：自动压缩没有 RPC 入口，靠事件感知并提示用户历史已更新 -->
-          <div v-if="compactBanner" class="compact-banner">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 12h16M12 4v8" />
-            </svg>
-            <span>{{ compactBanner }}</span>
-          </div>
-
           <!-- 加载态 -->
           <div v-if="loadingHistory" class="conv-loading">
             <span class="loading-dot"></span>
@@ -915,6 +901,20 @@ watch(
               <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
             </div>
           </template>
+
+          <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->
+          <div
+            v-if="compactBanner"
+            class="compact-banner"
+            :class="{ working: compactBanner.phase === 'compacting' }"
+          >
+            <span class="cb-line"></span>
+            <span
+              class="cb-text"
+              :class="{ 'thinking-shimmer': compactBanner.phase === 'compacting' }"
+            >{{ compactBanner.phase === 'compacting' ? '正在压缩上下文' : compactBanner.text }}</span>
+            <span class="cb-line"></span>
+          </div>
 
           <!-- 模型切换横幅（临时显示在对话流底部） -->
           <div v-if="switchBanner" class="conv-switch-banner">
@@ -1053,24 +1053,27 @@ watch(
 }
 
 /* 加载态 */
-/* 上下文压缩提示条（自动压缩后告知历史已被摘要替换） */
+/* 上下文压缩横幅：切换模型同款横线分隔款式；压缩中文字走微光动画 */
 .compact-banner {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 8px 0;
-  padding: 7px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--muted);
+  gap: 10px;
+  padding: 2px 6px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  user-select: none;
+  animation: fadeIn 0.2s ease-out;
 }
 
-.compact-banner svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
+.compact-banner .cb-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+}
+
+.compact-banner .cb-text {
+  font-size: 11.5px;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .conv-loading,

@@ -32,6 +32,8 @@ import type {
   ConversationStatus,
   ConversationMessage,
   ConversationDelta,
+  CompactReason,
+  ConversationCompactingPayload,
   ConversationCompactedPayload,
 } from '../conversation/conversationService.ts';
 
@@ -225,6 +227,18 @@ export class ConversationApi {
    */
   emitError(sessionId: string, code: number, message: string): void {
     this.events.emit('conversation.error', { sessionId, code, message });
+  }
+
+  /**
+   * 压缩开始推送（非 RPC 方法）：发射 conversation.compacting。
+   * 手动与自动压缩开始都经此通知 UI——锁定输入框并显示"正在压缩"横幅。
+   * @param sessionId 会话 ID
+   * @param reason 触发来源（manual / auto）
+   * @returns 无返回值；触发事件 conversation.compacting { sessionId, reason }
+   */
+  emitCompacting(sessionId: string, reason: CompactReason): void {
+    const payload: ConversationCompactingPayload = { sessionId, reason };
+    this.events.emit('conversation.compacting', payload);
   }
 
   /**

@@ -51,6 +51,7 @@ export type {
   ConversationResult,
   CompactReason,
   ConversationCompactResult,
+  ConversationCompactingPayload,
   ConversationCompactedPayload,
 } from './conversation/conversationService.ts';
 
