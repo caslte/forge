@@ -25,6 +25,7 @@ export type ForgeMethod =
   | 'conversation/sendMessage'
   | 'conversation/cancelStream'
   | 'conversation/queryHistory'
+  | 'conversation/getLastError'
   | 'conversation/getContextUsage'
   | 'conversation/compact'
   | 'conversation/getSlashCommands'

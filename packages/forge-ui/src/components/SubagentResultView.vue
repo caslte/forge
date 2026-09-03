@@ -326,11 +326,16 @@ onUnmounted(() => {
 .srv-status-text {
   color: var(--foreground);
   font-weight: 500;
+  /* 窄容器（多窗口分块）下 flex 会把无 nowrap 的中文压到逐字竖排（变形）；禁止换行收缩，压缩量全部由左侧描述名（ellipsis）吸收 */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .srv-elapsed {
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .srv-spacer {

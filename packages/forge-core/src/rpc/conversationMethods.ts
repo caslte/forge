@@ -89,6 +89,7 @@ export class ConversationApi {
       'conversation/sendMessage': (params) => this.sendMessage(params),
       'conversation/cancelStream': (params) => this.cancelStream(params),
       'conversation/queryHistory': (params) => this.queryHistory(params),
+      'conversation/getLastError': (params) => this.getLastError(params),
       'conversation/getContextUsage': (params) => this.getContextUsage(params),
       'conversation/compact': (params) => this.compact(params),
       'conversation/getSlashCommands': (params) => this.getSlashCommands(params),
@@ -167,6 +168,20 @@ export class ConversationApi {
       return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
     }
     return this.call('queryHistory', () => this.service.queryHistory(sessionId));
+  }
+
+  /**
+   * conversation/getLastError：查询会话最近一次轮次错误信息。
+   * 前端 errorMsg 横幅是瞬态内存态，切走再切回/后台会话出错后丢失；红点
+   * （session.status='error'）持久——切到 error 会话时经本方法拉取横幅数据。
+   * 无错误记录返回 message=null（不报错）。
+   */
+  private getLastError(params: unknown): RpcResult {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return fail(1001, '参数错误：sessionId 必须为非空字符串');
+    }
+    return ok({ message: this.service.getLastError(sessionId) });
   }
 
   /** conversation/getContextUsage：查询上下文用量（P3-A，CV-S06） */

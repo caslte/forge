@@ -65,6 +65,62 @@ const attachRowRef = ref<HTMLElement | null>(null);
 const focused = ref(false);
 const modelMenuOpen = ref(false);
 /** 项目选择器下拉开关（SM-S01 v3.21） */
+
+// ===== 输入历史翻阅（CLI 风格，方案 B：仅输入框为空时触发） =====
+// 存储：本会话的 user 输入按发送顺序倒序（0=最新），上限 100，localStorage 持久化
+// 状态：cursor = -1（当前编辑，未在历史中），0..n-1（历史索引，0 是最近）
+// 触发：↑ 在空输入框 + 浮窗关闭 → cursor+1 + 替换；↓ → cursor-1 + 替换
+// 边界：cursor 走过最新回到 -1 时 text 清空（待编辑草稿已暂存/恢复）
+const HISTORY_MAX = 100;
+const historyList = ref<string[]>([]);
+const historyCursor = ref(-1);
+let pendingDraft = ''; // 进入历史前暂存当前编辑内容；回到 -1 时回填
+
+function historyKey(sid: string | undefined): string | null {
+  return sid ? `forge.inputHistory.${sid}` : null;
+}
+
+function loadHistory(sid: string | undefined): void {
+  const k = historyKey(sid);
+  if (!k) {
+    historyList.value = [];
+    historyCursor.value = -1;
+    pendingDraft = '';
+    return;
+  }
+  try {
+    const raw = localStorage.getItem(k);
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    historyList.value = Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : [];
+  } catch {
+    historyList.value = [];
+  }
+  historyCursor.value = -1;
+  pendingDraft = '';
+}
+
+function saveHistory(): void {
+  const k = historyKey(props.sessionId);
+  if (!k) return;
+  try {
+    localStorage.setItem(k, JSON.stringify(historyList.value));
+  } catch {
+    // 配额溢出等异常静默
+  }
+}
+
+/** 发送成功时调用：去重（与最近一条相同则不入栈），上限截断后落盘 */
+function pushHistory(s: string): void {
+  if (!props.sessionId) return; // 草稿态不入栈
+  const trimmed = s.trim();
+  if (trimmed === '') return;
+  const list = historyList.value;
+  if (list[0] === trimmed) return; // 与最近一条相同，去重
+  list.unshift(trimmed);
+  if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
+  saveHistory();
+}
+
 const projMenuOpen = ref(false);
 
 function toggleProjMenu(): void {
@@ -577,6 +633,42 @@ function onKeydown(ev: KeyboardEvent): void {
   if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
     onSend();
+    return;
+  }
+  // 输入历史翻阅：方案 B——仅输入框为空时（且浮窗都关闭）才拦截 ↑/↓
+  // 避免误删用户正在输入的内容；已在历史模式（cursor>=0）时继续拦截 ↑/↓ 走完历史
+  if (!atPanelOpen.value && !commandPanelOpen.value
+      && (text.value === '' || historyCursor.value >= 0)
+      && historyList.value.length > 0) {
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (historyCursor.value === -1) {
+        pendingDraft = ''; // 已是空，无需保留草稿
+      }
+      const next = historyCursor.value + 1;
+      if (next < historyList.value.length) {
+        historyCursor.value = next;
+        text.value = historyList.value[next]!;
+        nextTick(autoGrow);
+      }
+      return;
+    }
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      if (historyCursor.value === -1) return; // 已在当前编辑态
+      const next = historyCursor.value - 1;
+      if (next < 0) {
+        historyCursor.value = -1;
+        text.value = pendingDraft;
+        pendingDraft = '';
+        nextTick(autoGrow);
+      } else {
+        historyCursor.value = next;
+        text.value = historyList.value[next]!;
+        nextTick(autoGrow);
+      }
+      return;
+    }
   }
 }
 
@@ -595,6 +687,8 @@ function onSend(): void {
   text.value = '';
   attachments.value = [];
   attachError.value = null;
+  // 发送成功后入栈输入历史（未跳过验证 / 文本非空 / 有 sessionId）
+  pushHistory(t);
   nextTick(autoGrow);
   // 附件行追加在正文后（换行分隔），@ 前缀是附件协议标记：@开头=附件，
   // 手敲裸路径=正文，展示层零歧义；模型据此自行 read，纯附件消息就是纯附件行
@@ -969,6 +1063,21 @@ watch(
       void refreshUsage();
     }
   },
+);
+
+// 切换会话：重载输入历史（不同会话的历史独立存储）
+watch(
+  () => props.sessionId,
+  (sid) => {
+    // 如果之前在历史模式（残留的 input 文本是上一会话的某条历史），切会话后应清空
+    // 草稿态则保留 input 不动（草稿不被会话清空）
+    if (historyCursor.value >= 0) {
+      text.value = '';
+      pendingDraft = '';
+    }
+    loadHistory(sid);
+  },
+  { immediate: true },
 );
 
 // 会议切换 / sessionId 变化时重新拉取用量（横幅状态在 useCompactBanner 内按会话隔离保留）

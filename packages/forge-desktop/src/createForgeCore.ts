@@ -385,8 +385,10 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
     onError: (sessionId, error) => {
       pokeMainTurnActivity(sessionId);
-      conversationService.setStatus(sessionId, 'error');
-      conversationApi.emitError(sessionId, 5000, error?.message ?? '对话处理失败');
+      const message = error?.message ?? '对话处理失败';
+      // lastError 随 error 状态记录（红点会话切回后错误横幅的数据源）
+      conversationService.setStatus(sessionId, 'error', { lastError: message });
+      conversationApi.emitError(sessionId, 5000, message);
     },
     onAutoRetryStart: (sessionId, info) => {
       pokeMainTurnActivity(sessionId); // 重试等待期也是会话活动，刷新看门狗

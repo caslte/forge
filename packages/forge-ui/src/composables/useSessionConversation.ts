@@ -234,6 +234,20 @@ export function useSessionConversation(options: {
         scheduleScroll();
       }
     }
+    // 红点会话切回恢复：errorMsg 横幅是瞬态内存态，错误发生在本会话之外时
+    //（切走再切回/后台会话出错）已被清空或从未设置，而会话树红点
+    //（session.status='error'）持久——此时拉取后端记录的 lastError 恢复横幅；
+    // 拉取失败静默降级（横幅非关键路径，不阻塞历史加载）
+    if (sid === options.getSessionId() && options.getStatusHint?.() === 'error') {
+      try {
+        const res = await call<{ message: string | null }>('conversation/getLastError', {
+          sessionId: sid,
+        });
+        if (sid === options.getSessionId() && res.message) errorMsg.value = res.message;
+      } catch {
+        // 静默降级：不显示横幅即可
+      }
+    }
   }
 
   /** 会话切换：重置状态（视图侧的回看模式/高亮等由视图自理） */

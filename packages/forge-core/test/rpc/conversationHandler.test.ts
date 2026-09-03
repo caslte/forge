@@ -258,6 +258,29 @@ test('conversation/sendMessage：附件统一给路径，不再读取 params.att
   assert.equal(call0.content, '读一下\nC:\\repo\\readme.md');
 });
 
+// ===== conversation/getLastError：红点会话切回后的错误横幅数据源 =====
+
+test('conversation/getLastError：返回服务层记录的最近错误消息', async () => {
+  const { api, service } = makeApi();
+  service.setStatus('sess-1', 'error', { lastError: '模型额度耗尽（429）：请检查账户额度' });
+  const result = await api.methods['conversation/getLastError']({ sessionId: 'sess-1' });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.data, { message: '模型额度耗尽（429）：请检查账户额度' });
+});
+
+test('conversation/getLastError：无错误记录返回 message null（不报错）', async () => {
+  const { api } = makeApi();
+  const result = await api.methods['conversation/getLastError']({ sessionId: 'sess-1' });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.data, { message: null });
+});
+
+test('conversation/getLastError：sessionId 缺失返回 1001', async () => {
+  const { api } = makeApi();
+  const result = await api.methods['conversation/getLastError']({});
+  assert.equal(result.code, 1001);
+});
+
 // ===== 扩展 CV-S08：斜杠命令清单（docs/api/03_conversation.md §9） =====
 
 /** 斜杠命令资源查询 port mock（rpc 层注入用）：记录 projectPath、可配置抛错 */

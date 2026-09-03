@@ -185,12 +185,24 @@ export interface StreamState {
   status: ConversationStatus;
   /** 流式增量累积文本（取消/中断时保留，不丢弃已生成内容） */
   lastDeltaText?: string;
+  /**
+   * 最近一次轮次错误信息（error 状态期间保留）：
+   * 前端 errorMsg 横幅是瞬态内存态，切走再切回/后台会话出错后丢失——
+   * 会话树红点（session.status='error'）持久，横幅数据源必须同样可回查。
+   * 新轮次（streaming）与正常终态（done/canceled/idle）清除。
+   */
+  lastError?: string | null;
 }
 
 /** 状态驱动选项（setStatus 内部辅助：携带/清空增量累积文本） */
 export interface ConversationStatusOptions {
   /** 增量累积文本；提供该选项时按值设置（undefined 清空），省略时保持当前值 */
   lastDeltaText?: string;
+  /**
+   * 轮次错误信息；error 状态时提供则记录，省略时保留已记录值；
+   * 非 error 状态忽略（lastError 一律清除）
+   */
+  lastError?: string;
 }
 
 /** 服务构造选项（校验解析器 + 事件回调注入点） */
@@ -303,7 +315,10 @@ export class ConversationService {
       await this.adapter.sendMessage(sessionId, content, resolvedOptions);
     } catch (err) {
       const message = toMessage(err);
-      this.setStatus(sessionId, 'error');
+      // 事件路径（adapter onError → setStatus error + lastError）先于 throw 触发时
+      // 保留其友好信息；本轮无事件记录时兜底记录原始错误
+      const current = this.streamStates.get(sessionId);
+      this.setStatus(sessionId, 'error', { lastError: current?.lastError ?? message });
       return { ok: false, code: 5000, message };
     }
     return { ok: true, data: null };
@@ -511,18 +526,41 @@ export class ConversationService {
   }
 
   /**
+   * 查询会话最近一次轮次错误信息（error 状态期间保留；新轮次/正常终态清除）。
+   * 前端切换/挂载到 status='error' 的会话时经 RPC 拉取，恢复错误横幅显示。
+   * @param sessionId 会话 ID
+   * @returns 错误信息；未记录/未知会话返回 null
+   */
+  getLastError(sessionId: string): string | null {
+    return this.streamStates.get(sessionId)?.lastError ?? null;
+  }
+
+  /**
    * 会话状态驱动（内部辅助，供测试 / rpc 层模拟适配器驱动的状态流转）。
    * 写入内存状态表并触发 onStatusChange 回调（事件接线在 rpc 层）。
    * @param sessionId 会话 ID
    * @param status 目标状态
-   * @param opts 可选：携带/清空增量累积文本（省略时保持当前值）
+   * @param opts 可选：携带/清空增量累积文本（省略时保持当前值）；
+   *             error 状态可携带 lastError（省略时保留已记录值），非 error 状态清除
    */
   setStatus(sessionId: string, status: ConversationStatus, opts?: ConversationStatusOptions): void {
     const current = this.streamStates.get(sessionId);
     this.streamStates.set(sessionId, {
       status,
       lastDeltaText: opts !== undefined ? opts.lastDeltaText : current?.lastDeltaText,
+      lastError: this.resolveLastError(status, current, opts),
     });
     this.options.onStatusChange?.(sessionId, status);
+  }
+
+  /** lastError 状态规则：非 error 状态清除；error 时 opts 提供则记录，否则保留已记录值 */
+  private resolveLastError(
+    status: ConversationStatus,
+    current: StreamState | undefined,
+    opts: ConversationStatusOptions | undefined,
+  ): string | null {
+    if (status !== 'error') return null;
+    if (opts !== undefined && opts.lastError !== undefined) return opts.lastError;
+    return current?.lastError ?? null;
   }
 }

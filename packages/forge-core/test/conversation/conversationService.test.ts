@@ -429,6 +429,78 @@ test('getSlashCommands：port 抛错返回空清单不报错（A-CV-033 枚举�
   if (draftMode.ok) assert.deepEqual(draftMode.data.commands, []);
 });
 
+// ===== lastError 持久化（红点会话切回后错误横幅的数据源，瞬态 errorMsg 丢失修复） =====
+
+test('lastError：setStatus error 携带 lastError 记录，getLastError 可查询', () => {
+  const { service } = makeService({ sessionExists: () => true });
+  service.setStatus('sess-1', 'streaming');
+  service.setStatus('sess-1', 'error', { lastError: '模型额度耗尽（429）：请检查账户额度' });
+  assert.equal(service.getLastError('sess-1'), '模型额度耗尽（429）：请检查账户额度');
+});
+
+test('lastError：未记录错误或未知会话返回 null', () => {
+  const { service } = makeService({ sessionExists: () => true });
+  assert.equal(service.getLastError('sess-unknown'), null);
+  service.setStatus('sess-1', 'streaming');
+  assert.equal(service.getLastError('sess-1'), null, '非 error 状态无错误记录');
+});
+
+test('lastError：新轮次（streaming）与正常终态（done/canceled/idle）清除记录', () => {
+  const { service } = makeService({ sessionExists: () => true });
+  service.setStatus('sess-1', 'error', { lastError: '额度耗尽' });
+  service.setStatus('sess-1', 'done');
+  assert.equal(service.getLastError('sess-1'), null, 'done 应清除 lastError');
+
+  service.setStatus('sess-1', 'error', { lastError: '再次失败' });
+  service.setStatus('sess-1', 'canceled');
+  assert.equal(service.getLastError('sess-1'), null, 'canceled 应清除 lastError');
+
+  service.setStatus('sess-1', 'error', { lastError: '第三次失败' });
+  service.setStatus('sess-1', 'idle');
+  assert.equal(service.getLastError('sess-1'), null, 'idle 应清除 lastError');
+
+  service.setStatus('sess-1', 'error', { lastError: '第四次失败' });
+  service.setStatus('sess-1', 'streaming');
+  assert.equal(service.getLastError('sess-1'), null, '新轮次 streaming 应清除 lastError');
+});
+
+test('lastError：error 状态再次 setStatus 不带 lastError 时保留已记录信息', () => {
+  const { service } = makeService({ sessionExists: () => true });
+  service.setStatus('sess-1', 'error', { lastError: '事件路径记录的友好错误' });
+  service.setStatus('sess-1', 'error');
+  assert.equal(service.getLastError('sess-1'), '事件路径记录的友好错误');
+});
+
+test('lastError：sendMessage adapter 抛错且本轮无事件记录时，兜底记录原始错误信息', async () => {
+  const failAdapter = new MockPiConversationAdapter();
+  failAdapter.sendMessage = async () => {
+    throw new Error('provider 超时');
+  };
+  const service = new ConversationService(failAdapter, { sessionExists: () => true });
+  const result = await service.sendMessage('sess-1', 'hi');
+  assert.ok(!result.ok);
+  assert.equal(service.getStatus('sess-1'), 'error');
+  assert.equal(service.getLastError('sess-1'), 'provider 超时');
+});
+
+test('lastError：事件路径先记录（adapter 内 setStatus error）后抛错，原始信息不覆盖友好信息', async () => {
+  let serviceRef: ConversationService;
+  const adapter = new MockPiConversationAdapter();
+  adapter.sendMessage = async (sessionId: string) => {
+    // 模拟真实链路：pi message_end(error) 事件先经 eventHandlers.onError 记录友好信息，之后 prompt 才抛错
+    serviceRef.setStatus(sessionId, 'error', { lastError: '模型凭据未配置：请在设置中填写 API Key' });
+    throw new Error('No API key found');
+  };
+  serviceRef = new ConversationService(adapter, { sessionExists: () => true });
+  const result = await serviceRef.sendMessage('sess-1', 'hi');
+  assert.ok(!result.ok);
+  assert.equal(
+    serviceRef.getLastError('sess-1'),
+    '模型凭据未配置：请在设置中填写 API Key',
+    'adapter 抛错不得覆盖事件路径已记录的友好错误',
+  );
+});
+
 test('ingestReportedCommands：幂等覆盖，重复上报后缓存为最新清单（A-CV-013）', async () => {
   const { service } = makeSlashService({ sessionExists: () => true });
   service.ingestReportedCommands('sess-1', reportedThreeKinds);

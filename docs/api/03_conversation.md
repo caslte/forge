@@ -1,11 +1,11 @@
 # 对话与消息 API
 
 > 模块编号：03
-> 来源：PRD 03（docs/prd/03_conversation.md）
+> 来源：PRD 03（docs/prd/03\_conversation.md）
 > 状态：已确认
 > 传输：Electron IPC（方法 + 事件）；headless 同契约（v2+）
 
----
+***
 
 ## 1. 发送消息
 
@@ -15,10 +15,10 @@
 
 请求参数：
 
-| 参数名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| sessionId | string | 是 | 会话 ID |
-| content | string | 是 | 消息内容（非空）；附件以 @ 路径行随正文发送（见下） |
+| 参数名       | 类型     | 必填 | 说明                          |
+| --------- | ------ | -- | --------------------------- |
+| sessionId | string | 是  | 会话 ID                       |
+| content   | string | 是  | 消息内容（非空）；附件以 @ 路径行随正文发送（见下） |
 
 **附件约定（统一给路径）**：附件不再作为独立参数传输。前端把附件文件的绝对路径以 `@` 前缀独立行追加在正文后（`正文\n@C:\path\a.ts\n@C:\path\b.png`，v3.27 起带 @ 协议标记：@ 开头=附件，手敲裸路径=正文，展示层零歧义；旧会话裸路径行兼容识别），剪贴板截图先由主进程落盘系统临时目录再给路径。文件内容由模型自行用 read 工具读取（图片自动转 image 块；非视觉模型由 pi-ai 传输层降级为占位文本，不报错）。加入待发区时主进程对文本类附件做密钥嗅探，命中需用户确认后才会发送。
 
@@ -28,12 +28,12 @@
 
 - `data: null`：正常（消息已在对话区即时展示；后续内容靠事件推送）。
 
-| code | 说明 |
-|------|------|
+| code | 说明                    |
+| ---- | --------------------- |
 | 1004 | provider 未配置，前端提示引导配置 |
-| 1002 | 会话不存在 |
+| 1002 | 会话不存在                 |
 
----
+***
 
 ## 2. 取消响应
 
@@ -43,9 +43,9 @@
 
 请求参数：
 
-| 参数名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| sessionId | string | 是 | 会话 ID |
+| 参数名       | 类型     | 必填 | 说明    |
+| --------- | ------ | -- | ----- |
+| sessionId | string | 是  | 会话 ID |
 
 响应：`data: null`。
 
@@ -53,7 +53,7 @@
 
 **变更**：sendMessage 撞车自愈：若发送时 pi 侧仍有残留 run（返回 "Agent is already processing"），适配器先 `abort()` 结束僵尸轮再报错提示重新发送，会话不再砖化。
 
----
+***
 
 ## 3. 查询历史
 
@@ -61,9 +61,9 @@
 
 **参数**
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| sessionId | string | 是 | 会话 ID |
+| 字段        | 类型     | 必填 | 说明    |
+| --------- | ------ | -- | ----- |
+| sessionId | string | 是  | 会话 ID |
 
 **响应 data**
 
@@ -79,7 +79,30 @@
 响应末尾会额外包含一条**未完成 assistant 快照**（流式清洗后全文）；轮次结束后不再返回该快照，
 不会与已落盘的终态消息重复。这保证流式中切换会话再切回时，后续增量有正确的追加基点（界面不截断）。
 
----
+### conversation/getLastError
+
+**参数**：`{ sessionId }`
+
+**响应 data**
+
+```json
+{ "message": "模型额度耗尽（429）：请检查账户额度" }
+```
+
+查询会话最近一次轮次错误信息（内存态，不落盘）。前端错误横幅（`conversation.error` 事件驱动）
+是瞬态内存态，错误发生在非当前查看会话（切走再切回 / 后台会话出错）时已丢失，而会话树红点
+（`session.status='error'`）持久——UI 在挂载/切换到 error 状态会话时经本方法拉取，恢复横幅显示。
+
+**语义**：
+
+- 无错误记录（未出错 / 已被新轮次或正常终态清除 / 应用重启后）返回 `message: null`，不报错；
+
+- `lastError` 随 error 状态记录（事件路径的友好信息优先于 adapter 抛错的原始信息），
+  新一轮发送（streaming）与正常终态（done / canceled / idle）清除；
+
+- 拉取失败 UI 静默降级（横幅非关键路径）。
+
+***
 
 ## 4. 上下文用量
 
@@ -106,7 +129,7 @@
 > `{ "tokens": null, "contextWindow": 128000, "percent": null }`。
 > UI 须显示「未知」而非 0，否则用户会误判压缩未生效。
 
----
+***
 
 ## 5. 手动压缩
 
@@ -127,19 +150,19 @@
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| result.ok | boolean | 是否压缩成功 |
-| result.message | string? | 失败原因（仅 ok=false；如「会话未激活，无法压缩」） |
-| result.tokensBefore | number? | 压缩前 token 数；未知为 null |
-| result.tokensAfter | number? | 压缩后估算 token 数；未知为 null |
-| result.summary | string? | 压缩摘要；未知为 null |
+| 字段                  | 类型      | 说明                             |
+| ------------------- | ------- | ------------------------------ |
+| result.ok           | boolean | 是否压缩成功                         |
+| result.message      | string? | 失败原因（仅 ok=false；如「会话未激活，无法压缩」） |
+| result.tokensBefore | number? | 压缩前 token 数；未知为 null           |
+| result.tokensAfter  | number? | 压缩后估算 token 数；未知为 null         |
+| result.summary      | string? | 压缩摘要；未知为 null                  |
 
 **错误码**：1001 参数错误 / 1002 会话不存在 / 5000 压缩异常（不破坏会话历史）。
 
 **流式限制**：运行时压缩会先中止当前轮（`abort`），因此 UI 在 streaming 期间禁用压缩入口，避免静默截断正在生成的回答。
 
----
+***
 
 ## 6. 事件（流式推送）
 
@@ -196,7 +219,7 @@
 
 流转时中断标记：出现 `conversation.error` 后保留已收内容，不再接收该轮增量。
 
-> **自动重试提示复用本事件**：可重试错误（network_error/429/5xx/超时等）触发 pi
+> **自动重试提示复用本事件**：可重试错误（network\_error/429/5xx/超时等）触发 pi
 > 内部自动重试时，轮次并未终止 —— 内核先发射 status `streaming`（恢复进行中），
 > 再发射本事件，`message` 为「模型连接中断，正在自动重试（第 N/M 次）…」。
 > UI 对本事件只展示提示、不断开进行中状态（终态一律以 status 事件为准）；
@@ -217,12 +240,12 @@
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| reason | string | `manual` = 用户点击压缩；`auto` = 运行时自动触发 |
-| tokensBefore | number? | 压缩前 token 数；未知为 null |
-| tokensAfter | number? | 压缩后估算 token 数；未知为 null |
-| summary | string? | 压缩摘要；未知为 null |
+| 字段           | 类型      | 说明                                 |
+| ------------ | ------- | ---------------------------------- |
+| reason       | string  | `manual` = 用户点击压缩；`auto` = 运行时自动触发 |
+| tokensBefore | number? | 压缩前 token 数；未知为 null               |
+| tokensAfter  | number? | 压缩后估算 token 数；未知为 null             |
+| summary      | string? | 压缩摘要；未知为 null                      |
 
 **UI 契约**：收到本事件必须重拉 `conversation/queryHistory`——压缩会把 transcript
 替换为摘要，不重拉则界面显示的仍是压缩前的旧内容，与真实上下文不一致。
@@ -230,24 +253,24 @@
 
 > 自动压缩失败不会发射本事件，而是走 `conversation.error`（绝不静默）。
 
----
+***
 
 ## 7. Markdown / Mermaid 渲染
 
 渲染由前端完成（复用 ai-coding：marked / prismjs / mermaid），接口不涉及；`conversation.delta` 只携带纯文本或代码块结构，`message.content` 为原始 markdown 字符串，前端白名单渲染（CV-S03）。
 
----
+***
 
 ## 8. 错误码
 
-| code | 说明 |
-|------|------|
-| 1001 | 参数错误（空消息） |
-| 1002 | 会话不存在 |
+| code | 说明           |
+| ---- | ------------ |
+| 1001 | 参数错误（空消息）    |
+| 1002 | 会话不存在        |
 | 1004 | provider 未配置 |
-| 5000 | 内部错误 / 流中断 |
+| 5000 | 内部错误 / 流中断   |
 
----
+***
 
 ## 9. 斜杠命令清单（扩展 CV-S08）
 
@@ -257,10 +280,10 @@
 
 请求参数：
 
-| 参数名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| sessionId | string | 否 | 会话 ID。提供时返回该会话的命令清单；省略时为草稿态查询 |
-| projectPath | string | 否 | 草稿态（无 sessionId）时的项目工作目录，用于发现项目级 skills/模板；省略时仅发现全局（agentDir）资源 |
+| 参数名         | 类型     | 必填 | 说明                                                              |
+| ----------- | ------ | -- | --------------------------------------------------------------- |
+| sessionId   | string | 否  | 会话 ID。提供时返回该会话的命令清单；省略时为草稿态查询                                   |
+| projectPath | string | 否  | 草稿态（无 sessionId）时的项目工作目录，用于发现项目级 skills/模板；省略时仅发现全局（agentDir）资源 |
 
 响应 data：
 
@@ -274,25 +297,26 @@
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| commands[].name | string | 原始命令名（skill 命令带 `skill:` 前缀；插入输入框时补 `/` 前缀） |
-| commands[].description | string? | 命令描述；缺失为 null（UI 副文本留空） |
-| commands[].source | string | `extension` = 扩展命令；`skill` = 技能；`prompt` = prompt 模板 |
+| 字段                      | 类型      | 说明                                                   |
+| ----------------------- | ------- | ---------------------------------------------------- |
+| commands\[].name        | string  | 原始命令名（skill 命令带 `skill:` 前缀；插入输入框时补 `/` 前缀）          |
+| commands\[].description | string? | 命令描述；缺失为 null（UI 副文本留空）                              |
+| commands\[].source      | string  | `extension` = 扩展命令；`skill` = 技能；`prompt` = prompt 模板 |
 
 **两种查询模式**：
 
 - **会话模式**（提供 sessionId）：返回该会话缓存的命令上报清单（三类全量，来自命令上报扩展会话启动时的上报，见下方桥接约定）。上报尚未到达（如首条消息刚发出）时，降级返回轻量资源查询结果（skills + 模板，无扩展命令）。
+
 - **草稿态模式**（省略 sessionId）：轻量资源查询直取 skills + prompt 模板（不加载扩展、不创建会话，TD-CV-08）；扩展命令不可见，会话激活后经 `conversation.slashCommandsUpdated` 补全。
 
 **枚举失败语义**：资源查询失败不报错，返回 `commands: []`（UI 显示「无可用命令」，输入不受阻塞，AC-CV-033）；仅参数非法（sessionId 非字符串）与未知会话报错。
 
 **错误码**：
 
-| code | 说明 |
-|------|------|
+| code | 说明                               |
+| ---- | -------------------------------- |
 | 1001 | 参数错误（sessionId/projectPath 非字符串） |
-| 1002 | 会话不存在（提供 sessionId 但未注册） |
+| 1002 | 会话不存在（提供 sessionId 但未注册）         |
 
 **UI 缓存契约**：同一会话首次触发浮窗时调用一次并缓存，切换会话失效重拉；收到 `conversation.slashCommandsUpdated` 后失效该会话缓存（下次触发浮窗重拉）。
 
@@ -311,5 +335,8 @@
 ### 桥接约定（forge-desktop 内部，非 UI 契约）
 
 - **命令上报扩展**（forge-extensions 首个真实 pi 扩展，TD-CV-07）：随每个 pi 会话加载，在 `session_start` 时调用运行时命令枚举能力（`pi.getCommands()`，覆盖扩展命令 + skills + prompt 模板三类），经会话事件总线上报（channel 形如 `slash-commands:reported`，与 pi-subagents 的 `subagents:*` 同构）。
+
 - forge-desktop 桥接该 channel → forge-core 会话级缓存，并转发为 `conversation.slashCommandsUpdated` 事件；扩展缺失/上报失败时静默降级（会话模式回落轻量查询）。
-- **命令执行无专用接口**：选中命令以原始命令串（如 `/skill:git-push `）经 `conversation/sendMessage` 原样发送，由 pi 运行时原生解析执行（TD-CV-09，零拦截零注册表）；AC-CV-031 的集成验证走真实 pi 会话。
+
+- **命令执行无专用接口**：选中命令以原始命令串（如 `/skill:git-push `  ）经 `conversation/sendMessage` 原样发送，由 pi 运行时原生解析执行（TD-CV-09，零拦截零注册表）；AC-CV-031 的集成验证走真实 pi 会话。
+
