@@ -46,7 +46,7 @@ project/addProject
 
 ### project/removeProject
 
-**说明**：从 forge 列表移除项目注册，不删除源文件、不删除 pi 会话（PM-S03）。
+**说明**：从 forge 列表移除项目注册，**级联删除该项目名下全部会话**（停运行 + 删 pi 会话文件 + 删 forge 会话记录，逐个发射 `session.removed`；v3.32 用户改判 TD-PM-05）；不删除源文件（PM-S03）。
 
 请求参数：
 
@@ -54,7 +54,7 @@ project/addProject
 |--------|------|------|------|
 | path | string | 是 | 项目规范化路径 |
 
-响应：`data = null`
+响应：`data = { removedSessions: number }`（级联删除的会话数；幂等重复移除返回 `{ removedSessions: 0 }`）
 
 错误码：1002（项目不存在）
 

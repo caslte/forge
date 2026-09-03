@@ -85,3 +85,42 @@ test('parseUserContent：正文中间的裸路径不提取（只认尾部连续�
   assert.deepEqual(r.files, []);
   assert.deepEqual(r.images, []);
 });
+
+test('parseUserContent：单行消息路径开头+中文正文不整行吞成 chip（回归）', () => {
+  const content = 'C:\\works\\edu-community 帮我分析这个项目很多文字在中间 C:\\works\\edu-community';
+  const r = parseUserContent(content);
+  assert.equal(r.body, content, '整行保留为正文，不出 chip');
+  assert.deepEqual(r.files, []);
+});
+
+test('parseUserContent：含空格的英文路径尾行仍提取（C:\\Program Files）', () => {
+  const r = parseUserContent('装一下\nC:\\Program Files\\app\\run.exe');
+  assert.deepEqual(r.files, ['C:\\Program Files\\app\\run.exe']);
+  assert.equal(r.body, '装一下');
+});
+
+test('parseUserContent：无空白的中文路径尾行仍提取', () => {
+  const r = parseUserContent('看下文档\nC:\\资料\\需求文档.docx');
+  assert.deepEqual(r.files, ['C:\\资料\\需求文档.docx']);
+  assert.equal(r.body, '看下文档');
+});
+
+test('parseUserContent：@前缀附件行提取为附件（@ 剥离，v3.27 协议）', () => {
+  const r = parseUserContent('看下这两个文件\n@C:\\a\\b.ts\n@C:\\x\\截图.png');
+  assert.equal(r.body, '看下这两个文件');
+  assert.deepEqual(r.files, ['C:\\a\\b.ts']);
+  assert.deepEqual(r.images, ['C:\\x\\截图.png']);
+});
+
+test('parseUserContent：@后非路径形状不提取（@mention 是正文）', () => {
+  const content = '提醒 @张三 明天看下';
+  const r = parseUserContent(content);
+  assert.equal(r.body, content);
+  assert.deepEqual(r.files, []);
+});
+
+test('parseUserContent：裸路径行兕底仍提取（旧会话兼容）', () => {
+  const r = parseUserContent('看下\nC:\\a\\b.ts');
+  assert.deepEqual(r.files, ['C:\\a\\b.ts']);
+  assert.equal(r.body, '看下');
+});

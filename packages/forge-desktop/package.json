@@ -17,7 +17,8 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.3",
     "@earendil-works/pi-coding-agent": "0.84.3",
-    "@forge/core": "*"
+    "@forge/core": "*",
+    "@forge/extensions": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

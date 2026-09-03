@@ -43,7 +43,6 @@ export type DisplayItem =
       totalCount: number;
       diffs: ToolDiff[];
       collapsed: boolean;
-      lastSummary?: string;
     };
 
 const props = defineProps<{
@@ -122,6 +121,9 @@ function isToolMessage(m: ConversationMessage): boolean {
   border-radius: 12px;
   background: color-mix(in oklab, var(--muted) 58%, transparent);
   overflow: hidden;
+  /* flex 子项显式允许收缩，窄窗格内 diff/工具卡不再横向撑破 */
+  min-width: 0;
+  max-width: 100%;
 }
 .tool-group-head {
   display: flex;

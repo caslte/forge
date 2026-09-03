@@ -3,6 +3,12 @@ import { ref, computed, watch } from 'vue';
 import type { ConversationMessage } from '../types';
 import { renderMarkdown, hasOpenFence } from '@forge/core/markdown';
 import { parseUserContent, baseName, isImagePath } from '../attachmentText';
+import {
+  extractCommandFromMessage,
+  formatCommandLabel,
+  splitSkillRefs,
+  SOURCE_LABELS,
+} from '../utils/slashCommand';
 import MermaidBlock from './MermaidBlock.vue';
 import ImageLightbox from './ImageLightbox.vue';
 
@@ -42,13 +48,25 @@ async function copy(): Promise<void> {
  * 非图片出文件占位 chip。pi 会话消息带独立 image part（msg.images）时，正文里的
  * 裸 [Image #N] 占位行一并剥离（缩略图已另行渲染）。
  */
-const userParsed = computed(() =>
-  isUser.value
-    ? parseUserContent(props.message.content, {
-        hasEmbeddedImages: (props.message.images?.length ?? 0) > 0,
-      })
-    : { body: props.message.content, files: [] as string[], images: [] as string[] },
-);
+const userParsed = computed(() => {
+  if (!isUser.value) {
+    return { body: props.message.content, files: [] as string[], images: [] as string[], command: null };
+  }
+  // CV-S08 消息气泡命令美化：识别两种形态（发送原始串 / pi 展开的 <skill> 块），
+  // 命令段从正文拉出单独渲染（与浮窗同款：品牌色加粗 + 来源标签）；
+  // 展开的 <skill> 指令文档整块收起不展示，只留用户正文
+  const command = extractCommandFromMessage(props.message.content);
+  const bodySource = command !== null ? command.rest : props.message.content;
+  return {
+    ...parseUserContent(bodySource, {
+      hasEmbeddedImages: (props.message.images?.length ?? 0) > 0,
+    }),
+    command,
+  };
+});
+
+/** 用户正文按 /skill:name 引用切段（所有技能名样式性美化，执行语义归 pi） */
+const userSegments = computed(() => (isUser.value ? splitSkillRefs(userParsed.value.body) : []));
 
 /** 图片路径 → data URL 缩略图（异步读，加载完成后渲染） */
 const userThumbs = ref<Record<string, string>>({});
@@ -138,7 +156,28 @@ const timeLabel = computed(() => {
 <template>
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
     <div class="msg-bubble">
-      <div class="msg-content" v-html="bodyHtml"></div>
+      <!-- CV-S08 命令美化段（与浮窗同款）：命令名 + 来源标签，后接剩余正文 -->
+      <div v-if="userParsed.command" class="msg-cmd-head">
+        <span
+          class="msg-cmd-name"
+          :class="userParsed.command.source ? 'is-' + userParsed.command.source : ''"
+        >{{ formatCommandLabel(userParsed.command.name) }}</span>
+        <span
+          v-if="userParsed.command.source"
+          class="msg-cmd-tag"
+          :class="'tag-' + userParsed.command.source"
+        >{{ SOURCE_LABELS[userParsed.command.source] }}</span>
+      </div>
+      <!-- 用户消息正文：按 /skill:name 引用切段渲染（全部技能名美化；Vue 插值自动转义） -->
+      <div v-if="isUser" class="msg-content"><template
+        v-for="(seg, i) in userSegments"
+        :key="i"
+        ><span v-if="seg.kind === 'text'">{{ seg.text }}</span><template
+          v-else
+        ><span class="msg-cmd-name is-skill">{{ formatCommandLabel(seg.text) }}</span><span
+            class="msg-cmd-tag tag-skill"
+          >技能</span></template></template></div>
+      <div v-else class="msg-content" v-html="bodyHtml"></div>
       <!-- 附件图片缩略图（统一给路径：图片不显示路径，点击放大） -->
       <div
         v-if="userParsed.images.some((img) => userThumbs[img])"
@@ -216,6 +255,9 @@ const timeLabel = computed(() => {
   background: transparent;
   animation: rise 0.3s ease both;
   max-width: 100%;
+  /* flex 子项（消息列表为 column flex）显式允许收缩：
+     否则 min-width:auto 会被长代码块/长链接撑破窄窗格，代码块无法在容器内横向滚动 */
+  min-width: 0;
 }
 
 .msg-bubble {
@@ -262,6 +304,42 @@ const timeLabel = computed(() => {
 .msg-system .msg-content,
 .msg-tool .msg-content {
   white-space: pre-wrap;
+}
+
+/* CV-S08 消息气泡命令美化段（与浮窗条目同款：品牌色加粗 + 来源标签胶囊）；
+   与剩余正文同行内联穿插（命令名/标签后直接接正文，长文自然折行） */
+.msg-cmd-head {
+  display: inline;
+  margin-right: 6px;
+}
+.msg-cmd-name {
+  font-size: 13px;
+  color: var(--foreground);
+}
+.msg-cmd-name.is-skill {
+  font-weight: 700;
+  color: var(--brand);
+}
+.msg-cmd-name.is-prompt {
+  color: var(--muted-foreground);
+}
+.msg-cmd-tag {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+.msg-cmd-tag.tag-skill {
+  color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 14%, transparent);
+}
+/* 命令段存在时正文降为内联，紧跟命令名/标签之后（同级块间空白已被 Vue condense 移除，不产多余空隙） */
+.msg-cmd-head + .msg-content {
+  display: inline;
 }
 
 /* 消息附带图片（P3-B）：缩略图网格，点击放大 */

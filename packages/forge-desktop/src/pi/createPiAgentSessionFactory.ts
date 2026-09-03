@@ -11,6 +11,8 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
+import { slashCommandReporterExtension } from '@forge/extensions';
+
 import type {
   MinimalPiSession,
   PiAgentSessionFactoryOptions,
@@ -191,6 +193,8 @@ export function createPiAgentSessionFactory(
     // 真正到达 forge。不注入则 pi 内部自建总线，forge 永远收不到扩展事件。
     // 装配与 createAgentSession 默认路径一致（cwd/agentDir/settingsManager），
     // 仅多传 eventBus，扩展发现逻辑（settings packages 等）不变。
+    // CV-S08：同时经 extensionFactories 装载命令上报扩展（slash-commands:reported
+    // 与 subagents:* 同构，session_start 时上报三类斜杠命令清单）。
     const subagentEventBus: SubagentEventBus = options.eventBus ?? createDefaultSubagentEventBus();
     const settingsManager = SettingsManager.create(cwd, agentDir);
     const resourceLoader = new DefaultResourceLoader({
@@ -198,6 +202,7 @@ export function createPiAgentSessionFactory(
       agentDir,
       settingsManager,
       eventBus: subagentEventBus,
+      extensionFactories: [slashCommandReporterExtension],
     });
     await resourceLoader.reload();
     createOptions.resourceLoader = resourceLoader;

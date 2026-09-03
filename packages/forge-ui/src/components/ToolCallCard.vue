@@ -85,10 +85,10 @@ const diffTriple = computed<{ filePath: string | null; oldString: string | null;
   border: none;
   border-radius: 12px;
   background: color-mix(in oklab, var(--muted) 58%, transparent);
-  overflow: hidden;
+  overflow: hidden; /* overflow 非 visible 使 flex 子项 min-width:auto 归 0，窄窗格可收缩、标题省略号生效 */
   align-self: flex-start;
   max-width: 94%;
-  min-width: 260px;
+  min-width: 0;
 }
 
 .tool-calls-head {

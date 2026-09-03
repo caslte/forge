@@ -36,6 +36,7 @@ export type ForgeMethod =
   | 'conversation/queryHistory'
   | 'conversation/getContextUsage'
   | 'conversation/compact'
+  | 'conversation/getSlashCommands'
   // tool（04）
   | 'tool/queryToolEvents'
   // model（05）
@@ -69,6 +70,8 @@ export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';
 export const IPC_CLIPBOARD_SAVE_IMAGE = 'forge:clipboard:saveImage';
 export const IPC_FILE_READ_IMAGE = 'forge:file:readImage';
+/** @ 补全候选：项目内白名单文件绝对路径列表（v3.30 输入框 @ 弹文件补全） */
+export const IPC_FILE_LIST_PROJECT = 'forge:file:listProjectFiles';
 
 /** 全部事件名（与 forge-core 各 Api events.emit 的 channel 一致） */
 export type ForgeEvent =
@@ -83,6 +86,7 @@ export type ForgeEvent =
   | 'conversation.error'
   | 'conversation.compacting'
   | 'conversation.compacted'
+  | 'conversation.slashCommandsUpdated'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -103,6 +107,7 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'conversation.error',
   'conversation.compacting',
   'conversation.compacted',
+  'conversation.slashCommandsUpdated',
   'tool.started',
   'tool.completed',
   'tool.error',

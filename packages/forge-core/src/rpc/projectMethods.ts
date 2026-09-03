@@ -98,8 +98,8 @@ function isTrustDecision(value: string): value is TrustDecision {
  * @param events 事件汇（默认新建 EventEmitter；可注入自定义汇）
  */
 export class ProjectApi {
-  /** 方法映射：方法名 -> handler(params) -> 统一信封 */
-  readonly methods: Record<string, (params: unknown) => RpcResult>;
+  /** 方法映射：方法名 -> handler(params) -> 统一信封（removeProject 级联删会话为 async） */
+  readonly methods: Record<string, (params: unknown) => RpcResult | Promise<RpcResult>>;
   /** 事件汇：project.opened / project.removed 在此发射 */
   readonly events: EventSink;
   private readonly service: ProjectService;
@@ -146,21 +146,25 @@ export class ProjectApi {
     return this.call('addProject', () => this.service.addProject(path));
   }
 
-  /** project/removeProject：移除项目（PM-S03），未注册视为成功（幂等） */
-  private removeProject(params: unknown): RpcResult {
+  /** project/removeProject：移除项目（PM-S03），级联删名下会话；未注册视为成功（幂等） */
+  private async removeProject(params: unknown): Promise<RpcResult> {
     const path = requireString(params, 'path');
     if (path === null) {
       return fail(1001, '参数错误：path 必须为非空字符串');
     }
     try {
-      const result = this.service.removeProject(path);
+      const result = await this.service.removeProject(path);
       if (result.ok) {
+        // 逐个通知会话删除（与 session/deleteSession 同事件，多窗口同步依赖）
+        for (const sessionId of result.data.removedSessions) {
+          this.events.emit('session.removed', { sessionId });
+        }
         this.events.emit('project.removed', { path });
-        return ok(null);
+        return ok({ removedSessions: result.data.removedSessions.length });
       }
       // 幂等客户端行为：未注册项目视为移除成功（PRD PM-S03 重复移除无副作用）
       if (result.code === 1002) {
-        return ok(null);
+        return ok({ removedSessions: 0 });
       }
       return fail(result.code, result.message);
     } catch (err) {

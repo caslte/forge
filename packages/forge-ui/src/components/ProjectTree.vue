@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
+import { sortSessionsByActivation, projectTagOf } from '../utils/sessionView';
 
 const props = defineProps<{
   projects: ProjectItem[];
@@ -10,6 +11,8 @@ const props = defineProps<{
   currentSessionId: string | null;
   /** 已在多窗口画布上打开的会话 id 列表（用于标记灰态，不可重复拖入） */
   openedSessionIds?: string[];
+  /** 会话列表视角（SM-S06）：project=按项目分组（现状）；task=平摊全部会话 */
+  view?: 'project' | 'task';
 }>();
 
 const emit = defineEmits<{
@@ -21,6 +24,7 @@ const emit = defineEmits<{
   (e: 'delete-session', id: string): void;
   (e: 'rename-session', id: string, alias: string): void;
   (e: 'reorder-project', paths: string[]): void;
+  (e: 'fold-state', allCollapsed: boolean): void;
 }>();
 
 const VISIBLE_SESSION_LIMIT = 5;
@@ -93,14 +97,49 @@ watch(
 );
 
 function sessionsOf(path: string): SessionItem[] {
-  const list = props.sessions.filter((s) => s.projectPath === path);
   // 按激活顺序排（最近激活在前）；从未激活过的保持后端原序（sort 稳定）
-  const rank = (id: string): number => {
-    const i = activatedOrder.value.indexOf(id);
-    return i === -1 ? Number.MAX_SAFE_INTEGER : i;
-  };
-  return [...list].sort((a, b) => rank(a.sessionId) - rank(b.sessionId));
+  return sortSessionsByActivation(
+    props.sessions.filter((s) => s.projectPath === path),
+    activatedOrder.value,
+  );
 }
+
+// ===== 任务视角（SM-S06）：平摊全部会话，排序规则与项目视角一致 =====
+const isTaskView = computed(() => props.view === 'task');
+const allSessionsSorted = computed(() =>
+  sortSessionsByActivation(props.sessions, activatedOrder.value),
+);
+
+// 任务视角截断：默认显示前 20 条（同排序规则），多余折叠，交互同项目视角「展开显示 N 个」
+const TASK_VISIBLE_LIMIT = 20;
+const taskExpanded = ref(false);
+const visibleTaskSessions = computed(() =>
+  taskExpanded.value ? allSessionsSorted.value : allSessionsSorted.value.slice(0, TASK_VISIBLE_LIMIT),
+);
+const hiddenTaskCount = computed(() =>
+  Math.max(0, allSessionsSorted.value.length - TASK_VISIBLE_LIMIT),
+);
+
+function taskProjectTag(s: SessionItem): string {
+  return projectTagOf(s.projectPath, props.projects);
+}
+
+// ===== 收起全部/展开全部（仅项目视角；两态判定 nextFoldAllAction 见 sessionView） =====
+const allCollapsed = computed(() =>
+  props.projects.length > 0 && props.projects.every((p) => collapsedPaths.value.has(p.path)),
+);
+
+watch(allCollapsed, (v) => emit('fold-state', v), { immediate: true });
+
+function collapseAll(): void {
+  collapsedPaths.value = new Set(props.projects.map((p) => p.path));
+}
+
+function expandAll(): void {
+  collapsedPaths.value = new Set();
+}
+
+defineExpose({ collapseAll, expandAll });
 
 function visibleSessions(path: string): SessionItem[] {
   const all = sessionsOf(path);
@@ -411,7 +450,97 @@ onUnmounted(() => {
 
 <template>
   <div class="project-tree">
-    <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">暂无项目</div>
+    <!-- 任务视角（SM-S06）：平摊全部会话，行尾项目 tag，排序与项目视角同规则 -->
+    <template v-if="isTaskView">
+      <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">暂无会话</div>
+      <div v-else class="tree-section">
+        <div
+          v-for="session in visibleTaskSessions"
+          :key="session.sessionId"
+          class="tree-session"
+          :class="{
+            active: currentSessionId === session.sessionId,
+            'on-canvas': isOnCanvas(session),
+            'non-draggable': isOnCanvas(session),
+          }"
+          :draggable="!isOnCanvas(session)"
+          @click="selectSession(session.sessionId)"
+          @dragstart="onSessionDragStart($event, session)"
+        >
+          <span
+            v-if="shouldShowDot(session)"
+            class="tree-session-status-dot"
+            :class="`tone-${sessionTone(session)}`"
+            :title="statusTitle(session)"
+            aria-hidden="true"
+          ></span>
+
+          <div class="tree-node-main">
+            <input
+              v-if="renamingSessionId === session.sessionId"
+              :ref="focusAndSelect"
+              v-model="renameSessionValue"
+              class="tree-rename-input"
+              type="text"
+              placeholder="会话别名"
+              @click.stop
+              @dblclick.stop
+              @keydown.enter.prevent="commitRenameSession()"
+              @keydown.esc.prevent="cancelRenameSession()"
+              @blur="commitRenameSession()"
+            />
+            <div
+              v-else
+              class="tree-session-title"
+              :title="sessionDisplayName(session)"
+              @dblclick.stop="startRenameSession(session)"
+            >{{ sessionDisplayName(session) }}</div>
+            <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">已开窗</span>
+          </div>
+
+          <span class="tree-session-proj-tag" :title="session.projectPath">{{ taskProjectTag(session) }}</span>
+
+          <div class="tree-node-actions">
+            <button
+              type="button"
+              class="tree-icon-button danger"
+              :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
+              :aria-label="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
+              :data-tooltip="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
+              @click.stop="handleDeleteSessionClick(session)"
+            >
+              <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">确认</span>
+              <svg
+                v-else
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <button
+          v-if="hiddenTaskCount > 0"
+          type="button"
+          class="tree-session-toggle"
+          @click.stop="taskExpanded = !taskExpanded"
+        >
+          {{ taskExpanded ? '折叠显示' : `展开显示 ${hiddenTaskCount} 个` }}
+        </button>
+      </div>
+    </template>
+
+    <!-- 项目视角（现状）：按项目分组 -->
+    <template v-else>
+      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">暂无项目</div>
 
     <div v-else class="tree-section" @dragover="onSectionDragOver" @drop="onSectionDrop">
       <div
@@ -588,6 +717,7 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+    </template>
 
     <!-- 项目操作菜单：Teleport 到 body，避免被 sidebar overflow/stacking 裁剪遮挡 -->
     <Teleport to="body">
@@ -901,6 +1031,21 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
   padding: 1px 6px;
+}
+
+/* 任务视角行尾项目 tag（SM-S06） */
+.tree-session-proj-tag {
+  flex: 0 0 auto;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: color-mix(in oklab, var(--muted) 30%, transparent);
 }
 
 .tree-session:hover {

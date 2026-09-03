@@ -1,20 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue';
-import {
-  call,
-  subscribe,
-  type ConversationCompactedPayload,
-} from '../bridge';
-import type { ConversationMessage, ProjectItem, SessionItem, SessionStatus, Subagent } from '../types';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { call } from '../bridge';
+import type { ProjectItem, SessionItem, ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
-import MessageListItem, { type DisplayItem, type ToolDiff } from './MessageListItem.vue';
+import MessageListItem from './MessageListItem.vue';
 import ConversationTimelineRail from './ConversationTimelineRail.vue';
 import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
-import { computeTurnFooters } from '../composables/useTurnFooter';
-import { useStreamPhase } from '../composables/useStreamPhase';
 import { useCompactBanner } from '../composables/useCompactBanner';
+import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
@@ -33,18 +28,63 @@ const props = defineProps<{
   session: SessionItem | null;
   models: string[];
   currentModel: string | null;
+  /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
+  projectPicker?: ProjectPickerDescriptor;
 }>();
 
 const emit = defineEmits<{
   (e: 'model-change', model: string): void;
   /** 草稿态发送首条消息时已创建会话，通知上层绑定当前会话 */
   (e: 'session-created', sessionId: string): void;
+  (e: 'pick-project', path: string): void;
+  (e: 'open-project-picker'): void;
+  (e: 'remove-project', path: string): void;
 }>();
 
-const messages = ref<ConversationMessage[]>([]);
-const isStreaming = ref(false);
-const loadingHistory = ref(false);
-const errorMsg = ref<string | null>(null);
+/**
+ * 草稿态发送首条消息时本次创建的会话 id：
+ * 上层绑定 currentSessionId 后 props 变化，据此跳过 reset+reload（消息流已在本地）。
+ */
+let createdSessionId: string | null = null;
+
+/**
+ * 共享单会话状态机（与多窗口 MultiWindowConversation 同一份实现）：
+ * 消息流 / 流式状态 / 工具事件聚合 / 子 Agent。本视图只保留壳层差异
+ * （时间线回看、历史浮窗、草稿建会话、模型横幅）。
+ */
+const {
+  messages,
+  isStreaming,
+  loadingHistory,
+  errorMsg,
+  isEmpty,
+  displayItems,
+  isMessageStreaming,
+  toggleGroup,
+  sessionStatus,
+  streamPhaseText,
+  resetForSession: resetConvForSession,
+  loadHistory,
+  send: sendTurn,
+  cancel: cancelTurn,
+  subagents,
+  activeAgentId,
+  activeSubagent,
+  showResultView,
+  pendingStopAgentId,
+  loadSubagents,
+  onSelectTab,
+  onCloseTab,
+  onClearFinished,
+  onSubagentStopRequest,
+  confirmSubagentStop,
+  cancelSubagentStop,
+} = useSessionConversation({
+  getSessionId: () => props.sessionId ?? createdSessionId,
+  getStatusHint: () => props.session?.status,
+  scrollToBottom: () => autoScrollToBottom(),
+});
+
 /**
  * 上下文压缩横幅（内存持久，按 sessionId 隔离）：压缩中「正在压缩上下文…」，
  * 完成「上下文已压缩（减少 x%）」。切换会话再回来仍保留；重启 App 丢失。
@@ -55,182 +95,9 @@ const compactBanner = computed(() => getCompactBanner(props.sessionId));
 const scrollRef = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 
-/** 子 Agent 内存态（按 sessionId 隔离）；空 = 不渲染 Tab 栏 */
-const subagents = ref<Subagent[]>([]);
-/** 当前激活的 Tab；null = 主会话 */
-const activeAgentId = ref<string | null>(null);
-/** 待二次确认的停止请求（结果视图头部"终止"） */
-const pendingStopAgentId = ref<string | null>(null);
-
-/** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
-const toolEventIndex = new Map<string, number>();
-
-/** 流式阶段指示（方案 A）：按 delta/工具事件推断当前动作文案（思考/输出/写入/读取/执行命令…） */
-const { streamPhaseText, reset: resetStreamPhase, markOutputting, markTool, markToolEnd } = useStreamPhase();
-
-/** 工具组折叠状态：key 为工具组稳定 id（首条工具 toolEventId/ts，聚组边界变化不漂移） */
-const toolGroupCollapsed = reactive(new Map<string, boolean>());
-
-const isEmpty = computed(() => messages.value.length === 0 && !isStreaming.value && !loadingHistory.value);
-
-/** 从 ConversationMessage（role=tool）构造 ToolDiff（Edit 类含 file_path/old_string/new_string） */
-function toToolDiff(message: ConversationMessage): ToolDiff | null {
-  const input = message.input;
-  if (!input || typeof input !== 'object') return null;
-  if (!('old_string' in input) && !('new_string' in input)) return null;
-  const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
-  return {
-    id: message.toolEventId ?? `${message.ts}-${input.file_path ?? ''}`,
-    filePath: text(input.file_path),
-    oldString: text(input.old_string),
-    newString: text(input.new_string),
-  };
-}
-
-function groupDiffs(tools: ConversationMessage[]): ToolDiff[] {
-  return tools.flatMap((tool) => {
-    const diff = toToolDiff(tool);
-    return diff ? [diff] : [];
-  });
-}
-
-/**
- * 稳定唯一 key：
- * - 消息：id ?? toolEventId ?? `ts-role`（不依赖列表位置，避免 idx 漂移导致 patch 错位）
- * - 工具组：首条工具 toolEventId ?? ts 加 `-group` 后缀（与消息 key 永不冲突）
- */
-function itemKey(m: ConversationMessage): string {
-  return m.id ?? m.toolEventId ?? `${m.ts}-${m.role}`;
-}
-
-const displayItems = computed(() => {
-  const out: DisplayItem[] = [];
-  const msgs = messages.value;
-  // 轮次 footer：一次回复被工具调用拆成多张 assistant 卡片时，仅末卡显示复制+时间
-  const footers = computeTurnFooters(msgs);
-  let i = 0;
-  while (i < msgs.length) {
-    const cur = msgs[i]!;
-    if (cur.role !== 'tool') {
-      const footer = footers.get(i);
-      out.push({
-        key: itemKey(cur),
-        kind: 'message',
-        msg: cur,
-        idx: i,
-        ...(footer ? { showFooter: footer.showFooter, copyText: footer.copyText } : {}),
-      });
-      i += 1;
-    } else {
-      const start = i;
-      const tools: ConversationMessage[] = [];
-      while (i < msgs.length && msgs[i]!.role === 'tool') {
-        tools.push(msgs[i]!);
-        i += 1;
-      }
-      if (tools.length >= 2) {
-        const first = tools[0]!;
-        const groupKey = `${first.toolEventId ?? first.ts}-group`;
-        const counts = new Map<string, number>();
-        for (const t of tools) counts.set(t.toolName ?? 'tool', (counts.get(t.toolName ?? 'tool') ?? 0) + 1);
-        const toolCounts = Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
-        // 折叠状态只跟随用户操作；新增工具仅更新头部计数和外部 Diff。
-        const collapsed = toolGroupCollapsed.get(groupKey) ?? true;
-        out.push({
-          key: groupKey,
-          kind: 'tool-group',
-          tools,
-          toolCounts,
-          totalCount: tools.length,
-          collapsed,
-          diffs: groupDiffs(tools),
-          lastSummary: tools[tools.length - 1]?.content || undefined,
-        });
-      } else {
-        for (let j = 0; j < tools.length; j += 1) {
-          const tm = tools[j]!;
-          out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: start + j });
-        }
-      }
-    }
-  }
-  return out;
-});
-
-function toggleGroup(key: string): void {
-  const cur = toolGroupCollapsed.get(key);
-  toolGroupCollapsed.set(key, !(cur ?? true));
-}
-
-const sessionStatus = computed<SessionStatus>(() =>
-  isStreaming.value ? 'streaming' : (props.session?.status ?? 'idle'),
-);
-
-const activeAssistantIndex = computed(() => messages.value.map((m) => m.role).lastIndexOf('assistant'));
-
-function isMessageStreaming(index: number): boolean {
-  return isStreaming.value && index === activeAssistantIndex.value;
-}
-
-/** 加载历史消息 */
-async function loadHistory(): Promise<void> {
-  if (props.sessionId === null) return; // 草稿态无会话，无需加载
-  // 请求发起时的会话 id：返回后与之比较以丢弃过期结果。
-  // 不能与"当前会话 id"比较——切换会话后两者恒等，守卫失效会把旧会话历史写进新会话视图
-  const sid = props.sessionId;
-  loadingHistory.value = true;
-  errorMsg.value = null;
-  try {
-    const res = await call<{ messages: ConversationMessage[] }>('conversation/queryHistory', {
-      sessionId: sid,
-    });
-    // 仅在仍停留于发起会话时应用结果
-    if (sid === props.sessionId) {
-      // 拷贝为本地数组：mock-backend 的 queryHistory 返回内部 HISTORY 数组引用，
-      // 直接持有会被 mock 后续写入（sendMessage/runScript push）原地污染，出现重复消息
-      messages.value = [...(res.messages ?? [])];
-      toolEventIndex.clear();
-      toolGroupCollapsed.clear();
-      // 重建工具事件索引
-      messages.value.forEach((m, i) => {
-        if (m.role === 'tool' && m.toolEventId) {
-          toolEventIndex.set(m.toolEventId, i);
-        }
-      });
-      autoScrollToBottom();
-    }
-  } catch (e) {
-    // 过期请求的错误不显示（属于已离开的会话）
-    if (sid === props.sessionId) {
-      errorMsg.value = e instanceof Error ? e.message : String(e);
-    }
-  } finally {
-    // 过期请求不清加载态（当前会话若有自己的加载由它收尾）；
-    // 切到草稿态等无新请求接管的场景由 resetForSession 归位
-    if (sid === props.sessionId) {
-      loadingHistory.value = false;
-      autoScrollToBottom();
-    }
-  }
-}
-
-/**
- * 草稿态发送首条消息时本次创建的会话 id：
- * 上层绑定 currentSessionId 后 props 变化，据此跳过 reset+reload（消息流已在本地）。
- */
-let createdSessionId: string | null = null;
-
-/** 会话切换：重置状态并重新加载 */
+/** 会话切换：重置共享状态机并清视图侧回看态 */
 function resetForSession(): void {
-  messages.value = [];
-  toolEventIndex.clear();
-  toolGroupCollapsed.clear();
-  isStreaming.value = false;
-  // 在途历史请求的结果按发起会话丢弃（见 loadHistory），加载态在此归位：
-  // 切到草稿态后没有新的 loadHistory 接管，不清会把"加载历史消息"永久卡在消息区顶部
-  loadingHistory.value = false;
-  errorMsg.value = null;
-  // 压缩横幅按 sessionId 在 useCompactBanner 内隔离保留（切换回来仍可见，内存态）
+  resetConvForSession();
   // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
   reviewCtrl.reset();
   syncReview();
@@ -251,11 +118,8 @@ function scrollToBottom(): void {
   });
 }
 
-/** 发送消息：本地追加 user 消息 + 调后端（附件统一给路径：路径行已在 content 内） */
+/** 发送消息：草稿态（未发首条消息）先真正创建会话再发送（状态机在 useSessionConversation） */
 async function onSend(text: string): Promise<void> {
-  errorMsg.value = null;
-  // 草稿态（新建会话未发首条消息）：发送前先真正创建会话，左侧树标签随之创建，
-  // 标题由 forge-core 首条消息自动命名生成（见 createForgeCore onFirstUserMessage）。
   if (props.sessionId === null) {
     try {
       const res = await call<{ session: { sessionId: string } }>('session/createSession', {
@@ -288,32 +152,7 @@ async function onSend(text: string): Promise<void> {
       return;
     }
   }
-  const sessionId = props.sessionId ?? createdSessionId!;
-  messages.value.push({
-    role: 'user',
-    content: text,
-    ts: new Date().toISOString(),
-  });
-  isStreaming.value = true;
-  resetStreamPhase();
-  autoScrollToBottom();
-  try {
-    const params: Record<string, unknown> = { sessionId, content: text };
-    await call<null>('conversation/sendMessage', params);
-  } catch (e) {
-    isStreaming.value = false;
-    errorMsg.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-/** 取消流式 */
-async function onCancel(): Promise<void> {
-  try {
-    await call('conversation/cancelStream', { sessionId: props.sessionId ?? createdSessionId });
-  } catch (e) {
-    // 取消失败不阻塞，仍允许 UI 停止
-  }
-  isStreaming.value = false;
+  await sendTurn(text);
 }
 
 function onModelChange(model: string): void {
@@ -333,252 +172,6 @@ function showSwitchBanner(model: string): void {
     switchBanner.value = null;
   }, 2600);
 }
-
-// ===== 事件处理 =====
-function onConversationMessage(payload: unknown): void {
-  const p = payload as { sessionId: string; message: ConversationMessage };
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  // 流式阶段已通过 delta 构建了一条 assistant 占位消息，最终 message 到达时以其为权威内容覆盖，
-  // 避免“delta 累积 + 完整消息再推一条”成双
-  const last = messages.value[messages.value.length - 1];
-  if (last && last.role === 'assistant') {
-    last.content = p.message.content;
-    last.ts = p.message.ts ?? last.ts;
-    autoScrollToBottom();
-    return;
-  }
-  messages.value.push(p.message);
-  autoScrollToBottom();
-}
-
-function onConversationDelta(payload: unknown): void {
-  // 契约：delta 为 { text, kind: 'text' }（docs/api/03_conversation.md §3）
-  const p = payload as { sessionId: string; delta: { text?: string } | string };
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
-  if (text !== '') markOutputting();
-  // 流式追加到最后一条 assistant 消息；无则新建
-  const last = messages.value[messages.value.length - 1];
-  if (last && last.role === 'assistant') {
-    last.content += text;
-  } else {
-    messages.value.push({
-      role: 'assistant',
-      content: text,
-      ts: new Date().toISOString(),
-    });
-  }
-  autoScrollToBottom();
-}
-
-function onConversationStatusChanged(payload: unknown): void {
-  const p = payload as { sessionId: string; status: string };
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  if (p.status === 'streaming') {
-    isStreaming.value = true;
-    resetStreamPhase();
-  } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
-    isStreaming.value = false;
-    // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
-    // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
-    if (p.status !== 'error') errorMsg.value = null;
-  }
-}
-
-function onConversationError(payload: unknown): void {
-  const p = payload as { sessionId: string; code?: number; message?: string };
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  // 不在此处置 isStreaming=false：终态错误必伴随 status='error' 事件（由
-  // onConversationStatusChanged 收尾）；conversation.error 还承载自动重试提示
-  // （轮次仍在 streaming），此处置假会误断进行中状态
-  errorMsg.value = p.message ?? `对话错误（${p.code ?? 'unknown'}）`;
-}
-
-/**
- * 上下文压缩完成（P3-A）：重拉历史。
- * 压缩会把 transcript 替换为摘要，若不重拉，界面显示的是压缩前的旧内容，
- * 与真实上下文不一致。自动压缩没有 RPC 入口，本事件是 UI 感知它的唯一通道。
- * 持久横幅（压缩中→已完成）由 InstructionInput 的事件订阅统一维护，此处不重复。
- */
-function onConversationCompacted(payload: unknown): void {
-  const p = payload as ConversationCompactedPayload;
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  void loadHistory();
-}
-
-function onToolStarted(payload: unknown): void {
-  const p = payload as {
-    toolEventId: string;
-    sessionId?: string;
-    tool?: { name?: string; input?: Record<string, unknown> };
-    toolName?: string;
-  };
-  // tool 事件可能不带 sessionId（按 ToolDescriptor 结构），保守处理：若无 sessionId 则归当前会话
-  if (p.sessionId && p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  if (toolEventIndex.has(p.toolEventId)) return;
-  markTool(p.toolEventId, p.tool?.name ?? p.toolName ?? null);
-  const msg: ConversationMessage = {
-    role: 'tool',
-    content: '',
-    ts: new Date().toISOString(),
-    toolEventId: p.toolEventId,
-    toolName: p.tool?.name ?? p.toolName,
-    status: 'started',
-    input: p.tool?.input,
-  };
-  messages.value.push(msg);
-  toolEventIndex.set(p.toolEventId, messages.value.length - 1);
-  autoScrollToBottom();
-}
-
-function onToolCompleted(payload: unknown): void {
-  const p = payload as {
-    toolEventId: string;
-    sessionId?: string;
-    result?: { text: string | null };
-    summary?: string;
-  };
-  if (p.sessionId && p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  const idx = toolEventIndex.get(p.toolEventId);
-  if (idx === undefined) return;
-  markToolEnd(p.toolEventId);
-  const msg = messages.value[idx];
-  if (msg) {
-    msg.status = 'completed';
-    const text = p.result?.text ?? p.summary;
-    if (text) msg.content = text;
-  }
-}
-
-function onToolError(payload: unknown): void {
-  const p = payload as {
-    toolEventId: string;
-    sessionId?: string;
-    error?: { message: string };
-    summary?: string;
-    message?: string;
-  };
-  if (p.sessionId && p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  const idx = toolEventIndex.get(p.toolEventId);
-  if (idx === undefined) return;
-  markToolEnd(p.toolEventId);
-  const msg = messages.value[idx];
-  if (msg) {
-    msg.status = 'error';
-    const text = p.error?.message ?? p.summary ?? p.message;
-    if (text) msg.content = text;
-  }
-}
-
-// ===== 子 Agent 处理 =====
-
-/** 加载会话的子 agent 内存态（queryList） */
-async function loadSubagents(): Promise<void> {
-  const sid = props.sessionId ?? createdSessionId;
-  if (sid === null) {
-    subagents.value = [];
-    return;
-  }
-  try {
-    const res = await call<{ subagents: Subagent[] }>('subagent/queryList', { sessionId: sid });
-    subagents.value = res.subagents ?? [];
-  } catch {
-    subagents.value = [];
-  }
-}
-
-/** 终态字段不可逆：终态记录的 finishedAt/result 一经设置不得回退 */
-function applySubagentUpsert(sa: Subagent): void {
-  const idx = subagents.value.findIndex((s) => s.agentId === sa.agentId);
-  if (idx === -1) {
-    subagents.value.push({ ...sa });
-    return;
-  }
-  const cur = subagents.value[idx]!;
-  subagents.value[idx] = {
-    ...cur,
-    ...sa,
-    finishedAt: cur.finishedAt ?? sa.finishedAt,
-    result: cur.result ?? sa.result,
-    error: cur.error ?? sa.error,
-  };
-}
-
-function onSubagentUpdated(payload: unknown): void {
-  const p = payload as { sessionId: string; subagent: Subagent };
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  applySubagentUpsert(p.subagent);
-}
-
-function onSubagentRemoved(payload: unknown): void {
-  const p = payload as { sessionId: string; agentIds: string[] };
-  if (p.sessionId !== (props.sessionId ?? createdSessionId)) return;
-  const removed = new Set(p.agentIds);
-  subagents.value = subagents.value.filter((s) => !removed.has(s.agentId));
-  // 若被移除者正在激活，切回主会话
-  if (activeAgentId.value !== null && removed.has(activeAgentId.value)) {
-    activeAgentId.value = null;
-  }
-}
-
-function onSelectTab(agentId: string | null): void {
-  activeAgentId.value = agentId;
-}
-
-/** 单个终态 Tab 关闭：本地移除（mock 不区分单删与批量清除，二者语义一致） */
-function onCloseTab(agentId: string): void {
-  subagents.value = subagents.value.filter((s) => s.agentId !== agentId);
-  if (activeAgentId.value === agentId) activeAgentId.value = null;
-}
-
-/** 清除已完成：批量移除终态 → 调 subagent/clearFinished（mock 也会 emit subagent.removed） */
-async function onClearFinished(): Promise<void> {
-  const sid = props.sessionId ?? createdSessionId;
-  if (sid === null) return;
-  try {
-    await call('subagent/clearFinished', { sessionId: sid });
-    // mock 已 emit subagent.removed 同步了本地状态；防御性主动清一次
-    subagents.value = subagents.value.filter(
-      (s) => s.status === 'queued' || s.status === 'running',
-    );
-  } catch {
-    // 静默失败：本地乐观更新已落
-    subagents.value = subagents.value.filter(
-      (s) => s.status === 'queued' || s.status === 'running',
-    );
-  }
-}
-
-/** 结果视图头部“终止”按钮点击：进入二次确认（不可逆） */
-function onSubagentStopRequest(agentId: string): void {
-  pendingStopAgentId.value = agentId;
-}
-
-async function confirmSubagentStop(): Promise<void> {
-  const agentId = pendingStopAgentId.value;
-  pendingStopAgentId.value = null;
-  if (agentId === null) return;
-  const sid = props.sessionId ?? createdSessionId;
-  if (sid === null) return;
-  try {
-    await call('subagent/stop', { sessionId: sid, agentId });
-  } catch (e) {
-    console.warn('[subagent] 终止失败', e);
-  }
-}
-
-function cancelSubagentStop(): void {
-  pendingStopAgentId.value = null;
-}
-
-/** 计算属性：当前激活的子 agent（结果视图渲染依赖） */
-const activeSubagent = computed<Subagent | null>(() => {
-  if (activeAgentId.value === null) return null;
-  return subagents.value.find((s) => s.agentId === activeAgentId.value) ?? null;
-});
-
-/** 当前是否在结果视图 */
-const showResultView = computed(() => activeSubagent.value !== null);
 
 // ===== CV-S06 会话提问时间线 =====
 /** 渲染前提：当前会话消息流含至少一条 user 消息（无 user 消息/草稿态不渲染，AC-CV-017） */
@@ -793,32 +386,12 @@ watch(
   },
 );
 
-// 事件订阅句柄
-let unsubs: Array<(() => void) | null> = [];
-
 onMounted(() => {
-  resetForSession();
-  if (props.sessionId !== null) void loadHistory();
-  void loadSubagents();
   // 回看模式触底判定（scrollRef 元素常驻，仅 v-show 切换）
   scrollRef.value?.addEventListener('scroll', onMessagesScroll, { passive: true });
-  unsubs = [
-    subscribe('conversation.message', onConversationMessage),
-    subscribe('conversation.delta', onConversationDelta),
-    subscribe('conversation.statusChanged', onConversationStatusChanged),
-    subscribe('conversation.error', onConversationError),
-    subscribe('conversation.compacted', onConversationCompacted),
-    subscribe('tool.started', onToolStarted),
-    subscribe('tool.completed', onToolCompleted),
-    subscribe('tool.error', onToolError),
-    subscribe('subagent.updated', onSubagentUpdated),
-    subscribe('subagent.removed', onSubagentRemoved),
-  ];
 });
 
 onUnmounted(() => {
-  unsubs.forEach((u) => u?.());
-  unsubs = [];
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
   window.removeEventListener('keydown', onPopoverKeydown);
   // 回看模式清理：触底判定去抖计时器 + 定位高亮
@@ -978,9 +551,14 @@ watch(
         :session-status="sessionStatus"
         :models="models"
         :current-model="currentModel"
+        :project-picker="props.projectPicker"
+        :project-path="props.project.path"
         @send="onSend"
-        @cancel="onCancel"
+        @cancel="cancelTurn"
         @model-change="onModelChange"
+        @pick-project="emit('pick-project', $event)"
+        @open-project-picker="emit('open-project-picker')"
+        @remove-project="emit('remove-project', $event)"
       />
     </div>
 

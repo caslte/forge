@@ -33,7 +33,7 @@
 | AC-PM-003 | PM-S01 添加项目 | 字段边界 | 异常：失效/无权限路径 | P1 | U-PM-002 | A-PM-002 | E-PM-002 | 不注册；返回"路径无效或不可访问"；store 无新增 | 目录选择器本身选不到无权限目录，需 API 级测 |
 | AC-PM-004 | PM-S02 打开项目 | 跨模块协作 | 正常流程：打开含会话项目 | P0 | - | A-PM-003 | E-PM-001 | openProject 返回成功；会话列表加载（模块 02 联动） | 需与模块 02 联测 |
 | AC-PM-005 | PM-S02 打开项目 | 可用性 | 异常：目录被删除 | P1 | - | A-PM-004 | E-PM-002 | 打开不崩溃；提示路径失效；提供"重新定位/移除"出口 | |
-| AC-PM-006 | PM-S03 移除项目 | 数据一致性/不可逆 | 正常流程：移除含会话项目 | P0 | - | A-PM-005 | E-PM-003 | 列表移除；源文件存在；pi 会话 JSONL 存在；store 中 project 记录删除 | 不可逆操作核心断言 |
+| AC-PM-006 | PM-S03 移除项目 | 数据一致性/不可逆 | 正常流程：移除含会话项目 | P0 | - | A-PM-005 | E-PM-003 | 列表移除；源文件存在；pi 会话 JSONL 删除；store 中 project 与该项目 session 记录删除 | 不可逆操作核心断言（v3.32 改级联删） |
 | AC-PM-007 | PM-S03 移除项目 | 前端反馈 | 正常流程：确认弹窗文案 | P2 | - | - | E-PM-003 | 弹窗文本含"仅移除注册，不删除源文件与会话"；确认后移除、取消不操作 | 原 PRD 标 manual，本设计提升为 E2E 文案断言；环境受限可降级 manual |
 | AC-PM-008 | PM-S04 项目信任 | 安全/权限 | 正常流程：含 .pi 资源首次打开 | P0 | - | A-PM-006 | E-PM-004 | 触发 trustRequested 事件；UI 出现信任弹窗 | |
 | AC-PM-009 | PM-S04 项目信任 | 安全 | 正常流程：选择信任 | P0 | U-PM-003 | A-PM-006 | E-PM-004 | setTrust(trust) 回传 pi；项目级资源加载 | 依赖 pi 信任机制 mock |
@@ -63,7 +63,7 @@
 | A-PM-002 | AC-PM-003 | project/addProject | - | { path: 无效路径 } | 1001 + 提示 | 无写入 | 错误提示文案 |
 | A-PM-003 | AC-PM-004 | project/openProject | 项目已注册含会话 | { path } | 0 + project | lastOpenedAt 更新 | 响应 + 时间戳更新 + 会话列表联动 |
 | A-PM-004 | AC-PM-005 | project/openProject | 项目已注册，目录被删 | { path } | 0（或特定码）+ 失效提示 | 无破坏性写入 | 不崩溃、提示失效 |
-| A-PM-005 | AC-PM-006 | project/removeProject | 项目含会话 | { path } | 0 | store project 删除；pi session 不动 | 源文件存在 + pi JSONL 存在 + store 记录删除 |
+| A-PM-005 | AC-PM-006 | project/removeProject | 项目含会话 | { path } | 0 | store project 删除；名下会话级联删除（session.removed 逐个发射） | 源文件存在 + pi JSONL 删除 + store project/session 记录删除 + data.removedSessions 计数正确 |
 | A-PM-006 | AC-PM-008/009 | project/openProject + setTrust | 项目含 .pi 资源 | { path } → { decision: trust } | 0；1005 先触发询问 | trustState 更新 | trustRequested 事件 → setTrust 回传 |
 | A-PM-007 | AC-PM-010 | project/setTrust | 询问中 | { decision: reject } | 0 | trustState=rejected | 资源不加载；会话基础能力可用 |
 | A-PM-008 | AC-PM-012 | project/reorderProjects | 3 个项目已注册 | { paths: 重排后的全量顺序 } | 0 | 列表顺序变更且持久化 | paths 非法（非数组/空/含非字符串）→ 1001；含未注册路径 → 1002 不写盘 |

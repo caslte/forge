@@ -48,6 +48,15 @@ import type { ProjectRecord, TrustState } from '../types/forge-store.ts';
 export type TrustDecision = 'trust' | 'reject' | 'trustOnce';
 
 /**
+ * 项目级联删除会话端口（v3.32 用户改判 TD-PM-05：移除项目=连同名下会话一并删除）。
+ * 由上层（forge-desktop）注入真实 sessionService.deleteSession（停运行+删 pi 会话文件+删 forge 记录）；
+ * 未注入时不级联（旧语义，测试兼容）。
+ */
+export interface ProjectSessionsPort {
+  deleteSession(sessionId: string): Promise<void>;
+}
+
+/**
  * 信任权威端口（P2-A：真实权威交给 pi 项目信任机制，forge store 只缓存展示状态）。
  * forge-core 不 import pi，由上层（forge-desktop）注入真实 pi 实现；测试注入 fake。
  * - hasTrustRequiringResources：目录是否含需要信任门禁的项目资源（.pi / .agents/skills）
@@ -95,10 +104,12 @@ export type OpenProjectResult =
 export class ProjectService {
   private readonly store: ForgeStore;
   private readonly trust: TrustStorePort | null;
+  private readonly sessions: ProjectSessionsPort | null;
 
-  constructor(store: ForgeStore, trust?: TrustStorePort) {
+  constructor(store: ForgeStore, trust?: TrustStorePort, sessions?: ProjectSessionsPort) {
     this.store = store;
     this.trust = trust ?? null;
+    this.sessions = sessions ?? null;
   }
 
   /** 判断目录是否含需要信任门禁的项目资源（注入权威端口时用它，否则本地 `.pi` 检测） */
@@ -165,17 +176,25 @@ export class ProjectService {
   }
 
   /**
-   * 移除项目（PM-S03）：仅删除 forge 元数据，不删源文件与 pi 会话。
+   * 移除项目（PM-S03）：级联删除名下会话（v3.32 用户改判 TD-PM-05：停运行+删 pi 会话文件+删
+   * forge 会话记录，逐个经 sessions 端口执行），再删 forge 项目元数据；不删用户源文件。
    * @param input 项目路径
-   * @returns 成功返回 null；项目未注册返回 1002（幂等客户端行为由 rpc 层实现）
+   * @returns 成功返回级联删除的会话 id 列表；项目未注册返回 1002（幂等客户端行为由 rpc 层实现）
    */
-  removeProject(input: string): ProjectResult<null> {
+  async removeProject(input: string): Promise<ProjectResult<{ removedSessions: string[] }>> {
     const key = this.resolveProjectKey(input);
     if (this.store.getProject(key) === null) {
       return { ok: false, code: 1002, message: `项目不存在: ${key}` };
     }
+    const removedSessions: string[] = [];
+    if (this.sessions !== null) {
+      for (const session of this.store.listSessions(key)) {
+        await this.sessions.deleteSession(session.sessionId);
+        removedSessions.push(session.sessionId);
+      }
+    }
     this.store.removeProject(key);
-    return { ok: true, data: null };
+    return { ok: true, data: { removedSessions } };
   }
 
   /**

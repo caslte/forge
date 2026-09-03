@@ -27,6 +27,7 @@ export type ForgeMethod =
   | 'conversation/queryHistory'
   | 'conversation/getContextUsage'
   | 'conversation/compact'
+  | 'conversation/getSlashCommands'
   | 'tool/queryToolEvents'
   | 'model/queryProviderList'
   | 'model/saveProvider'
@@ -56,6 +57,7 @@ export type ForgeEvent =
   | 'conversation.error'
   | 'conversation.compacting'
   | 'conversation.compacted'
+  | 'conversation.slashCommandsUpdated'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -113,6 +115,40 @@ export interface ConversationCompactedPayload {
   summary: string | null;
 }
 
+/**
+ * conversation/getSlashCommands 的命令条目（CV-S08，AC-CV-026~030）。
+ * name 为原始命令名（skill 命令带 `skill:` 前缀）；插入输入框时补 `/` 前缀。
+ * 与 docs/api/03_conversation.md §9 一致。
+ */
+export interface SlashCommand {
+  name: string;
+  /** 命令描述；缺失为 null（UI 副文本留空） */
+  description: string | null;
+  /** extension = 扩展命令；skill = 技能；prompt = prompt 模板 */
+  source: 'extension' | 'skill' | 'prompt';
+}
+
+/** conversation/getSlashCommands 请求参数（省略 sessionId = 草稿态查询） */
+export interface GetSlashCommandsParams {
+  /** 会话 ID：提供时返回该会话的上报清单（三类全量）；省略时为草稿态（skills + 模板） */
+  sessionId?: string;
+  /** 草稿态时的项目工作目录（发现项目级 skills/模板）；省略时仅发现全局资源 */
+  projectPath?: string;
+}
+
+/** conversation/getSlashCommands 响应 data */
+export interface GetSlashCommandsResult {
+  commands: SlashCommand[];
+}
+
+/**
+ * conversation.slashCommandsUpdated 事件 payload（CV-S08）：命令上报扩展的上报
+ * 到达（会话激活后覆盖降级清单）；UI 据此失效该会话命令清单缓存并重拉。
+ */
+export interface SlashCommandsUpdatedPayload {
+  sessionId: string;
+}
+
 /** preload 注入的 window.forge 桥 */
 export interface ForgeBridge {
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
@@ -136,6 +172,8 @@ export interface ForgeBridge {
     savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null>;
     /** 磁盘图片读为 data URL（仅缩略图/预览用）；缺失/超大/非图片返回 null */
     readImage(path: string): Promise<string | null>;
+    /** @ 补全候选：项目内白名单文件绝对路径（BFS 浅层优先，上限 2000）；项目缺失/不可读返回 [] */
+    listProjectFiles(projectPath: string): Promise<string[]>;
   };
 }
 

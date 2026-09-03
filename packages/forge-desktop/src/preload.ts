@@ -19,6 +19,7 @@ import {
   IPC_ATTACHMENT_SCAN,
   IPC_CLIPBOARD_SAVE_IMAGE,
   IPC_FILE_READ_IMAGE,
+  IPC_FILE_LIST_PROJECT,
   type ForgeMethod,
   type ForgeEvent,
 } from './ipc-contract.ts';
@@ -66,6 +67,9 @@ const fileControl = {
   },
   async readImage(p: string): Promise<string | null> {
     return ipcRenderer.invoke(IPC_FILE_READ_IMAGE, p) as Promise<string | null>;
+  },
+  async listProjectFiles(root: string): Promise<string[]> {
+    return ipcRenderer.invoke(IPC_FILE_LIST_PROJECT, root) as Promise<string[]>;
   },
 };
 

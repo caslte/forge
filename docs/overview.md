@@ -47,7 +47,7 @@
 |---|---|---|---|---|
 | 01 | 项目管理 | 本地目录注册为项目、项目列表、打开/移除、项目信任 | prd/01_project_management.md | PRD 已确认 |
 | 02 | 会话管理 | 会话创建/切换/删除/重命名，多会话并行，多窗口跨项目并排观察 | prd/02_session_management.md | PRD 已确认 |
-| 03 | 对话与消息 | 发消息、流式响应、Markdown/代码/Mermaid 渲染、取消、历史；扩展：会话历史导航（主会话时间线+浮窗预览+点击定位） | prd/03_conversation.md | PRD 已确认（含扩展 CV-S06） |
+| 03 | 对话与消息 | 发消息、流式响应、Markdown/代码/Mermaid 渲染、取消、历史；扩展：会话历史导航（主会话时间线+浮窗预览+点击定位）、斜杠命令（输入 / 浮窗选择 pi 生态命令/skills/模板，codex 风格美化，pi 原生识别） | prd/03_conversation.md | PRD 已确认（含扩展 CV-S06、CV-S08） |
 | 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转 | prd/04_tool_execution.md | PRD 已确认 |
 | 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择；扩展：思考级别选择（输入框）、上下文 1M 配置 | prd/05_model_provider.md | PRD 已确认（含扩展 MP-S05/MP-S06） |
 | 06 | 子 Agent 管理 | 主会话状态与后台子 agent 联动、Tab 栏+结果视图监控、停止级联/单个终止 | prd/06_subagent_management.md | PRD 已确认 |
@@ -70,7 +70,7 @@
 
 ## 七、MVP 范围
 
-**做**：项目管理、多会话（并行执行）、对话（Markdown/Mermaid）、工具执行卡片/Diff、模型配置、项目信任（pi 自带）、多窗口观察（多会话跨项目并排，窗口吸附）、子 Agent 管理（模块 06：状态联动+Tab 监控+终止）、会话历史导航（模块 03 扩展 CV-S06：主会话时间线+hover 浮窗预览+点击定位，零新增后端）、附件（统一给路径：选择/粘贴/拖拽 → 路径行随消息发送，截图先落盘临时文件，模型自行 read）。
+**做**：项目管理、多会话（并行执行）、对话（Markdown/Mermaid）、工具执行卡片/Diff、模型配置、项目信任（pi 自带）、多窗口观察（多会话跨项目并排，窗口吸附）、子 Agent 管理（模块 06：状态联动+Tab 监控+终止）、会话历史导航（模块 03 扩展 CV-S06：主会话时间线+hover 浮窗预览+点击定位，零新增后端）、斜杠命令（模块 03 扩展 CV-S08：输入 / 浮窗选择 pi 生态命令/skills/模板，codex 风格美化显示，原样发送 pi 原生识别；forge-extensions 承载首个真实扩展——命令上报扩展）、附件（统一给路径：选择/粘贴/拖拽 → 路径行随消息发送，截图先落盘临时文件，模型自行 read）。
 
 **不做（后续迭代）**：嵌入式终端、发送队列、复杂 ToolProfile CRUD、per-tool 审批扩展、嵌入式 agent（v2+）、TUI 形态、子 agent 左侧树分组与逐 token 实时查看（PRD 06 明确不做）。
 
@@ -80,6 +80,8 @@
 
 - 已完成：立项与架构决策（`plan/forge-v1-plan.md`）、docs 初始化、5 个 PRD（01-05）确认、DB/API/测试设计全档确认、PRD 05 扩展（MP-S05 思考级别选择、MP-S06 上下文 1M）文档确认与**开发交付（dev-flow run 20260827115957，COMPLETE：6 WU 通过 + Fan-in + 模块 QA PASS）**；开发产物含输入框思考级别切换器（含 max 金色流光动画）、设置页上下文 1M 勾选、forge-core/desktop 对应业务与运行时接线；**模块 03 扩展 CV-S06 会话历史导航文档确认与开发交付（dev-flow run 20260829155926，COMPLETE：3 WU 通过 + Fan-in 39 e2e 全绿 + 模块 QA PASS；独立模块 07 方案撤销，纯前端零新增后端）**。
 - 进行中：v1.1 计划草案（`plan/forge-v1.1-plan.md`，待确认范围后进入 gen-doc-prd / dev）。
+- 已完成（2026-09-02）：模块 03 扩展 CV-S08 斜杠命令全档确认（gen-doc-all：PRD + API §9 + 测试设计 U-CV-011/012、A-CV-011~013、E-CV-014~018、PIC-007）。
+- 进行中：CV-S08 开发交付（dev-flow run `20260902145236`，状态文件 `docs/plan/dev-20260902145236-flow.json`）——5 WU 中 4 个已通过 D3+D4（WU-01 core 服务与 RPC 329 测试、WU-02 forge-extensions 命令上报扩展+desktop 装配 161 测试、WU-03 UI 纯函数+bridge+mock 103 测试、WU-05 desktop 桥接+草稿态 port 171 测试）；**WU-04（InstructionInput 浮窗集成 + e2e）代码已落地但 5 条 e2e（E-CV-014~018）全部失败，Dev Agent 结果丢失，需重派修复**（WU 仍处 claimed/in_progress，重派修复后直接提交即可，不消耗 local_fix 次数）；之后 D5 Fan-in（全量回归）→ D6 模块 QA（含 PIC-007 真实链路验证项）。
 - 阻塞项：无（v1.1 范围待确认点见计划文档 §7）。
 - 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）；PRD 05 扩展的思考级别真实链路（PIC-005）与 1M 上下文运行时验证、PIC-006 子 agent 真实链路 **已于 2026-08-30 用户确认 OK**；forge-ui session 模块 2 条既有 e2e（E-SM-001/002）已修复（全量 41/41 通过）。
 ## 九、AI 开发约束

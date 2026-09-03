@@ -8,7 +8,7 @@
  *
  * 模块 06 子 Agent 管理：mock 增加子 agent 内存态、subagent.* 事件、级联 cancelStream。
  */
-import type { ForgeBridge, ForgeResult } from './bridge';
+import type { ForgeBridge, ForgeResult, SlashCommand } from './bridge';
 import type { Subagent } from './types';
 
 declare global {
@@ -199,6 +199,26 @@ function emit(event: string, payload: unknown): void {
 
 const modelList = ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.2', 'claude-opus-4'];
 
+/**
+ * 斜杠命令示例清单（语义对齐 docs/api/03_conversation.md §9 双模式）：
+ * - 会话模式（提供 sessionId）：命令上报扩展的上报清单，三类全量；
+ * - 草稿态（无 sessionId）：轻量资源查询，仅 skills + 模板（无 source:'extension' 项，TD-CV-08）。
+ * 均含无描述项（description: null，UI 副文本留空）；seed 可整单覆盖。
+ */
+const SESSION_SLASH_COMMANDS: SlashCommand[] = [
+  { name: 'review-pr', description: '审查拉取请求', source: 'extension' },
+  { name: 'compact', description: null, source: 'extension' },
+  { name: 'skill:git-push', description: '推送当前分支', source: 'skill' },
+  { name: 'skill:write-tests', description: null, source: 'skill' },
+  { name: 'write-tests', description: '生成测试用例', source: 'prompt' },
+];
+
+const DRAFT_SLASH_COMMANDS: SlashCommand[] = [
+  { name: 'skill:git-push', description: '推送当前分支', source: 'skill' },
+  { name: 'skill:write-tests', description: null, source: 'skill' },
+  { name: 'write-tests', description: '生成测试用例', source: 'prompt' },
+];
+
 // ===== E2E 可编程 mock =====
 // 测试经 window.__forgeMock 注入：
 // - seed(method, handler)：覆盖任意 invoke 方法（如新增会话/删除后事件）
@@ -238,7 +258,8 @@ interface MockControl {
       | 'subagent.removed'
       | 'conversation.statusChanged'
       | 'conversation.compacting'
-      | 'conversation.compacted',
+      | 'conversation.compacted'
+      | 'conversation.slashCommandsUpdated',
     payload: Record<string, unknown>,
   ): void;
   /** 注入查询会话列表/历史的种子覆盖 */
@@ -499,6 +520,14 @@ const bridge: ForgeBridge = {
           },
         };
       }
+      case 'conversation/getSlashCommands': {
+        // 双模式（docs/api §9）：有 sessionId → 会话模式三类全量；无 → 草稿态 skills+模板。
+        // seed 可覆盖（invoke 开头的 seedHandlers 优先级已保证）。
+        const slashSid = (params as { sessionId?: string }).sessionId;
+        const commands =
+          typeof slashSid === 'string' && slashSid !== '' ? SESSION_SLASH_COMMANDS : DRAFT_SLASH_COMMANDS;
+        return { code: 0, message: 'ok', data: { commands } };
+      }
       case 'subagent/queryList': {
         // 返回该会话的子 agent 列表（按展示顺序：运行中在前，终态按 finishedAt desc）
         const sid = (params as { sessionId?: string }).sessionId ?? '';
@@ -618,6 +647,12 @@ const bridge: ForgeBridge = {
       paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() ?? p, flagged: false })),
     savePasteImage: async () => null,
     readImage: async () => null,
+    // 浏览器 dev/e2e 无真实盘：固定小清单，@ 补全链路可走通（本地过滤逻辑在渲染层）
+    listProjectFiles: async () => [
+      'D:/work/aiwork/forge/edu-community/README.md',
+      'D:/work/aiwork/forge/edu-community/src/index.ts',
+      'D:/work/aiwork/forge/edu-community/docs/prd.md',
+    ],
   },
 };
 

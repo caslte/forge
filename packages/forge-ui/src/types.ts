@@ -24,6 +24,18 @@ export interface SessionItem {
   doneReadAt?: string | null;
 }
 
+/** 输入框项目选择器描述（SM-S01 v3.21）：单视图传入，多窗口 compact 不传则不渲染 */
+export interface ProjectPickerDescriptor {
+  /** draft=新建会话可选归属；session=会话中只读信息（归属不可换） */
+  mode: 'draft' | 'session';
+  /** 当前项目路径：草稿=目标项目；会话=归属项目 */
+  currentPath: string | null;
+  /** 显示名（别名优先，回退路径末段） */
+  currentName: string;
+  /** 已打开项目列表（按后端序） */
+  items: Array<{ path: string; name: string }>;
+}
+
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;

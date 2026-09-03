@@ -16,6 +16,7 @@ export type {
   TrustDecision,
   TrustPrompt,
   TrustStorePort,
+  ProjectSessionsPort,
   ProjectResult,
   OpenProjectResult,
 } from './project/projectService.ts';
@@ -53,6 +54,9 @@ export type {
   ConversationCompactResult,
   ConversationCompactingPayload,
   ConversationCompactedPayload,
+  SlashCommand,
+  SlashCommandResources,
+  GetSlashCommandsParams,
 } from './conversation/conversationService.ts';
 
 // 对话与消息 RPC 方法层（wu-03-rpc）
@@ -147,6 +151,9 @@ export type {
   SettingsRecord,
   ForgeStoreData,
 } from './types/forge-store.ts';
+
+// 附件格式白名单（选择器过滤 + 粘贴/拖拽校验三入口共用，单一事实来源）
+export { ATTACHMENT_EXTENSIONS, ATTACHMENT_DIALOG_FILTER, isAllowedAttachmentPath } from './attachments.ts';
 
 /** forge-core 当前版本号（骨架期固定为 0.1.0） */
 export const FORGE_CORE_VERSION = '0.1.0';

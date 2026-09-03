@@ -14,6 +14,12 @@ import type {
 import { stripThinkingContent } from './thinkingFilter.ts';
 import type { SubagentEventBus } from './createPiAgentSessionFactory.ts';
 
+/**
+ * 命令上报 channel（冻结契约：docs/api/03_conversation.md「桥接约定」，
+ * 与 pi-subagents 的 subagents:* 生命周期事件同构）。
+ */
+export const SLASH_COMMANDS_REPORTED_CHANNEL = 'slash-commands:reported';
+
 export interface PiAgentSessionLease<TSession> {
   session: TSession;
   dispose: () => void;
@@ -55,6 +61,13 @@ export type MinimalPiSession = {
    */
   modelRuntime?: { refresh(options?: unknown): Promise<unknown> };
 };
+
+/** 命令上报扩展上报的命令条目（forge-extensions SlashCommandReporter 载荷，纯数据） */
+export interface PiReportedSlashCommand {
+  name: string;
+  description: string | null;
+  source: string;
+}
 
 /** 适配器构造选项（模型解析器可注入；缺省走真实 pi models.json 解析） */
 export interface PiConversationAdapterOptions {
@@ -188,6 +201,13 @@ export interface PiConversationEventHandlers {
    * 否则用户会看到历史被摘要替换却毫无提示。
    */
   onCompacted?: (sessionId: string, info: CompactionInfo) => void;
+  /**
+   * 斜杠命令清单上报到达（CV-S08）：命令上报扩展在 session_start 时经
+   * 会话事件总线上报三类命令（extension / prompt / skill），此处按会话
+   * 上抛；上层据此写会话级缓存并转发 conversation.slashCommandsUpdated。
+   * 上报缺失/迟到前不回调（上层降级为轻量资源查询）。
+   */
+  onSlashCommandsReported?: (sessionId: string, commands: PiReportedSlashCommand[]) => void;
 }
 
 type TurnCompletionHandler = (sessionId: string) => void;
@@ -249,6 +269,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly unsubs = new Map<string, () => void>();
   /** 每会话在子 agent 扩展事件总线上的订阅取消函数（removeSession 时释放） */
   private readonly subagentUnsubs = new Map<string, () => void>();
+  /** 每会话在命令上报 channel 上的订阅取消函数（removeSession 时释放） */
+  private readonly slashCommandUnsubs = new Map<string, () => void>();
   private eventHandlers: PiConversationEventHandlers = {};
   private completionHandler: TurnCompletionHandler | undefined;
   /** 主轮完成回调（wu-06 done 门控）：prompt 解析后调用，转发到 subagentService.notifyMainTurnEnd */
@@ -379,6 +401,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     // wu-06：订阅子 agent 扩展事件总线（created/started/completed/failed）→ SubagentService.ingest
     // lease.events 缺失（扩展未激活）时跳过；每个会话独立订阅，removeSession 时退订。
     this.bindSubagentBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
+    // CV-S08：订阅命令上报 channel（slash-commands:reported）→ onSlashCommandsReported
+    this.bindSlashCommandBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     try {
       // 附件统一给路径：路径行已随 content 发送，模型自行 read；
       // 非视觉模型遇图片时 pi-ai 传输层自动降级占位，adapter 恒单参调用
@@ -647,6 +671,14 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       } catch {}
       this.subagentUnsubs.delete(sessionId);
     }
+    // CV-S08：退订命令上报 channel（迟到上报不再上抛）
+    const slashCommandUnsub = this.slashCommandUnsubs.get(sessionId);
+    if (slashCommandUnsub !== undefined) {
+      try {
+        slashCommandUnsub();
+      } catch {}
+      this.slashCommandUnsubs.delete(sessionId);
+    }
     // wu-06：退订后清空子 agent 会话内存态（会话删除是子 agent 注销的最终时机）
     this.subagentService?.disposeSession(sessionId);
     const lease = this.leases.get(sessionId);
@@ -724,6 +756,35 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         try { off(); } catch {}
       }
     });
+  }
+
+  /**
+   * CV-S08：按 lease 的扩展事件总线订阅命令上报 channel
+   * （slash-commands:reported，与 bindSubagentBus 的 subagents:* 同构：
+   * 先退订旧订阅再重绑防重复，removeSession 时统一退订），
+   * 载荷归一后经 onSlashCommandsReported 上抛。总线缺失时静默跳过。
+   */
+  private bindSlashCommandBus(
+    sessionId: string,
+    lease: PiAgentSessionLease<MinimalPiSession>,
+  ): void {
+    const bus = lease.events;
+    if (bus === undefined) {
+      return;
+    }
+    const prev = this.slashCommandUnsubs.get(sessionId);
+    if (prev !== undefined) {
+      try { prev(); } catch {}
+      this.slashCommandUnsubs.delete(sessionId);
+    }
+    const off = bus.on(SLASH_COMMANDS_REPORTED_CHANNEL, (raw) => {
+      const commands = extractReportedSlashCommands(raw);
+      if (commands === null) {
+        return;
+      }
+      this.eventHandlers.onSlashCommandsReported?.(sessionId, commands);
+    });
+    this.slashCommandUnsubs.set(sessionId, off);
   }
 
   /**
@@ -1028,6 +1089,28 @@ function extractToolResultText(result: unknown): string | null {
     .filter((t) => t !== '')
     .join('\n');
   return text === '' ? null : text;
+}
+
+/**
+ * 归一化命令上报扩展的载荷（CV-S08）：{ commands: [...] } → 纯数据数组。
+ * 载荷非法（非对象/commands 非数组）返回 null（静默忽略，上层维持降级清单）；
+ * 条目缺 name 或 source 非字符串时跳过该条；description 非 string 归一为 null。
+ */
+function extractReportedSlashCommands(raw: unknown): PiReportedSlashCommand[] | null {
+  if (!isRecord(raw) || !Array.isArray(raw.commands)) {
+    return null;
+  }
+  const commands: PiReportedSlashCommand[] = [];
+  for (const item of raw.commands) {
+    if (!isRecord(item) || typeof item.name !== 'string' || item.name === '') continue;
+    if (typeof item.source !== 'string') continue;
+    commands.push({
+      name: item.name,
+      description: typeof item.description === 'string' ? item.description : null,
+      source: item.source,
+    });
+  }
+  return commands;
 }
 
 /**

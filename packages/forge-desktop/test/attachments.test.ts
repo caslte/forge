@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { scanAttachments, savePasteImage, readImageDataUrl, SECRET_PATTERNS } from '../src/attachments.ts';
+import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles, SECRET_PATTERNS } from '../src/attachments.ts';
 
 // ===== 附件安全扫描：文本文件命中密钥特征 → flagged=true（给路径机制下唯一的出域防线） =====
 
@@ -76,4 +76,24 @@ test('readImageDataUrl：磁盘图片读为 data URL；缺失/超大返回 null'
   const big = path.join(dir, 'big.png');
   fs.writeFileSync(big, Buffer.alloc(11 * 1024 * 1024));
   assert.equal(readImageDataUrl(big), null, '超过 10MB 上限返回 null');
+});
+
+// ===== @ 补全候选：项目内白名单文件遍历 =====
+
+test('listProjectFiles：BFS 遍历白名单文件，忽略依赖目录与非白名单扩展', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-atwalk-'));
+  try {
+    fs.writeFileSync(path.join(root, 'README.md'), 'x');
+    fs.mkdirSync(path.join(root, 'src'));
+    fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'x');
+    fs.mkdirSync(path.join(root, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'node_modules', 'pkg', 'dep.js'), 'x');
+    fs.writeFileSync(path.join(root, 'virus.exe'), 'x');
+    const files = listProjectFiles(root);
+    const norm = files.map((f) => f.replace(/\\/g, '/').slice(root.replace(/\\/g, '/').length + 1));
+    assert.deepEqual(norm.sort(), ['README.md', 'src/index.ts'], 'node_modules 与 exe 应被排除');
+    assert.equal(listProjectFiles(path.join(root, 'missing')).length, 0, '缺失目录返回空数组');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

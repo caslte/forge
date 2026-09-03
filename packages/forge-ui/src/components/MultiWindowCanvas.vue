@@ -509,7 +509,12 @@ onUnmounted(() => {
           </button>
         </div>
         <div class="mw-body">
-          <MultiWindowConversation :session-id="w.sessionId" :models="models" />
+          <MultiWindowConversation
+            :session-id="w.sessionId"
+            :session="sessionOf(w.sessionId) ?? null"
+            :models="models"
+            :project-path="sessionOf(w.sessionId)?.projectPath ?? ''"
+          />
         </div>
       </div>
     </div>

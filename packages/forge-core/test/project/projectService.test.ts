@@ -297,13 +297,13 @@ test('openProject：未注册项目返回 1002（API 契约）', () => {
   }
 });
 
-test('removeProject：移除已注册项目成功，仅删元数据，源文件保留（AC-PM-006）', () => {
+test('removeProject：移除已注册项目成功，仅删元数据，源文件保留（AC-PM-006）', async () => {
   const tmp = makeTempDir();
   try {
     const { service, store } = makeService(tmp);
     const dir = makeProjectDir(tmp, 'proj-rm');
     assert.ok(service.addProject(dir).ok);
-    const result = service.removeProject(dir);
+    const result = await service.removeProject(dir);
     assert.ok(result.ok);
     assert.equal(store.getProject(dir), null, 'store 中 project 记录应删除');
     assert.ok(fs.existsSync(dir), '源文件不应被删除');
@@ -312,12 +312,55 @@ test('removeProject：移除已注册项目成功，仅删元数据，源文件�
   }
 });
 
-test('removeProject：未注册项目返回 1002（幂等客户端行为由 rpc 层实现）', () => {
+test('removeProject：级联删除名下会话（停运行+删 pi 会话经端口，forge 会话记录一并清除）', async () => {
+  const tmp = makeTempDir();
+  try {
+    const store = new ForgeStore(path.join(tmp, 'forge-store.json'));
+    const deleted: string[] = [];
+    const service = new ProjectService(store, undefined, {
+      deleteSession: async (sessionId) => {
+        deleted.push(sessionId);
+        store.removeSession(sessionId);
+      },
+    });
+    const dir = makeProjectDir(tmp, 'proj-cascade');
+    assert.ok(service.addProject(dir).ok);
+    store.saveSession({
+      sessionId: 's-1',
+      projectPath: dir,
+      alias: null,
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      modelOverride: null,
+    });
+    store.saveSession({
+      sessionId: 's-2',
+      projectPath: 'C:/other-proj',
+      alias: null,
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      modelOverride: null,
+    });
+    const result = await service.removeProject(dir);
+    assert.ok(result.ok);
+    if (result.ok) {
+      assert.deepEqual(result.data.removedSessions.sort(), ['s-1'], '只级联该项目名下会话');
+    }
+    assert.deepEqual(deleted, ['s-1'], '端口应收到该项目会话的删除调用');
+    assert.equal(store.getSession('s-1'), undefined, 'forge 会话记录应删除');
+    assert.notEqual(store.getSession('s-2'), undefined, '其他项目会话不应受影响');
+    assert.equal(store.getProject(dir), null, 'project 记录删除');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('removeProject：未注册项目返回 1002（幂等客户端行为由 rpc 层实现）', async () => {
   const tmp = makeTempDir();
   try {
     const { service } = makeService(tmp);
     const dir = makeProjectDir(tmp, 'proj-rm-missing');
-    const result = service.removeProject(dir);
+    const result = await service.removeProject(dir);
     assert.ok(!result.ok);
     if (!result.ok) {
       assert.equal(result.code, 1002);

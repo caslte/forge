@@ -80,7 +80,7 @@ test('A-PM-002：无效路径返回 1001 + 提示，store 无写入', () => {
   }
 });
 
-test('参数校验：path 缺失/非字符串/空白返回 1001', () => {
+test('参数校验：path 缺失/非字符串/空白返回 1001', async () => {
   const tmp = makeTempDir();
   try {
     const { api } = makeApi(tmp);
@@ -89,7 +89,7 @@ test('参数校验：path 缺失/非字符串/空白返回 1001', () => {
     assert.equal(api.methods['project/addProject']({ path: '   ' }).code, 1001);
     assert.equal(api.methods['project/addProject'](null).code, 1001);
     assert.equal(api.methods['project/openProject']({}).code, 1001);
-    assert.equal(api.methods['project/removeProject']({}).code, 1001);
+    assert.equal((await api.methods['project/removeProject']({})).code, 1001);
     assert.equal(api.methods['project/updateProjectAlias']({ path: '/x' }).code, 1001);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -133,21 +133,22 @@ test('A-PM-004：目录被删除后 openProject 不崩溃（code 0，无异常�
   }
 });
 
-test('A-PM-005：removeProject 返回 0，store 记录删除，源文件与 pi 会话保留', () => {
+test('A-PM-005：removeProject 返回 0，store 记录删除，源文件保留', async () => {
   const tmp = makeTempDir();
   try {
     const { api, store, events } = makeApi(tmp);
     const dir = makeProjectDir(tmp, 'proj-rm');
     api.methods['project/addProject']({ path: dir });
-    // 模拟 pi 侧数据：源文件与 pi 会话 JSONL（forge 不得删除）
+    // 模拟 pi 侧数据：源文件与 pi 会话 JSONL（无注入会话端口时 pi 会话文件不动）
     const sourceFile = path.join(dir, 'main.ts');
     fs.writeFileSync(sourceFile, 'export {}');
     const piSession = path.join(tmp, 'pi-session.jsonl');
     fs.writeFileSync(piSession, '{"role":"user","content":"hi"}\n');
     const removed: unknown[] = [];
     events.on('project.removed', (payload) => removed.push(payload));
-    const result = api.methods['project/removeProject']({ path: dir });
+    const result = await api.methods['project/removeProject']({ path: dir });
     assert.equal(result.code, 0);
+    assert.deepEqual(result.data, { removedSessions: 0 }, '无注入端口时无级联');
     assert.equal(store.getProject(dir), null, 'store 中 project 记录应删除');
     assert.ok(fs.existsSync(sourceFile), '源文件不应被删除');
     assert.ok(fs.existsSync(piSession), 'pi 会话不应被删除');
@@ -158,16 +159,51 @@ test('A-PM-005：removeProject 返回 0，store 记录删除，源文件与 pi �
   }
 });
 
-test('A-PM-005 幂等：重复移除未注册项目返回 0，不发射 project.removed', () => {
+test('A-PM-005：removeProject 级联删名下会话并逐个发射 session.removed', async () => {
+  const tmp = makeTempDir();
+  try {
+    const store = new ForgeStore(path.join(tmp, 'forge-store.json'));
+    const events = new EventEmitter();
+    const api = new ProjectApi(
+      new ProjectService(store, undefined, {
+        deleteSession: async (sessionId) => {
+          store.removeSession(sessionId);
+        },
+      }),
+      events,
+    );
+    const dir = makeProjectDir(tmp, 'proj-cascade');
+    api.methods['project/addProject']({ path: dir });
+    store.saveSession({
+      sessionId: 'sess-1',
+      projectPath: dir,
+      alias: null,
+      lastActiveAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      modelOverride: null,
+    });
+    const removedSessions: unknown[] = [];
+    events.on('session.removed', (payload) => removedSessions.push(payload));
+    const result = await api.methods['project/removeProject']({ path: dir });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.data, { removedSessions: 1 });
+    assert.deepEqual(removedSessions, [{ sessionId: 'sess-1' }], '级联删除应逐个发射 session.removed');
+    assert.equal(store.getSession('sess-1'), undefined);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('A-PM-005 幂等：重复移除未注册项目返回 0，不发射 project.removed', async () => {
   const tmp = makeTempDir();
   try {
     const { api, events } = makeApi(tmp);
     const dir = makeProjectDir(tmp, 'proj-rm-idem');
     api.methods['project/addProject']({ path: dir });
-    assert.equal(api.methods['project/removeProject']({ path: dir }).code, 0);
+    assert.equal((await api.methods['project/removeProject']({ path: dir })).code, 0);
     const removed: unknown[] = [];
     events.on('project.removed', (payload) => removed.push(payload));
-    const second = api.methods['project/removeProject']({ path: dir });
+    const second = await api.methods['project/removeProject']({ path: dir });
     assert.equal(second.code, 0, '幂等客户端行为：未注册项目视为移除成功');
     assert.equal(removed.length, 0, '未实际移除不发射事件');
   } finally {

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { call, subscribe } from './bridge';
-import type { ProjectItem, SessionItem, ThemeMode } from './types';
+import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
+import { projectTagOf, defaultDraftProjectPath } from './utils/sessionView';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
 import TitleBar from './components/TitleBar.vue';
@@ -9,7 +10,6 @@ import ProjectTree from './components/ProjectTree.vue';
 import ConversationView from './components/ConversationView.vue';
 import MultiWindowCanvas from './components/MultiWindowCanvas.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
-import ProjectPickerDialog from './components/ProjectPickerDialog.vue';
 import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
@@ -30,7 +30,6 @@ const draftMode = ref(false);
 type View = 'sessions' | 'settings';
 const activeView = ref<View>('sessions');
 const sidebarCollapsed = ref(false);
-const showProjectPicker = ref(false);
 const showExitDialog = ref(false);
 /** 待信任确认的项目（1005 弹窗） */
 const trustAskPath = ref<string | null>(null);
@@ -41,6 +40,88 @@ const multiWindow = ref(false);
 const openedSessionIds = ref<string[]>([]);
 /** 多窗口模式下聚焦查看的会话 id（非空时在画布上方叠加单会话视图，布局保留） */
 const focusedSessionForWin = ref<string | null>(null);
+
+// 会话树视角（SM-S06）：项目=按项目分组（现状）；任务=平摊全部会话。选择记忆在 localStorage
+const TREE_VIEW_KEY = 'forge:sidebar:view';
+const treeView = ref<'project' | 'task'>(readTreeView());
+const projectTreeRef = ref<InstanceType<typeof ProjectTree> | null>(null);
+/** 项目视角全部项目是否已折叠（收起/展开全部按钮两态，由 ProjectTree 上报） */
+const allCollapsed = ref(false);
+
+function readTreeView(): 'project' | 'task' {
+  try {
+    return localStorage.getItem(TREE_VIEW_KEY) === 'task' ? 'task' : 'project';
+  } catch {
+    return 'project';
+  }
+}
+
+watch(treeView, (v) => {
+  try {
+    localStorage.setItem(TREE_VIEW_KEY, v);
+  } catch {
+    // 存储失败忽略（不影响运行）
+  }
+});
+
+function onFoldAll(): void {
+  if (allCollapsed.value) projectTreeRef.value?.expandAll();
+  else projectTreeRef.value?.collapseAll();
+}
+
+/** 下拉项目排序记忆：按用户选中次序（先选中在前），localStorage 持久（SM-S01 v3.29） */
+const PICK_ORDER_KEY = 'forge:project-pick-order';
+const pickOrder = ref<string[]>(readPickOrder());
+
+function readPickOrder(): string[] {
+  try {
+    const arr = JSON.parse(localStorage.getItem(PICK_ORDER_KEY) ?? '[]');
+    return Array.isArray(arr) ? arr.filter((p): p is string => typeof p === 'string' && p.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+watch(pickOrder, (v) => {
+  try {
+    localStorage.setItem(PICK_ORDER_KEY, JSON.stringify(v));
+  } catch {
+    // 存储失败忽略（不影响运行）
+  }
+});
+
+/** 聚焦层「返回多窗口」行显示会话归属项目（别名优先，SM-S06 多窗口配套） */
+const winFocusProjectName = computed(() => {
+  const s = sessions.value.find((x) => x.sessionId === focusedSessionForWin.value);
+  if (!s) return '';
+  const p = projects.value.find((x) => x.path === s.projectPath);
+  return p?.alias ?? basename(s.projectPath);
+});
+
+/** 输入框项目选择器（SM-S01 v3.21）：草稿态=可选归属；会话中=只读信息。 */
+const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
+  if (projects.value.length === 0) return null;
+  const s = currentSession.value;
+  const inSession = s !== null && !draftMode.value;
+  const path = inSession ? s.projectPath : (currentProject.value?.path ?? null);
+  if (!path) return null;
+  // 排序：按用户选中次序（先选中在前，SM-S01 v3.29）；未选中的保持后端序排后
+  const rank = (p: string): number => {
+    const idx = pickOrder.value.indexOf(p);
+    return idx === -1 ? pickOrder.value.length : idx;
+  };
+  return {
+    mode: inSession ? 'session' : 'draft',
+    currentPath: path,
+    currentName: projectTagOf(path, projects.value),
+    items: [...projects.value]
+      .sort((a, b) => rank(a.path) - rank(b.path))
+      .map((p) => ({
+        path: p.path,
+        name: projectTagOf(p.path, projects.value),
+      })),
+  };
+});
 
 // 设置
 const { themeMode, setTheme } = useTheme();
@@ -89,6 +170,20 @@ async function selectProject(path: string): Promise<void> {
   draftMode.value = false;
   // 设置在设置页时，点击项目应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
+  await loadSessions();
+}
+
+/**
+ * 输入框选择器切换归属项目（SM-S01 v3.21）：与侧栏切项目不同，
+ * 草稿保留（选择器语义就是“给当前未发送的会话换归属”），不关设置页。
+ */
+async function onPickProject(path: string): Promise<void> {
+  // 记录选中次序（首次选中定序，重复选中不变）：下拉排序依据
+  if (!pickOrder.value.includes(path)) {
+    pickOrder.value = [...pickOrder.value, path];
+  }
+  currentProjectPath.value = path;
+  currentSessionId.value = null;
   await loadSessions();
 }
 
@@ -154,7 +249,6 @@ async function loadSessions(): Promise<void> {
 async function onAddProject(path: string): Promise<void> {
   try {
     await call('project/addProject', { path });
-    showProjectPicker.value = false;
     await loadProjects();
     showToast('项目已添加', 'success');
   } catch (e) {
@@ -162,16 +256,28 @@ async function onAddProject(path: string): Promise<void> {
   }
 }
 
+/** 打开项目：不弹弹窗，直接弹系统目录选择器，选中即注册（取消/失败视为无操作） */
+async function openFolderPicker(): Promise<void> {
+  try {
+    const dir = await window.forge.dialog.selectDirectory();
+    if (dir) await onAddProject(dir);
+  } catch {
+    // 用户取消或桥接失败：无操作
+  }
+}
+
 async function onRemoveProject(path: string): Promise<void> {
   try {
-    await call('project/removeProject', { path });
+    // 级联删除：后端连同该项目名下会话（含 pi 会话文件）一并删除（v3.32 用户改判 TD-PM-05）
+    const res = await call<{ removedSessions: number }>('project/removeProject', { path });
+    pickOrder.value = pickOrder.value.filter((p) => p !== path);
     if (currentProjectPath.value === path) {
       currentProjectPath.value = null;
       currentSessionId.value = null;
     }
     await loadProjects();
     await loadSessions();
-    showToast('项目已移除', 'success');
+    showToast(res.removedSessions > 0 ? `项目已移除，连同 ${res.removedSessions} 个会话一并删除` : '项目已移除', 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -201,9 +307,14 @@ async function onReorderProjects(paths: string[]): Promise<void> {
  * 发送首条消息时由 ConversationView 创建会话并 emit 'session-created'（见 onSessionCreated）。
  */
 function onCreateSession(): void {
-  if (currentProjectPath.value === null) return;
+  if (projects.value.length === 0) return;
   // 多窗口画布无独立输入区，新建先退回单会话视图
   if (multiWindow.value) multiWindow.value = false;
+  // 任务视角/未选项目时：默认落最近激活项目（AC-SM-030），归属可在输入框底行改
+  if (currentProjectPath.value === null) {
+    const fallback = defaultDraftProjectPath(sessions.value, projects.value[0]?.path ?? null);
+    if (fallback) void selectProject(fallback);
+  }
   currentSessionId.value = null;
   draftMode.value = true;
 }
@@ -420,23 +531,52 @@ onUnmounted(() => {
 
     <section class="main-layout">
       <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
-        <header class="workspace-header">
-          <span class="workspace-brand">FORGE</span>
-        </header>
+        <header class="workspace-header"></header>
         <div class="tree-panel">
           <div class="sidebar-top">
-            <span class="sidebar-top-label">项目</span>
-            <button
-              class="add-project-btn"
-              data-tooltip="打开项目"
-              @click="showProjectPicker = true"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-            </button>
+            <div class="view-seg" role="tablist" aria-label="会话列表视角">
+              <button
+                type="button"
+                class="view-seg-btn"
+                :class="{ active: treeView === 'project' }"
+                @click="treeView = 'project'"
+              >项目</button>
+              <button
+                type="button"
+                class="view-seg-btn"
+                :class="{ active: treeView === 'task' }"
+                @click="treeView = 'task'"
+              >任务</button>
+            </div>
+            <div class="sidebar-top-actions">
+              <button
+                v-if="treeView === 'project'"
+                type="button"
+                class="fold-all-btn"
+                :aria-label="allCollapsed ? '展开全部项目' : '收起全部项目'"
+                :data-tooltip="allCollapsed ? '展开全部项目' : '收起全部项目'"
+                @click="onFoldAll"
+              >
+                <svg v-if="allCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <!-- 展开全部：对角双箭头外扩 -->
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <!-- 收起全部：对角双箭头内收 -->
+                  <polyline points="4 14 10 14 10 20" />
+                  <polyline points="20 10 14 10 14 4" />
+                  <line x1="14" y1="10" x2="21" y2="3" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              </button>
+            </div>
           </div>
           <ProjectTree
+            ref="projectTreeRef"
+            :view="treeView"
             :projects="projects"
             :sessions="sessions"
             :current-project-path="currentProjectPath"
@@ -450,6 +590,7 @@ onUnmounted(() => {
             @select-session="onSelectSession"
             @delete-session="onDeleteSession"
             @rename-session="onRenameSession"
+            @fold-state="allCollapsed = $event"
           />
         </div>
         <div class="sidebar-footer">
@@ -472,7 +613,7 @@ onUnmounted(() => {
           <button
             class="app-toolbar-btn"
             data-tooltip="新建会话"
-            :disabled="!currentProject"
+            :disabled="projects.length === 0"
             @click="onCreateSession"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -532,6 +673,7 @@ onUnmounted(() => {
                 <span class="win-focus-title">
                   {{ currentSession.alias || '会话 ' + currentSession.sessionId.slice(-6) }}
                 </span>
+                <span class="win-focus-proj">{{ winFocusProjectName }}</span>
               </div>
               <ConversationView
                 :session-id="currentSessionId!"
@@ -539,7 +681,11 @@ onUnmounted(() => {
                 :session="currentSession"
                 :models="models"
                 :current-model="currentSessionModel"
+                :project-picker="projectPicker ?? undefined"
                 @model-change="onModelChange"
+                @pick-project="onPickProject"
+                @open-project-picker="openFolderPicker"
+                @remove-project="onRemoveProject"
               />
             </div>
           </div>
@@ -550,8 +696,12 @@ onUnmounted(() => {
               :session="currentSession"
               :models="models"
               :current-model="currentSessionModel"
+              :project-picker="projectPicker ?? undefined"
               @model-change="onModelChange"
               @session-created="onSessionCreated"
+              @pick-project="onPickProject"
+              @open-project-picker="openFolderPicker"
+              @remove-project="onRemoveProject"
             />
           </div>
           <div v-else-if="currentProject" class="no-session">
@@ -573,18 +723,12 @@ onUnmounted(() => {
                 </svg>
               </div>
               <p class="no-session-title">选择项目或创建新项目开始</p>
-              <button class="primary" @click="showProjectPicker = true">打开项目</button>
+              <button class="primary" @click="openFolderPicker">打开项目</button>
             </div>
           </div>
         </template>
       </main>
     </section>
-
-    <ProjectPickerDialog
-      v-if="showProjectPicker"
-      @close="showProjectPicker = false"
-      @confirm="onAddProject"
-    />
 
     <TrustAskDialog
       v-if="trustAskPath !== null"
@@ -673,23 +817,8 @@ onUnmounted(() => {
   min-height: 56px;
 }
 
-.workspace-brand {
-  font-family: var(--font-mono);
-  font-size: 22px;
-  letter-spacing: 0.14em;
-  background: linear-gradient(90deg, var(--logo-gradient-base) 0%, var(--logo-gradient-accent) 25%, var(--logo-gradient-base) 50%, var(--logo-gradient-accent) 75%, var(--logo-gradient-base) 100%);
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: logo-gradient-shift 3s linear infinite;
-  margin-left: 15px;
-}
-
-@keyframes logo-gradient-shift {
-  0% { background-position: 0% 0%; }
-  100% { background-position: 100% 0%; }
-}
+/* FORGE 渐变文字 LOGO 已随 SM-S07 隐藏（品牌位移至 TitleBar 左上角 LOGO 瓷片）；
+   重设计后如需文字品牌，在 workspace-header 内新增节点即可 */
 
 .tree-panel {
   flex: 1;
@@ -706,14 +835,44 @@ onUnmounted(() => {
   justify-content: space-between;
 }
 
-.sidebar-top-label {
-  color: var(--muted-foreground);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+/* 视角分段开关（SM-S06）：项目 / 任务 */
+.view-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
 }
 
-.add-project-btn {
+.view-seg-btn {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.view-seg-btn.active {
+  background: var(--surface-active);
+  color: var(--foreground);
+}
+
+.view-seg-btn:not(.active):hover {
+  color: var(--foreground);
+}
+
+.sidebar-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 收起全部/展开全部（仅项目视角）：无 边框 ghost 按钮（SM-S06） */
+.fold-all-btn {
   width: 30px;
   height: 30px;
   padding: 0;
@@ -721,19 +880,21 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  background: var(--background);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 0;
   color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.add-project-btn svg {
-  width: 16px;
-  height: 16px;
+.fold-all-btn:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  color: var(--foreground);
 }
 
-.add-project-btn:hover {
-  border-color: var(--brand);
-  color: var(--brand);
+.fold-all-btn svg {
+  width: 15px;
+  height: 15px;
 }
 
 .sidebar-footer {
@@ -881,6 +1042,21 @@ onUnmounted(() => {
 .win-focus-title {
   font-size: 12px;
   color: var(--muted-foreground);
+}
+
+/* 聚焦行项目 pill（SM-S06 多窗口配套）：点会话进来即可见归属项目 */
+.win-focus-proj {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: color-mix(in oklab, var(--muted) 30%, transparent);
 }
 
 .no-session {

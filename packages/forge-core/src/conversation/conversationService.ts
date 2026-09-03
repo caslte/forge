@@ -28,6 +28,12 @@
  *    （会话存储与 provider 在其它层）；未注入时跳过对应校验（视为通过）。
  * 6. 所有方法返回判别联合 `{ ok: true, data } | { ok: false, code, message }`，
  *    调用方无需 try/catch 即可映射错误码。
+ * 7. 斜杠命令清单（docs/api/03_conversation.md §9，扩展 CV-S08）：会话级内存缓存
+ *    （reportedCommands Map，无持久化）。会话模式命中缓存返回三类全量，上报未到降级
+ *    注入的 slashCommandResources port 轻量查询（skills+模板）；草稿态 port 直查。
+ *    port 未注入 / 抛错 / 查询失败一律返回空清单不报错（AC-CV-033）；仅参数非法
+ *    （1001）与未知会话（1002）报错。会话删除清理由 desktop 层调用
+ *    clearSessionCommands 接线（本服务不参与会话删除流程）。
  */
 
 /** 会话执行状态（docs/api/03_conversation.md §5：streaming/done/canceled/error，加 idle 默认态） */
@@ -76,6 +82,45 @@ export type ConversationRuntimeOptions = {
 
 /** 上下文压缩触发来源：manual = 用户点击压缩；auto = 运行时按阈值/溢出自动触发 */
 export type CompactReason = 'manual' | 'auto';
+
+/**
+ * 斜杠命令清单项（docs/api/03_conversation.md §9，扩展 CV-S08）。
+ * @param name 原始命令名（skill 命令带 skill: 前缀；插入输入框时补 / 前缀）
+ * @param description 命令描述；缺失归一为 null（UI 副文本留空）
+ * @param source 来源：extension = 扩展命令；skill = 技能；prompt = prompt 模板
+ */
+export interface SlashCommand {
+  name: string;
+  description: string | null;
+  source: 'extension' | 'skill' | 'prompt';
+}
+
+/**
+ * 斜杠命令资源轻量查询 port（可注入 mock，desktop 层注入真实实现）。
+ * 只覆盖 skills + prompt 模板（不加载扩展、不创建会话，TD-CV-08）；
+ * 会话模式上报未到时降级、草稿态模式直查均经此 port。
+ */
+export interface SlashCommandResources {
+  /** 枚举可用命令（projectPath 定位项目级资源；省略仅发现全局 agentDir 资源） */
+  listCommands(projectPath?: string): Promise<SlashCommand[]>;
+}
+
+/** getSlashCommands 请求参数（两种模式：提供 sessionId 为会话模式，省略为草稿态） */
+export interface GetSlashCommandsParams {
+  /** 会话 ID：提供时返回该会话缓存/降级清单；省略为草稿态查询 */
+  sessionId?: string;
+  /** 草稿态项目工作目录（定位项目级 skills/模板；省略仅发现全局资源） */
+  projectPath?: string;
+}
+
+/** 斜杠命令 description 归一（缺失/undefined -> null，契约禁止 undefined 出现） */
+function normalizeSlashCommand(command: SlashCommand): SlashCommand {
+  return {
+    name: command.name,
+    description: command.description ?? null,
+    source: command.source,
+  };
+}
 
 /**
  * 手动压缩结果（P3-A）。
@@ -166,6 +211,12 @@ export interface ConversationServiceOptions {
   ) => Promise<ConversationRuntimeOptions>;
   /** 首条用户消息发送后触发：基于首条问题自动设置会话别名 */
   onFirstUserMessage?: (sessionId: string, firstUserContent: string) => void;
+  /**
+   * 斜杠命令资源轻量查询 port（只覆盖 skills+模板，不加载扩展）。
+   * 会话模式上报未到时降级、草稿态模式直查均经此 port；
+   * 未注入 / 抛错 / 查询失败一律返回空清单不报错（AC-CV-033）。
+   */
+  slashCommandResources?: SlashCommandResources;
 }
 
 /** 提取异常消息（5000 错误联合用） */
@@ -192,6 +243,8 @@ export class ConversationService {
   private readonly options: ConversationServiceOptions;
   /** 会话流式状态表（sessionId -> StreamState），默认 idle；无模块级可变会话数据 */
   private readonly streamStates: Map<string, StreamState> = new Map();
+  /** 会话级命令上报缓存（sessionId -> 上报清单，来自命令上报扩展；内存态无持久化） */
+  private readonly reportedCommands: Map<string, SlashCommand[]> = new Map();
 
   constructor(adapter: PiConversationAdapter, options: ConversationServiceOptions = {}) {
     this.adapter = adapter;
@@ -357,6 +410,93 @@ export class ConversationService {
       return { ok: true, data: { result } };
     } catch (err) {
       return { ok: false, code: 5000, message: `压缩失败: ${toMessage(err)}` };
+    }
+  }
+
+  /**
+   * 查询斜杠命令清单（扩展 CV-S08，docs/api/03_conversation.md §9）。
+   * - 会话模式（提供 sessionId）：命中会话级上报缓存返回三类全量；上报未到降级
+   *   轻量资源查询（skills+模板，无扩展命令）。
+   * - 草稿态模式（省略 sessionId）：port 直查（projectPath 可选透传），无扩展命令。
+   * - 枚举失败语义：port 未注入 / 抛错 / 查询失败一律返回 commands: [] 不报错
+   *   （AC-CV-033，输入与消息发送不受阻塞）。
+   * @param params 查询参数（sessionId / projectPath 均可选）
+   * @returns { ok: true, data: { commands } }；sessionId/projectPath 非法类型 1001；
+   *          会话模式未知会话 1002
+   */
+  async getSlashCommands(
+    params: GetSlashCommandsParams = {},
+  ): Promise<ConversationResult<{ commands: SlashCommand[] }>> {
+    const sessionId = params?.sessionId;
+    const projectPath = params?.projectPath;
+    if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.trim() === '')) {
+      return { ok: false, code: 1001, message: '参数错误：sessionId 必须为非空字符串' };
+    }
+    if (projectPath !== undefined && typeof projectPath !== 'string') {
+      return { ok: false, code: 1001, message: '参数错误：projectPath 必须为字符串' };
+    }
+    // projectPath 空白无定位意义，归一为省略（仅发现全局资源）
+    const normalizedPath =
+      typeof projectPath === 'string' && projectPath.trim() !== '' ? projectPath : undefined;
+
+    if (sessionId !== undefined) {
+      // 会话模式：未知会话 1002（校验失败即短路，不触发降级查询）
+      if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+        return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+      }
+      const cached = this.reportedCommands.get(sessionId);
+      if (cached !== undefined) {
+        return { ok: true, data: { commands: cached.map((c) => ({ ...c })) } };
+      }
+      // 上报未到：降级轻量资源查询（skills+模板）
+      return { ok: true, data: { commands: await this.querySlashCommandResources(normalizedPath) } };
+    }
+
+    // 草稿态模式：port 直查（不加载扩展、不创建会话）
+    return { ok: true, data: { commands: await this.querySlashCommandResources(normalizedPath) } };
+  }
+
+  /**
+   * 命令上报入口（扩展 CV-S08，A-CV-013）：命令上报扩展经 desktop 桥接注入会话级
+   * 内存缓存（无持久化）。幂等覆盖（后一次上报整体覆盖前一次）；未注册会话静默
+   * 忽略不抛错（不崩不泄漏）。
+   * @param sessionId 会话 ID
+   * @param commands 扩展上报的命令清单（三类全量；description 缺失归一 null）
+   */
+  ingestReportedCommands(sessionId: string, commands: SlashCommand[]): void {
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return;
+    }
+    this.reportedCommands.set(sessionId, commands.map(normalizeSlashCommand));
+  }
+
+  /**
+   * 清理会话命令上报缓存（会话删除路径）。
+   * forge-core 内本服务不参与会话删除流程（删除在 SessionService.deleteSession），
+   * 由 desktop 层在会话删除路径接线调用（对齐 SubagentService.disposeSession 模式）；
+   * 清理后该会话查询降级回轻量资源查询。
+   * @param sessionId 会话 ID
+   */
+  clearSessionCommands(sessionId: string): void {
+    this.reportedCommands.delete(sessionId);
+  }
+
+  /**
+   * 轻量资源查询（内部辅助）：port 未注入 / 抛错 / 查询失败一律返回空清单
+   * 不报错（AC-CV-033 枚举失败降级）。
+   * @param projectPath 项目工作目录（可选，定位项目级 skills/模板）
+   */
+  private async querySlashCommandResources(projectPath: string | undefined): Promise<SlashCommand[]> {
+    const port = this.options.slashCommandResources;
+    if (port === undefined) {
+      return [];
+    }
+    try {
+      const commands = await port.listCommands(projectPath);
+      return commands.map(normalizeSlashCommand);
+    } catch (err) {
+      console.error('[getSlashCommands] resource query failed', err);
+      return [];
     }
   }
 

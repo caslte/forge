@@ -18,9 +18,11 @@
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | sessionId | string | 是 | 会话 ID |
-| content | string | 是 | 消息内容（非空）；附件以路径行随正文发送（见下） |
+| content | string | 是 | 消息内容（非空）；附件以 @ 路径行随正文发送（见下） |
 
-**附件约定（统一给路径）**：附件不再作为独立参数传输。前端把附件文件的绝对路径以独立行追加在正文后（`正文\nC:\path\a.ts\nC:\path\b.png`），剪贴板截图先由主进程落盘系统临时目录再给路径。文件内容由模型自行用 read 工具读取（图片自动转 image 块；非视觉模型由 pi-ai 传输层降级为占位文本，不报错）。加入待发区时主进程对文本类附件做密钥嗅探，命中需用户确认后才会发送。
+**附件约定（统一给路径）**：附件不再作为独立参数传输。前端把附件文件的绝对路径以 `@` 前缀独立行追加在正文后（`正文\n@C:\path\a.ts\n@C:\path\b.png`，v3.27 起带 @ 协议标记：@ 开头=附件，手敲裸路径=正文，展示层零歧义；旧会话裸路径行兼容识别），剪贴板截图先由主进程落盘系统临时目录再给路径。文件内容由模型自行用 read 工具读取（图片自动转 image 块；非视觉模型由 pi-ai 传输层降级为占位文本，不报错）。加入待发区时主进程对文本类附件做密钥嗅探，命中需用户确认后才会发送。
+
+**附件格式白名单**（单一事实来源：`@forge/core` `attachments.ts`）：图片 `png/jpg/jpeg/gif/webp`；文本与代码 `txt/md/json/log/csv/yaml/yml/toml/xml/html/css/js/ts/py/java/go/rs/c/cpp/h`；Office 文档 `xlsx/xls/docx/doc`。选择/粘贴/拖拽三入口统一校验（渲染层 `addPaths` 把关，选择器的 dialog filter 仅为软过滤）；不支持格式拒绝入待发区并提示。xlsx/docx 等二进制格式不参与密钥嗅探。
 
 响应：
 
@@ -244,3 +246,70 @@
 | 1002 | 会话不存在 |
 | 1004 | provider 未配置 |
 | 5000 | 内部错误 / 流中断 |
+
+---
+
+## 9. 斜杠命令清单（扩展 CV-S08）
+
+### conversation/getSlashCommands
+
+**说明**：查询当前可用的 pi 生态斜杠命令（扩展命令 / skills / prompt 模板），供输入框 `/` 浮窗展示（CV-S08）。命令清单为会话级内存缓存，无持久化。
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| sessionId | string | 否 | 会话 ID。提供时返回该会话的命令清单；省略时为草稿态查询 |
+| projectPath | string | 否 | 草稿态（无 sessionId）时的项目工作目录，用于发现项目级 skills/模板；省略时仅发现全局（agentDir）资源 |
+
+响应 data：
+
+```json
+{
+  "commands": [
+    { "name": "skill:git-push", "description": "推送当前分支", "source": "skill" },
+    { "name": "review-pr", "description": "审查拉取请求", "source": "extension" },
+    { "name": "write-tests", "description": "生成测试用例", "source": "prompt" }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| commands[].name | string | 原始命令名（skill 命令带 `skill:` 前缀；插入输入框时补 `/` 前缀） |
+| commands[].description | string? | 命令描述；缺失为 null（UI 副文本留空） |
+| commands[].source | string | `extension` = 扩展命令；`skill` = 技能；`prompt` = prompt 模板 |
+
+**两种查询模式**：
+
+- **会话模式**（提供 sessionId）：返回该会话缓存的命令上报清单（三类全量，来自命令上报扩展会话启动时的上报，见下方桥接约定）。上报尚未到达（如首条消息刚发出）时，降级返回轻量资源查询结果（skills + 模板，无扩展命令）。
+- **草稿态模式**（省略 sessionId）：轻量资源查询直取 skills + prompt 模板（不加载扩展、不创建会话，TD-CV-08）；扩展命令不可见，会话激活后经 `conversation.slashCommandsUpdated` 补全。
+
+**枚举失败语义**：资源查询失败不报错，返回 `commands: []`（UI 显示「无可用命令」，输入不受阻塞，AC-CV-033）；仅参数非法（sessionId 非字符串）与未知会话报错。
+
+**错误码**：
+
+| code | 说明 |
+|------|------|
+| 1001 | 参数错误（sessionId/projectPath 非字符串） |
+| 1002 | 会话不存在（提供 sessionId 但未注册） |
+
+**UI 缓存契约**：同一会话首次触发浮窗时调用一次并缓存，切换会话失效重拉；收到 `conversation.slashCommandsUpdated` 后失效该会话缓存（下次触发浮窗重拉）。
+
+### conversation.slashCommandsUpdated（事件）
+
+**触发**：命令上报扩展的上报到达 forge（会话激活后，覆盖此前的降级清单）。
+
+```json
+{
+  "sessionId": "sess_xxx"
+}
+```
+
+**UI 契约**：收到本事件后失效该会话的命令清单缓存，下次触发浮窗时重新拉取 `conversation/getSlashCommands`（扩展命令补全，AC-CV-032）。
+
+### 桥接约定（forge-desktop 内部，非 UI 契约）
+
+- **命令上报扩展**（forge-extensions 首个真实 pi 扩展，TD-CV-07）：随每个 pi 会话加载，在 `session_start` 时调用运行时命令枚举能力（`pi.getCommands()`，覆盖扩展命令 + skills + prompt 模板三类），经会话事件总线上报（channel 形如 `slash-commands:reported`，与 pi-subagents 的 `subagents:*` 同构）。
+- forge-desktop 桥接该 channel → forge-core 会话级缓存，并转发为 `conversation.slashCommandsUpdated` 事件；扩展缺失/上报失败时静默降级（会话模式回落轻量查询）。
+- **命令执行无专用接口**：选中命令以原始命令串（如 `/skill:git-push `）经 `conversation/sendMessage` 原样发送，由 pi 运行时原生解析执行（TD-CV-09，零拦截零注册表）；AC-CV-031 的集成验证走真实 pi 会话。

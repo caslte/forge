@@ -21,6 +21,7 @@ import type {
   ConversationServiceOptions,
   ConversationStatus,
   PiConversationAdapter,
+  SlashCommand,
 } from '../../src/conversation/conversationService.ts';
 
 /** 可注入的 pi 会话适配器 mock：记录调用、可配置历史与抛错 */
@@ -307,4 +308,168 @@ test('compact：压缩异常返回失败信息且不抛出（P3-A 手动压缩�
     assert.equal(res.code, 5000);
     assert.match(res.message, /压缩失败/);
   }
+});
+
+// ===== 扩展 CV-S08：斜杠命令清单（docs/api/03_conversation.md §9） =====
+
+/** 斜杠命令资源查询 port mock：记录 projectPath 调用、可配置返回清单/抛错 */
+class MockSlashCommandResources {
+  /** 每次 listCommands 收到的 projectPath（草稿态透传断言用） */
+  calls: Array<string | undefined> = [];
+  /** 返回的命令清单（skills+模板两类，模拟轻量查询契约） */
+  commands: SlashCommand[] = [
+    { name: 'skill:git-push', description: '推送当前分支', source: 'skill' },
+    { name: 'write-tests', description: '生成测试用例', source: 'prompt' },
+  ];
+  /** 置为非 null 时 listCommands 抛出该异常（模拟枚举失败降级） */
+  error: Error | null = null;
+
+  async listCommands(projectPath?: string): Promise<SlashCommand[]> {
+    this.calls.push(projectPath);
+    if (this.error !== null) {
+      throw this.error;
+    }
+    return this.commands;
+  }
+}
+
+/** 构造带斜杠命令资源 port 的服务 */
+function makeSlashService(options: {
+  sessionExists?: (sessionId: string) => boolean;
+  resources?: MockSlashCommandResources;
+}): { service: ConversationService; resources: MockSlashCommandResources } {
+  const resources = options.resources ?? new MockSlashCommandResources();
+  const service = new ConversationService(new MockPiConversationAdapter(), {
+    sessionExists: options.sessionExists,
+    slashCommandResources: resources,
+  });
+  return { service, resources };
+}
+
+/** 命令上报 fixture：三类全量（含 description 缺失归一项） */
+const reportedThreeKinds: SlashCommand[] = [
+  { name: 'skill:git-push', description: '推送当前分支', source: 'skill' },
+  { name: 'review-pr', description: '审查拉取请求', source: 'extension' },
+  { name: 'no-desc', description: null, source: 'prompt' },
+];
+
+test('getSlashCommands：会话模式缓存命中返回三类全量清单，不触发 port（A-CV-011）', async () => {
+  const { service, resources } = makeSlashService({ sessionExists: () => true });
+  service.ingestReportedCommands('sess-1', reportedThreeKinds);
+  const result = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data.commands, reportedThreeKinds);
+  }
+  assert.equal(resources.calls.length, 0, '缓存命中不走降级查询');
+});
+
+test('getSlashCommands：上报未到降级轻量查询（skills+模板），不报错（A-CV-011）', async () => {
+  const { service, resources } = makeSlashService({ sessionExists: () => true });
+  const result = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data.commands, resources.commands);
+  }
+  assert.deepEqual(resources.calls, [undefined]);
+});
+
+test('getSlashCommands：未知会话返回 1002，不触发 port（A-CV-011）', async () => {
+  const { service, resources } = makeSlashService({ sessionExists: (id) => id === 'sess-known' });
+  const result = await service.getSlashCommands({ sessionId: 'sess-ghost' });
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1002);
+  }
+  assert.equal(resources.calls.length, 0);
+});
+
+test('getSlashCommands：sessionId/projectPath 非法类型返回 1001（A-CV-011）', async () => {
+  const { service } = makeSlashService({ sessionExists: () => true });
+  const badSession = await service.getSlashCommands({ sessionId: 123 as unknown as string });
+  assert.ok(!badSession.ok);
+  if (!badSession.ok) assert.equal(badSession.code, 1001);
+  const badProject = await service.getSlashCommands({ projectPath: 42 as unknown as string });
+  assert.ok(!badProject.ok);
+  if (!badProject.ok) assert.equal(badProject.code, 1001);
+});
+
+test('getSlashCommands：草稿态（省略 sessionId）port 直查，projectPath 透传（A-CV-012）', async () => {
+  const { service, resources } = makeSlashService({});
+  const noPath = await service.getSlashCommands({});
+  assert.ok(noPath.ok);
+  if (noPath.ok) {
+    assert.deepEqual(noPath.data.commands, resources.commands);
+  }
+  assert.deepEqual(resources.calls, [undefined]);
+  const withPath = await service.getSlashCommands({ projectPath: 'C:\\repo\\demo' });
+  assert.ok(withPath.ok);
+  assert.deepEqual(resources.calls, [undefined, 'C:\\repo\\demo'], 'projectPath 原样透传给 port');
+});
+
+test('getSlashCommands：port 未注入返回空清单不报错（A-CV-033）', async () => {
+  const service = new ConversationService(new MockPiConversationAdapter(), { sessionExists: () => true });
+  const sessionMode = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(sessionMode.ok);
+  if (sessionMode.ok) assert.deepEqual(sessionMode.data.commands, []);
+  const draftMode = await service.getSlashCommands({});
+  assert.ok(draftMode.ok);
+  if (draftMode.ok) assert.deepEqual(draftMode.data.commands, []);
+});
+
+test('getSlashCommands：port 抛错返回空清单不报错（A-CV-033 枚举失败降级）', async () => {
+  const resources = new MockSlashCommandResources();
+  resources.error = new Error('resource scan failed');
+  const { service } = makeSlashService({ sessionExists: () => true, resources });
+  const sessionMode = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(sessionMode.ok);
+  if (sessionMode.ok) assert.deepEqual(sessionMode.data.commands, []);
+  const draftMode = await service.getSlashCommands({});
+  assert.ok(draftMode.ok);
+  if (draftMode.ok) assert.deepEqual(draftMode.data.commands, []);
+});
+
+test('ingestReportedCommands：幂等覆盖，重复上报后缓存为最新清单（A-CV-013）', async () => {
+  const { service } = makeSlashService({ sessionExists: () => true });
+  service.ingestReportedCommands('sess-1', reportedThreeKinds);
+  const second: SlashCommand[] = [{ name: 'skill:new-cmd', description: '第二次上报', source: 'skill' }];
+  service.ingestReportedCommands('sess-1', second);
+  const result = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data.commands, second, '后一次上报覆盖前一次');
+  }
+});
+
+test('ingestReportedCommands：未注册会话静默忽略不抛错（A-CV-013）', async () => {
+  const { service } = makeSlashService({ sessionExists: (id) => id === 'sess-1' });
+  assert.doesNotThrow(() => service.ingestReportedCommands('sess-ghost', reportedThreeKinds));
+  // 被忽略的上报不产生缓存：ghost 会话查询仍走 1002 未知会话路径
+  const result = await service.getSlashCommands({ sessionId: 'sess-ghost' });
+  assert.ok(!result.ok);
+  if (!result.ok) assert.equal(result.code, 1002);
+});
+
+test('ingestReportedCommands：description 缺失归一为 null 非 undefined（A-CV-011）', async () => {
+  const { service } = makeSlashService({ sessionExists: () => true });
+  service.ingestReportedCommands('sess-1', [
+    { name: 'no-desc', description: undefined as unknown as null, source: 'prompt' },
+  ]);
+  const result = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data.commands, [{ name: 'no-desc', description: null, source: 'prompt' }]);
+  }
+});
+
+test('clearSessionCommands：会话删除清理缓存，之后降级回 port 查询（desktop 层接线）', async () => {
+  const { service, resources } = makeSlashService({ sessionExists: () => true });
+  service.ingestReportedCommands('sess-1', reportedThreeKinds);
+  service.clearSessionCommands('sess-1');
+  const result = await service.getSlashCommands({ sessionId: 'sess-1' });
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.deepEqual(result.data.commands, resources.commands, '清理后降级轻量查询');
+  }
+  assert.deepEqual(resources.calls, [undefined]);
 });

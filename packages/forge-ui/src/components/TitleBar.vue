@@ -46,20 +46,24 @@ onUnmounted(() => {
       :data-tooltip="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
       @click="emit('toggle-sidebar')"
     >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <template v-if="sidebarCollapsed">
-          <!-- 已折叠：面板描边+分隔线在右，箭头朝右=点击展开 -->
-          <rect x="3" y="4" width="18" height="16" rx="2.5" />
-          <path d="M15 4v16" />
-          <path d="m8 15 3-3-3-3" />
-        </template>
-        <template v-else>
-          <!-- 展开中：面板描边+分隔线在左，箭头朝左=点击折叠 -->
-          <rect x="3" y="4" width="18" height="16" rx="2.5" />
-          <path d="M9 4v16" />
-          <path d="m16 15-3-3 3-3" />
-        </template>
-      </svg>
+      <!-- SM-S07：默认显方形 LOGO 瓷片，hover 交叉淡入为缩放图标，点击行为不变 -->
+      <span class="tb-logo" aria-hidden="true">F</span>
+      <span class="tb-panel" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <template v-if="sidebarCollapsed">
+            <!-- 已折叠：面板描边+分隔线在右，箭头朝右=点击展开 -->
+            <rect x="3" y="4" width="18" height="16" rx="2.5" />
+            <path d="M15 4v16" />
+            <path d="m8 15 3-3-3-3" />
+          </template>
+          <template v-else>
+            <!-- 展开中：面板描边+分隔线在左，箭头朝左=点击折叠 -->
+            <rect x="3" y="4" width="18" height="16" rx="2.5" />
+            <path d="M9 4v16" />
+            <path d="m16 15-3-3 3-3" />
+          </template>
+        </svg>
+      </span>
     </button>
 
     <div class="titlebar-spacer"></div>
@@ -115,6 +119,53 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   color: var(--muted-foreground);
   margin-right: 4px;
+}
+
+/* LOGO 瓷片（SM-S07）：默认态；hover 让位于缩放图标 */
+.titlebar-toggle {
+  position: relative;
+}
+
+.tb-logo {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: linear-gradient(135deg, var(--logo-gradient-accent) 0%, color-mix(in oklab, var(--logo-gradient-accent) 55%, oklch(0.6 0.12 60)) 100%);
+  color: oklch(0.22 0.01 286.3);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 14%);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.tb-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.titlebar-toggle:hover .tb-logo {
+  opacity: 0;
+  transform: scale(0.85);
+}
+
+.titlebar-toggle:hover .tb-panel {
+  opacity: 1;
+  transform: scale(1);
+  color: var(--foreground);
 }
 
 .titlebar-toggle svg,

@@ -1,8 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel } from '../types';
-import { call, subscribe, type PendingAttachment, type ConversationCompactResult } from '../bridge';
-import { isImagePath } from '../attachmentText';
+import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel, ProjectPickerDescriptor } from '../types';
+import { call, subscribe, type PendingAttachment, type ConversationCompactResult, type SlashCommand, type GetSlashCommandsResult } from '../bridge';
+import {
+  detectSlashContext,
+  filterCommands,
+  buildInsertion,
+  formatCommandLabel,
+  SOURCE_LABELS,
+} from '../utils/slashCommand';
+import { baseName, isImagePath } from '../attachmentText';
+import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
+// 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
+import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
 import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
 import ImageLightbox from './ImageLightbox.vue';
@@ -26,12 +36,22 @@ const props = defineProps<{
   sessionId?: string;
   /** 紧凑模式（多窗口用）：更小的默认高度，可用鼠标拖拽调整 */
   compact?: boolean;
+  /** 项目选择器（SM-S01 v3.21）：单视图传入；不传则不渲染（多窗口窗口标题行已有项目 pill） */
+  projectPicker?: ProjectPickerDescriptor;
+  /** 项目根路径（@ 文件补全候选范围）；未传则 @ 补全不触发 */
+  projectPath?: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'send', text: string): void;
   (e: 'cancel'): void;
   (e: 'model-change', model: string): void;
+  /** 草稿态选中归属项目（上层切当前项目，草稿保留） */
+  (e: 'pick-project', path: string): void;
+  /** 打开项目选择弹窗 */
+  (e: 'open-project-picker'): void;
+  /** 移除项目（仅删 forge 元数据，不删源文件/会话） */
+  (e: 'remove-project', path: string): void;
 }>();
 
 const text = ref('');
@@ -44,6 +64,57 @@ const inputBoxRef = ref<HTMLElement | null>(null);
 const attachRowRef = ref<HTMLElement | null>(null);
 const focused = ref(false);
 const modelMenuOpen = ref(false);
+/** 项目选择器下拉开关（SM-S01 v3.21） */
+const projMenuOpen = ref(false);
+
+function toggleProjMenu(): void {
+  // 仅草稿态（新会话）可弹：已创建会话归属不可换，浮窗不弹
+  if (props.projectPicker?.mode !== 'draft') return;
+  projMenuOpen.value = !projMenuOpen.value;
+}
+
+function onPickProject(path: string): void {
+  projMenuOpen.value = false;
+  if (path !== props.projectPicker?.currentPath) emit('pick-project', path);
+}
+
+function onOpenProjectPicker(): void {
+  projMenuOpen.value = false;
+  emit('open-project-picker');
+}
+
+/** 项目删除两阶段确认（与 ProjectTree 同模式）：首点变红「确认删除」，3s 内再点才 emit */
+const projDeleteConfirmPath = ref<string | null>(null);
+let projDeleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onProjDelete(path: string): void {
+  if (projDeleteConfirmPath.value === path) {
+    if (projDeleteConfirmTimer) clearTimeout(projDeleteConfirmTimer);
+    projDeleteConfirmPath.value = null;
+    projMenuOpen.value = false;
+    emit('remove-project', path);
+    return;
+  }
+  projDeleteConfirmPath.value = path;
+  if (projDeleteConfirmTimer) clearTimeout(projDeleteConfirmTimer);
+  projDeleteConfirmTimer = setTimeout(() => {
+    projDeleteConfirmPath.value = null;
+  }, 3000);
+}
+
+// ===== CV-S08：斜杠命令浮窗（AC-CV-026~030/032/033） =====
+/** 会话级命令清单缓存（初值 []；会话切换 / slashCommandsUpdated 事件时清空重拉） */
+const commands = ref<SlashCommand[]>([]);
+/** 浮窗开关 */
+const commandPanelOpen = ref(false);
+/** 当前高亮索引（默认 0） */
+const highlightIndex = ref(0);
+/** 按过滤串过滤后的可见命令 */
+const filteredCommands = ref<SlashCommand[]>([]);
+/** 拉取在途守卫：避免多个 / 输入竞态重复请求 */
+let slashFetching = false;
+/** 拉取代际编号：只应用最新一次响应，避免交错覆盖 */
+let slashLoadGen = 0;
 
 const { success: toastSuccess, error: toastError } = useToast();
 const { markCompacting, markDone, clear: clearCompactBanner } = useCompactBanner();
@@ -201,6 +272,198 @@ function onInput(): void {
   if (text.value.length > MAX_CHARS) {
     text.value = text.value.slice(0, MAX_CHARS);
   }
+  void refreshSlashPanel(true);
+  void refreshAtPanel(true);
+}
+
+// ===== CV-S08：斜杠命令浮窗逻辑 =====
+/** 拉取命令清单（会话级缓存；失败/空清单 → 浮窗显示「无可用命令」，不阻塞输入） */
+async function fetchCommands(): Promise<void> {
+  if (commands.value.length > 0 || slashFetching) return;
+  slashFetching = true;
+  const gen = ++slashLoadGen;
+  try {
+    const res = await call<GetSlashCommandsResult>('conversation/getSlashCommands', {
+      sessionId: props.sessionId,
+    });
+    if (gen !== slashLoadGen) return;
+    commands.value = res.commands ?? [];
+  } catch (e) {
+    if (gen !== slashLoadGen) return;
+    console.warn('[slash] 拉取命令清单失败（降级为空清单）', e);
+    commands.value = [];
+  } finally {
+    slashFetching = false;
+  }
+}
+
+/**
+ * 按当前光标处斜杠上下文刷新浮窗。
+ * @param resetIndex 是否把高亮重置到首条（输入变化时）；光标移动（keyup/click）时不重置
+ */
+async function refreshSlashPanel(resetIndex: boolean): Promise<void> {
+  const detect = (): ReturnType<typeof detectSlashContext> => {
+    const el = textareaRef.value;
+    const caret = el ? el.selectionStart : text.value.length;
+    return detectSlashContext(text.value, caret);
+  };
+  let ctx = detect();
+  if (!ctx.active) {
+    commandPanelOpen.value = false;
+    return;
+  }
+  // 清单为空先拉取（异步），拉完用最新光标位再判定一次，避免竞态
+  if (commands.value.length === 0) {
+    await fetchCommands();
+    ctx = detect();
+    if (!ctx.active) {
+      commandPanelOpen.value = false;
+      return;
+    }
+  }
+  commandPanelOpen.value = true;
+  filteredCommands.value = filterCommands(commands.value, ctx.filter);
+  if (resetIndex) {
+    highlightIndex.value = 0;
+  } else if (highlightIndex.value >= filteredCommands.value.length) {
+    highlightIndex.value = Math.max(0, filteredCommands.value.length - 1);
+  }
+}
+
+/** 光标移动（@click / @keyup）：浮窗打开时用最新光标位刷新过滤串 */
+function onCursorMove(): void {
+  if (commandPanelOpen.value) void refreshSlashPanel(false);
+  if (atPanelOpen.value) void refreshAtPanel(false);
+}
+
+/** ↑↓ 高亮循环导航（首↔末） */
+function moveHighlight(dir: number): void {
+  const n = filteredCommands.value.length;
+  if (n === 0) return;
+  highlightIndex.value = (highlightIndex.value + dir + n) % n;
+}
+
+/** 选中命令：用原始命令串（/name + 空格）替换 [lineStart, caret) 区间，美化名不入输入框 */
+function applyCommand(cmd: SlashCommand): void {
+  const el = textareaRef.value;
+  const caret = el ? el.selectionStart : text.value.length;
+  const ctx = detectSlashContext(text.value, caret);
+  const lineStart = ctx.active ? ctx.lineStart : 0;
+  const insertion = buildInsertion(cmd.name);
+  text.value = text.value.slice(0, lineStart) + insertion + text.value.slice(caret);
+  commandPanelOpen.value = false;
+  autoGrow();
+  nextTick(() => {
+    const pos = lineStart + insertion.length;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    }
+  });
+}
+
+function onBlur(): void {
+  focused.value = false;
+  commandPanelOpen.value = false;
+  atPanelOpen.value = false;
+}
+
+// ===== @ 弹文件补全（CV-S01 扩展 v3.30：与附件 @路径行协议闭环） =====
+/** @ 浮窗开关 */
+const atPanelOpen = ref(false);
+/** 候选文件清单（按 projectPath 缓存一次拉取，逐键本地过滤） */
+const atCandidates = ref<string[]>([]);
+/** 缓存归属项目路径（null = 未拉取） */
+const atLoadedFor = ref<string | null>(null);
+const atFetching = ref(false);
+/** 过滤后可见候选 */
+const atFiltered = ref<string[]>([]);
+/** 当前高亮索引 */
+const atHighlight = ref(0);
+
+/** 拉取候选文件（每项目一次；失败降级空清单不阻塞输入） */
+async function fetchAtCandidates(): Promise<void> {
+  const root = props.projectPath;
+  if (!root || atLoadedFor.value === root || atFetching.value) return;
+  atFetching.value = true;
+  try {
+    const files = await window.forge.file.listProjectFiles(root);
+    if (props.projectPath !== root) return; // 拉取期间已切项目，丢弃
+    atCandidates.value = files;
+    atLoadedFor.value = root;
+  } catch (e) {
+    console.warn('[at] 拉取文件候选失败（降级为空清单）', e);
+    atCandidates.value = [];
+    atLoadedFor.value = root;
+  } finally {
+    atFetching.value = false;
+  }
+}
+
+/** 按当前光标处 @ 上下文刷新浮窗（与斜杠浮窗互斥；无项目路径不触发） */
+async function refreshAtPanel(resetIndex: boolean): Promise<void> {
+  const el = textareaRef.value;
+  const caret = el ? el.selectionStart : text.value.length;
+  const ctx = detectAtContext(text.value, caret);
+  if (!ctx.active || !props.projectPath) {
+    atPanelOpen.value = false;
+    return;
+  }
+  commandPanelOpen.value = false;
+  if (atLoadedFor.value !== props.projectPath) {
+    await fetchAtCandidates();
+    const recheck = detectAtContext(text.value, el ? el.selectionStart : text.value.length);
+    if (!recheck.active) {
+      atPanelOpen.value = false;
+      return;
+    }
+  }
+  atPanelOpen.value = true;
+  atFiltered.value = filterAtFiles(atCandidates.value, ctx.filter);
+  if (resetIndex) {
+    atHighlight.value = 0;
+  } else if (atHighlight.value >= atFiltered.value.length) {
+    atHighlight.value = Math.max(0, atFiltered.value.length - 1);
+  }
+}
+
+function moveAtHighlight(dir: number): void {
+  const n = atFiltered.value.length;
+  if (n === 0) return;
+  atHighlight.value = (atHighlight.value + dir + n) % n;
+}
+
+/** 选中文件：移除 [atStart, caret) 的 @token，文件进待发区（与选择/粘贴/拖拽同链路） */
+function applyAtFile(file: string): void {
+  const el = textareaRef.value;
+  const caret = el ? el.selectionStart : text.value.length;
+  const ctx = detectAtContext(text.value, caret);
+  const atStart = ctx.active ? ctx.atStart : caret;
+  text.value = text.value.slice(0, atStart) + text.value.slice(caret);
+  atPanelOpen.value = false;
+  autoGrow();
+  void addPaths([file]);
+  nextTick(() => {
+    if (el) {
+      el.focus();
+      el.setSelectionRange(atStart, atStart);
+    }
+  });
+}
+
+/** @ 候选项展示：文件名 + 去项目前缀的目录提示 */
+function atItemParts(p: string): { name: string; dir: string } {
+  const name = baseName(p);
+  let dir = p.slice(0, p.length - name.length);
+  if (props.projectPath) {
+    const normRoot = props.projectPath.replace(/[\\/]+$/, '');
+    const normDir = dir.replace(/\\/g, '/');
+    const normRootSlash = normRoot.replace(/\\/g, '/') + '/';
+    if (normDir.toLowerCase().startsWith(normRootSlash.toLowerCase())) {
+      dir = normDir.slice(normRootSlash.length);
+    }
+  }
+  return { name, dir };
 }
 
 // ===== 上边沿拖拽调整输入框高度（单窗口 / 多窗口通用） =====
@@ -243,6 +506,54 @@ function onResizeUp(e: PointerEvent): void {
 }
 
 function onKeydown(ev: KeyboardEvent): void {
+  if (!ev.isComposing && atPanelOpen.value) {
+    // @ 浮窗打开期间消费导航/选择/关闭键，避免误触发消息发送
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      moveAtHighlight(1);
+      return;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      moveAtHighlight(-1);
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === 'Tab') {
+      ev.preventDefault();
+      const file = atFiltered.value[atHighlight.value];
+      if (file) applyAtFile(file);
+      return;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      atPanelOpen.value = false;
+      return;
+    }
+  }
+  if (!ev.isComposing && commandPanelOpen.value) {
+    // 浮窗打开期间消费导航/选择/关闭键，避免误触发消息发送
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      moveHighlight(1);
+      return;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      moveHighlight(-1);
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === 'Tab') {
+      ev.preventDefault();
+      const item = filteredCommands.value[highlightIndex.value];
+      if (item) applyCommand(item);
+      return;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      commandPanelOpen.value = false;
+      return;
+    }
+  }
   if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
     onSend();
@@ -265,20 +576,30 @@ function onSend(): void {
   attachments.value = [];
   attachError.value = null;
   nextTick(autoGrow);
-  // 路径行追加在正文后（换行分隔），模型据此自行 read；纯附件消息就是纯路径行
-  emit('send', paths.length > 0 ? `${t}\n${paths.join('\n')}` : t);
+  // 附件行追加在正文后（换行分隔），@ 前缀是附件协议标记：@开头=附件，
+  // 手敲裸路径=正文，展示层零歧义；模型据此自行 read，纯附件消息就是纯附件行
+  emit('send', paths.length > 0 ? `${t}\n${paths.map((p) => `@${p}`).join('\n')}` : t);
 }
 
-/** 把一批路径加入待发区（主进程密钥嗅探后返回标记）；返回是否全部成功 */
+/** 把一批路径加入待发区（格式白名单 + 主进程密钥嗅探后返回标记）；返回是否全部成功 */
 async function addPaths(paths: string[]): Promise<boolean> {
   if (paths.length === 0) return true;
-  const all = [...attachments.value, ...paths];
+  // 格式白名单（v3.19 用户需求）：选择/粘贴/拖拽三入口统一在此把关（选择器的 dialog filter 仅是软过滤）
+  const accepted = paths.filter((p) => isAllowedAttachmentPath(p));
+  const rejected = paths.filter((p) => !isAllowedAttachmentPath(p));
+  if (rejected.length > 0) {
+    showAttachError(
+      `不支持的文件格式：${rejected.slice(0, 3).map(baseName).join('、')}${rejected.length > 3 ? ` 等 ${rejected.length} 个` : ''}`,
+    );
+  }
+  if (accepted.length === 0) return false;
+  const all = [...attachments.value, ...accepted];
   if (all.length > MAX_ATTACHMENTS) {
     showAttachError(`附件最多 ${MAX_ATTACHMENTS} 个，已跳过`);
     return false;
   }
   try {
-    const scanned = await window.forge.file.scanAttachments(paths);
+    const scanned = await window.forge.file.scanAttachments(accepted);
     // 图片附加载缩略图（点击放大用）；非图片/读取失败保持 icon chip
     const entries: PendingAttachment[] = [];
     for (const s of scanned) {
@@ -341,8 +662,11 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
     paths.push(diskPath);
     return;
   }
-  // 无盘文件：仅支持图片（剪贴板截图），先落盘临时文件
-  if (!f.type.startsWith('image/')) return;
+  // 无盘文件：仅支持图片（剪贴板截图），先落盘临时文件；其余格式拒绝并提示
+  if (!f.type.startsWith('image/')) {
+    showAttachError(`不支持的文件格式：${f.name || '未知文件'}`);
+    return;
+  }
   const mimeType = f.type || 'image/png';
   const ext = (mimeType.split('/')[1] ?? 'png').split('+')[0] ?? 'png';
   const data = await blobToBase64(f);
@@ -547,9 +871,11 @@ function onDocClick(e: MouseEvent): void {
   const el = e.target as HTMLElement | null;
   const inModel = el && typeof el.closest === 'function' && el.closest('.model-wrap');
   const inLevel = el && typeof el.closest === 'function' && el.closest('.level-wrap');
-  if (inModel || inLevel) return;
+  const inProj = el && typeof el.closest === 'function' && el.closest('.proj-wrap');
+  if (inModel || inLevel || inProj) return;
   modelMenuOpen.value = false;
   levelMenuOpen.value = false;
+  projMenuOpen.value = false;
 }
 
 function focus(): void {
@@ -562,12 +888,20 @@ defineExpose({ focus, currentLevel });
 /** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;
 let unsubCompacting: (() => void) | null = null;
+/** 命令上报扩展（slashCommandsUpdated）订阅：收到后清空命令缓存，下次触发重拉（AC-CV-032） */
+let unsubSlash: (() => void) | null = null;
 
 onMounted(() => {
   nextTick(autoGrow);
   document.addEventListener('click', onDocClick);
   if (props.sessionId) void refreshUsage();
   void loadThinkingState();
+  // 命令上报扩展到达：失效该会话命令清单缓存（草稿态无 sessionId 时全局接受）
+  unsubSlash = subscribe('conversation.slashCommandsUpdated', (payload) => {
+    const p = payload as { sessionId?: string };
+    if (props.sessionId && p.sessionId && p.sessionId !== props.sessionId) return;
+    commands.value = [];
+  });
   // 自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，只能靠事件感知：
   // compacting → 锁定输入 + 持久横幅；compacted → 解锁 + 刷新用量 + 横幅收尾
   unsubCompacting = subscribe('conversation.compacting', (payload) => {
@@ -594,6 +928,7 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   unsubCompacted?.();
   unsubCompacting?.();
+  unsubSlash?.();
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
   if (shimmerTimer) clearTimeout(shimmerTimer);
 });
@@ -618,7 +953,19 @@ watch(
   () => {
     usage.value = null;
     autoCompacting.value = false;
+    commandPanelOpen.value = false;
+    commands.value = []; // 切换会话 → 命令清单缓存失效，下次触发重拉
     if (props.sessionId) void refreshUsage();
+  },
+);
+
+// 切换项目 → @ 候选缓存失效 + 浮窗关闭
+watch(
+  () => props.projectPath,
+  () => {
+    atPanelOpen.value = false;
+    atCandidates.value = [];
+    atLoadedFor.value = null;
   },
 );
 
@@ -704,18 +1051,137 @@ watch(
       :rows="3"
       @input="onInput"
       @keydown="onKeydown"
+      @keyup="onCursorMove"
+      @click="onCursorMove"
       @paste="onPaste"
       @focus="focused = true"
-      @blur="focused = false"
+      @blur="onBlur"
     ></textarea>
+
+    <!-- 斜杠命令浮窗（CV-S08，AC-CV-026~030/032/033）：向上弹出、行首 / 触发，命令=原始串替换 -->
+    <div
+      v-if="commandPanelOpen"
+      class="slash-menu"
+      @mousedown.prevent
+    >
+      <div v-if="commands.length === 0" class="slash-empty">无可用命令</div>
+      <template v-else>
+        <button
+          v-for="(item, i) in filteredCommands"
+          :key="item.name"
+          class="slash-item"
+          :class="{ highlighted: i === highlightIndex }"
+          type="button"
+          @click="applyCommand(item)"
+        >
+          <span class="slash-main">
+            <span class="slash-name" :class="'is-' + item.source">{{ formatCommandLabel(item.name) }}</span>
+            <span class="slash-tag" :class="'tag-' + item.source">{{ SOURCE_LABELS[item.source] }}</span>
+          </span>
+          <span v-if="item.description" class="slash-desc">{{ item.description }}</span>
+        </button>
+        <div v-if="filteredCommands.length === 0" class="slash-empty">无匹配命令</div>
+      </template>
+    </div>
+
+    <!-- @ 文件补全浮窗（CV-S01 扩展 v3.30）：行内 @ 触发，选中进待发区（发送时拼 @ 路径行） -->
+    <div
+      v-if="atPanelOpen"
+      class="slash-menu at-menu"
+      @mousedown.prevent
+    >
+      <div v-if="atFiltered.length === 0" class="slash-empty">无匹配文件</div>
+      <button
+        v-for="(p, i) in atFiltered"
+        :key="p"
+        class="slash-item at-item"
+        :class="{ highlighted: i === atHighlight }"
+        type="button"
+        :title="p"
+        @click="applyAtFile(p)"
+      >
+        <span class="slash-main">
+          <span class="at-icon" aria-hidden="true">
+            <svg v-if="isImagePath(p)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+          </span>
+          <span class="at-name">{{ atItemParts(p).name }}</span>
+          <span v-if="atItemParts(p).dir" class="at-dir">{{ atItemParts(p).dir }}</span>
+        </span>
+      </button>
+    </div>
 
     <div class="compose-bar">
       <div class="compose-links">
+        <!-- 项目选择器（SM-S01 v3.21）：草稿=选归属；会话中=同式样可点，信息态+定位 -->
+        <div v-if="projectPicker" class="proj-wrap">
+          <button
+            type="button"
+            class="meta-link proj-pill"
+            :class="{ 'proj-pill-static': projectPicker.mode === 'session' }"
+            :data-tooltip="projectPicker.mode === 'draft' ? '选择新会话归属项目' : '会话归属项目'"
+            @click="toggleProjMenu"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            <span>{{ projectPicker.currentName }}</span>
+            <span v-if="projectPicker.mode === 'draft'" class="proj-caret" aria-hidden="true">▾</span>
+          </button>
+          <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
+            <template v-if="projectPicker.mode === 'draft'">
+              <div class="menu-hint">新会话归属项目</div>
+              <button
+                v-for="it in projectPicker.items"
+                :key="it.path"
+                type="button"
+                class="proj-item"
+                :class="{ active: it.path === projectPicker.currentPath }"
+                @click="onPickProject(it.path)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+                <span class="proj-item-main">
+                  <span class="proj-item-name">{{ it.name }}</span>
+                  <span class="proj-item-path" :title="it.path">{{ it.path }}</span>
+                </span>
+                <span
+                  class="proj-item-del"
+                  :class="{ confirming: projDeleteConfirmPath === it.path }"
+                  :title="projDeleteConfirmPath === it.path ? '再次点击确认移除' : '移除项目（连同其下会话一并删除，源文件保留）'"
+                  role="button"
+                  @click.stop.prevent="onProjDelete(it.path)"
+                >
+                  <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">确认</span>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </span>
+              </button>
+              <div class="proj-menu-sep"></div>
+              <button type="button" class="proj-item" @click="onOpenProjectPicker">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                <span class="proj-item-main"><span class="proj-item-name">打开项目…</span></span>
+              </button>
+            </template>
+          </div>
+        </div>
+
         <!-- 附件 -->
         <button
           class="meta-link"
           :disabled="inputLocked"
-          data-tooltip="添加附件（图片 / 文本）"
+          data-tooltip="添加附件（图片 / 文本 / Office 文档）"
           aria-label="附件"
           @click="pickAttachments"
         >
@@ -1091,6 +1557,138 @@ watch(
   animation: menu-rise 0.15s ease both;
 }
 
+/* 项目选择器（SM-S01 v3.21）：pill + 下拉 */
+.proj-wrap {
+  position: relative;
+}
+
+.proj-pill {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* 会话中归属只读：不弹浮窗、去除可点反馈 */
+.proj-pill-static {
+  cursor: default;
+}
+
+.proj-pill-static:hover {
+  background: transparent;
+}
+
+.proj-menu {
+  min-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.proj-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.proj-item:hover {
+  background: var(--surface-hover);
+}
+
+.proj-item.active {
+  background: var(--surface-active);
+}
+
+.proj-item svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.proj-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.proj-item-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.proj-item-path {
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 超长路径保尾段（目录名）可见 */
+  text-align: left;
+}
+
+/* 移除按钮：悬停=裸 × 无底色；确认态=红色「确认」胶囊（同删除会话款） */
+.proj-item-del {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--destructive);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.proj-item:hover .proj-item-del {
+  display: inline-flex;
+}
+
+.proj-item-del svg {
+  width: 12px;
+  height: 12px;
+}
+
+.proj-item-del.confirming {
+  display: inline-flex;
+  background: var(--destructive);
+  color: #fff;
+  border-color: var(--destructive);
+  font-weight: 500;
+  padding: 0 8px;
+  min-width: 44px;
+}
+
+.proj-item-del.confirming:hover {
+  background: color-mix(in oklab, var(--destructive) 85%, black);
+}
+
+.confirm-text {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.proj-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 3px 6px;
+}
+
 .menu-hint {
   padding: 8px 12px 2px;
   font-size: 11px;
@@ -1121,6 +1719,140 @@ watch(
 @keyframes menu-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 斜杠命令浮窗（CV-S08）：向上弹出、对齐 .model-menu 视觉，位置由外层 .compose-box 绝对定位 */
+.slash-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  min-width: 220px;
+  max-width: 100%; /* 封顶=输入框宽度：长描述不再把浮窗撑得比输入框宽，超出由条目 ellipsis 截断 */
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  z-index: 700;
+  animation: menu-rise 0.15s ease both;
+}
+
+.slash-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.slash-item.highlighted,
+.slash-item:hover {
+  background: var(--muted);
+}
+
+.slash-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slash-name {
+  font-size: 13px;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 来源样式：技能=加粗+品牌色；扩展=普通前景；模板=弱化前景 */
+.slash-name.is-skill {
+  font-weight: 700;
+  color: var(--brand);
+}
+.slash-name.is-extension {
+  color: var(--foreground);
+}
+.slash-name.is-prompt {
+  color: var(--muted-foreground);
+}
+
+.slash-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+.slash-tag.tag-skill {
+  color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 14%, transparent);
+}
+.slash-tag.tag-extension {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.slash-tag.tag-prompt {
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+
+.slash-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* @ 文件补全条目：图标 + 文件名 + 去项目前缀的目录提示（复用 slash-menu 容器样式） */
+.at-item .slash-main {
+  align-items: baseline;
+}
+.at-icon {
+  display: inline-flex;
+  align-self: center;
+  flex: none;
+}
+.at-icon svg {
+  width: 13px;
+  height: 13px;
+  color: var(--muted-foreground);
+}
+.at-name {
+  font-size: 13px;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.at-dir {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 
 /* 思考级别切换器（MP-S05）：紧凑胶囊，紧邻模型选择，弹层样式对齐 .model-menu */

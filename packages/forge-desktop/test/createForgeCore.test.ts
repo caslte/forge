@@ -1274,3 +1274,169 @@ test('generateSessionTitle：附件路径行的消息取首行生成标题', () 
   // 无附件消息行为不变
   assert.equal(generateSessionTitle('第一句。第二句'), '第一句');
 });
+
+// ===== WU-CV08-05：斜杠命令上报桥接（AC-CV-032 / AC-CV-033）=====
+
+/** 命令上报扩展的三类上报载荷（extension / skill / prompt） */
+const CV08_REPORT = {
+  commands: [
+    { name: 'skill:git-push', description: '推送当前分支', source: 'skill' },
+    { name: 'review-pr', description: null, source: 'extension' },
+    { name: 'write-tests', description: '生成测试用例', source: 'prompt' },
+  ],
+};
+
+interface Cv08Fixture {
+  root: string;
+  sessionId: string;
+  methodTable: ReturnType<typeof createForgeCore>['methodTable'];
+  eventBus: import('node:events').EventEmitter;
+  sessions: Map<string, DeferredPiSession>;
+  buses: Map<string, GateTestBus>;
+}
+
+/** 命令上报测试装配：建项目+会话并发送首条消息，返回可向总线 emit 上报的 fixture */
+async function makeCv08Fixture(
+  deps: Partial<Parameters<typeof createForgeCore>[1]> = {},
+): Promise<Cv08Fixture> {
+  const fx = await makeGateFixture({ ...deps });
+  // 首条消息触发 lease 创建 + 命令上报 channel 订阅（需在 emit 前完成）
+  const sending = invoke(fx.methodTable, 'conversation/sendMessage', {
+    sessionId: fx.sessionId,
+    content: '你好',
+  });
+  for (let i = 0; i < 100 && !fx.sessions.has(fx.sessionId); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(fx.sessions.has(fx.sessionId), 'pi 会话应已创建（消息已进入流式）');
+  // 完成本轮以免泄漏 pending（发出首条 assistant 消息并 resolve prompt）
+  fx.sessions.get(fx.sessionId)!.finish('已就绪');
+  await sending;
+  return fx;
+}
+
+/** 等待事件（静默转储 pending 上报链路，避免时序竞态） */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test('CV08：命令上报经桥接写入会话缓存，返回三类全量且 slashCommandsUpdated 恰好发射一次', async () => {
+  const fx = await makeCv08Fixture();
+  try {
+    const updated: string[] = [];
+    fx.eventBus.on('conversation.slashCommandsUpdated', (p: unknown) => {
+      updated.push((p as { sessionId: string }).sessionId);
+    });
+
+    fx.buses.get(fx.sessionId)!.emit('slash-commands:reported', CV08_REPORT);
+    await settle();
+
+    assert.deepEqual(updated, [fx.sessionId], '上报应恰好发射一次 slashCommandsUpdated');
+
+    const res = await invoke(fx.methodTable, 'conversation/getSlashCommands', {
+      sessionId: fx.sessionId,
+    });
+    assert.equal(res.code, 0, `getSlashCommands 应成功，message: ${res.message}`);
+    const commands = (res.data as { commands: Array<{ name: string; source: string }> }).commands;
+    assert.equal(commands.length, 3, `三类全量应命中缓存，实际: ${JSON.stringify(commands)}`);
+    const sources = commands.map((c) => c.source).sort();
+    assert.deepEqual(sources, ['extension', 'prompt', 'skill']);
+    assert.ok(commands.some((c) => c.name === 'review-pr' && c.source === 'extension'), '扩展命令应可见');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('CV08：重复上报幂等覆盖缓存（返回最新），每次上报各发射一次事件', async () => {
+  const fx = await makeCv08Fixture();
+  try {
+    const updated: string[] = [];
+    fx.eventBus.on('conversation.slashCommandsUpdated', (p: unknown) => {
+      updated.push((p as { sessionId: string }).sessionId);
+    });
+
+    fx.buses.get(fx.sessionId)!.emit('slash-commands:reported', CV08_REPORT);
+    // 第二次上报整体覆盖（幂等）：仅剩一个 skill 命令
+    fx.buses.get(fx.sessionId)!.emit('slash-commands:reported', {
+      commands: [{ name: 'skill:new-only', description: null, source: 'skill' }],
+    });
+    await settle();
+
+    assert.equal(updated.length, 2, '每次上报各发射一次 slashCommandsUpdated');
+    const res = await invoke(fx.methodTable, 'conversation/getSlashCommands', {
+      sessionId: fx.sessionId,
+    });
+    assert.equal(res.code, 0);
+    const commands = (res.data as { commands: Array<{ name: string }> }).commands;
+    assert.deepEqual(commands.map((c) => c.name), ['skill:new-only'], '后一次上报应整体覆盖缓存');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('CV08：会话删除后迟到上报不再上抛，未知会话查询返回 1002（不崩）', async () => {
+  const fx = await makeCv08Fixture();
+  try {
+    const updated: string[] = [];
+    fx.eventBus.on('conversation.slashCommandsUpdated', (p: unknown) => {
+      updated.push((p as { sessionId: string }).sessionId);
+    });
+
+    fx.buses.get(fx.sessionId)!.emit('slash-commands:reported', CV08_REPORT);
+    await settle();
+    assert.equal(updated.length, 1);
+
+    // 删除会话（适配器退订命令上报 channel + 清缓存；store 移除会话）
+    const del = await invoke(fx.methodTable, 'session/deleteSession', {
+      sessionId: fx.sessionId,
+    });
+    assert.equal(del.code, 0, `deleteSession 应成功: ${del.message}`);
+
+    // 迟到上报：适配器已退订，不再上抛（不崩、不新增事件）
+    fx.buses.get(fx.sessionId)!.emit('slash-commands:reported', CV08_REPORT);
+    await settle();
+    assert.equal(updated.length, 1, '退订后迟到上报不应再上抛');
+
+    // 未知会话查询：1002（会话模式未知会话报错，不崩）
+    const res = await invoke(fx.methodTable, 'conversation/getSlashCommands', {
+      sessionId: 'sess-not-exist',
+    });
+    assert.equal(res.code, 1002);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test('CV08：slashCommandResources 注入后草稿态查询（无 sessionId）经 port 返回 skill+prompt', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-cv08-draft-'));
+  try {
+    const agentDir = path.join(root, 'agent');
+    const skillsDir = path.join(agentDir, 'skills', 'git-push');
+    const promptsDir = path.join(agentDir, 'prompts');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillsDir, 'SKILL.md'),
+      '---\nname: git-push\ndescription: 推送当前分支\n---\ncontent\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(promptsDir, 'write-tests.md'),
+      '---\ndescription: 生成测试用例\n---\n写测试\n',
+      'utf8',
+    );
+
+    const storeFile = path.join(root, 'forge-store.json');
+    const core = createForgeCore(storeFile, { ...mockDeps(), piAgentDir: agentDir });
+    const res = await invoke(core.methodTable, 'conversation/getSlashCommands', {});
+    assert.equal(res.code, 0, `草稿态查询应成功，message: ${res.message}`);
+    const commands = (res.data as { commands: Array<{ name: string; source: string }> }).commands;
+    const sources = commands.map((c) => c.source);
+    assert.ok(sources.includes('skill'), `草稿态应含 skill 来源: ${JSON.stringify(commands)}`);
+    assert.ok(sources.includes('prompt'), `草稿态应含 prompt 来源: ${JSON.stringify(commands)}`);
+    assert.ok(commands.some((c) => c.source === 'skill' && c.name.startsWith('skill:')), 'skill 命令应带前缀');
+    assert.ok(!sources.includes('extension'), `草稿态不含扩展命令: ${JSON.stringify(commands)}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

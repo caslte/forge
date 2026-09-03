@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isAllowedAttachmentPath } from '@forge/core/attachments';
 
 /** 疑似密钥/凭据特征（高置信度，避免对源码误报）：私钥块 / AWS / GitHub / OpenAI / Slack */
 export const SECRET_PATTERNS: RegExp[] = [
@@ -101,4 +102,54 @@ export function readImageDataUrl(filePath: string): string | null {
   } catch {
     return null;
   }
+}
+
+// ===== @ 补全候选：项目内白名单文件遍历（输入框 @ 弹文件补全用） =====
+
+/** 遍历时忽略的目录名（依赖/产物/隐藏缓存，防遍历爆炸） */
+const AT_WALK_IGNORED_DIRS = new Set([
+  '.git', 'node_modules', 'dist', 'build', 'out', 'release', 'coverage',
+  '__pycache__', '.next', '.venv', 'venv', '.idea', '.cache', 'target',
+]);
+
+/** 候选上限：BFS 浅层优先，超限截断（ponytail：无增量/缓存，万级文件仓库逐键仍走本地过滤） */
+const AT_WALK_MAX_FILES = 2000;
+
+/**
+ * 列出项目内符合附件白名单的文件绝对路径（BFS 浅层优先，忽略依赖/产物目录，
+ * 上限 2000 条）。根目录缺失/不可读返回 []，不抛错。
+ */
+export function listProjectFiles(root: string): string[] {
+  let rootStat: fs.Stats;
+  try {
+    rootStat = fs.statSync(root);
+  } catch {
+    return [];
+  }
+  if (!rootStat.isDirectory()) return [];
+  const out: string[] = [];
+  let queue: string[] = [root];
+  while (queue.length > 0 && out.length < AT_WALK_MAX_FILES) {
+    const next: string[] = [];
+    for (const dir of queue) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue; // 不可读目录跳过
+      }
+      for (const e of entries) {
+        if (out.length >= AT_WALK_MAX_FILES) break;
+        if (e.isDirectory()) {
+          if (!AT_WALK_IGNORED_DIRS.has(e.name)) next.push(path.join(dir, e.name));
+          continue;
+        }
+        if (!e.isFile()) continue; // 符号链接等不入候选，避免环
+        const full = path.join(dir, e.name);
+        if (isAllowedAttachmentPath(full)) out.push(full);
+      }
+    }
+    queue = next;
+  }
+  return out;
 }

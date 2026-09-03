@@ -129,6 +129,23 @@
 - **健康**：无未捕获异常、无吞错返回 success
 - **证据**：事件日志时序 + 注册表快照 + 会话 JSONL（子 agent 会话文件由扩展生成）
 
+### PIC-007 斜杠命令真实链路（命令上报扩展 / 枚举一致性 / pi 原生执行）
+
+- **关联**：模块 03 扩展 CV-S08（AC-CV-026/031/032 的 pi 真实层，不得全 mock）| **优先级**：P0 | **自动化等级**：real-integration
+- **前置**：forge-core + 真实 pi + forge-extensions 命令上报扩展随会话加载；`~/.pi/agent/skills` 已安装至少一个测试 skill（如 `git-push`）；可选装一个带 `pi.registerCommand` 的测试扩展
+- **操作**：
+  1. 经 forge 工厂创建会话（注入事件总线）→ 等命令上报扩展 `session_start` 上报 → 断言 forge 收到 `slash-commands:reported` 且含三类命令（extension/skill/prompt），与 `pi.getCommands()` 语义一致
+  2. `conversation/getSlashCommands`（会话模式）→ 断言返回清单与上报一致、缓存生效（第二次调用不重复上报）
+  3. 以原始命令串 `/skill:<name> ` 经 `conversation/sendMessage` 发送 → 断言 pi 运行时把消息展开为 `<skill name=… location=…>` 内容块（会话 JSONL 中 user 消息为展开后文本），模型可正常响应
+  4. 草稿态查询（无 sessionId，projectPath=测试项目）→ 断言返回 skills/模板且不含扩展命令（AC-CV-032 真实层）
+  5. 卸载/缺失命令上报扩展的环境 → 断言会话模式降级轻量查询、无报错（TD-CV-07 降级路径）
+- **断言**：
+  - 上报清单与运行时 `getCommands()` 一致（无丢命令/无错 source 分类；skill 命令带 `skill:` 前缀）
+  - skill 命令原样发送后被 pi 原生展开（非当作普通文本喂给模型）
+  - 负向：未知 skill 名透传为普通文本（pi 语义：Unknown skill pass through），不报错不崩
+- **健康**：无未捕获异常、无吞错返回 success
+- **证据**：上报载荷日志 + getSlashCommands 响应快照 + 会话 JSONL（skill 展开后的 user 消息）
+
 ---
 
 ## 3. 覆盖汇总
@@ -141,5 +158,6 @@
 | PIC-004 | 后端健康+契约 | P0 | real-integration | 无吞错/契约完整 |
 | PIC-005 | 思考级别真实链路 | P0 | real-integration | 级别列表一致/持久化恢复/并发隔离/1M 上下文 |
 | PIC-006 | 子 agent 真实事件链路 | P0 | real-integration | 事件无丢/无乱序/状态收敛/终止生效/缺失降级 |
+| PIC-007 | 斜杠命令真实链路 | P0 | real-integration | 上报清单一致/skill 原生展开/草稿态降级/缺失扩展降级 |
 
 > 注：本文件是跨模块集成设计，不并入任一模块 coverage-matrix；各模块矩阵的 A-* 契约用例与之互补（矩阵测契约、本文测真实映射）。

@@ -26,6 +26,10 @@
     "./side-by-side-diff": {
       "types": "./dist/tool/sideBySideDiff.d.ts",
       "import": "./dist/tool/sideBySideDiff.js"
+    },
+    "./attachments": {
+      "types": "./dist/attachments.d.ts",
+      "import": "./dist/attachments.js"
     }
   },
   "files": [

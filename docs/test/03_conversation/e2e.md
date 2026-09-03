@@ -2,7 +2,7 @@
 
 > 模块：03 对话与消息
 > 来源：`coverage-matrix.md` + PRD 03
-> 状态：已确认（含扩展 CV-S06，E-CV-007~011）
+> 状态：已确认（含扩展 CV-S06 E-CV-007~011、扩展 CV-S08 E-CV-014~018）
 > 触发：流式 mock 事件序列/时序、XSS fixtures、断流/取消时序复杂，按 contract §D 客观触发展开。
 
 ---
@@ -179,6 +179,94 @@
   （历史已重拉，避免界面仍显示压缩前的旧内容）；无 console error / pageerror
 - **证据**：screenshot
 
+## E-CV-014 斜杠命令浮窗：触发/美化/过滤/空态（AC-CV-026/027/028）
+
+- **关联 AC**：AC-CV-026/027/028 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：会话激活（非 streaming）；`window.__forgeMock.seed('conversation/getSlashCommands', …)` 返回三类命令清单
+  （`skill:git-push`「推送当前分支」、`review-pr`「审查拉取请求」、`write-tests`（无描述））
+- **操作**：
+  1. 输入框行首输入 `/` → 浮窗弹出
+  2. 续输 `git` → 过滤；再改为 `zzz` → 空态
+  3. `window.__forgeMock.emit(sid, 'conversation.statusChanged', { status:'streaming' })` 后尝试输入 `/`
+- **断言**：
+  - UI：浮窗自输入框向上弹出；条目显示 **Git Push**（无 `/` 与 `skill:` 前缀、Title Case、加粗+品牌色）+ 来源标签「技能」+ 描述副文本；
+    `review-pr` 普通色「命令」；`write-tests` 弱化色「模板」且无描述行；输入 `git` 后仅剩 `skill:git-push`；
+    `zzz` 后显示「无匹配命令」而非隐藏
+  - 负向：streaming 期间 textarea 禁用（disabled），浮窗不出现
+  - 健康：无 console error / pageerror
+- **证据**：screenshot（三类条目样式 + 空态）
+
+## E-CV-015 斜杠命令：导航/选择/插入原始串（AC-CV-029）
+
+- **关联 AC**：AC-CV-029 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：浮窗已打开（seed ≥3 条命令，高亮首条）
+- **操作**：
+  1. 按 ↓↓ 到末条再按 ↓（循环回首条）→ Enter 选中
+  2. 重新打开浮窗 → Tab 选中；再开浮窗 → 鼠标单击第三条
+  3. 浮窗打开期间按 Enter（选择）后检查消息区
+- **断言**：
+  - UI：↑↓ 循环导航高亮跟随；三种选择方式（Enter/Tab/单击）均把行内命令前缀替换为
+    **原始命令串 + 尾随空格**（如 `/skill:git-push `），光标落在空格后；浮窗关闭
+  - 数据一致性：输入框文本为原始命令串（**美化名 `Git Push` 不得出现在输入框**）
+  - 负向：浮窗打开期间的 Enter 被浮窗消费——消息区无新 user 气泡（不触发发送）
+  - 健康：无 console error / pageerror
+- **证据**：trace + 输入框 value 断言
+
+## E-CV-016 斜杠命令：浮窗关闭路径（AC-CV-030）
+
+- **关联 AC**：AC-CV-030 | **优先级**：P1 | **自动化等级**：mock-backend
+- **前置**：浮窗已打开（行首 `/g`）
+- **操作**（四路径独立触发，每路径后重开浮窗）：
+  1. Esc；2. 点击输入框外部（失焦）；3. 删空行首 `/`；4. 行内输入空格（`/git push`）
+  5. 关闭后输入普通文本按 Enter
+- **断言**：
+  - UI：四路径均关闭浮窗；关闭后 Enter 恢复发送语义（普通消息正常出现在消息区）
+  - 负向：关闭后按 Enter 不再被浮窗消费（消息发出，非无响应）
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-017 斜杠命令：草稿态可见 skills、激活后扩展命令补全（AC-CV-032）
+
+- **关联 AC**：AC-CV-032 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：新建会话未发消息（草稿态）；seed：无 sessionId 的 `getSlashCommands` 返回 skills+模板；
+  有 sessionId 时返回三类全量
+- **操作**：
+  1. 草稿态行首输入 `/` → 观察清单
+  2. 发送首条消息（激活会话）→ `window.__forgeMock.emit(sid, 'conversation.slashCommandsUpdated', { sessionId: sid })`
+  3. 删除输入内容，再次输入 `/` → 观察清单
+- **断言**：
+  - UI：草稿态列出 skills 与模板（**无扩展命令**）；事件后再次触发浮窗，扩展命令出现（缓存失效重拉）
+  - 数据：第二次打开浮窗时 `getSlashCommands` 携带 sessionId 被再次调用
+  - 负向：草稿态清单不含来源「命令」的条目
+  - 健康：无 console error / pageerror
+- **证据**：screenshot（前后清单对比）
+
+## E-CV-018 斜杠命令：枚举失败降级（AC-CV-033）
+
+- **关联 AC**：AC-CV-033 | **优先级**：P1 | **自动化等级**：mock-backend
+- **前置**：seed `conversation/getSlashCommands` 抛错（或返回 `commands: []`）
+- **操作**：行首输入 `/` → 观察浮窗 → 清空后输入普通消息发送
+- **断言**：
+  - UI：浮窗弹出显示「无可用命令」；已输入文本保留不被清空
+  - 数据：普通消息经 sendMessage 正常发送（消息区出现 user 气泡），无报错弹窗
+  - 负向：枚举失败不产生全局错误提示、不阻塞输入
+  - 健康：无 console error / pageerror（mock 抛错由后端收敛为空清单）
+- **证据**：screenshot
+
+---
+
+## E-CV-019 @ 文件补全：触发/过滤/选中/空态（AC-CV-034/035/036）
+
+- **关联 AC**：AC-CV-034/035/036 | **优先级**：P1 | **自动化等级**：mock-backend
+- **前置**：mock 会话（projectPath = mock 默认项目）；mock-bridge `file.listProjectFiles` 返回固定 3 条清单
+- **操作**：输入框输入「看下 @」→ 触发浮窗 → 续输 `read` 过滤 → ↓+Enter 选中 → 再输 `@zzz`（空态）→ Esc → 输入普通消息
+- **断言**：
+  - UI：@ 触发弹出浮窗 3 条；过滤后 1 条（README.md）；选中后 @token 从输入框移除（剩「看下 」）、待发区出现 attach-chip；空态显示「无匹配文件」；Esc 关闭；输入不被阻塞
+  - 数据：选中文件经 addPaths 入待发区（与选择/粘贴/拖拽同链路，发送时由 onSend 拼 @ 路径行）
+  - 负向：无匹配不产生全局错误、不阻塞输入
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
 ---
 
 ## 覆盖汇总
@@ -198,3 +286,9 @@
 | E-CV-011 | 018 | P2 | mock-backend（窄视口） | 极端尺寸布局 |
 | E-CV-012 | 020/021/022 | P0 | mock-backend | 压缩结果反馈 + 流式禁用 |
 | E-CV-013 | 023 | P0 | mock-backend（emit 事件） | 自动压缩感知与历史重拉 |
+| E-CV-014 | 026/027/028 | P0 | mock-backend | 斜杠浮窗触发/美化/过滤/空态 + streaming 禁用 |
+| E-CV-015 | 029 | P0 | mock-backend | 导航/选择/插入原始串（含 Enter 不发送负向） |
+| E-CV-016 | 030 | P1 | mock-backend | 四关闭路径 + Enter 恢复发送 |
+| E-CV-017 | 032 | P0 | mock-backend（emit slashCommandsUpdated） | 草稿态 skills 可见 + 激活后扩展命令补全 |
+| E-CV-018 | 033 | P1 | mock-backend | 枚举失败降级不阻塞输入 |
+| E-CV-019 | 034/035/036 | P1 | mock-backend | @ 补全触发/过滤/选中进待发区 + 空态降级 |

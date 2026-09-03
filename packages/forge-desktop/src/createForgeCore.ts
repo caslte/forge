@@ -28,8 +28,10 @@ import {
   type ModelsFileAdapter,
   type KeychainAdapter,
   type TrustStorePort,
+  type ProjectSessionsPort,
   type PiSessionAdapter as ForgePiSessionAdapter,
   type SubagentStopPort,
+  type SlashCommand,
 } from '@forge/core';
 import {
   PiConversationAdapter,
@@ -38,6 +40,7 @@ import {
 } from './pi/piConversationAdapter.ts';
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
+import { createSlashCommandResources } from './pi/slashCommandResources.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
 import {
   SUBAGENT_OUTPUT_TAIL_BYTES,
@@ -90,7 +93,17 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   const store = new ForgeStore(storePath);
   const eventBus = new EventEmitter();
 
-  // project（01）：信任权威交给 pi（P2-A），forge store 只缓存展示状态
+  // project（01）：信任权威交给 pi（P2-A），forge store 只缓存展示状态；
+  // 级联删会话端口晚绑定引用 sessionService（v3.32：移除项目连同名下会话一并删除）
+  let sessionServiceRef: SessionService | undefined;
+  const projectSessionsPort: ProjectSessionsPort = {
+    deleteSession: async (sessionId) => {
+      const result = await sessionServiceRef!.deleteSession(sessionId);
+      if (!result.ok) {
+        throw new Error(result.message);
+      }
+    },
+  };
   const projectApi = createProjectApi(
     new ProjectService(
       store,
@@ -103,6 +116,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
               'agent',
             ),
         ),
+      projectSessionsPort,
     ),
     eventBus,
   );
@@ -130,6 +144,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       },
     },
   );
+  sessionServiceRef = sessionService;
   const sessionApi = createSessionApi(sessionService, eventBus);
 
   // conversation（03）：先声明 conversationApi 以便 onStatusChange 闭包引用，
@@ -285,6 +300,8 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
   });
   const conversationService = new ConversationService(conversationAdapter, {
+    // CV-S08：会话模式上报未到 / 草稿态模式直查的轻量资源 port（skills+模板，不加载扩展）
+    slashCommandResources: createSlashCommandResources(agentDir),
     sessionExists: (id: string) => store.getSession(id) !== undefined,
     // 会话别名缺失判断：未设置 alias 视为第一条消息尚未自动命名
     sessionAliasMissing: (id: string) => {
@@ -407,6 +424,15 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     onCompacted: (sessionId, info) => {
       pokeMainTurnActivity(sessionId); // 压缩也是会话活动，避免看门狗误判卡死
       conversationApi.emitCompacted(sessionId, info);
+    },
+    // CV-S08：命令上报扩展的上报到达（slash-commands:reported → onSlashCommandsReported）。
+    // 幂等：后一次上报整体覆盖会话缓存（ingestReportedCommands 内部 sessionExists 守卫，
+    // 未注册会话静默忽略不崩）；再转发 conversation.slashCommandsUpdated 让 UI 失效
+    // 缓存、下次触发浮窗重拉（AC-CV-032）。扩展缺失/上报失败时该回调不触发，
+    // 会话模式回落轻量资源查询（WU-CV08-01 已实现，初始空缓存 getSlashCommands 走 port 降级）。
+    onSlashCommandsReported: (sessionId, commands) => {
+      conversationService.ingestReportedCommands(sessionId, commands as SlashCommand[]);
+      conversationApi.emitSlashCommandsUpdated(sessionId);
     },
   });
 

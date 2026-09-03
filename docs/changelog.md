@@ -1,6 +1,144 @@
 # 变更日志
 
-# 变更日志
+## v3.34 (SM-S01 验收修正：会话中项目 pill 不再弹浮窗)
+
+- 用户反馈：已创建会话的归属项目浮窗（信息态）不需要，只有新会话（草稿态）选归属才要弹。
+- 实现：`InstructionInput.toggleProjMenu` 仅 draft 态生效；删除会话中信息态下拉块及孤立 `.proj-item-static` 样式；会话中 pill 变只读（`proj-pill-static`：无 ▾、无 hover 反馈、cursor default，tooltip 去掉"点击查看"）；`v-if` 加 mode 守卫防草稿转会话瞬间残留空浮窗壳。
+- 验证：typecheck 0 错、forge-ui 140 测试全过。
+- 文档同步：`prd/02_session_management.md`（v3.21 规则 + AC-SM-029）、`test/02_session/coverage-matrix.md`（AC-SM-029/E-SM-007）。
+
+## v3.33 (PM-S03 决策改判：移除项目级联删除名下会话)
+
+- 用户验收反馈：v3.31 的"有会话禁止移除"不好用；裁定改回"删除项目就连同名下会话一并删除"（经核实旧代码从未是级联逻辑，TD-PM-05 原 A 决策保留会话正是孤儿会话问题的根因；本次正式改判为 B）。
+- 实现：`ProjectService` 新增可选 `ProjectSessionsPort`（`deleteSession` 委托 sessionService：停运行+删 pi 会话文件+删 forge 会话记录），`removeProject` 改 async 级联删除后删项目记录；RPC 层逐个发射 `session.removed`（多窗口同步）+ `project.removed`，响应 `data={removedSessions:N}`；未注入端口时保持旧语义（测试兼容）。`createForgeCore` 晚绑定注入端口（同 subagentServiceRef 模式）。前端去掉 v3.31 阻止守卫，toast 汇报"项目已移除，连同 N 个会话一并删除"；下拉 × tooltip 改为"连同其下会话一并删除，源文件保留"。
+- 测试：projectService/projectHandler 新增级联用例（只删本项目会话、他项目不受影响、session.removed 逐个发射、幂等 removedSessions:0），存量 removeProject 用例改 async，334/172/140 全过、typecheck 0 错。
+- 文档同步：`api/01_project.md`（removeProject 契约改级联 + data 形状）、`prd/01_project_management.md`（TD-PM-05 改判 B + PM-S03 规则/边界/AC-PM-006/007/009）、`prd/02_session_management.md`（AC-SM-028 + v3.21 规则）、两份 coverage-matrix。
+
+## v3.32 (CV-S01 扩展：@ 弹文件补全，与附件 @ 协议闭环)
+
+- 用户需求（已确认）：输入框行内敲 `@` 弹出当前项目文件补全，选中即进待发区——与 v3.30 的 @ 路径行协议、待发区 chip、气泡展示全链路闭环。
+- 交互：光标所在 token 以 `@` 开头且 @ 前为空白/行首时触发（邮箱式 token 不误触发）；↑↓ 循环、Enter/Tab/点击选中、Esc/失焦/@ 后空格关闭；与斜杠浮窗互斥。
+- 实现：forge-desktop `attachments.ts` 新增 `listProjectFiles`（BFS 遍历项目内白名单文件，忽略 node_modules/.git/dist 等，上限 2000，浅层优先；IPC 通道 `forge:file:listProjectFiles` 直连，不走 RPC 表）；forge-ui 新增 `utils/atCompletion.ts` 纯函数（`detectAtContext` token 检测 + `filterAtFiles` 分级排序：basename 前缀>包含>路径包含、同级路径短者前）；`InstructionInput` 新增 @ 浮窗（复用 slash-menu 样式）与 `projectPath` prop（单视图传 project.path，多窗口经 MultiWindowConversation 透传 session.projectPath）；候选按项目缓存，切项目失效；选中 = 移除 @token + addPaths 进待发区（与选择/粘贴/拖拽同链路，发送时统一拼 @ 路径行）。
+- 明确不做：不内联插入路径（保持 v3.30 展示层零歧义）；目录导航；模糊拼音匹配。
+- 测试：atCompletion.test 8 用例、desktop attachments.test 补遍历用例（白名单/忽略目录/缺失目录）、e2e 新增 atCompletion.spec（E-CV-019：触发/过滤/选中/空态，全过）；forge-ui 140、desktop 172、core 332 全过，typecheck 0 错。
+- 文档同步：`prd/03_conversation.md`（AC-CV-034~036）、`test/03_conversation/coverage-matrix.md`（AC 矩阵 + U-CV-013 + A-CV-014 + E-CV-019）、`test/03_conversation/e2e.md`（E-CV-019）。
+- 已知无关失败：e2e smoke/session 两用例因并行 SM-S01 工作树改了 TitleBar（.workspace-brand 移除）而过期，非本交付引入。
+
+## v3.31 (PM-S03 验收修正：项目名下有会话时禁止移除)（已被 v3.33 取代）
+
+- 用户验收反馈：移除项目后，原本在该项目下创建的会话"丢失项目"——项目视角按项目记录分组渲染会话，项目记录删除后其会话不再出现在项目树（任务视角仅剩 basename tag）。侧栏右键移除入口一直存在此问题，下拉删除使其更易触发。
+- 实现：`App.onRemoveProject` 增加前置守卫——项目名下仍有会话（含运行中）时 toast 阻止并提示"先删除会话再移除项目"；下拉 × 与侧栏右键两个入口同一 handler 自动全覆盖。服务层 `removeProject` 保持幂等可移除不变（headless 兼容；TD-PM-05 不级联删会话的冻结决策不变）。
+- 验证：typecheck 0 错、forge-ui 132 测试全过。
+- 文档同步：`prd/01_project_management.md`（PM-S03 异常边界改写 + AC-PM-009 新增 + AC-PM-006 边界条件修正）、`prd/02_session_management.md`（AC-SM-028）、`test/02_session/coverage-matrix.md`（E-SM-007）。
+
+## v3.30 (CV-S01 附件协议标记：@路径行，展示层零歧义)
+
+- 用户方案（已确认）：附件（选择/粘贴/拖拽三入口）发送时路径行统一加 `@` 前缀（`正文\n@C:\a.ts`），手敲裸路径一律当正文——把“展示层猜路径行”换成“显式协议标记”，根除路径开头消息被误吞成 chip 一类问题（v3.26 的根因）。
+- 实现：`InstructionInput.onSend` 拼附件行加 `@`；`attachmentText.ts` 新增 `attachmentPathOf`（`@` 后必须是路径形状，防 @mention 被吞），`@` 行优先提取为附件（展示时剥离 @），裸路径行保留为旧会话兼容兕底；模型侧零改动（`@C:\x` 仍是正文里的绝对路径，模型自行 read）。
+- 明确不做：手敲 `@` 弹文件补全（Cursor 式，大功能）；正文中间内联 `@路径` 解析（空格分词问题，另立 feature）。
+- 测试：attachmentText.test 新增 3 用例（@行提取/@mention 不吞/裸路径兕底），forge-ui 132 全过、typecheck 0 错。
+- 文档同步：`api/03_conversation.md`（附件约定改 @ 路径行格式）、`test/03_conversation/coverage-matrix.md`（AC-CV-013/U-CV-005/A-CV-007/E-CV-006 同步措辞）。
+
+## v3.29 (CV-S08 验收扩展：浮窗过滤由前缀匹配放宽为模糊匹配)
+
+- 用户需求：只记得命令名中间的文字（或描述关键词）时前缀匹配搜不到，浮窗筛选改为模糊匹配。
+- 实现：`utils/slashCommand.ts` `filterCommands` 由 `startsWith` 改为 `includes`——匹配键=原始名（含 `skill:` 前缀）或描述，大小写不敏感，保持清单原序不做相关度排序；空串仍返回全量副本，入参不变契约保留。此规则与 pi TUI 前缀匹配分叉（用户裁定）。
+- 测试：过滤用例改为包含语义并新增中间文字（`tests`）与描述关键词（`推送`/`查看`）用例，forge-ui 132 全过、typecheck 0 锉；e2e（`skill`/`zzz` 序列）语义兼容无需改。
+- 文档同步：`prd/03_conversation.md`（场景表/常规默认项/功能点过滤/AC-CV-028/ASCII 图/性能段 6 处）、`test/03_conversation/coverage-matrix.md`（AC-CV-028 与 U-CV-012 断言）。
+
+## v3.29 (SM-S01 验收扩展：下拉项目按选中次序排序)
+
+- 用户需求：A/B/C 三项目，先选 B 再选 C，下拉应为 B、C、A（按最后选中次序，先选中在前）。
+- 实现：App.vue 新增 `pickOrder`（localStorage `forge:project-pick-order` 持久，复用 treeView 记忆模式）——`onPickProject` 首次选中追加定序（重复选中不变），移除项目同步清除记录；`projectPicker.items` 按 pickOrder 序稳定排序，未选中的保持后端序排后。仅影响输入框下拉排序，侧栏/后端 lastOpenedAt 语义不变。
+- 验证：typecheck 0 错、forge-ui 132 测试全过。
+- 文档同步：`prd/02_session_management.md`（选择器排序规则 + AC-SM-028）。
+
+## v3.28 (SM-S01 验收修正：打开项目直达系统选择器 + 下拉去杂标)
+
+- 用户反馈：新建/打开项目不要中间弹窗，直接弹文件夹选择器；下拉条目黄点（运行中）和 ✓ 都去掉，只留悬停删除。
+- 实现：删除 `ProjectPickerDialog.vue`（弹窗及其"最近路径"链路一并移除）；App.vue 新增 `openFolderPicker()`——`window.forge.dialog.selectDirectory()` 选中即注册（取消无操作），"打开项目…"菜单项/空态"打开项目"按钮均接此函数；InstructionInput 下拉去掉 `proj-item-dot`/`proj-item-check` 及对应 CSS，条目唯一操作标=悬停裸 ×（无底色），首点变红色「确认」胶囊（同删除会话两阶段款）；types.ts `ProjectPickerDescriptor.items` 去掉孤立字段 `hasRunning`。
+- 验证：typecheck 全 workspace 0 错、forge-ui 127 测试全过。
+- 文档同步：`prd/01_project_management.md`（操作入口改为直达系统选择器）、`prd/02_session_management.md`（选择器规则 + AC-SM-028）、`test/02_session/coverage-matrix.md`（AC-SM-028/E-SM-007）。
+
+## v3.27 (SM-S01 验收扩展：输入框项目下拉支持移除项目)
+
+- 用户需求：输入框项目选择器下拉（新会话归属项目）中的项目要可删除。
+- 实现：`InstructionInput.vue` 草稿态下拉条目悬停显示移除 ×，两阶段确认（首点变红“确认移除”，3s 内再点才发）——与侧栏 ProjectTree 同模式；事件链 `InstructionInput → ConversationView → App.onRemoveProject`（复用已有 `project/removeProject` RPC，仅删 forge 元数据，源文件/会话不动）；移除当前归属项目后由 loadProjects 自动回落首个剩余项目。会话中信息态不下拉列表，不提供移除入口。
+- 验证：typecheck 全 workspace 0 错、forge-ui 127 测试全过。
+- 文档同步：`prd/02_session_management.md`（v3.21 选择器规则 + AC-SM-028）、`test/02_session/coverage-matrix.md`（AC-SM-028/E-SM-007 补移除断言）。
+
+## v3.26 (CV-S01 修复：路径开头的单行消息不再整行吞成文件 chip)
+
+- 用户验收反馈：单行消息以路径开头（首路径 + 中间长段文字 + 尾路径）发送后，气泡只剩一个文件 chip（尾路径文件名），正文消失。
+- 根因：`attachmentText.ts` `isPathLine` 只判行首路径格式，`parseUserContent` 尾部路径行剥离把整行当纯路径行吃进 `files`，`body` 变空。仅展示层问题：消息原文完整发送与存档（复制/模型可见性不受影响）。
+- 实现：`isPathLine` 收紧为只认“纯路径行”——空白 + CJK（`C:\x 帮我看这个项目`）或盘符后出现 Windows 文件名非法字符（第二个冒号等，英文混排 `C:\a is at C:\b`）一律不算路径行，保留为正文；无空白的中文路径（`C:\资料\文档.docx`）与含空格英文路径（`C:\Program Files\x`）仍正常出 chip。宁可漏收（真路径显示为文字）不误吞（整条消息变 chip）。
+- 测试：attachmentText.test 新增 3 用例（单行混排回归/含空格英文路径/无空白中文路径），forge-ui 14/14 过。
+- 文档同步：`test/03_conversation/coverage-matrix.md` E-CV-006「用户气泡按原文展示正文+路径行」契约未变，本次为恢复该契约，无 PRD/API 改动。
+
+## v3.25 (CV-S08 验收扩展：气泡内多个 skill 引用全部美化)
+
+- 用户确认 pi 语义（仅展开消息开头第一个 `/skill:` 命令，其余为字面量参数）后裁定：forge 气泡内出现的全部 `/skill:name` 引用都美化——样式归 forge，执行语义归 pi；美化是样式性的，不代表该引用会被 pi 执行。
+- 实现：`utils/slashCommand.ts` 新增 `splitSkillRefs`（正文按 `/skill:name` 切段，名字符集 `[A-Za-z0-9_-]+`，中文标点/`/`不吞进名）；`MessageCard.vue` 用户正文由 v-html 转为分段渲染——文本段原样插值（自动转义），引用段复用浮窗同款美化（品牌色加粗 + 技能胶囊）；命令段与正文同行内联穿插（v3.24）不变；无前导命令但句中含引用的消息同样美化。另：斜杠浮窗加 `max-width: 100%` 封顶输入框宽度（此前长描述把浮窗撑得比输入框宽，超出由条目 ellipsis 截断）。
+- 测试：slashCommand.test 新增 3 用例（多引用切段/无引用与防御/标点与连写边界），forge-ui 124 全过、typecheck 0 锉。
+- 文档同步：`prd/03_conversation.md`（消息气泡显示规则补多技能引用）、`test/03_conversation/coverage-matrix.md`（U-CV-012 补 splitSkillRefs 断言）。
+
+## v3.24 (CV-S08 验收修正：气泡命令段与正文同行穿插)
+
+- 用户验收反馈：命令段（如 `Git Pull` + 技能标签）单独占一行、正文在下一行，希望穿插在文本中、仅保留自身美化。
+- 实现：`MessageCard.vue` 纯 CSS 调整——`.msg-cmd-head` 由 flex 块改为 inline，`.msg-cmd-head + .msg-content` 降为 inline，命令名/标签与剩余正文同行流式排布（间距由 name/tag margin 提供，替代原 flex gap）；美化样式（品牌色加粗 + 来源标签胶囊）不变，长正文自然折行；模板与识别逻辑零改动，复制仍为原始串。
+- 验证：forge-ui 121 测试全过、typecheck 0 锉；PRD 03 仅约定「命令段浮窗同款美化 + 剩余正文照常展示」，未约束布局，无需改 PRD。
+
+## v3.23 (CV-S08 验收修正：消息气泡斜杠命令美化 + 技能展开块收起)
+
+- 用户验收反馈：发送 `/skill:gen-doc-all 测试一下技能` 后气泡里命令是 plain 原文，和浮窗的美化样式（Gen Doc All 加粗品牌色 + 技能标签）不一致；且 pi 展开后持久化的 user 消息是整段 `<skill>` 指令文档，历史重载后气泡会渲染出整墙技能说明。
+- 实现：`utils/slashCommand.ts` 新增 `extractCommandFromMessage`（识别两种形态：发送原始串「行首 / + 无空白 token」与 pi 展开块 `<skill name=...>…</skill>`，非命令不误伤）；`MessageCard` 用户气泡把命令段渲染为浮窗同款美化（品牌色加粗 + 来源标签胶囊），命令后剩余正文照常展示，展开块指令文档收起不展示；复制按钮仍复制原始内容（语义不变，TD-CV-09 零拦截不受影响）。
+- 测试：slashCommand.test 新增 6 用例（40/40），forge-ui 121 全过、typecheck 0 锉、slash/输入框相关 e2e 17/17。
+- 文档同步：`prd/03_conversation.md`（CV-S08 消息气泡显示规则）、`test/03_conversation/coverage-matrix.md`（U-CV-012 补气泡命令段识别断言）。
+
+## v3.22 (模块 03 扩展 CV-S08 斜杠命令交付：输入框 / 命令浮窗，pi 原生执行)
+
+- 交付（dev-flow run 20260902145236，5 WU 全过 + D5 Fan-in + D6 模块 QA PASS，开发视图 `plan/cv-s08-slash-commands.md`）：输入框行首 `/` 弹出命令浮窗（pi 生态三类：扩展命令/skills/prompt 模板；pi TUI 内置命令不映射不拦截），↑↓ 循环导航 + Enter/Tab/鼠标单击选择，插入恒为原始命令串（`/skill:git-push ` 尾随空格光标在后），随消息发送后 pi 原生解析执行——零拦截零注册表；浮窗 codex 风格美化（剥前缀/Title Case/skill 加粗品牌色/描述副文本/来源标签），前缀实时过滤，无匹配/无可用命令空态，枚举失败降级空清单不阻塞输入，streaming 期间禁用。
+- 实现：forge-core conversationService（SlashCommand 类型/getSlashCommands 双模式/ingest 会话级缓存幂等）；forge-extensions 首个真实 pi 扩展 slashCommandReporter（session_start 调 pi.getCommands() 经 `slash-commands:reported` 总线上报，抛错静默不阻断）；forge-ui utils/slashCommand.ts 纯函数（检测/过滤/美化/插入串，34 用例）+ InstructionInput 浮窗集成；forge-desktop createForgeCore 桥接接线 + 草稿态轻量资源查询 port（DefaultResourceLoader noExtensions 直查，失败返回 []）。
+- 测试：core 332 / desktop 171 / ui 112 单测全绿；e2e slashCommands.spec 5 条（E-CV-014~018）全过；PIC-007 真实链路 QA 期验证 5/5（真实 ~/.pi/agent 上报 51 条命令、缓存生效、/skill:git-push 原样发送、草稿态无扩展、降级无报错；模型回复端到端因无真实 LLM 端点按 PIC-005/006 先例记已知集成待办）。
+- 修复：e2e 全局超时根因为根入口 `@forge/core` import（node:events 浏览器炸 → mock 注入崩），forge-ui 浏览器引用一律改瘦子路径；TSC-E2E-004 无脚本草稿激活按真实后端语义补两侧事件（树侧 DB done + session.updated、视图侧 conversation.statusChanged）。
+- 文档同步：`prd/03_conversation.md`（AC-CV-026~033）、`api/03_conversation.md` §9、`test/03_conversation/coverage-matrix.md` + `e2e.md`（E-CV-014~018）、`test/integration/pi-core.md`（PIC-007）。
+
+## v3.21 (输入框项目选择器：新会话归属显性化，移除侧栏打开项目按钮)
+
+- 用户需求（对齐稿 `plan/input-project-picker-mockup.html` 已确认）：任务视角下新建会话不知道落哪个项目；参考 zcode/WorkBuddy/OpenCode 在输入框附近选项目的做法改造。
+- 交互：输入框底行左侧第一位 `📁 项目名 ▾`——**草稿态**=下拉选归属（已打开项目：别名+路径+运行中状态点+当前 ✓；底部"打开项目…"复用 ProjectPickerDialog；选中=切当前项目，草稿保留）；**会话中**=同式样可点，信息态（归属+完整路径，归属绑定 cwd 不可换；定位动作用户裁定裁剪）。任务视角"新建会话"默认落最近激活项目（lastActiveAt），禁用条件放宽为"无任何已打开项目"；侧栏顶部打开项目按钮移除（入口收敏到输入框下拉+内容区空态）。
+- 实现：`utils/sessionView.ts` 新增 `defaultDraftProjectPath`（TDD RED→GREEN，4 用例）；`InstructionInput` 新增 `projectPicker` prop + `pick-project/open-project-picker` 事件（多窗口 compact 不传不渲染，窗口标题行已有项目 pill）；`ConversationView` 透传；`App` 组装描述符（`projectTagOf` 复用命名）+ 新建默认落点。
+- 测试：forge-ui 115 全过，四包 typecheck 通过。
+- 文档同步：PRD 01（入口描述）、PRD 02（SM-S01 交互规则 + AC-SM-028~030 + 自检 24 项）、coverage-matrix（基线 3 行 + U-SM-006 + E-SM-007）。
+
+## v3.20 (会话列表双视角 + LOGO 缩放按钮合一，SM-S06/S07)
+
+- 用户需求（设计稿 `plan/logo-view-mockup.html` 已确认）：①FORGE 文字 LOGO 先隐藏，左上角缩放按钮改 zcode 风格方形 LOGO 瓷片——默认显瓷片、hover 变缩放图标、点击折叠/展开会话树行为不变；②会话列表增加项目/任务双视角——任务视角平摊所有会话不分项目、行尾项目 tag，排序复用激活序（运行中置顶且保留）；项目视角增加「收起全部/展开全部」无 边框 ghost 按钮（对角双箭头内收/外扩两态）；③多窗口「返回多窗口」聚焦行补项目 pill（窗口标题行项目 pill 现状已有，保留）。
+- PRD 增量：`prd/02_session_management.md` 新增场景 SM-S06/SM-S07、AC-SM-022~027、已确认决策 3 条、页面承载入口更新、自检扩至 23 项 PASS。
+- 实现：新增 `forge-ui/src/utils/sessionView.ts` 纯函数（`sortSessionsByActivation` 激活序排序、`nextFoldAllAction` 两态判定、`projectTagOf` 项目 tag，项目/任务两视角共用）；`ProjectTree.vue` 接 `view` prop 渲染任务视角平摊列表（重命名/删除/拖拽开窗/已开窗灰态与项目视角一致；默认前 20 条截断，多余「展开显示 N 个」），`collapseAll/expandAll` expose + `fold-state` 上报；`App.vue` 侧栏顶部「项目/任务」分段开关（localStorage `forge:sidebar:view` 记忆）+ 收起/展开全部按钮（仅项目视角）+ 聚焦行项目 pill + 移除 FORGE 文字；`TitleBar.vue` 缩放按钮 LOGO 瓷片化（120ms 交叉淡入，折叠态箭头朝右）。
+- 测试：TDD RED→GREEN，forge-ui 新增 `test/sessionView.test.ts` 8 用例（激活序稳定排序/纯函数性/两态判定含空列表/项目 tag 别名优先与脏数据回退）；forge-ui 112 全过，四包 typecheck 通过；E2E 补 `E-SM-006`（双视角/收起展开/LOGO 按钮/聚焦行/视角记忆）。
+- 文档同步：`test/02_session/coverage-matrix.md`（AC-SM-022~027 基线 + U-SM-005 + E-SM-006）、`test/02_session/e2e.md`（E-SM-006 详情 + 汇总行）。
+
+## v3.19 (附件格式白名单：粘贴/拖拽补上格式校验，新增 Excel/Word)
+
+- 用户需求：上传附件、粘贴、拖拽都要判断文件格式；当前粘贴与拖拽不判格式，任意文件（exe/dll 均可）直接进待发区；同时新增 Excel/Word 支持。
+- 现状梳理：格式约束仅存在于文件选择器的 Electron dialog filter（软过滤，可手动输入文件名绕过，选中后渲染层不再复查）；粘贴/拖拽完全不判格式（无盘文件仅收截图图片，其余静默丢弃）。
+- 变更：新增 `@forge/core` `attachments.ts` 附件格式白名单（单一事实来源）：图片 `png/jpg/jpeg/gif/webp` + 文本与代码 `txt/md/json/log/csv/yaml/yml/toml/xml/html/css/js/ts/py/java/go/rs/c/cpp/h` + **新增 Office 文档 `xlsx/xls/docx/doc`**；①主进程选择器 dialog filters 改由白名单派生（原硬编码 25 项）；②渲染层 `addPaths` 统一白名单校验（选择/粘贴/拖拽三入口的必经汇聚点），不支持格式拒绝入待发区并提示「不支持的文件格式：xxx」；③粘贴无盘非图片文件从静默跳过改为报错提示。
+- 边界：xlsx/xls/docx/doc 为二进制（zip）格式，不参与密钥嗅探（TEXT_SCAN_EXTS 仅收文本扩展名，对压缩字节做明文正则无意义）；无扩展名文件（如 Dockerfile）按白名单拒绝。
+- 测试：forge-core 新增 `test/attachments.test.ts`（放行/大小写/拒绝/过滤项派生共 3 用例）；forge-core 332 / forge-desktop 171 / forge-ui 103 全过，三包 typecheck 通过。
+- 文档同步：`api/03_conversation.md`（附件格式白名单段落）、`test/03_conversation/coverage-matrix.md`（U-CV-005 补不支持格式拒绝断言）。
+
+## v3.18 (模块 03 扩展 CV-S08 斜杠命令 PRD 确认)
+
+- 用户需求「输入 / 斜杠需要跟 pi 一样把内容浮窗出来，回车或者 tab 或鼠标单击选择，输入之后 pi 要能识别到这些命令」；用户逐步裁定：①命令面板只列 **pi 生态自动发现命令**（扩展命令 + skills + prompt 模板），**pi TUI 内置命令（/model /compact /quit 等）一律不做 forge 侧映射与拦截**（曾考虑映射 /compact，后整层砍掉）；②浮窗显示参考 codex 美化（不显示 `/` 与 `skill:` 前缀、`git-push` → `Git Push`、skill 加粗品牌色）；③草稿态必须能看到 skill 命令。
+- PRD 03 新增：场景 CV-S08、技术决策 TD-CV-07/08/09、功能点 CV-S08（含页面承载浮窗 ASCII 图与非功能量化）、AC-CV-026~033（8 条）；自检扩展 10 项全 PASS。
+- 关键决策：TD-CV-07=A（forge-extensions 承载**首个真实 pi 扩展**——命令上报扩展，会话启动时调运行时命令枚举经事件总线上报，与 pi-subagents 桥接同构）；TD-CV-08=A（草稿态轻量资源查询直取 skills/模板，扩展命令会话激活后补全）；TD-CV-09=A（选中命令原样经既有发送链路，pi 原生解析执行，零拦截零注册表）。
+- 硬边界：插入文本恒为原始命令串（`/skill:git-push ` 尾随空格光标在后），美化名不进输入框；命令枚举失败降级空清单不阻塞输入。
+- 同步：`prd/03_conversation.md`（第 1-4 节扩展）、`prd/index.md`（03 行）、`overview.md`（模块表 03 行 + MVP 范围 + 当前状态）。
+- API 增量（`api/03_conversation.md` §9）：方法 `conversation/getSlashCommands`（sessionId 可选=会话/草稿态双模式，projectPath 草稿态项目级发现；枚举失败返回空清单不报错）；事件 `conversation.slashCommandsUpdated`（上报到达 → UI 缓存失效重拉）；桥接约定（命令上报扩展 `session_start` 经事件总线上报，与 pi-subagents 同构；命令执行无专用接口，经 sendMessage 原样发送）。
+- 测试设计增量：`test/03_conversation/coverage-matrix.md`（AC-CV-026~033 基线含必测标记 + U-CV-011/012 纯函数 + A-CV-011~013 契约）；`test/03_conversation/e2e.md`（E-CV-014~018：触发/美化/过滤/空态、导航/选择/插入原始串、四关闭路径、草稿态补全、枚举失败降级）；`test/integration/pi-core.md` 新增 **PIC-007**（命令上报扩展真实链路：上报清单与 getCommands 一致、skill 原生展开、草稿态降级、扩展缺失降级）；`test/index.md` 03 行 8/8 覆盖。
+- DB 增量：无（命令清单会话级内存缓存，不持久化）。
+- 状态：gen-doc-all 流程完成——确认点 1、确认点 2、PRD 两轮、API/测试设计均已确认；artifacts.json 03 各项维持 approved（既有文件内容扩展，无新增产物）。下一步可调 `dev` 开发（建议 WU 拆分：forge-extensions 命令上报扩展 + desktop/core 枚举链路 / InstructionInput 斜杠浮窗纯函数与交互 / e2e 与集成验证）。
 
 ## v3.17 (附件统一给路径)
 

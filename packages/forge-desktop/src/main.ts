@@ -15,8 +15,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
-import { scanAttachments, savePasteImage, readImageDataUrl } from './attachments.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE } from './ipc-contract.ts';
+import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles } from './attachments.ts';
+import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -111,9 +112,7 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     const options = {
       title: '选择附件',
       properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: '图片与文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'txt', 'md', 'json', 'log', 'csv', 'yaml', 'yml', 'toml', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h'] },
-      ],
+      filters: [ATTACHMENT_DIALOG_FILTER],
     } as Electron.OpenDialogOptions;
     const res = mainWindow
       ? await dialog.showOpenDialog(mainWindow, options)
@@ -148,6 +147,10 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     }
     return readImageDataUrl(p);
   });
+  // @ 补全候选：项目内白名单文件绝对路径（BFS 浅层优先，上限 2000）
+  ipcMain.handle(IPC_FILE_LIST_PROJECT, (_e, root: unknown) =>
+    typeof root === 'string' && root !== '' ? listProjectFiles(root) : [],
+  );
 }
 
 app.whenReady().then(() => {

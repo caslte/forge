@@ -35,6 +35,7 @@ import type {
   CompactReason,
   ConversationCompactingPayload,
   ConversationCompactedPayload,
+  GetSlashCommandsParams,
 } from '../conversation/conversationService.ts';
 
 /** 构造成功信封 */
@@ -90,6 +91,7 @@ export class ConversationApi {
       'conversation/queryHistory': (params) => this.queryHistory(params),
       'conversation/getContextUsage': (params) => this.getContextUsage(params),
       'conversation/compact': (params) => this.compact(params),
+      'conversation/getSlashCommands': (params) => this.getSlashCommands(params),
     };
   }
 
@@ -186,6 +188,34 @@ export class ConversationApi {
   }
 
   /**
+   * conversation/getSlashCommands：查询斜杠命令清单（扩展 CV-S08，A-CV-011/012）。
+   * sessionId/projectPath 均可选——省略 sessionId 为草稿态查询；资源查询失败在
+   * 服务层降级为空清单（code 0），仅参数非法（1001）与未知会话（1002）报错。
+   */
+  private getSlashCommands(params: unknown): Promise<RpcResult> {
+    const request: GetSlashCommandsParams = {};
+    if (isRecord(params)) {
+      const sessionId = params.sessionId;
+      if (sessionId !== undefined) {
+        if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+          return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
+        }
+        request.sessionId = sessionId;
+      }
+      const projectPath = params.projectPath;
+      if (projectPath !== undefined) {
+        if (typeof projectPath !== 'string') {
+          return Promise.resolve(fail(1001, '参数错误：projectPath 必须为字符串'));
+        }
+        if (projectPath.trim() !== '') {
+          request.projectPath = projectPath;
+        }
+      }
+    }
+    return this.call('getSlashCommands', () => this.service.getSlashCommands(request));
+  }
+
+  /**
    * 会话状态驱动（非 RPC 方法）：发射 conversation.statusChanged。
    * 供 sendMessage 成功后自动调用，也供 UI 层 / 测试直接驱动状态流转。
    * @param sessionId 会话 ID
@@ -252,6 +282,18 @@ export class ConversationApi {
   emitCompacted(sessionId: string, info: Omit<ConversationCompactedPayload, 'sessionId'>): void {
     const payload: ConversationCompactedPayload = { sessionId, ...info };
     this.events.emit('conversation.compacted', payload);
+  }
+
+  /**
+   * 斜杠命令清单更新推送（非 RPC 方法，扩展 CV-S08）：发射
+   * conversation.slashCommandsUpdated。命令上报扩展的上报到达 forge（desktop
+   * 桥接 channel）后，desktop 层先调 service.ingestReportedCommands 更新会话缓存，
+   * 再经此转发事件——UI 收到后失效该会话缓存、下次触发浮窗重拉（AC-CV-032）。
+   * @param sessionId 会话 ID
+   * @returns 无返回值；触发事件 conversation.slashCommandsUpdated { sessionId }
+   */
+  emitSlashCommandsUpdated(sessionId: string): void {
+    this.events.emit('conversation.slashCommandsUpdated', { sessionId });
   }
 }
 

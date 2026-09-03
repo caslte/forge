@@ -314,3 +314,62 @@ test('工厂总线桥接：会话总线注入 pi 扩展加载（DefaultResourceL
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ===== CV-S08：命令上报扩展随会话装载（extensionFactories） =====
+
+test('命令上报扩展随会话装载：session_start 后总线上报 slash-commands:reported', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-slash-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const handlers = new Map<string, Set<(data: unknown) => void>>();
+    const reports: unknown[] = [];
+    const bus = {
+      emit(channel: string, data: unknown): void {
+        if (channel === 'slash-commands:reported') reports.push(data);
+        for (const handler of [...(handlers.get(channel) ?? [])]) handler(data);
+      },
+      on(channel: string, handler: (data: unknown) => void): () => void {
+        let set = handlers.get(channel);
+        if (set === undefined) {
+          set = new Set();
+          handlers.set(channel, set);
+        }
+        set.add(handler);
+        return () => set.delete(handler);
+      },
+    };
+
+    await createPiAgentSessionFactory({ agentDir, eventBus: bus })({
+      cwd: projectDir,
+      sessionId: 'forge-slash-1',
+    });
+
+    // session_start 扩展 handler 异步执行：轮询等待上报到达（上限 5s）
+    const deadline = Date.now() + 5_000;
+    while (reports.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.ok(reports.length >= 1, '总线应收到 slash-commands:reported 上报（真实扩展经 extensionFactories 装载）');
+    const payload = reports[0] as {
+      commands: Array<{ name: unknown; description: unknown; source: unknown }>;
+    };
+    assert.ok(Array.isArray(payload.commands), '载荷应为 { commands: [...] }');
+    for (const command of payload.commands) {
+      assert.equal(typeof command.name, 'string', '命令名应为字符串');
+      assert.ok(
+        command.description === null || typeof command.description === 'string',
+        '命令描述应为字符串或 null',
+      );
+      assert.ok(
+        command.source === 'extension' || command.source === 'prompt' || command.source === 'skill',
+        `命令来源应为三值之一，实际：${String(command.source)}`,
+      );
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
