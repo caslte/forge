@@ -473,17 +473,25 @@ let rsStartY = 0;
 let rsStartH = 0;
 let rsFloor = 0;
 
-function onResizeDown(e: PointerEvent): void {
+/** 当前布局下盒子最小高度：上内边距 + 附件行实高（v3.39 贴图后计入，防拖拽下限以下内容溢出重叠）+ 输入区最小高度 + 底部预留 */
+function minBoxHeight(): number {
   const el = inputBoxRef.value;
-  if (!el) return;
-  e.preventDefault();
-  // 稳定底线＝上内边距 + 输入区最小高度 + 底部预留：保证钉在底部的操作行始终可见、不移动
+  if (!el) return 64;
   const cs = getComputedStyle(el);
   const pt = parseFloat(cs.paddingTop) || 0;
   const pb = parseFloat(cs.paddingBottom) || 0;
   const ta = textareaRef.value;
   const taMin = ta ? parseFloat(getComputedStyle(ta).minHeight) || 0 : 0;
-  rsFloor = Math.max(64, pt + taMin + pb - 2);
+  const attachH = attachRowRef.value?.offsetHeight ?? 0;
+  return Math.max(64, pt + attachH + taMin + pb - 2);
+}
+
+function onResizeDown(e: PointerEvent): void {
+  const el = inputBoxRef.value;
+  if (!el) return;
+  e.preventDefault();
+  // 稳定底线＝附件行实高 + 输入区最小高度 + 上下预留（minBoxHeight）：拖拽最低也不能让内容溢出重叠
+  rsFloor = minBoxHeight();
   rsStartY = e.clientY;
   rsStartH = el.offsetHeight;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -504,6 +512,18 @@ function onResizeUp(e: PointerEvent): void {
     // 忽略
   }
 }
+
+// 附件增减后，手动拖过的固定高度盒子若低于新下限则抬起（先贴图后拖拽/先拖矮后贴图两序均覆盖）
+watch(
+  () => attachments.value.length,
+  async () => {
+    await nextTick(); // 等 attach-row 渲染出实际高度
+    const el = inputBoxRef.value;
+    if (!el || el.style.height === '') return; // auto 高度自然增长，无需干预
+    const need = minBoxHeight();
+    if (el.offsetHeight < need) el.style.height = need + 'px';
+  },
+);
 
 function onKeydown(ev: KeyboardEvent): void {
   if (!ev.isComposing && atPanelOpen.value) {
@@ -1054,6 +1074,7 @@ watch(
       :placeholder="isStreaming ? '助手正在回复，可点击停止中断…' : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
       :disabled="inputLocked"
       :rows="3"
+      spellcheck="false"
       @input="onInput"
       @keydown="onKeydown"
       @keyup="onCursorMove"
