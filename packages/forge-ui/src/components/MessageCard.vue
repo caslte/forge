@@ -318,7 +318,7 @@ const timeLabel = computed(() => {
 }
 .msg-cmd-name.is-skill {
   font-weight: 700;
-  color: var(--brand);
+  color: var(--brand-accent);
 }
 .msg-cmd-name.is-prompt {
   color: var(--muted-foreground);
@@ -334,8 +334,8 @@ const timeLabel = computed(() => {
   background: var(--muted);
 }
 .msg-cmd-tag.tag-skill {
-  color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 14%, transparent);
+  color: var(--brand-accent);
+  background: color-mix(in oklab, var(--brand-accent) 14%, transparent);
 }
 /* 命令段存在时正文降为内联，紧跟命令名/标签之后（同级块间空白已被 Vue condense 移除，不产多余空隙） */
 .msg-cmd-head + .msg-content {

@@ -1,5 +1,25 @@
 # 变更日志
 
+## v3.41 (修复：子 agent 头部条窄容器下变形)
+
+- 用户反馈：子 agent 的工具条（头部：描述名 + 类型徽标 + 状态点 + 运行中 + 耗时）有时候会变形。
+- 根因：`.srv-header` 是不换行 flex 行，但 `.srv-status-text`（“运行中”）与 `.srv-elapsed`（“· 4 分 58 秒”）无 `white-space: nowrap` / `flex-shrink: 0`；容器不够宽时（多窗口窄分块、描述名长、耗时进位变宽）被 flex 压到 min-content 以下，中文任意字符间可断行——“运行中”竖排成三行、耗时折成两行，整条变高错位。间歇性 = 只有总宽跨过临界值才触发。
+- 修复：两项加 `white-space: nowrap` + `flex-shrink: 0`，压缩量全部由描述名（已有 ellipsis，overflow:hidden 使 min-width 归零）吸收；头部最坏情况只截断名字，不再折行变形。单/多窗口共用同一组件，一处修复全覆盖。
+- 验证：forge-ui typecheck 0 错（纯 CSS 改动，布局行为人工核验）。
+
+## v3.40 (技能标签语义色：暖琥珀)
+
+- 用户反馈：消息气泡里"技能"标签文字没有颜色。原因：技能名/标签用的是 `--brand`，而本套设计系统 brand=中性灰（chroma 0），视觉上无色。
+- 实现：design-tokens 新增 `--brand-accent`（暖琥珀，与 LOGO 渐变点缀色同源；light `oklch(0.65 0.14 85)` / dark `oklch(0.8 0.14 85)` 提亮保对比）；仅 `MessageCard` 消息气泡内技能名 `.is-skill` 与"技能"标签 `.tag-skill` 改用该令牌（用户裁定：浮窗/列表保留原色不夸张）。
+- 验证：forge-ui typecheck 0 错、143 测试全过。
+
+## v3.39 (修复：贴图后拖拽输入框高度导致内容重叠)
+
+- 用户反馈：贴图后往下拉（拖拽上边沿调低输入框高度），文本与拼写红线、附件缩略图、底部操作条叠在一起。
+- 根因：拖拽下限 `rsFloor = 上内边距12 + 输入区minHeight68 + 底部预留58 − 2 ≈ 136px`，**未计入附件行实高**（贴图后约 74px）；盒子被压到 136px 时内容溢出，`.compose-bar` 是 absolute 钉底，视觉上直接叠在文本上。
+- 修复：提取 `minBoxHeight()`（上内边距 + 附件行 offsetHeight + 输入区最小高度 + 底部预留）；拖拽起点与拖拽中均用新下限；另加 `watch(attachments.length)`——手动拖过（inline height 已设）的盒子在附件增减后低于新下限则抬起（nextTick 后量 attach-row 实高，覆盖“先拖矮后贴图”时序）；auto 高度盒子自然增长不干预。
+- 验证：forge-ui typecheck 0 错、143 测试全过。
+
 ## v3.38 (新建会话默认选中项目列表第一项)
 
 - 用户反馈：新建会话的归属默认不是最近使用的项目，而是某个历史项目。排查：① `lastActiveAt` 仅在 createSession 写一次、之后从不更新，"最近激活项目"实为"最近创建会话的项目"；② 旧默认仅在 `currentProjectPath === null` 时生效，但启动时 `loadProjects` 自动打开 `projects[0]`，条件几乎永远不成立，草稿直接继承侧栏当前选中（可能是钉扎的老项目）。
