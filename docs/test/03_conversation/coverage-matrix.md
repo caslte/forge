@@ -96,6 +96,7 @@
 | U-CV-002 | AC-CV-006 | Markdown 渲染器 | 字段边界 | 消息内容 | `\`\`\` 代码块+标题+列表 | 渲染 | 正确生成 HTML 结构 | 不当转义 |
 | U-CV-003 | AC-CV-007 | 白名单渲染器 | 安全 | 消息含恶意 HTML | `<script>alert</script>`、`<img onerror>` | 渲染 | 危险标签被剔除/转义，不执行 | 无跨站脚本（XSS）执行 |
 | U-CV-004 | AC-CV-008 | Mermaid 渲染 | 边界 | 无效 mermaid 图 | `graph TD; a -- b --` 非法 | 渲染 | 返回错误信息+源码 | 不抛出未处理异常 |
+| U-CV-006 | AC-CV-008 | Mermaid 非 mermaid 内容误包围栏 | 边界 | 围栏标记 mermaid 但内容不是任何图语法（如 ASCII 框图 `┌─┐`） | `\`\`\`mermaid\n┌──┐\n\`\`\`` | 渲染 | detectType 失败不弹红色报错，按普通代码块+灰色提示展示（MermaidBlock notMermaid 分支） | 不尝试图表渲染报错打断阅读 |
 | U-CV-005 | AC-CV-013 | 附件路径化 | 一致性 | 会话存在 + 生效模型 | 正文+@路径行；残留 attachments 选项；含密钥附件；粘贴截图；不支持格式（如 exe） | sendMessage / scanAttachments / savePasteImage | content 原样透传不拼接片段、恒返回 data=null；文本文件命中密钥特征 → flagged；截图落盘临时文件返回真实路径；不在白名单的格式拒绝入待发区并提示 | 附件机制单一：路径进正文，无内容内联/门控分支 |
 
 #### unit（扩展 CV-S06）

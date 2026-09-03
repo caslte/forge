@@ -26,6 +26,8 @@ try {
 
 const svg = ref('');
 const error = ref<string | null>(null);
+/** 源码不是任何 mermaid 图类型（如模型把 ASCII 框图误包进 ```mermaid 围栏）：按代码块展示，不弹红色报错 */
+const notMermaid = ref(false);
 
 // mermaid 渲染结果（mermaid.render 返回 { svg } 或字符串视图，随版本略异）
 type RenderResult = { svg: string } | string;
@@ -54,7 +56,13 @@ onMounted(async () => {
     svg.value = svgText;
   } catch (e) {
     if (disposed) return;
-    error.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    // mermaid detectType 失败（内容不是图语法）：源码本来就不可渲染，按普通代码块展示即可
+    if (msg.includes('No diagram type detected')) {
+      notMermaid.value = true;
+    } else {
+      error.value = msg;
+    }
   }
 });
 
@@ -70,6 +78,7 @@ onBeforeUnmount(() => {
     <!-- 渲染失败 / 空：降级显示原始代码 + 错误提示 -->
     <div v-else class="md-mermaid-fallback">
       <div v-if="error" class="md-mermaid-error">Mermaid 渲染失败：{{ error }}</div>
+      <div v-else-if="notMermaid" class="md-mermaid-hint">内容不是 mermaid 语法，按代码块显示</div>
       <pre class="md-mermaid-source"><code>{{ source }}</code></pre>
     </div>
   </div>
@@ -93,6 +102,12 @@ onBeforeUnmount(() => {
 .md-mermaid-error {
   font-size: 12px;
   color: var(--destructive);
+  margin-bottom: 8px;
+}
+
+.md-mermaid-hint {
+  font-size: 12px;
+  color: var(--muted-foreground);
   margin-bottom: 8px;
 }
 
