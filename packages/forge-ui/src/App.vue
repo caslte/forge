@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { call, subscribe } from './bridge';
 import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
-import { projectTagOf, defaultDraftProjectPath } from './utils/sessionView';
+import { projectTagOf } from './utils/sessionView';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
 import TitleBar from './components/TitleBar.vue';
@@ -98,28 +98,32 @@ const winFocusProjectName = computed(() => {
   return p?.alias ?? basename(s.projectPath);
 });
 
-/** 输入框项目选择器（SM-S01 v3.21）：草稿态=可选归属；会话中=只读信息。 */
+/**
+ * 输入框项目选择器（SM-S01 v3.21）：草稿态=可选归属；会话中=只读信息。
+ * 列表序（v3.38 定版）：pickOrder（用户首次选中次序）优先，未选中的按后端序排后。
+ */
+const orderedProjects = computed<ProjectItem[]>(() => {
+  const rank = (p: string): number => {
+    const idx = pickOrder.value.indexOf(p);
+    return idx === -1 ? pickOrder.value.length : idx;
+  };
+  return [...projects.value].sort((a, b) => rank(a.path) - rank(b.path));
+});
+
 const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
   if (projects.value.length === 0) return null;
   const s = currentSession.value;
   const inSession = s !== null && !draftMode.value;
   const path = inSession ? s.projectPath : (currentProject.value?.path ?? null);
   if (!path) return null;
-  // 排序：按用户选中次序（先选中在前，SM-S01 v3.29）；未选中的保持后端序排后
-  const rank = (p: string): number => {
-    const idx = pickOrder.value.indexOf(p);
-    return idx === -1 ? pickOrder.value.length : idx;
-  };
   return {
     mode: inSession ? 'session' : 'draft',
     currentPath: path,
     currentName: projectTagOf(path, projects.value),
-    items: [...projects.value]
-      .sort((a, b) => rank(a.path) - rank(b.path))
-      .map((p) => ({
-        path: p.path,
-        name: projectTagOf(p.path, projects.value),
-      })),
+    items: orderedProjects.value.map((p) => ({
+      path: p.path,
+      name: projectTagOf(p.path, projects.value),
+    })),
   };
 });
 
@@ -305,16 +309,15 @@ async function onReorderProjects(paths: string[]): Promise<void> {
 /**
  * 新建会话：仅进入草稿输入态，不真正创建 pi session。
  * 发送首条消息时由 ConversationView 创建会话并 emit 'session-created'（见 onSessionCreated）。
+ * 归属默认=项目选择器列表第一项（v3.38 用户裁定：顺序不变，默认选第一项）；
+ * 项目树行内"新建会话"显式携带项目 path，优先于默认。
  */
-function onCreateSession(): void {
+function onCreateSession(sessionProjectPath?: string): void {
   if (projects.value.length === 0) return;
   // 多窗口画布无独立输入区，新建先退回单会话视图
   if (multiWindow.value) multiWindow.value = false;
-  // 任务视角/未选项目时：默认落最近激活项目（AC-SM-030），归属可在输入框底行改
-  if (currentProjectPath.value === null) {
-    const fallback = defaultDraftProjectPath(sessions.value, projects.value[0]?.path ?? null);
-    if (fallback) void selectProject(fallback);
-  }
+  const target = sessionProjectPath ?? orderedProjects.value[0]?.path ?? null;
+  if (target !== null && target !== currentProjectPath.value) void selectProject(target);
   currentSessionId.value = null;
   draftMode.value = true;
 }
@@ -393,12 +396,11 @@ async function onModelChange(model: string): Promise<void> {
   // 草稿态（会话尚未创建）：仅本地回显预览；所选模型在创建会话时由
   // ConversationView 写入会话覆盖（见其草稿发送分支），发送即生效
   if (currentSessionId.value === null) {
-    showToast(`已切换模型：${model}`, 'success');
+    // 不弹顶部 toast：模型选择器本身已回显所选模型，避免遮挡会话区
     return;
   }
   try {
     await call('model/setSessionModel', { sessionId: currentSessionId.value, model });
-    showToast(`已切换模型：${model}`, 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -614,7 +616,7 @@ onUnmounted(() => {
             class="app-toolbar-btn"
             data-tooltip="新建会话"
             :disabled="projects.length === 0"
-            @click="onCreateSession"
+            @click="onCreateSession()"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19" />

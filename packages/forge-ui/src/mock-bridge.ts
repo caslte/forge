@@ -640,6 +640,9 @@ const bridge: ForgeBridge = {
     selectDirectory: async () => 'D:/work/aiwork',
     selectFiles: async () => [],
   },
+  shell: {
+    openPath: async () => true,
+  },
   file: {
     // 浏览器 dev 下无 Electron webUtils，拿不到盘上路径
     getPathForFile: () => '',

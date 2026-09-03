@@ -37,18 +37,3 @@ export function projectTagOf(projectPath: string, projects: ProjectItem[]): stri
   const segs = projectPath.replace(/\\/g, '/').split('/');
   return segs[segs.length - 1] || projectPath;
 }
-
-/**
- * 任务视角"新建会话"默认落点（AC-SM-030）：最近激活会话（lastActiveAt 最新）所属项目；
- * 无会话回退当前项目；均无返回 null。时间相同保持输入序第一个（稳定）。
- */
-export function defaultDraftProjectPath(
-  sessions: SessionItem[],
-  fallbackPath: string | null,
-): string | null {
-  let best: SessionItem | null = null;
-  for (const s of sessions) {
-    if (best === null || s.lastActiveAt > best.lastActiveAt) best = s;
-  }
-  return best?.projectPath ?? fallbackPath;
-}

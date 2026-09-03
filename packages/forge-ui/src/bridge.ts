@@ -163,6 +163,10 @@ export interface ForgeBridge {
     selectDirectory(): Promise<string | null>;
     selectFiles(): Promise<string[]>;
   };
+  shell: {
+    /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
+    openPath(path: string): Promise<boolean>;
+  };
   file: {
     /** 拖拽/粘贴 File 对象 → 磁盘绝对路径；无盘文件（剪贴板截图）返回空串 */
     getPathForFile(file: File): string;

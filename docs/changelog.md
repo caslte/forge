@@ -1,5 +1,35 @@
 # 变更日志
 
+## v3.38 (新建会话默认选中项目列表第一项)
+
+- 用户反馈：新建会话的归属默认不是最近使用的项目，而是某个历史项目。排查：① `lastActiveAt` 仅在 createSession 写一次、之后从不更新，"最近激活项目"实为"最近创建会话的项目"；② 旧默认仅在 `currentProjectPath === null` 时生效，但启动时 `loadProjects` 自动打开 `projects[0]`，条件几乎永远不成立，草稿直接继承侧栏当前选中（可能是钉扎的老项目）。
+- 用户裁定（体验定版）：下拉列表**顺序不变**（pickOrder=首次选中次序），新建会话时**默认选中列表第一项**；项目工作区行内"新建会话"仍固定归属所在项目。
+- 实现：`App` 提取 `orderedProjects` computed（pickOrder 排序收口，picker 与默认落点共用）；`onCreateSession(sessionProjectPath?)` 无载荷→归属=列表第一项，有载荷（`ProjectTree` 行内新建 emit 携带项目 path）→归属=该项目；删除 `sessionView.defaultDraftProjectPath` 及其 3 个单测（孤儿代码）；工具栏新建按钮改 `@click="onCreateSession()"`（避免 PointerEvent 误作路径载荷）。
+- 验证：forge-ui typecheck 0 错、143 测试全过。
+- 文档同步：`prd/02_session_management.md` SM-S01 业务规则 + AC-SM-030 + 追溯表 v3.38 行；`test/02_session/coverage-matrix.md` AC-SM-030 / U-SM-006 / E-SM-007。
+
+## v3.37 (流式指示器读秒)
+
+- 用户需求："思考中"动画右侧增加读秒，从 AI 回复开始计时。
+- 实现：`useSessionConversation` 新增 `streamElapsedSec`（watch `isStreaming` 唯一收口：置 true 记起点 + 1s interval 计数，置 false/卸载清除归零；覆盖 send/statusChanged/statusHint 兒底全部入口）；单视图 `.conv-thinking` 与多窗口 `.wc-thinking` 指示文字右侧追加计时（tabular-nums 小号弱化色）；格式化 `utils/formatElapsed.ts`：秒→分→小时进位且秒位持续在转（`42s`/`1m26s`/`1h2m8s`，整分/整时省零位 `10m`、`1h`）。
+- 验证：typecheck 0 错，forge-ui 143 测试全过。
+- 修复（用户反馈：切会话读秒被重置）：起点改存模块级 `turnStartAt`（sessionId → 时刻，跨视图实例共享）——切走仅停表不删起点，切回（statusHint 兒底置 true）按原起点继续读秒；轮次终态 done/idle/canceled/error、取消、send 即时失败才删；`statusChanged streaming` 无条件刷新起点（防切走期间终态事件被过滤后残留旧起点串入新轮次）。
+- 修复（用户反馈：单视图切会话读秒全同）：根因是会话切换在同 tick 内 `isStreaming` false→true，`watch(isStreaming)` 去重后视为无变化不触发，计时器永不重启、沿用上个会话起点（多窗口每窗格独立实例故无此问题）。重写为显式 `startElapsed/stopElapsed`（send/statusChanged streaming/statusHint 兒底/restoreStreaming 各真实转折点调用）+ 新增 `restoreStreaming(active)` 供 ConversationView 切会话处替换直写 `isStreaming`（一并接管读秒启停）。新增回归测试 `streamElapsed.test.ts` 2 用例（同 tick 切会话各显各的秒数；跨实例起点共享续算）；src/composables 导入补 `.ts` 后缀使 node --test 可直跑，forge-ui tsconfig `allowImportingTsExtensions` 放开（noEmit 下无构建影响）。
+
+## v3.36 (项目右键菜单：打开项目所在目录)
+
+- 用户需求：侧栏项目右键/⋯ 菜单增加"打开项目所在目录"，快捷定位项目文件夹。
+- 实现：forge-desktop 新增 IPC 通道 `forge:shell:openPath`（main 调 `shell.openPath`，成功 true/失败 false；路径非 string/空串直接 false）+ preload `window.forge.shell.openPath` + bridge 类型 + mock-bridge no-op；`ProjectTree` 菜单插入"打开项目所在目录"项（文件夹图标，位于重命名之前、删除项保持最末），点击后关菜单并直接调 shell（沿用 InstructionInput/TitleBar 直调 window.forge 先例，不经 emit 链），菜单高度估算 96→144。
+- 验证：typecheck 全 workspace 0 错。
+- 文档同步：`prd/01_project_management.md` 操作入口 + v3.36 交互补段。
+
+## v3.35 (展示修复：气泡内孤立 @ 残留)
+
+- 用户反馈：粘贴图片发送后，气泡正文尾部多出一个裸 `@`（用户并未手打 @）。
+- 根因：forge 粘贴图发送 `@绝对路径` 行，全局 pi-image-view 扩展在 pi 会话内把路径改写为 `[[Image #N]](file:///…blobs/…)` 链接并附 base64 图 part；forge 展示层剥离链接后行首残留孤立 `@`。
+- 实现：`attachmentText.ts` 链接图片正则与 `[Image #N]` 占位行正则均兼容可选 `@` 前缀（`!?@?\[…\](…)`、`@?\s*\[Image #N\]`），改写后的附件行整体剥除不残留；非图片链接/普通 @mention 不受影响（匹配后仍需过图片路径校验）。
+- 测试：attachmentText.test 新增 3 用例（真实会话 `@[[]]` 形态 / 裸 `@[Image #N]` / 无 base64 part 时提取缩略图且不留 @），forge-ui 143 全过；typecheck 存量 2 错（useSessionConversation.vue 类型导入）非本次引入。
+
 ## v3.34 (SM-S01 验收修正：会话中项目 pill 不再弹浮窗)
 
 - 用户反馈：已创建会话的归属项目浮窗（信息态）不需要，只有新会话（草稿态）选归属才要弹。

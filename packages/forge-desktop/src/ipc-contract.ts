@@ -66,6 +66,9 @@ export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
 export const IPC_DIALOG_OPEN_DIRECTORY = 'forge:dialog:openDirectory';
 export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 
+/** preload ↔ main shell 通道：系统文件管理器打开路径 */
+export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
+
 /** preload ↔ main 附件通道（统一给路径：嗅探 + 截图落盘 + 缩略图读取） */
 export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';
 export const IPC_CLIPBOARD_SAVE_IMAGE = 'forge:clipboard:saveImage';

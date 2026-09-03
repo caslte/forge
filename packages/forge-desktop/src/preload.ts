@@ -16,6 +16,7 @@ import {
   IPC_WINDOW_IS_MAXIMIZED,
   IPC_DIALOG_OPEN_DIRECTORY,
   IPC_DIALOG_OPEN_FILE,
+  IPC_SHELL_OPEN_PATH,
   IPC_ATTACHMENT_SCAN,
   IPC_CLIPBOARD_SAVE_IMAGE,
   IPC_FILE_READ_IMAGE,
@@ -73,6 +74,13 @@ const fileControl = {
   },
 };
 
+/** window.forge.shell 系统能力：文件管理器打开目录 */
+const shellControl = {
+  async openPath(path: string): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_SHELL_OPEN_PATH, path) as Promise<boolean>;
+  },
+};
+
 /** forge:event 多路复用：单条 ipcRenderer 监听分发到多类 ForgeEvent */
 const eventListeners = new Map<ForgeEvent, Set<(payload: unknown) => void>>();
 let ipcEventListening = false;
@@ -118,6 +126,7 @@ const forgeBridge = {
   },
   window: windowControl,
   dialog: dialogControl,
+  shell: shellControl,
   file: fileControl,
 };
 

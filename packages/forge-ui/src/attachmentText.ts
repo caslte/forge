@@ -82,14 +82,18 @@ export interface ParseUserContentOptions {
   hasEmbeddedImages?: boolean;
 }
 
-/** pi 图片占位标记行（裸 [Image #N]） */
-const IMAGE_MARKER_LINE = /^\s*\[Image #\d+\]\s*$/;
+/** pi 图片占位标记行（裸 [Image #N]；@ 前缀为 forge 附件协议符被 pi-image-view
+ *  改写后遗留的孤立形态，如 `@[Image #1]`，一并剥离） */
+const IMAGE_MARKER_LINE = /^\s*@?\s*\[Image #\d+\]\s*$/;
 
 export function parseUserContent(content: string, options?: ParseUserContentOptions): ParsedUserContent {
   const images: string[] = [];
   // 1) markdown 链接形式的本地图片引用（[x](file:///)、[[x]](盘符路径)、![](路径) 均可），任意位置；
+  //    链接前可带 @（forge 附件协议符）：粘贴图片经 forge 发 @绝对路径，pi-image-view 扩展
+  //    把路径改写为 [[Image #N]](file://…) 链接后残留孤立 @，须连同链接一并剥除，
+  //    否则气泡正文尾巴多出一个裸 @；
   //    消息已含 base64 part 时链接只是同一批图的引用：剥离但不提取，避免双重渲染
-  let text = content.replace(/!?\[+[^\]]*\]+\(([^)\s]+)\)/g, (match, target: string) => {
+  let text = content.replace(/!?@?\[+[^\]]*\]+\(([^)\s]+)\)/g, (match, target: string) => {
     const p = fileUrlToPath(target);
     if (isImagePath(p) && (isPathLine(p) || p.startsWith('file://'))) {
       if (!options?.hasEmbeddedImages) {

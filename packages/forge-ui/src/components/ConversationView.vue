@@ -13,6 +13,7 @@ import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
+import { formatElapsed } from '../utils/formatElapsed.ts';
 
 /**
  * 对话主视图。
@@ -63,6 +64,8 @@ const {
   toggleGroup,
   sessionStatus,
   streamPhaseText,
+  streamElapsedSec,
+  restoreStreaming,
   resetForSession: resetConvForSession,
   loadHistory,
   send: sendTurn,
@@ -414,8 +417,9 @@ watch(
     }
     resetForSession();
     // 切回仍在流式的会话时恢复流式标记：后端不会对进行中的轮次重发 streaming 事件，
-    // 不恢复则"助手正在思考"指示器消失、输入框却仍显示流式中（两处状态源不一致）
-    isStreaming.value = props.session?.status === 'streaming';
+    // 不恢复则"助手正在思考"指示器消失、输入框却仍显示流式中（两处状态源不一致）；
+    // 经 restoreStreaming 一并接管读秒启停（同 tick false→true 的 watch 会去致盲）
+    restoreStreaming(props.session?.status === 'streaming');
     void loadHistory();
     activeAgentId.value = null; // 切换会话回主会话 Tab
     void loadSubagents();
@@ -472,6 +476,7 @@ watch(
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
             <div v-if="isStreaming" class="conv-thinking">
               <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
+              <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
             </div>
           </template>
 
@@ -697,6 +702,14 @@ watch(
 /* 思考指示器已无前置圆点，取消左移 */
 .conv-thinking .thinking-text {
   margin-left: 0;
+}
+
+/* 流式读秒：正文右侧的计时器，小号弱化色 */
+.thinking-sec {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  margin-left: 2px;
 }
 
 /* Codex 银色流光（ai-coding streaming-working 同款，银色版） */

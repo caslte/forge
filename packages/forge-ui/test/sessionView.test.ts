@@ -17,7 +17,6 @@ import {
   sortSessionsByActivation,
   nextFoldAllAction,
   projectTagOf,
-  defaultDraftProjectPath,
 } from '../src/utils/sessionView.ts';
 import type { SessionItem, ProjectItem } from '../src/types.ts';
 
@@ -90,24 +89,4 @@ test('projectTagOf: 无别名取路径末段；反斜杠路径同样取末段', 
 test('projectTagOf: 会话所属项目不在列表（脏数据）回退路径末段', () => {
   const projects = [proj('/other', 'x')];
   assert.equal(projectTagOf('/ghost/proj', projects), 'proj');
-});
-
-test('defaultDraftProjectPath: 返回最近激活会话（lastActiveAt 最新）所属项目，乱序输入稳定', () => {
-  const sessions = [
-    sess('s1', 'idle', '/w/a', '2026-01-01T00:00:00Z'),
-    sess('s2', 'done', '/w/b', '2026-01-02T00:00:00Z'),
-    sess('s3', 'idle', '/w/c', '2026-01-01T12:00:00Z'),
-  ];
-  assert.equal(defaultDraftProjectPath(sessions, null), '/w/b');
-});
-
-test('defaultDraftProjectPath: lastActiveAt 相同保持输入序第一个最大（稳定）', () => {
-  const ts = '2026-01-01T00:00:00Z';
-  const sessions = [sess('s1', 'idle', '/w/a', ts), sess('s2', 'idle', '/w/b', ts)];
-  assert.equal(defaultDraftProjectPath(sessions, '/w/z'), '/w/a');
-});
-
-test('defaultDraftProjectPath: 空 sessions 回退当前项目；均空返回 null', () => {
-  assert.equal(defaultDraftProjectPath([], '/w/cur'), '/w/cur');
-  assert.equal(defaultDraftProjectPath([], null), null);
 });

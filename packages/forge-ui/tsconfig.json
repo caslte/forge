@@ -11,7 +11,7 @@
     "noEmit": true,
     "verbatimModuleSyntax": false,
     "erasableSyntaxOnly": false,
-    "allowImportingTsExtensions": false,
+    "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false
   },
   "include": ["src"]

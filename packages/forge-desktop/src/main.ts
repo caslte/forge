@@ -10,14 +10,14 @@
  *
  * 单窗口（v1 MVP）；多窗口多会话为后续迭代。
  */
-import { app, BrowserWindow, ipcMain, dialog, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
 import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -121,6 +121,11 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
       return [];
     }
     return res.filePaths;
+  });
+  // 系统文件管理器打开目录（PM 侧栏右键“打开项目所在目录”）；成功 true，失败 false
+  ipcMain.handle(IPC_SHELL_OPEN_PATH, (_e, p: unknown) => {
+    if (typeof p !== 'string' || p === '') return false;
+    return shell.openPath(p).then((err) => err === '');
   });
   // 附件密钥嗅探：文本文件命中凭据特征 → flagged（发送前 UI 弹确认，出域防线）
   ipcMain.handle(IPC_ATTACHMENT_SCAN, (_e, paths: unknown) => {

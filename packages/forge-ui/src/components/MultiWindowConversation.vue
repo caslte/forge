@@ -2,13 +2,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { call } from '../bridge';
 import type { SessionItem } from '../types';
-import { useToast } from '../composables/useToast';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import InstructionInput from './InstructionInput.vue';
 import MessageListItem from './MessageListItem.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { useCompactBanner } from '../composables/useCompactBanner';
+import { formatElapsed } from '../utils/formatElapsed.ts';
 
 /**
  * 多窗口画布内单个窗口的会话视图：会话状态机（消息流/流式/工具/子 Agent）与单视图共用
@@ -24,8 +24,6 @@ const props = defineProps<{
   /** 项目根路径（透传给输入框，@ 文件补全候选范围） */
   projectPath?: string;
 }>();
-
-const { success: toastSuccess } = useToast();
 
 /**
  * 上下文压缩横幅（内存持久，按 sessionId 隔离）：状态由 InstructionInput 的
@@ -61,6 +59,7 @@ const {
   toggleGroup,
   sessionStatus,
   streamPhaseText,
+  streamElapsedSec,
   send,
   cancel,
   subagents,
@@ -95,8 +94,7 @@ async function onSelectModel(model: string): Promise<void> {
   try {
     await call('model/setSessionModel', { sessionId: props.sessionId, model });
     currentModel.value = model;
-    toastSuccess(`已切换模型：${model}`); // 顶部全局提示
-    showSwitchBanner(model); // 窗口内容内提示
+    showSwitchBanner(model); // 窗口内容内提示（不再弹顶部全局 toast）
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e);
   }
@@ -141,6 +139,7 @@ onUnmounted(() => {
         <!-- 与单视图 .conv-thinking 同构：左对齐，窄窗格用紧凑字号/内边距 -->
         <div v-if="isStreaming" class="wc-thinking">
           <span class="thinking-shimmer">{{ streamPhaseText }}</span>
+          <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
         </div>
       </template>
       <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->
@@ -250,6 +249,12 @@ onUnmounted(() => {
   padding: 6px 2px;
   color: var(--muted-foreground);
   font-size: 13px;
+}
+.wc-thinking .thinking-sec {
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
 }
 .wc-empty {
   flex: 1;

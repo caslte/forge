@@ -787,8 +787,10 @@ function selectModel(m: string): void {
  * 草稿态（新会话未创建，sessionId 缺省）同样渲染切换器：级别列表只依赖模型
  * （草稿用全局默认模型）；级别回显传空参查全局默认（新会话继承全局，TD-MP-05）。
  * 仅当 currentModel 不存在时回退空态。
+ * animateMax：切换模型触发的重载时传 true——刷新后级别仍为 max 则触发金色流光
+ * （与手动切级别到 max 一致，确认新模型下最强推理仍在生效）。
  */
-async function loadThinkingState(): Promise<void> {
+async function loadThinkingState(animateMax = false): Promise<void> {
   const gen = ++tlGen;
   if (!props.currentModel) {
     availableLevels.value = [];
@@ -816,6 +818,8 @@ async function loadThinkingState(): Promise<void> {
     );
     if (gen !== tlGen) return;
     currentLevel.value = res.level ?? null;
+    // 切换模型后级别仍为 max：同样触发金色流光（displayLevel 兼容新模型不支持 max 的回退）
+    if (animateMax && displayLevel.value === 'max') triggerShimmer();
   } catch (e) {
     if (gen !== tlGen) return;
     console.warn('[thinkingLevel] 查询当前思考级别失败（降级回显）', e);
@@ -969,12 +973,13 @@ watch(
   },
 );
 
-// 会话 / 当前模型变化时重新加载思考级别状态（MP-S05）
+// 会话 / 当前模型变化时重新加载思考级别状态（MP-S05）；模型变化时带 animateMax，
+// 刷新后仍为 max 则播放金色流光
 watch(
   () => [props.currentModel, props.sessionId] as const,
-  () => {
+  ([model], [prevModel]) => {
     levelMenuOpen.value = false;
-    void loadThinkingState();
+    void loadThinkingState(model !== prevModel);
   },
 );
 </script>
@@ -1599,11 +1604,16 @@ watch(
 }
 
 .proj-item:hover {
-  background: var(--surface-hover);
+  background: color-mix(in oklab, var(--surface-hover) 55%, transparent);
 }
 
 .proj-item.active {
-  background: var(--surface-active);
+  background: color-mix(in oklab, var(--surface-active) 55%, transparent);
+}
+
+/* 上下相邻两项同为焦点（active/hover）时留 1px 缝，避免高亮块粘连 */
+:is(.proj-item.active, .proj-item:hover) + :is(.proj-item.active, .proj-item:hover) {
+  margin-top: 1px;
 }
 
 .proj-item svg {

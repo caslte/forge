@@ -49,6 +49,27 @@ test('parseUserContent：消息已含 base64 图 part 时，文本里的链接�
   assert.deepEqual(r.images, [], '链接不进缩略图列表，否则同一张图渲染两遍');
 });
 
+test('parseUserContent：@[[]] 链接（forge @ 前缀 + 扩展改写）不残留孤立 @', () => {
+  // 真实场景：forge 粘贴图发 `@C:\…png`，pi-image-view 把路径改写为 [[Image #N]](file:///) 链接，
+  // @ 前缀残留成孤立行，气泡正文尾巴会多出一个 @
+  const content = '背景颜色淡一点\n@[[Image #1]](file:///C:/Users/chenmo/.pi/agent/image-view/blobs/348ff566.png)';
+  const r = parseUserContent(content, { hasEmbeddedImages: true });
+  assert.equal(r.body, '背景颜色淡一点');
+  assert.deepEqual(r.images, []);
+});
+
+test('parseUserContent：裸 @[Image #N] 占位行（@ 前缀残留）一并剥离', () => {
+  const r = parseUserContent('看图\n@[Image #2]', { hasEmbeddedImages: true });
+  assert.equal(r.body, '看图');
+  assert.deepEqual(r.images, []);
+});
+
+test('parseUserContent：无 base64 part 时 @[[]] 链接照常提取缩略图且不留 @', () => {
+  const r = parseUserContent('看这张\n@[[Image #1]](file:///C:/x/logo.png)');
+  assert.deepEqual(r.images, ['C:/x/logo.png']);
+  assert.equal(r.body, '看这张');
+});
+
 test('parseUserContent：无 base64 part 时链接图片照常提取（forge 路径消息 / 粘贴文本）', () => {
   const content = '看这张\n[Image #1](file:///C:/x/logo.png)';
   const r = parseUserContent(content);

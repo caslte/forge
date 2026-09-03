@@ -19,7 +19,7 @@ const emit = defineEmits<{
   (e: 'select-project', path: string): void;
   (e: 'remove-project', path: string): void;
   (e: 'rename-project', path: string, alias: string): void;
-  (e: 'create-session'): void;
+  (e: 'create-session', projectPath?: string): void;
   (e: 'select-session', id: string): void;
   (e: 'delete-session', id: string): void;
   (e: 'rename-session', id: string, alias: string): void;
@@ -198,7 +198,7 @@ function selectSession(id: string): void {
   emit('select-session', id);
 }
 
-// create-session 事件无 path 载荷，先 select-project 让父端知道目标项目，再展开本面板
+// create-session 携带项目 path（v3.38）：App 端归属优先用载荷，不再依赖 select-project 先行
 function onCreateSession(p: ProjectItem): void {
   emit('select-project', p.path);
   if (collapsedPaths.value.has(p.path)) {
@@ -206,7 +206,7 @@ function onCreateSession(p: ProjectItem): void {
     next.delete(p.path);
     collapsedPaths.value = next;
   }
-  emit('create-session');
+  emit('create-session', p.path);
 }
 
 // 会话删除：首次点击进入确认态（按钮变红“确认”），3 秒内再次点击才真删除
@@ -234,7 +234,7 @@ function clearDeleteConfirmTimer(): void {
 function openProjectMenu(p: ProjectItem, ev: MouseEvent): void {
   menuOpenPath.value = p.path;
   const w = 184;
-  const h = 96;
+  const h = 144;
   menuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
   menuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
   clearProjectDeleteTimer();
@@ -306,6 +306,12 @@ function requestDeleteProject(p: ProjectItem): void {
   projectDeleteConfirmTimer = setTimeout(() => {
     projectDeleteConfirmPath.value = null;
   }, 3000);
+}
+
+function onMenuOpenDir(): void {
+  const path = menuOpenPath.value;
+  closeMenu();
+  if (path) void window.forge.shell.openPath(path);
 }
 
 function onMenuRename(): void {
@@ -729,6 +735,12 @@ onUnmounted(() => {
         @click.stop
         @contextmenu.prevent
       >
+        <button type="button" class="project-action-menu-item" @click="onMenuOpenDir">
+          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          打开项目所在目录
+        </button>
         <button type="button" class="project-action-menu-item" @click="onMenuRename">
           <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 20h9" />

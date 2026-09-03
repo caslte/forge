@@ -25,16 +25,12 @@ onUnmounted(() => {
   }
 });
 
-// 解析“已切换模型：xxx”做富文本展示，贴合但又能让用户一眼看出
+// 长消息含全角冒号时拆为 label+value 富文本，模型名等关键值一眼可辨
 const parsed = computed(() => {
   const m = props.message;
   const idx = m.indexOf('：');
-  if (m.startsWith('已切换模型') && idx > -1) {
+  if (idx > -1 && m.length > 20) {
     return { label: m.slice(0, idx), value: m.slice(idx + 1) };
-  }
-  const idx2 = m.indexOf('：');
-  if (idx2 > -1 && m.length > 20) {
-    return { label: m.slice(0, idx2), value: m.slice(idx2 + 1) };
   }
   return { label: null as string | null, value: m };
 });

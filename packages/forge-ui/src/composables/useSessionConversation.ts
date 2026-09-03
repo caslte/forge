@@ -1,9 +1,12 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { call, subscribe, type ConversationCompactedPayload } from '../bridge';
-import type { ConversationMessage, SessionStatus, Subagent } from '../types';
+import { call, subscribe, type ConversationCompactedPayload } from '../bridge.ts';
+import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
 import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
-import { computeTurnFooters } from './useTurnFooter';
-import { useStreamPhase } from './useStreamPhase';
+import { computeTurnFooters } from './useTurnFooter.ts';
+import { useStreamPhase } from './useStreamPhase.ts';
+
+/** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
+const turnStartAt = new Map<string, number>();
 
 /**
  * 单会话对话状态机（单视图 ConversationView 与多窗口 MultiWindowConversation 共用）。
@@ -39,6 +42,43 @@ export function useSessionConversation(options: {
 
   /** 流式阶段指示（方案 A）：按 delta/工具事件推断当前动作文案（思考/输出/写入/读取/执行命令…） */
   const { streamPhaseText, reset: resetStreamPhase, markOutputting, markTool, markToolEnd } = useStreamPhase();
+
+  /** 流式读秒：起点按 sessionId 存模块级表（跨视图实例共享），切走再切回不丢真实起点；
+   *  用显式 start/stop 而非 watch(isStreaming)：会话切换在同 tick 内 false→true，
+   *  watch 去重后视为无变化不触发，计时器会沿用上个会话的起点（多会话读秒全同的 bug） */
+  const streamElapsedSec = ref(0);
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  let elapsedStartAt = 0;
+
+  function startElapsed(sid: string): void {
+    if (elapsedTimer) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+    const recorded = turnStartAt.get(sid);
+    elapsedStartAt = recorded ?? Date.now();
+    if (recorded === undefined) turnStartAt.set(sid, elapsedStartAt);
+    streamElapsedSec.value = Math.floor((Date.now() - elapsedStartAt) / 1000);
+    elapsedTimer = setInterval(() => {
+      streamElapsedSec.value = Math.floor((Date.now() - elapsedStartAt) / 1000);
+    }, 1000);
+  }
+
+  /** 停表不删起点：切走会话（resetForSession）用；真正终态由各终态分支另删起点 */
+  function stopElapsed(): void {
+    if (elapsedTimer) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
+  /** 会话切换时恢复/清除流式态（ConversationView 切会话调用）：一并接管读秒启停 */
+  function restoreStreaming(active: boolean): void {
+    const sid = options.getSessionId();
+    isStreaming.value = active;
+    if (active && sid !== null) startElapsed(sid);
+    else stopElapsed();
+  }
 
   // ===== 子 Agent 内存态（按 sessionId 隔离） =====
   const subagents = ref<Subagent[]>([]);
@@ -204,6 +244,7 @@ export function useSessionConversation(options: {
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
+    stopElapsed();
   }
 
   // ===== 发送 / 取消 =====
@@ -216,11 +257,14 @@ export function useSessionConversation(options: {
     errorMsg.value = null;
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
     isStreaming.value = true;
+    startElapsed(sid);
     resetStreamPhase();
     scheduleScroll();
     try {
       await call<null>('conversation/sendMessage', { sessionId: sid, content: t });
     } catch (e) {
+      if (sid !== null) turnStartAt.delete(sid);
+      stopElapsed();
       isStreaming.value = false;
       errorMsg.value = e instanceof Error ? e.message : String(e);
     }
@@ -233,6 +277,9 @@ export function useSessionConversation(options: {
     } catch {
       // 取消失败不阻塞，仍允许 UI 停止
     }
+    const sid = options.getSessionId();
+    if (sid !== null) turnStartAt.delete(sid);
+    stopElapsed();
     isStreaming.value = false;
   }
 
@@ -274,9 +321,14 @@ export function useSessionConversation(options: {
     const p = payload as { sessionId: string; status: string };
     if (p.sessionId !== options.getSessionId()) return;
     if (p.status === 'streaming') {
+      // 新轮次起点：无条件刷新（防上一轮终态在切走期间被过滤后残留旧起点串入新轮次）
+      turnStartAt.set(p.sessionId, Date.now());
       isStreaming.value = true;
+      startElapsed(p.sessionId);
       resetStreamPhase();
     } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
+      turnStartAt.delete(p.sessionId);
+      stopElapsed();
       isStreaming.value = false;
       // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
       // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
@@ -473,7 +525,7 @@ export function useSessionConversation(options: {
   watch(
     () => options.getStatusHint?.(),
     (st) => {
-      if (st === 'streaming' && !isStreaming.value) isStreaming.value = true;
+      if (st === 'streaming' && !isStreaming.value) restoreStreaming(true);
     },
     { immediate: true },
   );
@@ -503,6 +555,7 @@ export function useSessionConversation(options: {
   onUnmounted(() => {
     unsubs.forEach((u) => u?.());
     unsubs = [];
+    stopElapsed();
   });
 
   return {
@@ -517,6 +570,8 @@ export function useSessionConversation(options: {
     toggleGroup,
     sessionStatus,
     streamPhaseText,
+    streamElapsedSec,
+    restoreStreaming,
     // 会话操作
     loadHistory,
     resetForSession,
