@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "kb-2026-09-04-flex-scroll-shrink",
+      "title": "flex column 滚动容器会压缩 overflow:hidden 子项而不是滚动",
+      "tags": ["css", "flexbox", "滚动容器", "多窗口", "布局消失"],
+      "source": "v3.42 多窗口工具条不显示 + v3.41 子agent头部条变形",
+      "file": "flex-scroll-shrink.md",
+      "createdAt": "2026-09-04"
+    }
+  ]
+}

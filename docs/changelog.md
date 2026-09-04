@@ -1,5 +1,13 @@
 # 变更日志
 
+## v3.42 (修复：多窗口窄窗格工具调用条不显示)
+
+- 用户反馈：多窗口会话窗口里工具调用条不显示（又出现），单视图同一会话正常；并追问多窗口会话窗口与单窗口是否同一组件。
+- 组件事实：多窗口 `MultiWindowConversation` 与单视图 `ConversationView` 是两个壳层，共享状态机 `useSessionConversation` 与输入框/子 agent 子组件；本次 bug 不在共享层，在多窗口壳层自己的滚动区。
+- 根因（无头浏览器实测复现，量测 DOM 几何）：`.wc-messages` 是 flex column + `overflow-y:auto` 滚动容器，但展示项是它的**直接子元素**且默认 `flex-shrink:1`；窗格矮+会话长内容超高时 flex 先收缩而不滚动——文本消息压到 min-content 地板（中文字块地板高）几乎不变形，而 `overflow:hidden` 的 `.tool-group`/`.tool-calls` min-height 地板为 0，吸收全部收缩量 → 计算高度 0px，视觉“消失”。间歇性 = 仅内容总高超过窗格才触发，多窗口窗格矮几乎必现，单窗口高几乎不现（且单视图 `.conv-messages` 内有唯一的 `.conv-messages-inner` 包装层，子项不直接参与收缩，结构性免疫）。
+- 修复：`.wc-messages > * { flex-shrink: 0 }`，超高恢复为正常滚动；compact 横幅/错误/思考指示同为直接子元素一并受保护。单视图不动。
+- 验证：新增 e2e `mwToolGroupVisible.spec.ts`（矮窗格 1280×640 + 工具组历史，断言 `.tool-group` offsetHeight > 0）；未修复时 failed、修复后 passed（TDD 闭环）；mw-restore/session/subagent 回归 20 过，session.spec 的 SESSION-E2E-001 为存量失败（不带本改动同样失败，与本次无关）。
+
 ## v3.41 (修复：子 agent 头部条窄容器下变形)
 
 - 用户反馈：子 agent 的工具条（头部：描述名 + 类型徽标 + 状态点 + 运行中 + 耗时）有时候会变形。

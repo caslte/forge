@@ -236,6 +236,12 @@ onUnmounted(() => {
   width: 6px;
   height: 6px;
 }
+/* 滚动容器内禁止 flex 收缩：内容超高时必须走滚动而不是压缩子项。
+   否则 overflow:hidden 的工具组/工具卡（min-height 地板 0）会被压到 0 高度——
+   表现为多窗口里“工具条不显示”而文本消息正常（文本地板是 min-content） */
+.wc-messages > * {
+  flex-shrink: 0;
+}
 .wc-hint {
   color: var(--muted-foreground);
   font-size: 13px;

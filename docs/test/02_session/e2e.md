@@ -135,6 +135,23 @@
 
 ---
 
+## E-SM-007 多窗口窄窗格工具组保持可见（回归）
+
+- **关联 AC**：AC-SM-013（窗口内嵌真实会话视图，展示与单视图一致） | **优先级**：P0 | **上线门禁**：是 | **自动化等级**：mock-backend
+- **角色/页面**：单用户 / 多窗口画布会话窗口
+- **前置条件**：会话含工具调用历史（连续 ≥2 工具聚组）
+- **测试数据**：mock 历史 user + tool×2 + assistant
+- **准备与清理**：mock 会话与历史；矮视口（1280×640）锁住“内容超高”触发条件
+- **操作**：
+  1. 拖会话入画布开窗
+  2. 断言窗口内 `.tool-group` offsetHeight > 0（头部“工具调用 N 次”可见）
+- **背景**：曾因 `.wc-messages` 滚动容器内子项默认 flex-shrink:1，超高时长文本项压到
+  min-content 地板停住，`overflow:hidden` 的工具组被压到 0 高度“消失”（单视图有
+  `.conv-messages-inner` 包装层免疫）；修复为 `.wc-messages > * { flex-shrink: 0 }`
+- **失败检查**：无 console error；用例：`e2e/mwToolGroupVisible.spec.ts`
+
+---
+
 ## 覆盖汇总
 
 | 用例 | AC | 优先级 | 自动化等级 | 触发展开项 |
@@ -145,5 +162,6 @@
 | E-SM-004 | 011/012/013/014/015/016 | P0 | mock-backend | 多步交互（开窗/吸附/置顶/重复/关闭） |
 | E-SM-005 | 017/018/019/020 | P1 | mock-backend | 多步交互（8 区吸附/4窗格/resize/崩溃恢复） |
 | E-SM-006 | 022/023/024/025/026/027 | P1 | mock-backend | 多步交互（双视角/收起展开全部/LOGO 按钮/聚焦行 pill/视角记忆） |
+| E-SM-007 | 013 | P0 | mock-backend | 回归：多窗口窄窗格工具组不被 flex 压缩（mwToolGroupVisible.spec.ts） |
 
 > 注：多窗口并发为集成级风险，真实多 AgentSession 并发（非 mock）见 `test/integration/pi-core.md`（F5/F6）。
