@@ -184,7 +184,7 @@
 
 | 用例 ID | 关联 AC | 页面 | 前置场景 | 测试数据 | 自动化等级 | 操作 | 断言 |
 |---|---|---|---|---|---|---|---|
-| E-CV-014 | AC-CV-026/027/028 | 输入框命令浮窗 | 会话激活（seed 三类命令清单） | seed getSlashCommands（skill/extension/prompt + 无描述项） | mock-backend | 行首输入 `/`→续输前缀→输入无匹配串；emit streaming 后再尝试触发 | 浮窗弹出、美化显示（无前缀/Title Case/skill 加粗品牌色/来源标签）；过滤实时；「无匹配命令」空态；streaming 期间输入禁用、浮窗不可触发 |
+| E-CV-014 | AC-CV-026/027/028 | 输入框命令浮窗 | 会话激活（seed 三类命令清单） | seed getSlashCommands（skill/extension/prompt + 无描述项） | mock-backend | 行首输入 `/`→续输前缀→输入无匹配串；emit streaming 后再触发 | 浮窗弹出、美化显示（无前缀/Title Case/skill 加粗品牌色/来源标签）；过滤实时；「无匹配命令」空态；streaming 期间输入不禁用、浮窗可触发（CV-S09 起忙时解锁） |
 | E-CV-015 | AC-CV-029 | 输入框命令浮窗 | 浮窗已打开（高亮首条） | seed 命令清单 | mock-backend | ↓↓ 到末条再 ↓（循环）→Enter 选中；再开浮窗 Tab 选中；鼠标单击选中 | 插入原始命令串+尾随空格、光标在空格后；浮窗关闭；期间 Enter 不发送消息（消息区无新 user 气泡） |
 | E-CV-016 | AC-CV-030 | 输入框命令浮窗 | 浮窗已打开 | - | mock-backend | 分别：Esc；点输入框外部（失焦）；删空行首 `/`；行内输入空格 | 四路径均关闭浮窗；关闭后 Enter 恢复发送（可正常发出普通消息） |
 | E-CV-017 | AC-CV-032 | 输入框命令浮窗 | 新建会话草稿态（未发消息） | seed 草稿态清单（skills+模板）；emit slashCommandsUpdated | 草稿态输入 `/` 观察；发送首条消息激活会话→emit 事件→再次输入 `/` | 草稿态列 skills/模板、无扩展命令；事件后扩展命令出现（缓存失效重拉） |
@@ -192,3 +192,16 @@
 | E-CV-019 | AC-CV-034/035/036 | 输入框 @ 文件补全 | mock listProjectFiles 固定 3 条清单 | - | mock-backend | 输入 `看下 @`→过滤 `read`→↓+Enter 选中→输 `@zzz` 空态→Esc→普通消息 | 触发弹 3 条、过滤 1 条；选中后 @token 移除且待发区出 chip；空态「无匹配文件」Esc 关闭；输入与发送不阻塞、无报错 |
 
 > E-CV-004 用 manual（安全边界，需人工确认无脚本执行，无法由 mock 自动判定）——已注明。可另配合禁用 CSP 的专用用例做自动化安全断言（P2 补充）。
+#### e2e（扩展 CV-S09 消息队列 / CV-S10 输入历史翻阅，v1.1；实现为 e2e/queue.spec.ts 与 e2e/inputHistory.spec.ts）
+
+| 用例 ID | 关联 AC | 页面 | 前置场景 | 测试数据 | 自动化等级 | 操作 | 断言 |
+|---|---|---|---|---|---|---|---|
+| QC-001 | CV-S09 | 输入框队列区 | 会话流式中（慢回复脚本） | 脚本 delay 900ms；两条排队文本 | mock-backend | 忙时连发两条→看徽标→开浮窗→等自动派发 | 徽标计数 1→2；浮窗只读（无按钮）FIFO 展示；脚本结束后逐条派发为 user 气泡、徽标清空；无 console error |
+| QC-002 | CV-S09 | 输入框队列区 | 队列已满 5 条 | q1~q5 + 第 6 条 | mock-backend | 忙时连发 5 条→第 6 条 Enter | toast「队列已满」；输入框内容保留；计数仍 5 |
+| QC-003 | CV-S09 | 输入框+队列区 | 队列 2 条流式中 | 两条待发文本 | mock-backend | 点停止 | 徽标消失；被清空文本按 \n\n 拼接回填输入框（pi TUI ESC 同款，零丢失） |
+| AC-IH-001/002 | CV-S10 | 输入框 | 发送 3 条后清空输入框 | msg-1~3 | mock-backend | 空输入 ↑↑↓↓ | ↑ 回填最近→更早；↓ 反向；走过最新清空回当前编辑 |
+| AC-IH-003 | CV-S10 | 输入框 | 输入框非空 | 任意文本 | mock-backend | 非空时按 ↑/↓ | 不触发翻阅（方案 B，让出默认光标移动） |
+| AC-IH-004 | CV-S10 | localStorage | 未发任何消息 | - | mock-backend | 检查存储 | 无 forge.inputHistory.* 键（草稿态不入栈） |
+| AC-IH-005 | CV-S10 | 双会话 | A/B 各发一条 | A-only/B-only | mock-backend | 切会话后 ↑ | 历史按 sessionId 隔离；历史模式残留文本随切换清空 |
+| AC-IH-006 | CV-S10 | 输入框 | 发送 2 条后刷新页面 | persist-1/2 | mock-backend | 刷新→↑↑ | localStorage 持久化跨刷新生效 |
+| AC-IH-007 | CV-S10 | 输入框 | 连续发送相同内容 | same-msg ×2 | mock-backend | 翻阅 | 去重不产生重复条目 |

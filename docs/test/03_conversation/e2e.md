@@ -286,9 +286,12 @@
 | E-CV-011 | 018 | P2 | mock-backend（窄视口） | 极端尺寸布局 |
 | E-CV-012 | 020/021/022 | P0 | mock-backend | 压缩结果反馈 + 流式禁用 |
 | E-CV-013 | 023 | P0 | mock-backend（emit 事件） | 自动压缩感知与历史重拉 |
-| E-CV-014 | 026/027/028 | P0 | mock-backend | 斜杠浮窗触发/美化/过滤/空态 + streaming 禁用 |
+| E-CV-014 | 026/027/028 | P0 | mock-backend | 斜杠浮窗触发/美化/过滤/空态 + streaming 可用（CV-S09 起忙时不禁用） |
 | E-CV-015 | 029 | P0 | mock-backend | 导航/选择/插入原始串（含 Enter 不发送负向） |
 | E-CV-016 | 030 | P1 | mock-backend | 四关闭路径 + Enter 恢复发送 |
 | E-CV-017 | 032 | P0 | mock-backend（emit slashCommandsUpdated） | 草稿态 skills 可见 + 激活后扩展命令补全 |
 | E-CV-018 | 033 | P1 | mock-backend | 枚举失败降级不阻塞输入 |
-| E-CV-019 | 034/035/036 | P1 | mock-backend | @ 补全触发/过滤/选中进待发区 + 空态降级 |
+| E-CV-019 | 034/035/036 | P1 | mock-backend | @ 补全触发/过滤/选中进待发区 + 空态降级 || QC-001 | CV-S09 | P0 | mock-backend | 忙时入队/徽标浮窗/自动派发（慢回复脚本） |
+| QC-002 | CV-S09 | P1 | mock-backend | 上限 5 条拒绝 + 输入保留 |
+| QC-003 | CV-S09 | P0 | mock-backend | 停止清队 + \n\n 回填（TUI ESC 同款） |
+| AC-IH-001~007 | CV-S10 | P1 | mock-backend | 空输入 ↑↓ 翻阅/隔离/持久化/去重/草稿态 |

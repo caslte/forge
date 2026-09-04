@@ -34,8 +34,8 @@ const props = defineProps<{
   currentModel: string | null;
   /** 会话 ID（P3-A：读取上下文用量 / 手动压缩） */
   sessionId?: string;
-  /** 紧凑模式（多窗口用）：更小的默认高度，可用鼠标拖拽调整 */
-  compact?: boolean;
+  /** 当前会话待发送队列（CV-S09，FIFO 序）；不传则不渲染徽标 */
+  queueItems?: string[];
   /** 项目选择器（SM-S01 v3.21）：单视图传入；不传则不渲染（多窗口窗口标题行已有项目 pill） */
   projectPicker?: ProjectPickerDescriptor;
   /** 项目根路径（@ 文件补全候选范围）；未传则 @ 补全不触发 */
@@ -218,7 +218,11 @@ const usageLabel = computed(() => {
 const usageWarning = computed(() => usagePercent.value !== null && usagePercent.value >= 80);
 
 /** 压缩期间锁定输入（手动或自动）：上下文重建中发送会造成内容错位 */
-const inputLocked = computed(() => isStreaming.value || compacting.value || autoCompacting.value);
+const inputLocked = computed(() => compacting.value || autoCompacting.value);
+/** 待发送队列（CV-S09）：忙时发送入队，上限 5 条 */
+const queueList = computed(() => props.queueItems ?? []);
+const QUEUE_MAX = 5;
+const queuePanelOpen = ref(false);
 const canSend = computed(
   () => (text.value.trim().length > 0 || attachments.value.length > 0) && !inputLocked.value,
 );
@@ -676,6 +680,11 @@ function onSend(): void {
   if (!canSend.value) return;
   const t = text.value.trim();
   const atts = attachments.value;
+  // CV-S09 队列上限：忙时入队前校验（软校验，双窗口极端并发可能超 1 条）
+  if (isStreaming.value && queueList.value.length >= QUEUE_MAX) {
+    toastError(`待发送队列已满（最多 ${QUEUE_MAX} 条），请稍候`);
+    return;
+  }
   // 密钥嗅探确认：flagged 附件（路径对应文件含疑似凭据）出域前需确认
   const flagged = atts.filter((a) => a.flagged);
   if (flagged.length > 0 && !window.confirm(
@@ -990,10 +999,29 @@ function onDocClick(e: MouseEvent): void {
   const inModel = el && typeof el.closest === 'function' && el.closest('.model-wrap');
   const inLevel = el && typeof el.closest === 'function' && el.closest('.level-wrap');
   const inProj = el && typeof el.closest === 'function' && el.closest('.proj-wrap');
-  if (inModel || inLevel || inProj) return;
+  const inQueue = el && typeof el.closest === 'function' && el.closest('.queue-wrap');
+  if (inModel || inLevel || inProj || inQueue) return;
   modelMenuOpen.value = false;
   levelMenuOpen.value = false;
   projMenuOpen.value = false;
+  queuePanelOpen.value = false;
+}
+
+/**
+ * 停止时回填被清空的待发队列文本（CV-S09，pi TUI ESC 同款）：
+ * 队列文本按空行段落拼接，置于当前输入内容之前（对齐 TUI [queued, current] 顺序）。
+ */
+function restoreQueuedText(items: string[]): void {
+  const valid = items.filter((s) => typeof s === 'string' && s.trim() !== '');
+  if (valid.length === 0) return;
+  const queued = valid.join('\n\n');
+  const current = text.value.trim();
+  text.value = current ? `${queued}\n\n${current}` : queued;
+  queuePanelOpen.value = false;
+  nextTick(() => {
+    autoGrow();
+    focus();
+  });
 }
 
 function focus(): void {
@@ -1001,7 +1029,7 @@ function focus(): void {
 }
 
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
-defineExpose({ focus, currentLevel });
+defineExpose({ focus, currentLevel, restoreQueuedText });
 
 /** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;
@@ -1117,7 +1145,7 @@ watch(
   <div
     ref="inputBoxRef"
     class="compose-box"
-    :class="{ streaming: isStreaming, focused, compact, dragover: dragOver }"
+    :class="{ streaming: isStreaming, focused, dragover: dragOver }"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
     @drop="onDrop"
@@ -1180,7 +1208,7 @@ watch(
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? '助手正在回复，可点击停止中断…' : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
+      :placeholder="isStreaming ? '助手回复中，Enter 排队发送…' : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"
@@ -1404,6 +1432,22 @@ watch(
           </div>
         </div>
 
+        <!-- CV-S09 待发送队列徽标 + 只读浮窗：忙时入队的消息在派发前暂存于此 -->
+        <div v-if="queueList.length > 0" class="queue-wrap">
+          <button
+            class="queue-badge"
+            type="button"
+            data-tooltip="待发送队列"
+            @click.stop="queuePanelOpen = !queuePanelOpen"
+          >
+            待发送 {{ queueList.length }}
+          </button>
+          <div v-if="queuePanelOpen" class="queue-panel">
+            <div class="menu-hint">待发送队列（忙完自动按序发出）</div>
+            <div v-for="(item, i) in queueList" :key="i" class="queue-item">{{ item }}</div>
+          </div>
+        </div>
+
         <!-- 发送/停止 -->
         <button
           v-if="!isStreaming"
@@ -1418,7 +1462,19 @@ watch(
             <polygon points="22 2 15 22 11 13 2 9 22 2" />
           </svg>
         </button>
-        <button v-else class="cancel-btn" aria-label="停止" data-tooltip="停止" @click="onCancel">
+        <button
+          v-if="isStreaming && canSend"
+          class="send-btn queue-send"
+          aria-label="排队发送"
+          data-tooltip="排队发送（Enter）"
+          @click="onSend"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13" />
+            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
+        </button>
+        <button v-if="isStreaming" class="cancel-btn" aria-label="停止" data-tooltip="停止（清空待发送队列并回填输入框）" @click="onCancel">
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
         </button>
       </div>
@@ -1676,6 +1732,63 @@ watch(
 /* 模型浮窗菜单（对齐原型 .menu：向上弹、点外部关） */
 .model-wrap {
   position: relative;
+}
+
+/* CV-S09 待发送队列：徽标 + 向上弹出只读浮窗（对齐 .model-menu 视觉） */
+.queue-wrap {
+  position: relative;
+}
+
+.queue-badge {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--primary) 12%, var(--background));
+  border: 1px solid color-mix(in oklab, var(--primary) 30%, var(--border));
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.queue-badge:hover {
+  background: color-mix(in oklab, var(--primary) 20%, var(--background));
+}
+
+.queue-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  min-width: 220px;
+  max-width: 340px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  z-index: 700;
+  animation: menu-rise 0.15s ease both;
+}
+
+.queue-item {
+  padding: 6px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 6px;
+}
+
+.queue-item + .queue-item {
+  border-top: 1px solid var(--border);
+}
+
+.queue-send {
+  margin-right: 2px;
 }
 
 .model-menu {

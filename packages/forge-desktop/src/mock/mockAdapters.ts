@@ -83,8 +83,9 @@ export class MockPiConversationAdapter implements PiConversationAdapter {
     return [...this.getHistory(sessionId)];
   }
 
-  async cancelStream(sessionId: string): Promise<void> {
+  async cancelStream(sessionId: string): Promise<string[]> {
     this.cancelCalls.push(sessionId);
+    return [];
   }
 
   private getHistory(sessionId: string): ConversationMessage[] {

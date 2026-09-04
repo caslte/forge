@@ -173,7 +173,11 @@ export type ConversationUsageSnapshot = {
 export interface PiConversationAdapter {
   sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void>;
   loadHistory(sessionId: string): Promise<ConversationMessage[]>;
-  cancelStream(sessionId: string): Promise<void>;
+  /**
+   * 取消当前轮（CV-S04/CV-S09）：中止运行并清空待发队列（pi TUI ESC 语义），
+   * 返回被清空的队列文本（FIFO 序，供 UI 回填输入框）；无队列返回空数组。
+   */
+  cancelStream(sessionId: string): Promise<string[]>;
   /** 上下文用量查询（P3-A）；无数据返回 null；允许异步实现（无 lease 时磁盘估算） */
   getContextUsage?(sessionId: string): Promise<ConversationUsageSnapshot | null> | ConversationUsageSnapshot | null;
   /** 手动压缩（P3-A） */
@@ -292,7 +296,15 @@ export class ConversationService {
       }
     }
     if (this.getStatus(sessionId) === 'streaming') {
-      return { ok: false, code: 1001, message: '正在流式响应，不能重复发送' };
+      // CV-S09 消息队列：忙时发送 = 入队（pi followUp，收尾自动投递）。
+      // 不重置流式状态/不重做首条命名/不重解析模型覆盖（在途轮次不因入队改变），
+      // 入队失败（如扩展命令不能排队）只报错不影响在途轮次状态。
+      try {
+        await this.adapter.sendMessage(sessionId, content, runtimeOptions);
+      } catch (err) {
+        return { ok: false, code: 5000, message: toMessage(err) };
+      }
+      return { ok: true, data: null };
     }
     const resolvedOptions =
       this.options.resolveSendOptions !== undefined
@@ -325,23 +337,24 @@ export class ConversationService {
   }
 
   /**
-   * 取消响应（CV-S04）：仅 streaming 状态调用 adapter.cancelStream 并置为 canceled；
-   * 非 streaming 取消为幂等成功（重复取消 / 空闲取消无副作用）。已生成内容保留
-   * （lastDeltaText 不清空）。
+   * 取消响应（CV-S04/CV-S09）：仅 streaming 状态调用 adapter.cancelStream
+   * （中止 + 清空待发队列）并置为 canceled；非 streaming 取消为幂等成功
+   * （重复取消 / 空闲取消无副作用）。已生成内容保留（lastDeltaText 不清空）。
    * @param sessionId 会话 ID
-   * @returns 成功返回 null；会话 ID 为空返回 1001；adapter 异常向上抛出（rpc 层映射 5000）
+   * @returns 成功返回 { clearedMessages }（被清空的队列文本，FIFO 序，供 UI 回填输入框）；
+   *          会话 ID 为空返回 1001；adapter 异常向上抛出（rpc 层映射 5000）
    */
-  async cancelStream(sessionId: string): Promise<ConversationResult<null>> {
+  async cancelStream(sessionId: string): Promise<ConversationResult<{ clearedMessages: string[] }>> {
     if (typeof sessionId !== 'string' || sessionId.trim() === '') {
       return { ok: false, code: 1001, message: '会话 ID 不能为空' };
     }
     if (this.getStatus(sessionId) !== 'streaming') {
-      // 幂等：非 streaming 取消为无操作成功（重复取消不产生副作用）
-      return { ok: true, data: null };
+      // 幂等：非 streaming 取消为无操作成功（重复取消不产生副作用；无队列可清）
+      return { ok: true, data: { clearedMessages: [] } };
     }
-    await this.adapter.cancelStream(sessionId);
+    const cleared = await this.adapter.cancelStream(sessionId);
     this.setStatus(sessionId, 'canceled'); // 保留 lastDeltaText（已生成内容不丢弃）
-    return { ok: true, data: null };
+    return { ok: true, data: { clearedMessages: cleared } };
   }
 
   /**

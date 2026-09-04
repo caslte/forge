@@ -403,6 +403,11 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
         `模型连接中断，正在自动重试（第 ${info.attempt}/${info.maxAttempts} 次）…`,
       );
     },
+    // CV-S09：队列变更 → conversation.queueUpdated，UI 据此渲染待发送徽标/浮窗。
+    // 派发时 user 气泡由 onMessage（role=user，经 pendingDelivery 确认）驱动。
+    onQueueUpdated: (sessionId, followUp) => {
+      conversationApi.emitQueueUpdated(sessionId, followUp);
+    },
     onToolStarted: (sessionId, event) => {
       pokeMainTurnActivity(sessionId);
       toolApi.emitToolStarted(sessionId, event.toolEventId, event.tool);

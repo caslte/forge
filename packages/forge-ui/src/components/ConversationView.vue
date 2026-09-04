@@ -66,6 +66,7 @@ const {
   streamPhaseText,
   streamElapsedSec,
   restoreStreaming,
+  queueItems,
   resetForSession: resetConvForSession,
   loadHistory,
   send: sendTurn,
@@ -122,6 +123,12 @@ function scrollToBottom(): void {
 }
 
 /** 发送消息：草稿态（未发首条消息）先真正创建会话再发送（状态机在 useSessionConversation） */
+/** 停止当前轮（CV-S09）：被清空的待发队列文本回填输入框（pi TUI ESC 同款） */
+async function onCancelTurn(): Promise<void> {
+  const cleared = await cancelTurn();
+  if (cleared.length > 0) inputRef.value?.restoreQueuedText(cleared);
+}
+
 async function onSend(text: string): Promise<void> {
   if (props.sessionId === null) {
     try {
@@ -524,8 +531,8 @@ watch(
           @click="onBackdownClick"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="19" x2="12" y2="5" />
-            <polyline points="5 12 12 5 19 12" />
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <polyline points="5 12 12 19 19 12" />
           </svg>
           <span>回到底部</span>
         </button>
@@ -558,8 +565,9 @@ watch(
         :current-model="currentModel"
         :project-picker="props.projectPicker"
         :project-path="props.project.path"
+        :queue-items="queueItems"
         @send="onSend"
-        @cancel="cancelTurn"
+        @cancel="onCancelTurn"
         @model-change="onModelChange"
         @pick-project="emit('pick-project', $event)"
         @open-project-picker="emit('open-project-picker')"
@@ -621,6 +629,10 @@ watch(
 .conv-messages {
   flex: 1;
   min-height: 0;
+  /* flex row（.conv-main-row）子项：min-width:0 阻断长行 min-content 向上撑宽
+     （多窗口窄窗格会裁掉右侧输入区）；溢出就地隐藏，代码块内部自有横向滚动 */
+  min-width: 0;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   overflow-y: auto;

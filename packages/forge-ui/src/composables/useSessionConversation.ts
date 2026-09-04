@@ -258,16 +258,27 @@ export function useSessionConversation(options: {
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
+    queueItems.value = [];
     stopElapsed();
   }
 
   // ===== 发送 / 取消 =====
 
-  /** 发送消息：本地追加 user 消息 + 调后端（附件统一给路径：路径行已在 content 内） */
+  /** 发送消息：本地追加 user 消息 + 调后端（附件统一给路径：路径行已在 content 内）。
+   *  CV-S09：忙时（isStreaming）改为入队——不本地 push 气泡（派发时由后端
+   *  conversation.message(user) 事件渲染），不重置流式读秒。 */
   async function send(text: string): Promise<void> {
     const t = text.trim();
     const sid = options.getSessionId();
-    if (!t || sid === null || isStreaming.value) return;
+    if (!t || sid === null) return;
+    if (isStreaming.value) {
+      try {
+        await call<null>('conversation/sendMessage', { sessionId: sid, content: t });
+      } catch (e) {
+        errorMsg.value = e instanceof Error ? e.message : String(e);
+      }
+      return;
+    }
     errorMsg.value = null;
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
     isStreaming.value = true;
@@ -284,10 +295,14 @@ export function useSessionConversation(options: {
     }
   }
 
-  /** 取消流式 */
-  async function cancel(): Promise<void> {
+  /** 取消流式（CV-S09）：返回被清空的待发队列文本（FIFO 序），供输入框回填 */
+  async function cancel(): Promise<string[]> {
+    let clearedMessages: string[] = [];
     try {
-      await call('conversation/cancelStream', { sessionId: options.getSessionId() });
+      const res = await call<{ clearedMessages?: string[] }>('conversation/cancelStream', {
+        sessionId: options.getSessionId(),
+      });
+      clearedMessages = res?.clearedMessages ?? [];
     } catch {
       // 取消失败不阻塞，仍允许 UI 停止
     }
@@ -295,13 +310,30 @@ export function useSessionConversation(options: {
     if (sid !== null) turnStartAt.delete(sid);
     stopElapsed();
     isStreaming.value = false;
+    return clearedMessages;
   }
 
   // ===== 会话/工具事件处理 =====
 
+  /** 当前会话待发送队列（CV-S09）：pi followUp 队列快照（FIFO 序，[0] 最先派发） */
+  const queueItems = ref<string[]>([]);
+
+  function onQueueUpdated(payload: unknown): void {
+    const p = payload as { sessionId: string; followUp?: string[] };
+    if (p.sessionId !== options.getSessionId()) return;
+    queueItems.value = Array.isArray(p.followUp) ? p.followUp : [];
+  }
+
   function onMessage(payload: unknown): void {
     const p = payload as { sessionId: string; message: ConversationMessage };
     if (p.sessionId !== options.getSessionId()) return;
+    // CV-S09：排队消息派发到达的 user 气泡：直接 push（不套用 assistant 覆盖逻辑，
+    // 否则会把 user 文本写进在途 assistant 占位）
+    if (p.message.role === 'user') {
+      messages.value.push(p.message);
+      scheduleScroll();
+      return;
+    }
     // 流式阶段已通过 delta 构建了 assistant 占位消息，最终 message 到达时以其为权威内容覆盖，
     // 避免"delta 累积 + 完整消息再推一条"成双
     const last = messages.value[messages.value.length - 1];
@@ -558,6 +590,7 @@ export function useSessionConversation(options: {
       subscribe('conversation.statusChanged', onStatus),
       subscribe('conversation.error', onError),
       subscribe('conversation.compacted', onCompacted),
+      subscribe('conversation.queueUpdated', onQueueUpdated),
       subscribe('tool.started', onToolStarted),
       subscribe('tool.completed', onToolCompleted),
       subscribe('tool.error', onToolError),
@@ -586,6 +619,7 @@ export function useSessionConversation(options: {
     streamPhaseText,
     streamElapsedSec,
     restoreStreaming,
+    queueItems,
     // 会话操作
     loadHistory,
     resetForSession,

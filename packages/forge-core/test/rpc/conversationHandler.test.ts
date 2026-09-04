@@ -29,6 +29,8 @@ class MockConversationAdapter implements PiConversationAdapter {
   sendError: Error | null = null;
   /** 置为非 null 时 cancelStream 抛出该错误（模拟取消失败 → 5000） */
   cancelError: Error | null = null;
+  /** cancelStream 返回的被清空队列文本（CV-S09） */
+  clearedOnCancel: string[] = [];
   /** 置为非 null 时 loadHistory 抛出该错误（模拟历史加载失败 → 5000） */
   loadError: Error | null = null;
 
@@ -46,11 +48,12 @@ class MockConversationAdapter implements PiConversationAdapter {
     return this.history;
   }
 
-  async cancelStream(sessionId: string): Promise<void> {
+  async cancelStream(sessionId: string): Promise<string[]> {
     this.cancelCalls.push(sessionId);
     if (this.cancelError !== null) {
       throw this.cancelError;
     }
+    return this.clearedOnCancel;
   }
 }
 
@@ -107,17 +110,17 @@ test('conversation/sendMessage：provider 未配置返回 1004，adapter 不被�
   assert.equal(adapter.sendCalls.length, 0);
 });
 
-test('conversation/sendMessage：streaming 中重复发送返回 1001 并保留 streaming', async () => {
+test('conversation/sendMessage：streaming 中发送 → 入队返 0，无状态变更事件（CV-S09）', async () => {
   const { api, service, adapter, events } = makeApi();
   service.setStatus('sess-1', 'streaming', { lastDeltaText: 'partial' });
   const changed: unknown[] = [];
   events.on('conversation.statusChanged', (payload) => changed.push(payload));
 
-  const result = await api.methods['conversation/sendMessage']({ sessionId: 'sess-1', content: 'again' });
+  const result = await api.methods['conversation/sendMessage']({ sessionId: 'sess-1', content: 'queued' });
 
-  assert.equal(result.code, 1001);
-  assert.equal(adapter.sendCalls.length, 0);
-  assert.equal(changed.length, 0);
+  assert.equal(result.code, 0);
+  assert.equal(adapter.sendCalls.length, 1);
+  assert.equal(changed.length, 0, '入队不触发状态事件（在途轮次不受影响）');
   assert.equal(service.getStatus('sess-1'), 'streaming');
 });
 
@@ -150,12 +153,13 @@ test('conversation/queryHistory：sessionId 缺失返回 1001', async () => {
   assert.equal((await api.methods['conversation/queryHistory']({})).code, 1001);
 });
 
-test('A-CV-002：conversation/cancelStream（streaming）返回 0 + data null，adapter 调用正确', async () => {
+test('A-CV-002：conversation/cancelStream（streaming）返回 0 + clearedMessages，adapter 调用正确', async () => {
   const { api, service, adapter } = makeApi();
   service.setStatus('sess-1', 'streaming');
+  adapter.clearedOnCancel = ['q1', 'q2'];
   const result = await api.methods['conversation/cancelStream']({ sessionId: 'sess-1' });
   assert.equal(result.code, 0);
-  assert.equal(result.data, null);
+  assert.deepEqual((result.data as { clearedMessages: string[] }).clearedMessages, ['q1', 'q2']);
   assert.deepEqual(adapter.cancelCalls, ['sess-1']);
 });
 

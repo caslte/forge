@@ -1,5 +1,22 @@
 # 变更日志
 
+## v3.44 (CV-S09 消息队列 + CV-S10 输入历史翻阅)
+
+- CV-S09 消息队列（think-1788425299398 对齐，方案 C5 + pi TUI ESC 语义）：忙时发送 = 入队，完全托管 pi —— 适配器以 `session.isStreaming` 分流，streaming 中经 `prompt(content, {streamingBehavior:'followUp'})` 入队，pi 收尾自动 FIFO 派发（投递时 `message_start(role=user)` + `queue_update` 移队，适配器以「离队+message_start(user)」确认派发转发 user 气泡，直发路径不转发无重复）；UI「待发送 N」徽标 + 只读浮窗（无删除/立即发送）；上限 5 条 UI 软校验；**停止 = `clearQueue()`（双层清，防 while 循环续跑）→ `abort()` → 被清文本 `\n\n` 拼接回填输入框**（源码核实 pi TUI ESC 同款，单条删除 pi 无 API、唯一丢弃入口 = 停止）；RPC：cancelStream 响应改带 `clearedMessages`，新增 `conversation.queueUpdated` 事件，忙时 sendMessage 不再返 1001 且不推 statusChanged（防重置读秒）。
+- CV-S10 输入历史翻阅（方案 B）：仅输入框为空（或已在历史模式）时 ↑/↓ 触发；`forge.inputHistory.{sessionId}` localStorage 持久化（上限 100 FIFO）；会话隔离 + 切换时历史模式残留清空；连续相同去重；草稿态不翻阅不入栈。
+- 附带行为变更：忙时输入框不再禁用（placeholder「Enter 推队发送」、斜杠浮窗 streaming 中可触发）；排队消息派发前只住浮窗不进对话区（方案 A，与 ai-coding 一致）。
+- 验证：forge-core 344 单测（含入队/入队失败不影响在途/cancelStream clearedMessages 新断言）、forge-desktop 176（含 CV-S09 adapter 四用例）、forge-ui 148；e2e 新增 queue.spec（QC-001~003）与 inputHistory.spec（AC-IH-001~007）全过；全量 e2e 67 过/2 挂（smoke、session E-SM-001 均为存量，与本批无关）；v3.43 预告的 slashCommands TSC-E2E-001 步骤 5 已随 CV-S09 更新为 streaming 可用断言。
+- 文档同步：PRD 03（CV-S01 翻案 + CV-S09/CV-S10 场景与状态机 + 自检报告）、API 03（sendMessage 入队语义/cancelStream 响应/queueUpdated 事件）、test 03 coverage-matrix + e2e（QC/AC-IH 行 + E-CV-014 修正）。
+
+## v3.43 (重构：多窗口会话窗口合并复用 ConversationView)
+
+- 用户决策（think-1788488643459 对齐）：双壳层是“单视图修了、多窗口没份”事故类的根源（footer 重复/读秒/工具条压缩三连），合并后此类问题结构性消失。D1=A：时间线竖条+历史浮窗随 ConversationView 带入多窗口，零刻意差异。
+- 实现：`MultiWindowConversation` 重写为 ~40 行薄壳——只保留多窗口专属的每窗口模型状态（getSessionModel/setSessionModel）+ 由 session.projectPath 合成 ConversationView 所需 ProjectItem（其内部只消费 path）；消息流/子 agent/横幅/停止确认全部删除（单实现，-368 行）。`InstructionInput` 的 `compact` 死 prop（无对应样式）一并删除；MultiWindowCanvas 去掉 project-path 传参。App 装配与画布布局/拖拽/吸附不动（win-focus 聚焦层本就渲染 ConversationView，已有先例）。
+- 合并后首个回归修复（用户实测反馈：多窗口宽度不对、发送按钮看不到）：旧壳层两条横向防御随删除丢失——① `.mw-body > * { min-width: 0 }`（flex row 子项默认 min-width:auto，长 token/URL/代码行的 min-content 把整列撑宽越出窗口右缘，实测 438px 窗格被撑到 1238px、发送按钮裁在窗外）；② `.conv-messages` 补 `min-width:0 + overflow-x:hidden`（阻断长行 min-content 向上传递，溢出就地隐藏，代码块内部自有横向滚动，单视图同享防御）。回归用例：mwConversationView.spec 长行场景断言视图不超宽 + 发送按钮在窗口内（修复前 1238px/不可见 → 修复后 436px/可见）。
+- 附带效果：多窗口获得回看模式/回到底部、空会话欢迎页、时间线竖条+历史浮窗；v3.42 的 `.wc-messages > *` 规则随壳层删除（单视图 `.conv-messages-inner` 包装层结构性免疫 flex 压缩，工具条回归锁 mwToolGroupVisible.spec.ts 继续有效）。
+- 验证：新增冒烟 `mwConversationView.spec.ts`（合并前 RED：窗口内无 .conv-view；合并后 GREEN）；全量 e2e 62 过/3 挂，三挂均非本次引入（smoke=存量断言已删元素；session E-SM-001=存量；slashCommands TSC-E2E-001 步骤5=与在途 CV-S09 排队语义冲突，见 v3.42 后工作区说明）；单测 148 全过；vue-tsc 0 错。
+- 注：工作区同时存在用户在途 CV-S09 排队发送改动（forge-core/desktop/ui 多文件），本条目仅含合并重构；slashCommands 用例步骤 5 断言 streaming 禁用输入框，与排队语义冲突，需随 CV-S09 交付一并更新。
+
 ## v3.42 (修复：多窗口窄窗格工具调用条不显示)
 
 - 用户反馈：多窗口会话窗口里工具调用条不显示（又出现），单视图同一会话正常；并追问多窗口会话窗口与单窗口是否同一组件。

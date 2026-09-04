@@ -74,7 +74,7 @@ async function openSlash(page: Page, fragment = '/'): Promise<void> {
 }
 
 // ===== E-CV-014（AC-CV-026/027/028）：触发/美化/过滤/空态 + streaming 禁用 =====
-test('TSC-E2E-001 @P0 @mock-backend E-CV-014：触发弹窗、三类条目美化+标签+副文本、过滤、空态、streaming 禁用', async ({ page }) => {
+test('TSC-E2E-001 @P0 @mock-backend E-CV-014：触发弹窗、三类条目美化+标签+副文本、过滤、空态、streaming 可用（CV-S09）', async ({ page }) => {
   const guard = attachHealthGuards(page);
   await boot(page);
 
@@ -108,14 +108,15 @@ test('TSC-E2E-001 @P0 @mock-backend E-CV-014：触发弹窗、三类条目美化
   await page.locator('.compose-input').pressSequentially('zzz');
   await expect(page.locator('.slash-empty')).toHaveText('无匹配命令');
 
-  // 5. streaming 禁用：textarea disabled，浮窗不出现
+  // 5. streaming 不禁用（CV-S09 忙时可输入/排队）：textarea 可写，斜杠浮窗正常触发
   await page.locator('.compose-input').fill('');
   await expect(page.locator('.slash-menu')).toHaveCount(0);
   await page.evaluate((sid) => {
     window.__forgeMock!.emit(sid, 'conversation.statusChanged', { status: 'streaming' });
   }, SESSION_ID);
-  await expect(page.locator('.compose-input')).toBeDisabled();
-  await expect(page.locator('.slash-menu')).toHaveCount(0);
+  await expect(page.locator('.compose-input')).toBeEnabled();
+  await page.locator('.compose-input').pressSequentially('/');
+  await expect(page.locator('.slash-menu')).toBeVisible();
 
   guard.assertHealthy();
 });

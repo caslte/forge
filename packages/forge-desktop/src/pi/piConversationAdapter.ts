@@ -47,6 +47,13 @@ export type MinimalPiSession = {
   /** prompt：第二参为图片附件（真实 AgentSession 收 PromptOptions，fake 收图片数组） */
   prompt(text: string, imagesOrOptions?: unknown): Promise<void>;
   abort(): Promise<void>;
+  /** 是否在流式运行中（CV-S09 队列分流用）；真实 AgentSession 支持，fake 可选 */
+  isStreaming?: boolean;
+  /**
+   * 清空待发队列（CV-S09）：真实 AgentSession 同步返回被清空的 steering/followUp
+   * 文本（fake 可选；缺失时视为无队列）。
+   */
+  clearQueue?(): { steering: string[]; followUp: string[] };
   /** 运行中热切换模型（真实 AgentSession 支持；fake 可选实现） */
   setModel?(model: unknown): Promise<void>;
   /** 上下文用量查询（P3-A）；真实 AgentSession 支持，fake 可选；结构兼容 ContextUsage */
@@ -202,6 +209,11 @@ export interface PiConversationEventHandlers {
    */
   onCompacted?: (sessionId: string, info: CompactionInfo) => void;
   /**
+   * 队列变更（CV-S09）：pi followUp 队列每次变化全量推送待发文本列表，
+   * 上层转发 conversation.queueUpdated 供 UI 渲染待发送徽标/浮窗。
+   */
+  onQueueUpdated?: (sessionId: string, followUp: string[]) => void;
+  /**
    * 斜杠命令清单上报到达（CV-S08）：命令上报扩展在 session_start 时经
    * 会话事件总线上报三类命令（extension / prompt / skill），此处按会话
    * 上抛；上层据此写会话级缓存并转发 conversation.slashCommandsUpdated。
@@ -272,6 +284,11 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   /** 每会话在命令上报 channel 上的订阅取消函数（removeSession 时释放） */
   private readonly slashCommandUnsubs = new Map<string, () => void>();
   private eventHandlers: PiConversationEventHandlers = {};
+  /** 队列镜像（CV-S09）：sessionId -> pi 当前 followUp 队列文本（FIFO 序），来自 queue_update 事件 */
+  private readonly queueMirror = new Map<string, string[]>();
+  /** 待派发确认（CV-S09）：已离开队列但尚未收到 message_start(user) 的文本（FIFO 序），
+   * 用于区分「派发」（转发 user 气泡）与「清空」（不转发）；直发起点/取消时清空 */
+  private readonly pendingDelivery = new Map<string, string[]>();
   private completionHandler: TurnCompletionHandler | undefined;
   /** 主轮完成回调（wu-06 done 门控）：prompt 解析后调用，转发到 subagentService.notifyMainTurnEnd */
   private mainTurnEndHandler: ((sessionId: string) => void) | undefined;
@@ -348,6 +365,14 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   ): Promise<void> {
     // P1-D：同一会话复用已持有的 AgentSession lease，避免每轮重建上下文
     const existing = this.leases.get(sessionId);
+    if (existing !== undefined && existing.session.isStreaming === true) {
+      // CV-S09 消息队列：在途轮次未结束 → 以 followUp 入队（pi 收尾自动投递），
+      // 立即返回；不重置轮次状态（partialContent 等归属在途轮），不应用模型/思考
+      // 级别变更（在途轮次不因入队改变）。扩展命令不能排队（pi 抛错）→ 向上抛由
+      // service 返 5000，不影响在途轮次状态。
+      await existing.session.prompt(content, { streamingBehavior: 'followUp' });
+      return;
+    }
     let lease: PiAgentSessionLease<MinimalPiSession>;
     if (existing === undefined) {
       lease = await this.factory(options);
@@ -361,6 +386,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.forwardedClean.set(sessionId, '');
     this.livePartial.set(sessionId, '');
     this.errorEmittedThisTurn.delete(sessionId);
+    this.pendingDelivery.delete(sessionId); // 新直发轮次起点：清待派发确认（CV-S09）
     // 思考级别应用（MP-S05）：目标级别 = options.thinkingLevel（会话生效级别，
     // 由上层 resolveSendOptions 计算：session.thinkingLevel ?? settings，兜底 off），
     // 缺省降级 defaultThinkingLevel。仅当目标级别与当前已应用级别不同时才调用
@@ -450,8 +476,17 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     }
   }
 
-  async cancelStream(sessionId: string): Promise<void> {
-    await this.leases.get(sessionId)?.session.abort();
+  /**
+   * 取消当前轮（CV-S04/CV-S09）：先清空待发队列（防止中止后 while 循环自动续跑
+   * 队列，对齐 pi TUI ESC 语义）再中止，返回被清空的队列文本供 UI 回填输入框。
+   */
+  async cancelStream(sessionId: string): Promise<string[]> {
+    const lease = this.leases.get(sessionId);
+    if (!lease) return [];
+    const cleared = lease.session.clearQueue?.() ?? { steering: [], followUp: [] };
+    this.pendingDelivery.delete(sessionId); // 清空 ≠ 派发，不转发 user 气泡
+    await lease.session.abort();
+    return cleared.followUp;
   }
 
   /**
@@ -701,6 +736,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.leaseModels.delete(sessionId);
     this.appliedThinkingLevels.delete(sessionId);
     this.lastCompactTokensAfter.delete(sessionId);
+    this.queueMirror.delete(sessionId);
+    this.pendingDelivery.delete(sessionId);
   }
 
   /**
@@ -811,6 +848,49 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private handleEvent(sessionId: string, rawEvent: unknown): void {
     const event = rawEvent as MinimalPiEvent;
     const callback = this.callbacks.get(sessionId);
+
+    // CV-S09：队列变更转发 + 维护镜像/待派发确认。
+    // pi 在投递用户消息时先从镜像移除并发 queue_update，再发 message_start(user)，
+    // 因此「离开队列的文本」先入 pendingDelivery，待 message_start(user) 到达时
+    // FIFO 确认为派发 → 转发为 user 气泡事件（conversation.message role=user）。
+    if (event.type === 'queue_update') {
+      const prev = this.queueMirror.get(sessionId) ?? [];
+      const followUpRaw = (event as { followUp?: unknown }).followUp;
+      const next = Array.isArray(followUpRaw)
+        ? followUpRaw.filter((s): s is string => typeof s === 'string')
+        : [];
+      const departedCount = prev.length - next.length;
+      if (departedCount > 0) {
+        const departed = prev.slice(0, departedCount);
+        this.pendingDelivery.set(sessionId, [
+          ...(this.pendingDelivery.get(sessionId) ?? []),
+          ...departed,
+        ]);
+      }
+      this.queueMirror.set(sessionId, next);
+      this.eventHandlers.onQueueUpdated?.(sessionId, next);
+      return;
+    }
+    // CV-S09：排队消息派发确认 → 以 user 气泡进对话区（直发路径 pendingDelivery
+    // 已在 sendMessage 起点清空，不会重复渲染本地已 push 的 user 消息）
+    if (event.type === 'message_start' && event.message?.role === 'user') {
+      const pending = this.pendingDelivery.get(sessionId);
+      if (pending !== undefined && pending.length > 0) {
+        pending.shift();
+        if (pending.length === 0) this.pendingDelivery.delete(sessionId);
+        const message: ConversationMessage = {
+          role: 'user',
+          content: extractAssistantText(event.message.content),
+          ts: new Date().toISOString(),
+        };
+        if (callback) {
+          callback.onMessage(message);
+        } else {
+          this.eventHandlers.onMessage?.(sessionId, message);
+        }
+      }
+      return;
+    }
 
     // 仅转发 text_delta（thinking/toolcall 增量不进正文，避免污染回答）
     const delta =

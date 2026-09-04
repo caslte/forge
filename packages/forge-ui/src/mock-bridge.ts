@@ -296,6 +296,8 @@ const mockUsage = new Map<string, number>();
 const seedHandlers = new Map<string, (params: Record<string, unknown>) => Record<string, unknown> | null>();
 const sendScripts = new Map<string, MockScriptItem[]>();
 const sendInFlight = new Map<string, Promise<void>>();
+/** CV-S09 待发队列（模拟 pi followUp）：sessionId -> FIFO 文本；流式中入队，脚本结束后派发 */
+const sendQueues = new Map<string, string[]>();
 
 /** mock cancelStream 行为配置（默认级联，与真实后端语义一致） */
 let cancelOpts: MockCancelOpts = { cascadeSubagents: true };
@@ -410,14 +412,24 @@ const bridge: ForgeBridge = {
         if (sid !== undefined) delete DB.subagents[sid];
         emit('session.removed', { sessionId: sid });
         sendScripts.delete(sid ?? '');
+        sendQueues.delete(sid ?? '');
         persistSubagents();
         return { code: 0, message: 'ok', data: null };
       }
       case 'conversation/sendMessage': {
         const sessionId = (params as { sessionId?: string }).sessionId ?? '';
         const content = (params as { content?: string }).content ?? '';
-        // 首条用户消息自动命名（与真实 forge-core onFirstUserMessage 一致）+ 状态 idle→streaming，广播刷新会话树
         const sess = DB.sessions.find((s) => s.sessionId === sessionId);
+        // CV-S09 忙时入队：流式中收到 sendMessage → 入待发队列（不写历史/不重置状态），
+        // 派发时机在 runScript 尾部（当前脚本结束后 FIFO 取出，与 pi followUp 同构）
+        if (sess && sess.status === 'streaming') {
+          const q = sendQueues.get(sessionId) ?? [];
+          q.push(content);
+          sendQueues.set(sessionId, q);
+          emit('conversation.queueUpdated', { sessionId, followUp: [...q] });
+          return { code: 0, message: 'ok', data: null };
+        }
+        // 首条用户消息自动命名（与真实 forge-core onFirstUserMessage 一致）+ 状态 idle→streaming，广播刷新会话树
         let sessionTouched = false;
         if (sess && !sess.alias && content.trim() !== '') {
           sess.alias = generateMockTitle(content);
@@ -450,8 +462,14 @@ const bridge: ForgeBridge = {
         return { code: 0, message: 'ok', data: null };
       }
       case 'conversation/cancelStream': {
-        // E2E：取消后按 cancelOpts 决定是否级联终止活跃子 agent（默认级联，与真实后端一致）
+        // CV-S09：清空待发队列（与 pi TUI ESC 同款）+ 广播队列变更；返回清空的文本供 UI 回填
         const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const cleared = sendQueues.get(sid) ?? [];
+        if (cleared.length > 0) {
+          sendQueues.delete(sid);
+          emit('conversation.queueUpdated', { sessionId: sid, followUp: [] });
+        }
+        // E2E：取消后按 cancelOpts 决定是否级联终止活跃子 agent（默认级联，与真实后端一致）
         if (cancelOpts.cascadeSubagents) {
           const list = DB.subagents[sid] ?? [];
           const now = new Date().toISOString();
@@ -468,7 +486,7 @@ const bridge: ForgeBridge = {
           }
           persistSubagents();
         }
-        return { code: 0, message: 'ok', data: null };
+        return { code: 0, message: 'ok', data: { clearedMessages: [...cleared] } };
       }
       case 'conversation/queryHistory':
         return {
@@ -691,6 +709,24 @@ async function runScript(sessionId: string, script: MockScriptItem[]): Promise<v
     } else if (item.type === 'tool') {
       emit('tool.started', { sessionId, ...item.payload });
       emit('tool.completed', { sessionId, ...item.payload });
+    }
+  }
+  // 流式结束：若待发队列非空 → FIFO 派发下一条（模拟 pi followUp 收尾投递：
+  // 广播队列变更 + user 气泡消息 + 重跑脚本），全部派发完才置 done
+  const queued = sendQueues.get(sessionId) ?? [];
+  if (queued.length > 0) {
+    const content = queued.shift()!;
+    emit('conversation.queueUpdated', { sessionId, followUp: [...queued] });
+    (HISTORY[sessionId] ??= []).push({ role: 'user', content, ts: new Date().toISOString() });
+    persistHistory();
+    emit('conversation.message', {
+      sessionId,
+      message: { role: 'user', content, ts: new Date().toISOString() },
+    });
+    const script = sendScripts.get(sessionId);
+    if (script) {
+      void runScript(sessionId, script);
+      return;
     }
   }
   // 流式结束：会话状态从 streaming 置 done，广播刷新会话树（未打开的完成会话显示绿点）

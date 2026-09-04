@@ -143,10 +143,13 @@ export class ConversationApi {
     }
     // 附件统一给路径：路径行已随 content 由 UI 拼好，此处不再读取/拼接任何附件参数
 
+    // CV-S09：忙时发送 = 入队（service 内部分流），不推 statusChanged——
+    // 入队不改变在途轮次状态，重推 streaming 会重置 UI 的流式读秒/阶段显示
+    const wasStreaming = this.service.getStatus(sessionId) === 'streaming';
     const result = await this.call('sendMessage', () =>
       this.service.sendMessage(sessionId, content, options),
     );
-    if (result.code === 0) {
+    if (result.code === 0 && !wasStreaming) {
       this.pushStatus(sessionId, this.service.getStatus(sessionId));
     }
     return result;
@@ -261,6 +264,18 @@ export class ConversationApi {
    */
   emitMessage(sessionId: string, message: ConversationMessage): void {
     this.events.emit('conversation.message', { sessionId, message });
+  }
+
+  /**
+   * 队列变更推送（非 RPC 方法，CV-S09）：发射 conversation.queueUpdated。
+   * pi followUp 队列每次变化（入队/派发/清空）全量推送当前待发文本列表，
+   * UI 据此渲染输入框上方的待发送徽标/浮窗。
+   * @param sessionId 会话 ID
+   * @param followUp 当前待发队列文本（FIFO 序，[0] 最先派发）
+   * @returns 无返回值；触发事件 conversation.queueUpdated { sessionId, followUp }
+   */
+  emitQueueUpdated(sessionId: string, followUp: string[]): void {
+    this.events.emit('conversation.queueUpdated', { sessionId, followUp });
   }
 
   /**

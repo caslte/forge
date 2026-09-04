@@ -513,7 +513,6 @@ onUnmounted(() => {
             :session-id="w.sessionId"
             :session="sessionOf(w.sessionId) ?? null"
             :models="models"
-            :project-path="sessionOf(w.sessionId)?.projectPath ?? ''"
           />
         </div>
       </div>
@@ -704,6 +703,14 @@ onUnmounted(() => {
   overflow: hidden;
   padding: 0;
   display: flex;
+}
+
+/* 窗口内会话视图根（ConversationView 根节点）：flex row 子项默认 min-width:auto，
+   长行内容（超长 token/URL/代码行）的 min-content 会把整列撑宽越出窗口右缘，
+   右下角的上下文用量+发送按钮被裁掉不可见（旧壳层同款防御，v3.43 合并后由本规则承接） */
+.mw-body > * {
+  min-width: 0;
+  min-height: 0;
 }
 
 .snap-preview {

@@ -24,14 +24,17 @@
 
 **附件格式白名单**（单一事实来源：`@forge/core` `attachments.ts`）：图片 `png/jpg/jpeg/gif/webp`；文本与代码 `txt/md/json/log/csv/yaml/yml/toml/xml/html/css/js/ts/py/java/go/rs/c/cpp/h`；Office 文档 `xlsx/xls/docx/doc`。选择/粘贴/拖拽三入口统一校验（渲染层 `addPaths` 把关，选择器的 dialog filter 仅为软过滤）；不支持格式拒绝入待发区并提示。xlsx/docx 等二进制格式不参与密钥嗅探。
 
-响应：
+**响应**：
 
 - `data: null`：正常（消息已在对话区即时展示；后续内容靠事件推送）。
+
+**CV-S09 消息队列（v1.1）**：会话处于流式中时调用本接口 = **入队**（非报错）。适配器以 `session.isStreaming` 分流：streaming 中经 pi `prompt(content, { streamingBehavior: 'followUp' })` 入队，pi 在当前轮收尾后自动按 FIFO 逐条投递（每条投递时发 `message_start(role=user)`，适配器确认后转发 `conversation.message`，UI 渲染普通 user 气泡）；队列变更经 `conversation.queueUpdated` 全量推送。上限 5 条由 UI 层软校验（超限拒绝 + toast）；忙时输入框不再禁用（placeholder 提示 Enter 排队发送）。
 
 | code | 说明                    |
 | ---- | --------------------- |
 | 1004 | provider 未配置，前端提示引导配置 |
 | 1002 | 会话不存在                 |
+| 5000 | 入队失败（如斜杠扩展命令不能排队，不影响在途轮次） |
 
 ***
 
@@ -41,13 +44,31 @@
 
 **说明**：停止当前处理，保留已生成内容（CV-S04）。
 
+**CV-S09 变更（v1.1）**：停止前先清空待发队列（pi TUI ESC 同款语义），响应携带被清空的队列文本供 UI 回填输入框：
+
+```json
+{ "code": 0, "data": { "clearedMessages": ["待发 1", "待发 2"] } }
+```
+
+`clearedMessages` 为 FIFO 序；UI 将其以 `\n\n` 拼接回填输入框（不丢内容，可编辑重发）。无队列时为空数组。
+
 请求参数：
 
 | 参数名       | 类型     | 必填 | 说明    |
 | --------- | ------ | -- | ----- |
 | sessionId | string | 是  | 会话 ID |
 
-响应：`data: null`。
+响应：`data: null`（CV-S09 起改为 `data: { clearedMessages: string[] }`，见上）。
+
+**事件：conversation.queueUpdated（CV-S09 新增）**
+
+pi followUp 队列每次变化（入队/派发/清空）全量推送：
+
+```json
+{ "sessionId": "...", "followUp": ["最先派发", "其次", "..."] }
+```
+
+UI 据此渲染输入框工具区的「待发送 N」徽标与只读浮窗（无删除/立即发送；丢弃唯一入口 = 停止按钮清队回填）。
 
 **变更**：主轮看门狗改用真中断（SA-F02 修正）：pi 侧 run 挂起且连续 30 分钟无任何会话事件（delta/消息/工具/子 agent）时，看门狗调用本接口语义执行 `session.abort()` 并置 `canceled`，保证 forge 状态与 pi 一致。此前经 forceDone 只把 forge 状态打成 `done`（假结束），pi run 仍挂着，下一次发送会被 pi 以 "Agent is already processing" 拒绝且无法自愈。
 

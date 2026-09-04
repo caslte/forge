@@ -30,12 +30,21 @@ class MockPiConversationAdapter implements PiConversationAdapter {
   /** 记录 sendMessage 的 options（多模态门控断言用） */
   sendOptions: Array<ConversationRuntimeOptions | undefined> = [];
   cancelCalls: string[] = [];
+  /** 置为非 null 时 sendMessage 抛出该异常（CV-S09 入队失败模拟） */
+  failNextSend: Error | null = null;
+  /** cancelStream 返回的被清空队列文本（CV-S09） */
+  clearedOnCancel: string[] = [];
   /** 会话历史（sessionId -> 消息列表），未设置返回空 */
   history: Map<string, ConversationMessage[]> = new Map();
   /** 置为非 null 时 loadHistory 抛出该异常（模拟历史加载失败） */
   loadError: Error | null = null;
 
   async sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void> {
+    if (this.failNextSend !== null) {
+      this.sendCalls.push({ sessionId, content });
+      this.sendOptions.push(options);
+      throw this.failNextSend;
+    }
     this.sendCalls.push({ sessionId, content });
     this.sendOptions.push(options);
   }
@@ -47,8 +56,9 @@ class MockPiConversationAdapter implements PiConversationAdapter {
     return this.history.get(sessionId) ?? [];
   }
 
-  async cancelStream(sessionId: string): Promise<void> {
+  async cancelStream(sessionId: string): Promise<string[]> {
     this.cancelCalls.push(sessionId);
+    return this.clearedOnCancel;
   }
 }
 
@@ -109,28 +119,45 @@ test('sendMessage：成功进入 streaming，adapter.sendMessage 调用一次（
   assert.deepEqual(adapter.sendCalls, [{ sessionId: 'sess-1', content: 'hi' }]);
 });
 
-test('sendMessage：streaming 中重复发送返回 1001，adapter 不被调用', async () => {
-  const { service, adapter } = makeService();
+test('sendMessage：streaming 中发送 → 入队（CV-S09），状态保持 streaming，adapter 被调用', async () => {
+  const { service, adapter } = makeService({ sessionExists: () => true, providerReady: () => true });
   service.setStatus('sess-1', 'streaming', { lastDeltaText: 'partial' });
 
-  const result = await service.sendMessage('sess-1', 'again');
+  const result = await service.sendMessage('sess-1', 'queued-msg');
+
+  assert.ok(result.ok);
+  // 状态保持 streaming 且 lastDeltaText 不被重置（在途轮次不因入队改变）
+  assert.equal(service.getStatus('sess-1'), 'streaming');
+  assert.equal(service.getStreamState('sess-1').lastDeltaText, 'partial');
+  assert.deepEqual(adapter.sendCalls, [{ sessionId: 'sess-1', content: 'queued-msg' }]);
+});
+
+test('sendMessage：入队失败返 5000，状态不被置为 error（在途轮次不受影响）', async () => {
+  const { service, adapter } = makeService({ sessionExists: () => true, providerReady: () => true });
+  service.setStatus('sess-1', 'streaming');
+  adapter.failNextSend = new Error('extension commands cannot be queued');
+
+  const result = await service.sendMessage('sess-1', '/ext-cmd');
 
   assert.ok(!result.ok);
   if (!result.ok) {
-    assert.equal(result.code, 1001);
-    assert.match(result.message, /正在流式响应/);
+    assert.equal(result.code, 5000);
+    assert.match(result.message, /cannot be queued/);
   }
-  assert.equal(adapter.sendCalls.length, 0);
+  assert.equal(service.getStatus('sess-1'), 'streaming');
 });
 
 test('cancelStream：streaming 中取消 -> canceled，adapter 调用，已生成内容保留（A-CV-005/AC-CV-009）', async () => {
   const { service, adapter } = makeService();
   service.setStatus('sess-1', 'streaming', { lastDeltaText: 'partial reply' });
+  adapter.clearedOnCancel = ['待发 1', '待发 2'];
   const result = await service.cancelStream('sess-1');
   assert.ok(result.ok);
   assert.equal(service.getStatus('sess-1'), 'canceled');
   assert.deepEqual(adapter.cancelCalls, ['sess-1']);
   assert.equal(service.getStreamState('sess-1').lastDeltaText, 'partial reply');
+  // CV-S09：返回被清空的队列文本供 UI 回填
+  assert.deepEqual(result.data.clearedMessages, ['待发 1', '待发 2']);
 });
 
 test('cancelStream：重复取消幂等，adapter 只调用一次（AC-CV-009 幂等）', async () => {

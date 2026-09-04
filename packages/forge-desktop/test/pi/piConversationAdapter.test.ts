@@ -980,3 +980,99 @@ test('compact 抛错返回 ok:false 与错误信息，不抛出（不破坏会�
   assert.equal(res.ok, false);
   assert.match(res.message ?? '', /Nothing to compact/);
 });
+
+// ===== CV-S09 消息队列 =====
+
+/** 支持 isStreaming/clearQueue 的 fake（模拟流式中 + 待发队列） */
+class QueuedFakePiSession extends FakePiSession {
+  isStreaming = true;
+  clearQueueCalls = 0;
+  queueContent: string[] = [];
+  clearQueue(): { steering: string[]; followUp: string[] } {
+    this.clearQueueCalls += 1;
+    const followUp = [...this.queueContent];
+    this.queueContent = [];
+    return { steering: [], followUp };
+  }
+}
+
+test('CV-S09：streaming 中 sendMessage 以 followUp 入队，不应用思考级别/不重置轮次', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  await adapter.sendMessage('s1', '第一轮'); // 先建立 lease（直发路径）
+  const thinkingCallsBefore = fake.setThinkingLevelCalls.length;
+
+  await adapter.sendMessage('s1', '排队消息');
+
+  assert.deepEqual(fake.promptCalls, ['第一轮', '排队消息']);
+  assert.equal((fake.imageCalls[0] as { streamingBehavior?: string }).streamingBehavior, 'followUp');
+  assert.equal(fake.setThinkingLevelCalls.length, thinkingCallsBefore, '入队不应用思考级别');
+});
+
+test('CV-S09：queue_update 转发 onQueueUpdated；派发时 user 气泡经 onMessage 转发', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  const queueUpdates: string[][] = [];
+  const userMessages: string[] = [];
+  adapter.setEventHandlers({
+    onQueueUpdated: (_sid, followUp) => queueUpdates.push([...followUp]),
+    onMessage: (_sid, message) => {
+      if (message.role === 'user') userMessages.push(message.content);
+    },
+  });
+  // 先建 lease（订阅在直发路径内建立）
+  await adapter.sendMessage('s1', '第一轮');
+
+  // 入队两条（无离队）
+  fake.emit({ type: 'queue_update', followUp: ['a', 'b'] } as MinimalEvent);
+  // 派发一条：pi 先发 queue_update（移除）再发 message_start(user)
+  fake.emit({ type: 'queue_update', followUp: ['b'] } as MinimalEvent);
+  fake.emit({ type: 'message_start', message: { role: 'user', content: 'a' } } as MinimalEvent);
+
+  assert.deepEqual(queueUpdates, [['a', 'b'], ['b']]);
+  assert.deepEqual(userMessages, ['a'], '离队 + message_start(user) = 派发，转发 user 气泡');
+});
+
+test('CV-S09：直发路径的 user message_start 不转发（pendingDelivery 为空）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  const userMessages: string[] = [];
+  adapter.setEventHandlers({
+    onMessage: (_sid, message) => {
+      if (message.role === 'user') userMessages.push(message.content);
+    },
+  });
+  await adapter.sendMessage('s1', '第一轮');
+
+  fake.emit({ type: 'message_start', message: { role: 'user', content: '直发' } } as MinimalEvent);
+
+  assert.deepEqual(userMessages, [], '无离队记录时不转发');
+});
+
+test('CV-S09：cancelStream 清空队列并返回文本，清空不派发（无 user 气泡）', async () => {
+  const fake = new QueuedFakePiSession();
+  fake.queueContent = ['q1', 'q2'];
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  const queueUpdates: string[][] = [];
+  const userMessages: string[] = [];
+  adapter.setEventHandlers({
+    onQueueUpdated: (_sid, followUp) => queueUpdates.push([...followUp]),
+    onMessage: (_sid, message) => {
+      if (message.role === 'user') userMessages.push(message.content);
+    },
+  });
+
+  // 先建 lease（首条走直发路径）+ 模拟在途队列镜像（入队时 queue_update 已建立）
+  await adapter.sendMessage('s1', '第一轮');
+  fake.emit({ type: 'queue_update', followUp: ['q1', 'q2'] } as MinimalEvent);
+
+  const cleared = await adapter.cancelStream('s1');
+
+  assert.deepEqual(cleared, ['q1', 'q2']);
+  assert.equal(fake.clearQueueCalls, 1);
+  assert.equal(fake.abortCalls, 1);
+  // 清空触发的 queue_update 事件不产生 user 气泡（清空 ≠ 派发）
+  const userAfterClear = userMessages.length;
+  fake.emit({ type: 'message_start', message: { role: 'user', content: 'q1' } } as MinimalEvent);
+  assert.equal(userMessages.length, userAfterClear, '取消后 user message_start 不再转发');
+});
