@@ -271,6 +271,42 @@ function resolveAgentDir(agentDir?: string): string {
   );
 }
 
+/**
+ * 预热 pi 扩展加载缓存（首条消息卡顿修复）。
+ *
+ * 会话工厂冷启动时 resourceLoader.reload() 经 jiti 现场编译 settings.packages 全部
+ * npm 扩展（实测本机 10 个包 3~9s），同步占用 Electron 主进程事件循环 → 全 app IPC
+ * 延迟、会话树刷新延迟。pi 扩展模块缓存按 cwd 记忆（进程内 Map），预热后同 cwd
+ * 工厂 reload 仅需 ~100ms。在 project.opened 时对项目 cwd 后台预热，把冷编译
+ * 从首条消息发送路径挪到打开项目时。
+ * 同 cwd 只预热一次；失败仅告警（预热不能影响正常工厂创建）。
+ * 已知边界：pi 缓存按 cwd 记忆，切换预热另一个项目会使上一项目缓存失效
+ * （多项目轮流首发仍可能冷启动一次）。
+ */
+const warmedCwds = new Set<string>();
+const warmingCwds = new Map<string, Promise<void>>();
+
+export function warmPiResourceLoader(cwd: string, agentDir?: string): Promise<void> {
+  if (warmedCwds.has(cwd)) return Promise.resolve();
+  const inFlight = warmingCwds.get(cwd);
+  if (inFlight !== undefined) return inFlight;
+  const run = (async () => {
+    try {
+      const dir = resolveAgentDir(agentDir);
+      const settingsManager = SettingsManager.create(cwd, dir);
+      const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: dir, settingsManager });
+      await resourceLoader.reload();
+      warmedCwds.add(cwd);
+    } catch (err) {
+      console.warn(`[createPiAgentSessionFactory] 扩展加载预热失败 (cwd=${cwd})`, err);
+    } finally {
+      warmingCwds.delete(cwd);
+    }
+  })();
+  warmingCwds.set(cwd, run);
+  return run;
+}
+
 function getDefaultSessionDir(cwd: string, agentDir?: string): string {
   const root = resolveAgentDir(agentDir);
   return path.join(root, 'sessions', encodeURIComponent(cwd));

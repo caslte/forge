@@ -14,6 +14,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electro
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
+import { warmPiResourceLoader } from './pi/createPiAgentSessionFactory.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
 import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
@@ -168,6 +169,13 @@ app.whenReady().then(() => {
   keychain.restoreEnv();
   const { methodTable, eventBus } = createForgeCore(storePath, { keychain });
   registerIpc(methodTable, eventBus);
+
+  // 首条消息卡顿修复：项目打开即后台预热 pi 扩展加载（jiti 冷编译 3~9s 不再落在
+  // 首条发送路径上）；启动时自动打开首个项目也会触发 project.opened，单点覆盖
+  eventBus.on('project.opened', (payload) => {
+    const opened = (payload as { path?: unknown }).path;
+    if (typeof opened === 'string' && opened !== '') void warmPiResourceLoader(opened);
+  });
 
   const win = createWindow(!!process.env.FORGE_DEV_SERVER_URL);
   const devUrl = process.env.FORGE_DEV_SERVER_URL;

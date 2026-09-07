@@ -8,6 +8,14 @@
       "source": "v3.42 多窗口工具条不显示 + v3.41 子agent头部条变形",
       "file": "flex-scroll-shrink.md",
       "createdAt": "2026-09-04"
+    },
+    {
+      "id": "kb-2026-09-07-pi-extension-cold-load",
+      "title": "pi 扩展冷加载会占满 Electron 主进程，首条消息卡顿要预热而不是重试发送",
+      "tags": ["electron", "pi", "jiti", "主进程阻塞", "性能", "会话工厂", "预热"],
+      "source": "v3.46 发送首条消息全 app 卡顿 + 会话树延迟",
+      "file": "pi-extension-cold-load.md",
+      "createdAt": "2026-09-07"
     }
   ]
 }

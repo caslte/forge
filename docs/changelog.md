@@ -1,5 +1,24 @@
 # 变更日志
 
+## v3.46 (修复：发送消息全 app 卡顿——首条冻结 + 流式渲染冻结)
+
+- 用户反馈：发送第一条消息整个 app 很卡、会话树里新会话显示延迟；发送第二条消息也卡住。
+- 根因①（首条消息，主进程）：会话工厂冷启动时 pi `DefaultResourceLoader.reload()` 经 jiti 现场编译 settings.packages 全部 npm 扩展（本机 10 个包实测 3~9s，CPU profile 主体为 stat/statSync + jiti 解析转译），同步占用 Electron 主进程事件循环 → 全部 IPC/事件延迟（会话树刷新、窗口控制、@ 补全等），表现为“整个 app 卡”。pi 扩展模块缓存按 cwd 进程内记忆，同进程二次 reload 仅 75~550ms（实测 cold 3848/9077/6987ms vs warm 75/109ms；工厂整体 5444ms → 预热后 175ms）。
+  - 修复：新增 `warmPiResourceLoader(cwd)`（forge-desktop/pi/createPiAgentSessionFactory.ts，同 cwd 幂等），main.ts 订阅 `project.opened` 后台预热——启动时自动打开首个项目也触发，冷编译从首条发送路径挪到打开项目时；失败仅告警不影响正常工厂创建。
+- 根因②（流式期间，渲染进程）：`MessageCard.renderedContent` 为 computed，逐 delta 全量重跑 marked + hljs + sanitizeHtml（33KB 回复单次 44ms，40 delta/s ≈ 176% 渲染线程）且 bodyHtml 逐 delta 重换 v-html → 长回复流式时整个渲染进程冻结（代码内既有 ponytail 注释预告的天花板）。
+  - 修复：流式期间（streaming=true）每 150ms 尾随重渲染一次，非流式（历史加载/终态覆盖/取消收尾）立即渲染；开围栏标记与 html 一同在节流点快照，mermaid/bodyHtml 派生量只依赖节流后状态，不再逐 delta 重算（实测渲染线程占用 176% → ~29%）。角色分支保留（user/system/tool 仍纯文本转义）。
+- 验证：forge-desktop/ui typecheck 0 错；三包 668 测试全过（344+176+148）；工厂预热计时脚本（cold 5444ms → warm 175ms）与 renderMarkdown 基准（44ms/次）实测记录于调查过程；MessageCard 节流无组件测试设施（forge-ui 测试均为纯函数 node:test），行为验证依赖 typecheck + 人工流式观察——缺口如实记录。
+- 文档同步：PRD CV-S02/AC-CV-004 本就要求“增量渲染不卡顿”，实现已满足，契约无变化；沉淀知识库 kb-2026-09-07-pi-extension-cold-load。
+- 剩余风险：①多项目轮流首发仍可能各冷启动一次（pi 缓存按 cwd 记忆，切换预热目标会失效前一个）；②预热与首条发送若几乎同时发生（打开项目后 <5s 内发送）可能双重编译，发送仍可能卡一次；③根治需把 pi 会话运行时挪出主进程（utilityProcess），成本高未做。
+
+## v3.45 (SM-S01 验收修正：下拉项目排序改最近使用置顶 MRU)
+
+- 用户需求：新建项目在下拉里排最后，应排第一；本次选中的项目在创建会话后也应变成第一（原规则=首次选中定序永不重排，与新项目/新会话预期不符）。
+- 对齐粒度（用户裁定，方案 B）：下拉序与项目树拖拽序完全独立；置顶触发点仅两个——新建项目（打开项目…注册成功）、创建会话成功（草稿发首条消息归属落定）；纯下拉选中不改序；重复使用也置顶，其余相对顺序不变。
+- 实现：App.vue `pickOrder` 写入由「首次选中追加」改为 `bumpProjectToFront`（move-to-front），写入时机从 `onPickProject` 移到 `onAddProject` + `onSessionCreated`（草稿归属即 currentProjectPath）；`orderedProjects` 排序逻辑不变（indexOf 序、未记录按后端序垫底，天然兼容 MRU）；移除项目同步清除记录保留；后端 lastOpenedAt/侧栏语义不变。
+- 验证：typecheck 0 错、forge-ui 148 测试全过。
+- 文档同步：`prd/02_session_management.md`（选择器排序规则改 MRU + AC-SM-028）、`test/02_session/coverage-matrix.md`（AC-SM-028 断言 + E-SM-007 步骤改置顶断言）。
+
 ## v3.44 (CV-S09 消息队列 + CV-S10 输入历史翻阅)
 
 - CV-S09 消息队列（think-1788425299398 对齐，方案 C5 + pi TUI ESC 语义）：忙时发送 = 入队，完全托管 pi —— 适配器以 `session.isStreaming` 分流，streaming 中经 `prompt(content, {streamingBehavior:'followUp'})` 入队，pi 收尾自动 FIFO 派发（投递时 `message_start(role=user)` + `queue_update` 移队，适配器以「离队+message_start(user)」确认派发转发 user 气泡，直发路径不转发无重复）；UI「待发送 N」徽标 + 只读浮窗（无删除/立即发送）；上限 5 条 UI 软校验；**停止 = `clearQueue()`（双层清，防 while 循环续跑）→ `abort()` → 被清文本 `\n\n` 拼接回填输入框**（源码核实 pi TUI ESC 同款，单条删除 pi 无 API、唯一丢弃入口 = 停止）；RPC：cancelStream 响应改带 `clearedMessages`，新增 `conversation.queueUpdated` 事件，忙时 sendMessage 不再返 1001 且不推 statusChanged（防重置读秒）。

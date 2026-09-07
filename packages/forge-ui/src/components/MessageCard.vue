@@ -88,15 +88,60 @@ watch(
  * Markdown 安全渲染（P2-B）：流式与结束后统一用完整渲染（marked + hljs + sanitize 白名单），
  * 保证两种状态样式一致（此前流式用简化渲染导致紧凑/正常样式跳变）。
  * ponytail: 每 chunk 全量解析，长文+多代码块若流式卡顿再上节流（100ms 重渲染一次）。
+ *
+ * 节流已上线（首条/后续消息流式冻结修复）：流式期间（streaming=true）每 150ms 尾随
+ * 重渲染一次，非流式（历史加载/终态覆盖）立即渲染。marked+hljs+sanitizeHtml 全量
+ * 解析单次可达几十 ms，逐 delta 重渲染是 O(n²)，长回复时渲染线程占满 → 全 UI 冻结。
+ * 开围栏标记 openFence 与 html 一同在节流点快照，mermaid/bodyHtml 派生量只依赖
+ * 节流后状态，不再逐 delta 重算 + 重换 v-html。
  */
-const renderedContent = computed(() => {
-  const raw = isUser.value ? userParsed.value.body : props.message.content;
+const STREAM_RENDER_INTERVAL_MS = 150;
+const renderedContent = ref('');
+/** 渲染时刻的内容快照是否含未闭合围栏（流式中 mermaid 只写了一半） */
+const renderedOpenFence = ref(false);
+let renderTimer: ReturnType<typeof setTimeout> | null = null;
+
+function renderMarkdownNow(): void {
+  renderTimer = null;
+  const raw = isUser.value ? userParsed.value.body : (props.message.content ?? '');
   if (isUser.value || isSystem.value || isTool.value) {
     // 用户/系统/工具消息保持纯文本渲染（无 markdown 语义，避免误伤）
-    return escapeHtml(raw);
+    renderedContent.value = escapeHtml(raw);
+  } else {
+    renderedContent.value = renderMarkdown(raw);
   }
-  return renderMarkdown(raw);
-});
+  renderedOpenFence.value = hasOpenFence(props.message.content ?? '');
+}
+
+watch(
+  () => props.message.content,
+  (raw) => {
+    if (!props.streaming) {
+      // 非流式（历史加载/终态覆盖/用户消息）：立即渲染，不落后于数据
+      if (renderTimer !== null) {
+        clearTimeout(renderTimer);
+        renderTimer = null;
+      }
+      renderMarkdownNow();
+    } else if (renderTimer === null) {
+      renderTimer = setTimeout(renderMarkdownNow, STREAM_RENDER_INTERVAL_MS);
+    }
+  },
+  { immediate: true },
+);
+
+// 流式结束（含取消/错误收尾）：冲刷待渲染内容，终态不留尾随延迟
+watch(
+  () => props.streaming,
+  (streaming) => {
+    if (streaming) return;
+    if (renderTimer !== null) {
+      clearTimeout(renderTimer);
+      renderTimer = null;
+    }
+    renderMarkdownNow();
+  },
+);
 
 /** 纯文本转义（用户消息等不使用 markdown 渲染） */
 function escapeHtml(s: string): string {
@@ -127,7 +172,7 @@ const mermaidBlocks = computed<{ key: string; encoded: string }[]>(() => {
     blocks.push({ key: `${i++}-${m[1]?.slice(0, 8) ?? ''}`, encoded: m[1] ?? '' });
   }
   // 末围栏未闭合（流式中 mermaid 只写了一半）：末块先不渲染图表，避免半截源码反复渲染失败报错闪现
-  if (hasOpenFence(props.message.content) && blocks.length > 0) blocks.pop();
+  if (renderedOpenFence.value && blocks.length > 0) blocks.pop();
   return blocks;
 });
 
@@ -135,7 +180,7 @@ const mermaidBlocks = computed<{ key: string; encoded: string }[]>(() => {
 const bodyHtml = computed(() => {
   const html = renderedContent.value;
   // 末围栏未闭合时保留最后一个占位 pre（含转义源码，按普通代码块展示），其余照常摘除
-  const keepLast = hasOpenFence(props.message.content);
+  const keepLast = renderedOpenFence.value;
   const lastIdx = keepLast ? html.lastIndexOf('<pre class="md-mermaid-wrap">') : -1;
   return html.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, (match, offset: number) =>
     keepLast && offset === lastIdx ? match : '',
