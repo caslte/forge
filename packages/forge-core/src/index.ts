@@ -25,6 +25,19 @@ export type {
 export { ProjectApi, createProjectApi } from './rpc/projectMethods.ts';
 export type { RpcResult, EventSink } from './rpc/projectMethods.ts';
 
+// Git 分支服务（wu-01-project-git-core）
+export { GitService } from './git/gitService.ts';
+export type {
+  GitBranchInfo,
+  GitResult,
+  SwitchBranchData,
+  SwitchResult,
+} from './git/gitService.ts';
+
+// Git RPC 方法层（wu-01-project-git-core）
+export { GitApi, createGitApi } from './rpc/gitMethods.ts';
+export type { GitApiDeps } from './rpc/gitMethods.ts';
+
 // 会话管理服务（wu-02-session-service）
 export { SessionService } from './session/sessionService.ts';
 export type {

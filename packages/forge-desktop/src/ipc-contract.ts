@@ -22,6 +22,9 @@ export type ForgeMethod =
   | 'project/updateProjectAlias'
   | 'project/reorderProjects'
   | 'project/setTrust'
+  // git（wu-02）
+  | 'git/getBranchInfo'
+  | 'git/switchBranch'
   // session（02）
   | 'session/createSession'
   | 'session/querySessionList'
@@ -80,6 +83,7 @@ export const IPC_FILE_LIST_PROJECT = 'forge:file:listProjectFiles';
 export type ForgeEvent =
   | 'project.opened'
   | 'project.removed'
+  | 'git.branchChanged'
   | 'session.statusChanged'
   | 'session.removed'
   | 'session.updated'
@@ -102,6 +106,7 @@ export type ForgeEvent =
 export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'project.opened',
   'project.removed',
+  'git.branchChanged',
   'session.statusChanged',
   'session.removed',
   'session.updated',
@@ -225,6 +230,7 @@ export interface ForgeBridge {
    * 订阅引擎事件。返回取消订阅函数。
    * 事件 payload 结构 = 各 Api events.emit(channel, …) 的载荷：
    * - project.opened/removed: { path }
+   * - git.branchChanged: { path, branch }
    * - session.statusChanged: { sessionId, status }
    * - session.removed: { sessionId }
    * - conversation.statusChanged: { sessionId, status }

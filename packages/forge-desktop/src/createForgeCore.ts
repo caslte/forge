@@ -15,6 +15,8 @@ import {
   ForgeStore,
   ProjectService,
   createProjectApi,
+  createGitApi,
+  GitService,
   SessionService,
   createSessionApi,
   ConversationService,
@@ -104,22 +106,23 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       }
     },
   };
-  const projectApi = createProjectApi(
-    new ProjectService(
-      store,
-      deps.trustStore ??
-        new PiTrustStoreAdapter(
-          deps.piAgentDir ??
-            path.join(
-              process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
-              '.pi',
-              'agent',
-            ),
-        ),
-      projectSessionsPort,
-    ),
-    eventBus,
+  const projectService = new ProjectService(
+    store,
+    deps.trustStore ??
+      new PiTrustStoreAdapter(
+        deps.piAgentDir ??
+          path.join(
+            process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
+            '.pi',
+            'agent',
+          ),
+      ),
+    projectSessionsPort,
   );
+  const projectApi = createProjectApi(projectService, eventBus);
+
+  // git（wu-02）：与 project 共享同一事件汇，switchBranch 分支变化经 eventBus 转发渲染进程
+  const gitApi = createGitApi({ gitService: new GitService(), projectService, events: eventBus });
 
   // conversation adapter 先行声明（sessionService 删除钩子闭包引用；实际初始化在下方）
   let conversationAdapter: PiConversationAdapter;
@@ -563,6 +566,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
 
   const methodTable: MethodTable = {
     ...projectApi.methods,
+    ...gitApi.methods,
     ...sessionApi.methods,
     ...conversationApi.methods,
     ...toolApi.methods,

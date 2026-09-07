@@ -1,5 +1,18 @@
 # 变更日志
 
+## v3.52 (开发交付：PM-S05 分支查看与切换，dev-flow run 20260907175149 COMPLETE)
+
+- 交付：4 WU 全部 D4 通过 + D5 Fan-in + D6 模块 QA PASS（gap 0）。
+  - wu-01 core：`gitService.ts`（execFile 调 git CLI，gitBin 可注入；getBranchInfo 五态/dirty/dict 序；switchBranch `git switch --` 参数数组防注入，6001+stderr 透传，幂等无事件）+ `gitMethods.ts`（信封 1001/1002/6001/5000，事件 git.branchChanged）+ 21 单测（真实临时仓库含 detached/unborn/远程跟踪）。
+  - wu-02 desktop：ipc-contract 方法/事件/白名单 + createForgeCore 同构注入 gitApi；事件白名单静态扫描契约回归绿（修复 wu-01 引入的跨包缺口）；32 单测。
+  - wu-03 ui：bridge/types/mock-bridge 契约同步；BranchBadge 组件（徽标+浮窗过滤+dirty 确认框+6001 stderr 展示浮窗不关+busy 禁用态+事件刷新+聚焦重查）；InstructionInput proj-pill 旁挂载；App/MultiWindow 按项目级 busy（任一会话 streaming）逐窗口传；纯函数提取 + 13 单测。
+  - wu-04 e2e：branchBadge.spec 5 用例覆盖 E-PM-005~008（含流式禁用/取消确认/冲突 stderr 展示分支不变）；RED 均为真实交互缺陷后修复。
+- D5 集成修复 1 项：BranchBadge scoped 样式不继承宿主 `.meta-link svg` 尺寸规则，SVG 默认尺寸撑爆 compose-bar（114px）拦截输入框点击，级联打挂 13 条存量 e2e；单行 `.git-pill svg{13px}` 修复后全部恢复（教训：子组件内的宿主 scoped 规则不可依赖，需显式约束）。
+- 验证：typecheck 四包 0 错；单测 706/706（core 365 + desktop 180 + ui 161）；e2e 74 过/2 挂（smoke、E-SM-001 为 HEAD 存量，基线 stash 验证与本次改动无关）。
+- 工具链修复：dev skill 的 wu-normalize.js 丢失 test_selector 字段（references/dev-flow.md 明文要求），致 D4 全量跑跨 WU 中间态误报；已补字段透传并重开 run（旧 run 20260907171139 弃用，状态文件 .abandoned 留档）。前一次误提交（cc0d6c2 把三个并行会话未提交改动打包且提交信息声称 PM-S05 已实现）不实，实际实现以本 run 为准。
+- 已知偏差（QA 判定不阻塞）：E-PM-005/006/008 以 mock-backend 表达矩阵 real-backend 场景（spec 头部已声明），真实 git 语义由 core 单测真实临时仓库覆盖。
+- 未提交：本 run 全部改动在工作区，待用户决定提交。
+
 ## v3.51 (功能：模块 01 扩展 PM-S05 分支查看与切换全档确认)
 
 - 需求：在 forge 内感知项目 git 分支并切换。用户拍板：展示/切换入口只放输入框项目选择器旁；流式中徽标与其他控件一致呈禁用态（非点击后拦截）；有未提交更改先弹确认框；确认后切换失败原样展示 git 错误。

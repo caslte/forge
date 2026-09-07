@@ -31,6 +31,8 @@ const props = defineProps<{
   currentModel: string | null;
   /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
   projectPicker?: ProjectPickerDescriptor;
+  /** 项目忙（任一会话 streaming，PM-S05 AC-PM-016）：透传给分支徽标禁用 */
+  gitBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -566,6 +568,8 @@ watch(
         :project-picker="props.projectPicker"
         :project-path="props.project.path"
         :queue-items="queueItems"
+        :git-project-path="props.projectPicker?.currentPath ?? props.project.path"
+        :git-busy="props.gitBusy ?? false"
         @send="onSend"
         @cancel="onCancelTurn"
         @model-change="onModelChange"

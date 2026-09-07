@@ -16,6 +16,7 @@ import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
 import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
 import ImageLightbox from './ImageLightbox.vue';
+import BranchBadge from './BranchBadge.vue';
 
 /**
  * 指令输入框。
@@ -40,6 +41,10 @@ const props = defineProps<{
   projectPicker?: ProjectPickerDescriptor;
   /** 项目根路径（@ 文件补全候选范围）；未传则 @ 补全不触发 */
   projectPath?: string;
+  /** git 分支徽标目标项目路径（PM-S05）；未传则不渲染徽标 */
+  gitProjectPath?: string;
+  /** 项目忙（任一会话 streaming）：徽标禁用（AC-PM-016） */
+  gitBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -1371,6 +1376,8 @@ watch(
               </button>
             </template>
           </div>
+          <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
+          <BranchBadge v-if="gitProjectPath" :project-path="gitProjectPath" :busy="gitBusy ?? false" />
         </div>
 
         <!-- 附件 -->

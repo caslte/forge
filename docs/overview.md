@@ -82,7 +82,7 @@
 - 进行中：v1.1 计划草案（`plan/forge-v1.1-plan.md`，待确认范围后进入 gen-doc-prd / dev）。
 - 已完成（2026-09-02）：模块 03 扩展 CV-S08 斜杠命令全档确认（gen-doc-all：PRD + API §9 + 测试设计 U-CV-011/012、A-CV-011~013、E-CV-014~018、PIC-007）。
 - 进行中：CV-S08 开发交付（dev-flow run `20260902145236`，状态文件 `docs/plan/dev-20260902145236-flow.json`）——5 WU 中 4 个已通过 D3+D4（WU-01 core 服务与 RPC 329 测试、WU-02 forge-extensions 命令上报扩展+desktop 装配 161 测试、WU-03 UI 纯函数+bridge+mock 103 测试、WU-05 desktop 桥接+草稿态 port 171 测试）；**WU-04（InstructionInput 浮窗集成 + e2e）代码已落地但 5 条 e2e（E-CV-014~018）全部失败，Dev Agent 结果丢失，需重派修复**（WU 仍处 claimed/in_progress，重派修复后直接提交即可，不消耗 local_fix 次数）；之后 D5 Fan-in（全量回归）→ D6 模块 QA（含 PIC-007 真实链路验证项）。
-- 已完成（2026-09-07）：模块 01 扩展 PM-S05 git 分支查看与切换全档确认（gen-doc-all：PRD 01 扩展 + API §10/§11 + 事件 git.branchChanged + 错误码 6001 + 测试矩阵 U-PM-006~009/A-PM-009~010/E-PM-005~008；无 DB 变更）；待进入 dev。
+- 已完成（2026-09-07）：模块 01 扩展 PM-S05 git 分支查看与切换全档确认（gen-doc-all）与开发交付（dev-flow run `20260907175149`，COMPLETE：4 WU 通过 + Fan-in 706 单测全绿 + e2e 74 过/2 存量挂 + 模块 QA PASS gap 0）；改动待提交。
 - 阻塞项：无（v1.1 范围待确认点见计划文档 §7）。
 - 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）；PRD 05 扩展的思考级别真实链路（PIC-005）与 1M 上下文运行时验证、PIC-006 子 agent 真实链路 **已于 2026-08-30 用户确认 OK**；forge-ui session 模块 2 条既有 e2e（E-SM-001/002）已修复（全量 41/41 通过）。
 ## 九、AI 开发约束

@@ -43,6 +43,8 @@ const DB: {
   projects: Array<Record<string, unknown>>;
   sessions: MockSessionSeed[];
   subagents: Record<string, MockSubagentSeed[]>;
+  /** mock git 状态（PM-S05）：不在表内 = 非 git 项目（isGitRepo:false 全空值） */
+  git: Record<string, { branch: string; branches: string[]; dirty: boolean }>;
 } = {
   projects: [
     { path: 'D:/work/aiwork/forge', alias: null, lastOpenedAt: new Date().toISOString(), trust: 'trusted' },
@@ -84,6 +86,13 @@ const DB: {
     },
   ],
   subagents: {},
+  git: {
+    'D:/work/aiwork/forge': {
+      branch: 'dev-v0.1.0',
+      branches: ['dev-v0.1.0', 'main', 'feat/login'],
+      dirty: true,
+    },
+  },
 };
 
 const HISTORY: Record<string, unknown[]> = {
@@ -648,6 +657,37 @@ const bridge: ForgeBridge = {
           message: 'ok',
           data: { exists: true, size: chunk.length, chunk },
         };
+      }
+      case 'git/getBranchInfo': {
+        // PM-S05：路径命中 mock git 表返回固定分支信息；未命中 = 非 git 项目全空值
+        const gp = (params as { path?: string }).path ?? '';
+        const g = DB.git[gp];
+        if (!g) return { code: 0, message: 'ok', data: { isGitRepo: false, branch: '', branches: [], dirty: false, detached: false } };
+        return {
+          code: 0,
+          message: 'ok',
+          data: { isGitRepo: true, branch: g.branch, branches: [...g.branches], dirty: g.dirty, detached: false },
+        };
+      }
+      case 'git/switchBranch': {
+        // PM-S05：__conflict__ 模拟 dirty 冲突（6001 + git 原始 stderr 样例，浮窗不关）
+        const sp = (params as { path?: string }).path ?? '';
+        const sb = (params as { branch?: string }).branch ?? '';
+        const g = DB.git[sp];
+        if (!g) return { code: 1002, message: '项目未注册: ' + sp, data: null };
+        if (sb === '__conflict__') {
+          return {
+            code: 6001,
+            message: 'git 切换失败',
+            data: {
+              stderr:
+                'error: Your local changes to the following files would be overwritten by checkout:\n\tpackage.json\nPlease commit your changes or stash them before you switch branches.\nAborting',
+            },
+          };
+        }
+        g.branch = sb;
+        emit('git.branchChanged', { path: sp, branch: sb });
+        return { code: 0, message: 'ok', data: { branch: sb } };
       }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };

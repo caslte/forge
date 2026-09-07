@@ -43,7 +43,9 @@ export type ForgeMethod =
   | 'subagent/queryList'
   | 'subagent/stop'
   | 'subagent/clearFinished'
-  | 'subagent/queryOutput';
+  | 'subagent/queryOutput'
+  | 'git/getBranchInfo'
+  | 'git/switchBranch';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -65,7 +67,8 @@ export type ForgeEvent =
   | 'tool.error'
   | 'model.providersChanged'
   | 'subagent.updated'
-  | 'subagent.removed';
+  | 'subagent.removed'
+  | 'git.branchChanged';
 
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
 export interface ForgeResult<T = unknown> {

@@ -1,0 +1,151 @@
+/**
+ * Git RPC 方法层（gitMethods）单元测试（wu-01-project-git-core）。
+ *
+ * 覆盖 docs/api/01_project.md §10/§11 RPC 层契约：
+ * - git/getBranchInfo：code 0 透传服务层分支信息；path 缺失 1001；未注册 1002；异常 5000
+ * - git/switchBranch：成功 code 0 且分支变化时发射 git.branchChanged {path,branch}；
+ *   幂等（changed=false）不发射；6001 + data.stderr 透传；branch 缺失 1001；未注册 1002
+ *
+ * 使用 node:test + assert/strict；gitService / projectService 注入 fake，
+ * 事件经 EventEmitter 捕获。
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import path from 'node:path';
+import { GitApi } from '../../src/rpc/gitMethods.ts';
+import type { GitService } from '../../src/git/gitService.ts';
+import type { GitBranchInfo, SwitchResult } from '../../src/git/gitService.ts';
+
+/** fake GitService：返回预设分支信息 / 切换结果，记录调用 */
+class FakeGitService implements GitService {
+  info: GitBranchInfo = { isGitRepo: false, branch: null, branches: [], dirty: false, detached: false };
+  switchResult: SwitchResult = { ok: true, data: { branch: 'main', changed: true } };
+  infoCalls: string[] = [];
+  switchCalls: Array<{ cwd: string; branch: string }> = [];
+  throwOnSwitch: Error | null = null;
+
+  async getBranchInfo(cwd: string): Promise<GitBranchInfo> {
+    this.infoCalls.push(cwd);
+    return this.info;
+  }
+
+  async switchBranch(cwd: string, branch: string): Promise<SwitchResult> {
+    this.switchCalls.push({ cwd, branch });
+    if (this.throwOnSwitch !== null) {
+      throw this.throwOnSwitch;
+    }
+    return this.switchResult;
+  }
+}
+
+/** fake ProjectService：仅 queryProjectList（注册判定用）；路径经 resolve 与真实唯一键同口径 */
+function makeFakeProjects(registered: string[]): { queryProjectList(): unknown } {
+  return {
+    queryProjectList() {
+      return { ok: true, data: { projects: registered.map((p) => ({ path: path.resolve(p) })) } };
+    },
+  };
+}
+
+function makeApi(registered: string[] = ['C:/dev/a']) {
+  const gitService = new FakeGitService();
+  const events = new EventEmitter();
+  const emitted: Array<{ event: string; payload: unknown }> = [];
+  events.on('git.branchChanged', (payload: unknown) => emitted.push({ event: 'git.branchChanged', payload }));
+  const api = new GitApi({
+    gitService,
+    projectService: makeFakeProjects(registered) as never,
+    events,
+  });
+  return { api, gitService, events, emitted };
+}
+
+test('git/getBranchInfo：成功返回 code 0 且透传服务层分支信息', async () => {
+  const { api, gitService } = makeApi();
+  gitService.info = { isGitRepo: true, branch: 'main', branches: ['main'], dirty: true, detached: false };
+  const r = await api.methods['git/getBranchInfo']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, gitService.info);
+  assert.equal(gitService.infoCalls[0], 'C:/dev/a');
+});
+
+test('git/getBranchInfo：path 缺失/空白返回 1001 且不进服务层', async () => {
+  const { api, gitService } = makeApi();
+  for (const params of [{}, { path: '' }, { path: '   ' }, { path: 42 }]) {
+    const r = await api.methods['git/getBranchInfo'](params);
+    assert.equal(r.code, 1001);
+    assert.equal(r.data, null);
+  }
+  assert.equal(gitService.infoCalls.length, 0);
+});
+
+test('git/getBranchInfo：未注册项目返回 1002 且不进服务层', async () => {
+  const { api, gitService } = makeApi(['C:/dev/a']);
+  const r = await api.methods['git/getBranchInfo']({ path: 'C:/dev/other' });
+  assert.equal(r.code, 1002);
+  assert.equal(r.data, null);
+  assert.equal(gitService.infoCalls.length, 0);
+});
+
+test('git/getBranchInfo：服务层意外抛错返回 5000', async () => {
+  const { api, gitService } = makeApi();
+  gitService.infoCalls.push = () => {
+    throw new Error('boom');
+  };
+  const r = await api.methods['git/getBranchInfo']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 5000);
+  assert.equal(r.data, null);
+});
+
+test('git/switchBranch：成功且分支变化时 code 0 并发射 git.branchChanged', async () => {
+  const { api, gitService, emitted } = makeApi();
+  gitService.switchResult = { ok: true, data: { branch: 'feat/login', changed: true } };
+  const r = await api.methods['git/switchBranch']({ path: 'C:/dev/a', branch: 'feat/login' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, { branch: 'feat/login' });
+  assert.equal(emitted.length, 1);
+  assert.deepEqual(emitted[0].payload, { path: 'C:/dev/a', branch: 'feat/login' });
+});
+
+test('git/switchBranch：幂等（changed=false）code 0 且不发射事件', async () => {
+  const { api, gitService, emitted } = makeApi();
+  gitService.switchResult = { ok: true, data: { branch: 'main', changed: false } };
+  const r = await api.methods['git/switchBranch']({ path: 'C:/dev/a', branch: 'main' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, { branch: 'main' });
+  assert.equal(emitted.length, 0);
+});
+
+test('git/switchBranch：6001 透传且 data.stderr 附 git 原始错误', async () => {
+  const { api, gitService, emitted } = makeApi();
+  gitService.switchResult = { ok: false, code: 6001, message: 'git 切换失败', stderr: 'error: Your local changes would be overwritten' };
+  const r = await api.methods['git/switchBranch']({ path: 'C:/dev/a', branch: 'other' });
+  assert.equal(r.code, 6001);
+  assert.deepEqual(r.data, { stderr: 'error: Your local changes would be overwritten' });
+  assert.equal(emitted.length, 0);
+});
+
+test('git/switchBranch：branch 缺失返回 1001 且不进服务层', async () => {
+  const { api, gitService } = makeApi();
+  for (const params of [{ path: 'C:/dev/a' }, { path: 'C:/dev/a', branch: '' }, { path: 'C:/dev/a', branch: '  ' }]) {
+    const r = await api.methods['git/switchBranch'](params);
+    assert.equal(r.code, 1001);
+  }
+  assert.equal(gitService.switchCalls.length, 0);
+});
+
+test('git/switchBranch：未注册项目返回 1002 且不进服务层', async () => {
+  const { api, gitService } = makeApi(['C:/dev/a']);
+  const r = await api.methods['git/switchBranch']({ path: 'C:/dev/other', branch: 'main' });
+  assert.equal(r.code, 1002);
+  assert.equal(gitService.switchCalls.length, 0);
+});
+
+test('git/switchBranch：服务层意外抛错返回 5000', async () => {
+  const { api, gitService } = makeApi();
+  gitService.throwOnSwitch = new Error('boom');
+  const r = await api.methods['git/switchBranch']({ path: 'C:/dev/a', branch: 'main' });
+  assert.equal(r.code, 5000);
+  assert.equal(r.data, null);
+});
