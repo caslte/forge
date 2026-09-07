@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>技能引用配色方案对比 · forge</title>
+<style>
+/* ============================================================
+   设计令牌：取自 packages/forge-ui/src/design-tokens.css（light/dark）
+   候选技能色为 oklch 直写（Electron/Chrome 111+ 支持），hex 为近似标注
+   ============================================================ */
+:root {
+  --background: oklch(1 0 0);
+  --foreground: #333333;
+  --card: oklch(1 0 0);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --border: oklch(0.92 0.004 286.32);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 4%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 6%);
+  --font-sans: "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+:root[data-theme='dark'] {
+  --background: oklch(0.26 0.006 286.2);
+  --foreground: oklch(0.88 0.002 286.3);
+  --card: oklch(0.26 0.006 286.2);
+  --muted: oklch(0.3 0.005 286.2);
+  --muted-foreground: oklch(0.7 0.008 286.3);
+  --border: oklch(0.32 0.005 286.3);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 18%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 24%);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--background);
+  color: var(--foreground);
+  padding: 40px 24px 64px;
+  transition: background 0.2s, color 0.2s;
+}
+.page { max-width: 1060px; margin: 0 auto; }
+
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+.page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.2px; }
+.page-head p { margin-top: 6px; font-size: 13px; line-height: 1.7; color: var(--muted-foreground); max-width: 720px; }
+.page-head code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--muted); border-radius: 4px; padding: 1px 5px; }
+
+.theme-toggle {
+  flex-shrink: 0; border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+  font-size: 13px; padding: 7px 14px; border-radius: 8px; cursor: pointer; box-shadow: var(--shadow-sm);
+}
+.theme-toggle:hover { background: var(--muted); }
+
+/* ---------- 方案网格 ---------- */
+.grid { margin-top: 28px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+
+.option {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 18px 16px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 12px;
+}
+.option-head { display: flex; align-items: baseline; gap: 10px; }
+.option-head .name { font-size: 15px; font-weight: 600; }
+.option-head .badge { font-size: 11px; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+.option-meta { font-size: 12px; line-height: 1.7; color: var(--muted-foreground); }
+.option-meta .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+.swatch-row { display: flex; gap: 8px; align-items: center; }
+.swatch { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); }
+.swatch-label { font-size: 11px; color: var(--muted-foreground); }
+
+/* ---------- 模拟消息气泡（样式对齐 MessageCard 用户消息） ---------- */
+.bubble {
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  font-size: 13px; line-height: 1.7; word-break: break-word;
+}
+.bubble + .bubble { margin-top: 8px; }
+
+/* 技能名 + 标签：结构与 MessageCard.vue .msg-cmd-* 一致，仅颜色走各方案变量 */
+.msg-cmd-name.is-skill { font-weight: 700; font-size: 13px; color: var(--c); }
+.msg-cmd-tag {
+  display: inline-block; margin-left: 6px; font-size: 10px; line-height: 1;
+  padding: 3px 6px; border-radius: 999px;
+}
+.msg-cmd-tag.tag-skill { color: var(--c); background: color-mix(in oklab, var(--c) 14%, transparent); }
+
+/* ---------- 单变量方案卡（页面底部：同一颜色不同用量） ---------- */
+.variant { margin-top: 4px; }
+.variant .label { font-size: 12px; color: var(--muted-foreground); margin-bottom: 6px; }
+</style>
+</head>
+<body data-theme="light">
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>技能引用配色方案对比</h1>
+      <p>
+        场景：消息气泡里的 <code>/skill:xxx</code> 技能名（粗体）与「技能」胶囊标签（MessageCard.vue
+        <code>.msg-cmd-name.is-skill</code> / <code>.tag-skill</code>）。当前为方案 A（v3.40 暖琥珀）。
+        右上角切换 light / dark 预览双主题效果。
+      </p>
+    </div>
+    <button class="theme-toggle" onclick="const b=document.body;b.dataset.theme=b.dataset.theme==='light'?'dark':'light';this.textContent=b.dataset.theme==='light'?'🌙 切到暗色':'☀️ 切到浅色'">🌙 切到暗色</button>
+  </div>
+
+  <div class="grid">
+    <!-- A 现状 -->
+    <div class="option" style="--c: oklch(0.65 0.14 85);">
+      <div class="option-head"><span class="name">A · 暖琥珀（现状）</span><span class="badge">v3.40 现行</span></div>
+      <div class="option-meta">
+        <div class="mono">light oklch(0.65 0.14 85) ≈ #b68700 ｜ dark oklch(0.8 0.14 85) ≈ #e7b643</div>
+        <div>与 LOGO 渐变点缀同源，品牌呼应最强；饱和偏高，浅色底上整段粗体略扎眼。</div>
+      </div>
+      <div class="swatch-row"><span class="swatch" style="background:#b68700"></span><span class="swatch" style="background:#e7b643"></span><span class="swatch-label">light / dark</span></div>
+      <div class="bubble"><span class="msg-cmd-name is-skill">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;我想增加一个数据展示模块，先给我看一下现有方案的对比。</div>
+      <div class="bubble">先执行&nbsp;<span class="msg-cmd-name is-skill">Review Code</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;再汇总结果给我。</div>
+    </div>
+
+    <!-- B 香槟金 -->
+    <div class="option" style="--c: oklch(0.70 0.10 90);">
+      <div class="option-head"><span class="name">B · 香槟金</span><span class="badge">琥珀降饱和</span></div>
+      <div class="option-meta">
+        <div class="mono">light oklch(0.70 0.10 90) ≈ #b79c51 ｜ dark oklch(0.80 0.10 90) ≈ #d7bb70</div>
+        <div>仍是 LOGO 同源的暖金家族，饱和度降三成、明度提一档：有色但柔，浅色底不刺眼。改动最小（只调 --brand-accent 数值）。</div>
+      </div>
+      <div class="swatch-row"><span class="swatch" style="background:#b79c51"></span><span class="swatch" style="background:#d7bb70"></span><span class="swatch-label">light / dark</span></div>
+      <div class="bubble"><span class="msg-cmd-name is-skill">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;我想增加一个数据展示模块，先给我看一下现有方案的对比。</div>
+      <div class="bubble">先执行&nbsp;<span class="msg-cmd-name is-skill">Review Code</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;再汇总结果给我。</div>
+    </div>
+
+    <!-- C 炉火橙 -->
+    <div class="option" style="--c: oklch(0.65 0.17 50);">
+      <div class="option-head"><span class="name">C · 炉火橙</span><span class="badge">forge 炉火意象</span></div>
+      <div class="option-meta">
+        <div class="mono">light oklch(0.65 0.17 50) ≈ #de6907 ｜ dark oklch(0.78 0.16 50) ≈ #ff9550</div>
+        <div>「forge＝锻造」最直白的呼应：炉火色，比琥珀更热烈醒目。注意色相接近现有 warning（85°→50° 有距离）与 destructive（27°），需留意语义距离。</div>
+      </div>
+      <div class="swatch-row"><span class="swatch" style="background:#de6907"></span><span class="swatch" style="background:#ff9550"></span><span class="swatch-label">light / dark</span></div>
+      <div class="bubble"><span class="msg-cmd-name is-skill">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;我想增加一个数据展示模块，先给我看一下现有方案的对比。</div>
+      <div class="bubble">先执行&nbsp;<span class="msg-cmd-name is-skill">Review Code</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;再汇总结果给我。</div>
+    </div>
+
+    <!-- D 淬火钢蓝 -->
+    <div class="option" style="--c: oklch(0.58 0.08 240);">
+      <div class="option-head"><span class="name">D · 淬火钢蓝</span><span class="badge">冷色反衬</span></div>
+      <div class="option-meta">
+        <div class="mono">light oklch(0.58 0.08 240) ≈ #4b81a5 ｜ dark oklch(0.76 0.08 240) ≈ #82b8df</div>
+        <div>锻造后淬火的钢色：低饱和冷蓝，衬灰底非常稳，整个 app 唯一冷色点缀，区分度最高。缺点：与「暖灰+琥珀」的品牌叙事关联弱。</div>
+      </div>
+      <div class="swatch-row"><span class="swatch" style="background:#4b81a5"></span><span class="swatch" style="background:#82b8df"></span><span class="swatch-label">light / dark</span></div>
+      <div class="bubble"><span class="msg-cmd-name is-skill">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;我想增加一个数据展示模块，先给我看一下现有方案的对比。</div>
+      <div class="bubble">先执行&nbsp;<span class="msg-cmd-name is-skill">Review Code</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;再汇总结果给我。</div>
+    </div>
+
+    <!-- E 青瓷绿 -->
+    <div class="option" style="--c: oklch(0.62 0.09 170);">
+      <div class="option-head"><span class="name">E · 青瓷绿</span><span class="badge">清新方向</span></div>
+      <div class="option-meta">
+        <div class="mono">light oklch(0.62 0.09 170) ≈ #46987e ｜ dark oklch(0.78 0.10 170) ≈ #70ccae</div>
+        <div>青瓷/玉色，清新耐看，与现有 success（145° 绿）有一定语义重叠，需确认不引起「成功/完成」误读。</div>
+      </div>
+      <div class="swatch-row"><span class="swatch" style="background:#46987e"></span><span class="swatch" style="background:#70ccae"></span><span class="swatch-label">light / dark</span></div>
+      <div class="bubble"><span class="msg-cmd-name is-skill">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;我想增加一个数据展示模块，先给我看一下现有方案的对比。</div>
+      <div class="bubble">先执行&nbsp;<span class="msg-cmd-name is-skill">Review Code</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;再汇总结果给我。</div>
+    </div>
+
+    <!-- F 同色不同用量 -->
+    <div class="option" style="--c: oklch(0.65 0.14 85);">
+      <div class="option-head"><span class="name">F · 保持琥珀，只减用量</span><span class="badge">组合方向</span></div>
+      <div class="option-meta">
+        <div class="mono">颜色不动（--brand-accent），只把技能名改回中性灰粗体，标签保留琥珀</div>
+        <div>点缀色只出现在小胶囊上——设计上「点缀」的标准用法；但技能名本身就没有颜色了。</div>
+      </div>
+      <div class="variant bubble"><span class="msg-cmd-name is-skill" style="color:var(--foreground)">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;技能名中性灰、标签琥珀。</div>
+      <div class="variant bubble"><span class="msg-cmd-name is-skill">Gen Doc All</span><span class="msg-cmd-tag tag-skill">技能</span>&nbsp;对照：名字+标签全琥珀（现状）。</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

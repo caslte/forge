@@ -1,5 +1,31 @@
 # 变更日志
 
+## v3.51 (功能：模块 01 扩展 PM-S05 分支查看与切换全档确认)
+
+- 需求：在 forge 内感知项目 git 分支并切换。用户拍板：展示/切换入口只放输入框项目选择器旁；流式中徽标与其他控件一致呈禁用态（非点击后拦截）；有未提交更改先弹确认框；确认后切换失败原样展示 git 错误。
+- PRD：`prd/01_project_management.md` 扩展 PM-S05（场景行/已确认决策/TD-PM-06~09/功能点 + AC-PM-013~023/徽标与浮窗承载/性能量化，自检 21 项 PASS）；状态 → PRD 已确认（含扩展 PM-S05）。
+- 关键决策：TD-PM-06 git CLI（child_process 零新依赖）；TD-PM-07 实时读不缓存不落 forge-store（无 DB 变更）；TD-PM-08 禁用+确认+透传（用户拍板）；TD-PM-09 切换广播 git.branchChanged + 聚焦/打开重查，不做文件监听。
+- API：`api/01_project.md` 新增 §10 `git/getBranchInfo`（isGitRepo/branch/branches/dirty/detached；非 git 与 git 不可用均 isGitRepo:false 不报错）与 §11 `git/switchBranch`（git switch 默认语义含远程同名自动建跟踪；冲突返回 6001 + data.stderr，分支不变；幂等重切无事件）；§8 新增事件 `git.branchChanged`；§9 与全局错误码表新增 6001。
+- 测试设计：`test/01_project/coverage-matrix.md` 新增 11 条基线（U-PM-006~009 / A-PM-009~010 / E-PM-005~008），覆盖 detached/空仓库/流式禁用/dirty 确认/冲突透传/多窗口同步/实时读收敛。
+- 文档同步：`prd/index.md`、`overview.md`（模块表+MVP 范围+当前状态）、`api/index.md`（6001）；`artifacts.json` 无需变更（01_project 各 artifact 路径与状态不变，均 approved）。
+- 剩余风险：git CLI 依赖用户机器安装 git（开发者用户群风险低；不可用时徽标隐藏降级，无功能损失）。
+
+## v3.50 (样式：技能引用配色暖琥珀→青瓷绿)
+
+- 背景：用户觉得全 app 黑白太单调，希望技能引用保留颜色但更耐看；通过原型页多方案对比后选定 E 青瓷绿（demo：`prototypes/skill-color-options.html`，可切 light/dark）。
+- 改动：`design-tokens.css` `--brand-accent` light `oklch(0.65 0.14 85)` → `oklch(0.62 0.09 170)`，dark `oklch(0.8 0.14 85)` → `oklch(0.78 0.1 170)`；注释同步更新。该令牌当前仅 `MessageCard` 技能名 `.is-skill` 与「技能」标签 `.tag-skill` 引用，零误伤；LOGO（`--logo-gradient-accent`）、Toast 渐变线、shimmer 流光的暖琥珀均为独立变量/字面值，不受影响。
+- 备选方案（用户指定留档）：D 淬火钢蓝 light `oklch(0.58 0.08 240)` ≈ #4b81a5 / dark `oklch(0.76 0.08 240)` ≈ #82b8df，将来如需冷色点缀可直接替换 `--brand-accent` 两处值。
+- 验证：纯 CSS 变量替换，无测试/e2e 断言颜色值；刷新 dev 页面即可见。
+
+## v3.49 (修复：消息队列浮窗真实端始终不出现——IPC 事件转发白名单漏登记)
+
+- 用户反馈：忙时入队后，发送按钮旁的「待发送 N」徽标/浮窗仍然看不到（v3.47/v3.48 修复后依旧）。
+- 根因（forge-desktop `ipc-contract.ts`）：main 进程 `registerIpc` 只把 `FORGE_EVENTS` 白名单内的事件经 `webContents.send` 转发给渲染进程，而 CV-S09 新增的 `conversation.queueUpdated` 通道漏登白名单。链条前段全部正常：pi `queue_update` → adapter `onQueueUpdated` → forge-core `events.emit('conversation.queueUpdated')`——事件在主进程事件总线上发出，但无监听转发，渲染进程 `subscribe('conversation.queueUpdated')` 永不触发，`queueBySession` 恒空，徽标 `v-if` 恒假。
+- 为何 v3.47/v3.48 两轮修复都没发现：mock-bridge（浏览器 dev/e2e）在同一 JS 上下文内 emit/consume，不经主进程 IPC 转发，白名单缺失对 mock 路径无影响——单测/e2e 全绿但真实 Electron 端必挂。
+- 修复：`ForgeEvent` 联合类型与 `FORGE_EVENTS` 数组补登 `conversation.queueUpdated`（各一行）；新增契约回归测试 `ipcEventContract.test.ts`：静态扫描 forge-core 全部 `events.emit('<channel>')` 字面量，断言每个通道均已登记白名单——以后新增事件漏登直接红。
+- 验证：契约测试先红（还原修复精确报出 `conversation.queueUpdated`）后绿；forge-desktop 全量单测 179 过；typecheck 0 错。真实端验证需用户重启 dev（start.bat）后忙时连发两条确认徽标出现。
+- 文档同步：知识库新增 kb-2026-09-09-ipc-events-whitelist（IPC 事件转发白名单陷阱，mock 绕过 IPC 导致 e2e 盲区）。
+
 ## v3.48 (修复：新建项目未自动选中——新建后下拉置顶但归属仍是旧项目)
 
 - 用户反馈：新建项目（输入框下拉“打开项目…”注册）后，新项目在列表排第一（MRU 置顶生效）但未被选中——草稿归属/当前项目仍是旧项目。

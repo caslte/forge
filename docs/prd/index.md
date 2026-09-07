@@ -6,7 +6,7 @@
 
 | 编号 | 模块名称 | 路径 | 状态 | 备注 |
 |---|---|---|---|---|
-| 01 | 项目管理 | prd/01_project_management.md | PRD 已确认 | 工作台入口；对齐 pi cwd；信任继承 pi |
+| 01 | 项目管理 | prd/01_project_management.md | PRD 已确认 | 工作台入口；对齐 pi cwd；信任继承 pi；扩展 PM-S05 分支查看与切换（输入框项目区徽标+浮窗切换） |
 | 02 | 会话管理 | prd/02_session_management.md | PRD 已确认 | 多会话并行；多窗口画布；复用 pi session |
 | 03 | 对话与消息 | prd/03_conversation.md | PRD 已确认 | 流式响应、Markdown/Mermaid、取消、历史；扩展：会话历史导航 CV-S06（主会话时间线+浮窗预览+点击定位）、斜杠命令 CV-S08（输入 / 浮窗选择 pi 生态命令，codex 风格美化） |
 | 04 | 工具执行展示 | prd/04_tool_execution.md | PRD 已确认 | tool 卡片、并排 Diff、状态流转 |

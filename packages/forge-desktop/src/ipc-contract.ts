@@ -86,6 +86,7 @@ export type ForgeEvent =
   | 'conversation.statusChanged'
   | 'conversation.delta'
   | 'conversation.message'
+  | 'conversation.queueUpdated'
   | 'conversation.error'
   | 'conversation.compacting'
   | 'conversation.compacted'
@@ -107,6 +108,7 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'conversation.statusChanged',
   'conversation.delta',
   'conversation.message',
+  'conversation.queueUpdated',
   'conversation.error',
   'conversation.compacting',
   'conversation.compacted',

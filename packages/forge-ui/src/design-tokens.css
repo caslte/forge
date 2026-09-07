@@ -30,8 +30,8 @@
   --brand: oklch(0.35 0 0);
   --brand-hover: color-mix(in oklab, var(--brand) 85%, black);
   --brand-foreground: oklch(0.985 0 0);
-  /* 品牌点缀色（暖琥珀，与 LOGO 渐变同源）：用于技能标签等需要语义色区分的场合 */
-  --brand-accent: oklch(0.65 0.14 85);
+  /* 技能标签语义色（青瓷绿，v3.50 用户选定原型 E；备选 D 淬火钢蓝 oklch(0.58 0.08 240)，见 prototypes/skill-color-options.html） */
+  --brand-accent: oklch(0.62 0.09 170);
 
   /* 语义色 */
   --destructive: oklch(0.577 0.245 27.325);
@@ -103,7 +103,7 @@
   --brand: oklch(0.88 0.008 286.3);
   --brand-hover: color-mix(in oklab, var(--brand) 85%, white);
   --brand-foreground: oklch(0.2 0.01 286.3);
-  --brand-accent: oklch(0.8 0.14 85);
+  --brand-accent: oklch(0.78 0.1 170);
 
   --destructive: oklch(0.7 0.18 27.325);
   --success: oklch(0.72 0.14 145);
