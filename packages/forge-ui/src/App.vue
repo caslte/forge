@@ -69,7 +69,7 @@ function onFoldAll(): void {
   else projectTreeRef.value?.collapseAll();
 }
 
-/** 下拉项目排序记忆：按用户选中次序（先选中在前），localStorage 持久（SM-S01 v3.29） */
+/** 下拉项目排序记忆：最近使用置顶（新建项目/创建会话触发），localStorage 持久（SM-S01 v3.29，v3.45 改 MRU） */
 const PICK_ORDER_KEY = 'forge:project-pick-order';
 const pickOrder = ref<string[]>(readPickOrder());
 
@@ -90,6 +90,11 @@ watch(pickOrder, (v) => {
   }
 });
 
+/** 最近使用置顶（MRU）：重复使用也置顶，其余项目相对顺序不变；与项目树拖拽序无关 */
+function bumpProjectToFront(path: string): void {
+  pickOrder.value = [path, ...pickOrder.value.filter((p) => p !== path)];
+}
+
 /** 聚焦层「返回多窗口」行显示会话归属项目（别名优先，SM-S06 多窗口配套） */
 const winFocusProjectName = computed(() => {
   const s = sessions.value.find((x) => x.sessionId === focusedSessionForWin.value);
@@ -100,7 +105,8 @@ const winFocusProjectName = computed(() => {
 
 /**
  * 输入框项目选择器（SM-S01 v3.21）：草稿态=可选归属；会话中=只读信息。
- * 列表序（v3.38 定版）：pickOrder（用户首次选中次序）优先，未选中的按后端序排后。
+ * 列表序（v3.45 改 MRU）：pickOrder（最近使用置顶）优先，未记录的按后端序排后。
+ * 触发点仅两个：新建项目、创建会话成功；纯下拉选中不改序（与项目树拖拽序无关）。
  */
 const orderedProjects = computed<ProjectItem[]>(() => {
   const rank = (p: string): number => {
@@ -182,10 +188,7 @@ async function selectProject(path: string): Promise<void> {
  * 草稿保留（选择器语义就是“给当前未发送的会话换归属”），不关设置页。
  */
 async function onPickProject(path: string): Promise<void> {
-  // 记录选中次序（首次选中定序，重复选中不变）：下拉排序依据
-  if (!pickOrder.value.includes(path)) {
-    pickOrder.value = [...pickOrder.value, path];
-  }
+  // 纯选中不改下拉序（v3.45 MRU 粒度）：置顶只由新建项目/创建会话触发
   currentProjectPath.value = path;
   currentSessionId.value = null;
   await loadSessions();
@@ -254,6 +257,7 @@ async function onAddProject(path: string): Promise<void> {
   try {
     await call('project/addProject', { path });
     await loadProjects();
+    bumpProjectToFront(path);
     showToast('项目已添加', 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
@@ -329,6 +333,9 @@ function onCreateSession(sessionProjectPath?: string): void {
  */
 function onSessionCreated(sessionId: string): void {
   currentSessionId.value = sessionId;
+  // 会话归属落定 → 归属项目置顶（v3.45 MRU 粒度，草稿归属即 currentProjectPath）
+  const p = currentProjectPath.value;
+  if (p !== null) bumpProjectToFront(p);
 }
 
 async function onSelectSession(id: string): Promise<void> {
