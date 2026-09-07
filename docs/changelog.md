@@ -1,5 +1,25 @@
 # 变更日志
 
+## v3.48 (修复：新建项目未自动选中——新建后下拉置顶但归属仍是旧项目)
+
+- 用户反馈：新建项目（输入框下拉“打开项目…”注册）后，新项目在列表排第一（MRU 置顶生效）但未被选中——草稿归属/当前项目仍是旧项目。
+- 根因（App.vue `onAddProject`）：注册成功后只做三件事——`loadProjects()`（仅当 `currentProjectPath === null` 才自动选中，已有选中项目时恒不成立）、`bumpProjectToFront`（只改下拉 MRU 序）、toast；从未切换当前项目。
+- 修复：注册后追加 `await onPickProject(path)`——归属切到新项目，复用下拉选中语义（草稿保留），与 v3.21“选中=切换当前项目，草稿保留”一致；空态“打开项目”入口同步受益。MRU 置顶触发点不变（新建项目/创建会话成功）。
+- mock 修复（e2e 逼真度）：mock-bridge `project/queryProjectList` 原样返回 `DB.projects` 活数组，而真实 IPC 结构化克隆每次返回新数组——共享实例使 `projects.value` 赋同实例不触发响应式、mock 侧 push 绕过 reactive proxy，computed 缓存永不失效。改为逐项浅拷贝返回；补 `project/addProject` case（重复返 1001、排尾，同真实端未打开垫底语义）。
+- 验证：新增 e2e SESSION-E2E-007（E-SM-007 回归）先红后绿（修复前 pill 停留 'forge▾' 复现，修复后归属切新项目+草稿文本保留+树选中态+下拉置顶）；全量 e2e 69 过/2 挂（smoke、E-SM-001 为存量，同 v3.47）；forge-ui typecheck 0 错；单测 148 全过。
+- 文档同步：PRD SM-S01 输入框项目选择器（“注册成功后自动切换为当前项目，草稿保留”）、test/02_session/coverage-matrix AC-SM-028 与 E-SM-007（补回归断言）。
+
+## v3.47 (修复：消息队列不稳定——入队徽标不出现/切会话后丢失)
+
+- 用户反馈：消息队列很不稳定，页面上经常看不到待发送徽标。
+- 根因①（adapter 分流竞态，主因）：pi `AgentSession.prompt()` 在置位 `_isAgentRunActive`（即 `isStreaming`）前有 preflight 窗口——扩展 input 钩子、鉴权 `checkAuth`（可含网络往返）、压缩预检、before_agent_start 均为 await。适配器仅以 `session.isStreaming` 分流入队/直发，窗口内（首条发送后数百 ms 至数秒）到达的第二条误走直发：重置在途轮次状态 + 二次 `prompt()`，与启动中的轮次相撞（`already processing` → 适配器反手 `abort()` 误杀在途轮并报错；或双重并发轮次交错）。用户在首条发送后立即补发（分段指令习惯）极易命中 → 队列徽标不出现、报错、回复被截断。
+  - 修复：适配器增设**直发提交门**（`pendingSubmit`，sessionId → promise）：直发路径登记（先于 factory/preflight 首个 await），pi `preflightResult` 回调（提交完成，含 factory/预检失败释放）提前放行，异常/收尾兑底放行（resolve 幂等）；同会话后续 sendMessage 循环等待提交完成后再按 `isStreaming` 分流（入队等待者 FIFO 保序）；removeSession 同步清理。
+- 根因②（UI 队列镜像切换丢失）：`useSessionConversation` 的 `queueItems` 仅镜像当前会话（事件回调过滤非当前 sessionId）且 `resetForSession` 切换即清空，无查询接口可恢复 → 排队后切走再切回，徽标永久丢失（pi 队列仍在，收尾仍会派发，但用户不可见）。
+  - 修复：`queueBySession`（reactive Map）按会话镜像全部 `conversation.queueUpdated` 事件，`queueItems` 改为当前会话的 computed 读取；`resetForSession` 不再清队列镜像。
+- 验证：adapter 回归用例先红后绿（U-CV-014：preflight 窗口内第二条不二次直发、提交后 followUp 入队——修复前 `promptCalls=2` 复现相撞；U-CV-015：factory 失败释放等待者不悬挂）；e2e QC-004 切走再切回徽标不丢（stash 复原后确认 RED，修复后 GREEN）；三包单测 670 全过（344+178+148）；全量 e2e 68 过/2 挂（smoke、session E-SM-001 为存量，干净工作区同样挂）；typecheck 0 错。
+- 文档同步：`api/03_conversation.md`（CV-S09 分流语义 v1.2：提交门 + 按会话镜像）、`test/03_conversation/coverage-matrix.md`（U-CV-014/015 + QC-004）、`test/03_conversation/e2e.md`（QC-004）。
+- 剩余风险：①轮次收尾后、forge 状态尚未置 done 的短暂窗口（如子 agent 收尾门控延迟）内入队的消息会由适配器直发，UI 因误判忙时未本地渲染 user 气泡（消息丢失视觉，非队列问题；根治需 sendMessage 响应携带 queued 标志，涉及契约变更未做）；②停止时若有消息仍在提交门等待，门释放后将以直发开启新轮（罕见：停止落在首条 preflight 内且已有第二条在等）。
+
 ## v3.46 (修复：发送消息全 app 卡顿——首条冻结 + 流式渲染冻结)
 
 - 用户反馈：发送第一条消息整个 app 很卡、会话树里新会话显示延迟；发送第二条消息也卡住。

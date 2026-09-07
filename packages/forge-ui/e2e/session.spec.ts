@@ -255,4 +255,31 @@ test('SESSION-E2E-006 @P1 @mock-backend E-SM-003 负向：首次点击不删除�
   health.assertHealthy();
 });
 
+// ===== E-SM-007（回归 v3.48）：新建项目自动选中为草稿归属，草稿保留 =====
+test('SESSION-E2E-007 @P0 @mock-backend E-SM-007 回归：新建项目置顶并自动选中为草稿归属', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await boot(page, [mkSession({ alias: '已有会话' })]);
+
+  // 草稿态：当前归属 = 首个项目 forge，预填草稿文本验证保留
+  await page.locator('.app-toolbar-btn', { hasText: '新会话' }).click();
+  await expect(page.locator('.compose-box')).toBeVisible();
+  await expect(page.locator('.proj-pill')).toContainText('forge');
+  await page.locator('.compose-input').fill('留给新项目的草稿');
+
+  // 下拉「打开项目…」→ mock 目录选择器返回 D:/work/aiwork → 注册新项目
+  await page.locator('.proj-pill').click();
+  await expect(page.locator('.proj-menu')).toBeVisible();
+  await page.locator('.proj-item', { hasText: '打开项目…' }).click();
+
+  // 归属自动切到新项目（basename=aiwork），草稿文本保留
+  await expect(page.locator('.proj-pill')).toContainText('aiwork');
+  await expect(page.locator('.compose-input')).toHaveValue('留给新项目的草稿');
+  // 项目树：新项目出现且为选中态（active）
+  await expect(page.locator('.tree-project.active')).toContainText('aiwork');
+  // 下拉排序：新项目置顶第一
+  await page.locator('.proj-pill').click();
+  await expect(page.locator('.proj-menu .proj-item-name').first()).toHaveText('aiwork');
+  health.assertHealthy();
+});
+
 void waitForMock;

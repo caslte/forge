@@ -188,6 +188,30 @@ let shimmerTimer: ReturnType<typeof setTimeout> | null = null;
 let tlGen = 0;
 
 const isStreaming = computed(() => props.sessionStatus === 'streaming');
+
+// 进行中转轮（与终端 pi 同帧序列、同 80ms 步进）：仅以 placeholder 前缀呈现，输入非空时随 placeholder 一起隐藏
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
+const spinnerIdx = ref(0);
+const spinnerFrame = computed(() => SPINNER_FRAMES[spinnerIdx.value] ?? SPINNER_FRAMES[0]);
+let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+watch(
+  isStreaming,
+  (on) => {
+    if (spinnerTimer) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = null;
+    }
+    if (on) {
+      spinnerTimer = setInterval(() => {
+        spinnerIdx.value = (spinnerIdx.value + 1) % SPINNER_FRAMES.length;
+      }, 80);
+    } else {
+      spinnerIdx.value = 0;
+    }
+  },
+  { immediate: true },
+);
+
 const charCount = computed(() => text.value.length);
 const MAX_CHARS = 8000;
 
@@ -318,10 +342,15 @@ const GROW_MAX = 250;
 /**
  * textarea 自适应高度——只增长、不收缩覆盖手动拖拽的高度：
  * 输入字数变多时自动增高，直到与拖拽上限一致的上限后，剩余内容交给 textarea 滚动条。
+ * 文本清空（发送/删空）时重置回默认高度（CSS min-height），长文本撑高的输入框不残留。
  */
 function autoGrow(): void {
   const el = textareaRef.value;
   if (!el) return;
+  if (text.value === '') {
+    el.style.height = '';
+    return;
+  }
   const desired = Math.min(el.scrollHeight, GROW_MAX);
   const cur = parseFloat(el.style.height) || 0;
   if (desired > cur) el.style.height = desired + 'px';
@@ -1077,6 +1106,7 @@ onUnmounted(() => {
   unsubSlash?.();
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
   if (shimmerTimer) clearTimeout(shimmerTimer);
+  if (spinnerTimer) clearInterval(spinnerTimer);
 });
 
 // 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）。
@@ -1102,6 +1132,7 @@ watch(
     if (historyCursor.value >= 0) {
       text.value = '';
       pendingDraft = '';
+      nextTick(autoGrow); // 空文本 → 重置回默认高度
     }
     loadHistory(sid);
   },
@@ -1158,6 +1189,8 @@ watch(
       @pointermove="onResizeMove"
       @pointerup="onResizeUp"
     ></div>
+    <!-- 进行中蚂蚁线边框：SVG overlay 沿圆角画流动虚线；聚焦/拖拽时隐藏，让位 brand 实线 -->
+    <svg v-if="isStreaming" class="cb-ants" aria-hidden="true"><rect /></svg>
     <!-- max 思考级别动画（仅 "M A X" 底部浮现 → 停留 → 淡出；纯视觉层 pointer-events:none 不阻塞输入） -->
     <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
       <span class="max-text">M A X</span>
@@ -1208,7 +1241,7 @@ watch(
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? '助手回复中，Enter 排队发送…' : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
+      :placeholder="isStreaming ? `${spinnerFrame} 助手回复中，Enter 排队发送…` : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"
@@ -1514,8 +1547,49 @@ watch(
   /* 仅保留外圈边框；去掉内圈 3px 光环 */
 }
 
+/* 进行中：蚂蚁线（流动虚线）画在 SVG overlay 上，实体边框让位为透明；
+   聚焦时整条让位会导致无框，故显式回 brand 实线（权重高于 :focus-within/.streaming 单条） */
 .compose-box.streaming {
-  border-color: color-mix(in oklab, var(--warning) 50%, var(--input));
+  border-color: transparent;
+}
+
+.compose-box.streaming:focus-within {
+  border-color: var(--brand);
+}
+
+.cb-ants {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.cb-ants rect {
+  x: 0.5px;
+  y: 0.5px;
+  width: calc(100% - 1px);
+  height: calc(100% - 1px);
+  rx: 15.5px;
+  ry: 15.5px;
+  fill: none;
+  stroke: var(--foreground);
+  stroke-width: 1;
+  stroke-dasharray: 6 6;
+  animation: cb-ants-march 0.9s linear infinite;
+}
+
+/* 聚焦（排队打字）/拖拽附件时隐藏蚂蚁线，露出 brand 实线 */
+.compose-box:focus-within .cb-ants,
+.compose-box.dragover .cb-ants {
+  display: none;
+}
+
+@keyframes cb-ants-march {
+  to {
+    stroke-dashoffset: -12;
+  }
 }
 
 /* 拖拽图片悬停高亮：边框品牌色 + 轻微底色提示可放置 */

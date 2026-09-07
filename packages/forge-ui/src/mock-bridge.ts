@@ -360,7 +360,23 @@ const bridge: ForgeBridge = {
     }
     switch (method) {
       case 'project/queryProjectList':
-        return { code: 0, message: 'ok', data: { projects: DB.projects } };
+        // 返回副本（同真实 IPC 结构化克隆语义）：共享活数组会让
+        // projects.value 赋同实例不触发响应式，mock 侧 push 也不被追踪
+        return { code: 0, message: 'ok', data: { projects: DB.projects.map((p) => ({ ...p })) } };
+      case 'project/addProject': {
+        // E2E：注册项目入内存列表（排尾，同真实端未打开垫底；重复返 1001 同真实端）
+        const p = (params as { path?: string }).path ?? '';
+        if (!p || DB.projects.some((x) => x.path === p)) {
+          return { code: 1001, message: `项目已存在: ${p}`, data: null };
+        }
+        DB.projects.push({
+          path: p,
+          alias: null,
+          lastOpenedAt: new Date().toISOString(),
+          trust: 'trusted',
+        });
+        return { code: 0, message: 'ok', data: null };
+      }
       case 'project/reorderProjects': {
         // 拖拽重排：按传入顺序重排内存项目列表（与真实端持久化语义一致）
         const paths = (params as { paths?: string[] } | null)?.paths ?? [];

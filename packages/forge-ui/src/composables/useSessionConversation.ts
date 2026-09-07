@@ -250,7 +250,8 @@ export function useSessionConversation(options: {
     }
   }
 
-  /** 会话切换：重置状态（视图侧的回看模式/高亮等由视图自理） */
+  /** 会话切换：重置状态（视图侧的回看模式/高亮等由视图自理）；
+   * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09） */
   function resetForSession(): void {
     messages.value = [];
     toolEventIndex.clear();
@@ -258,7 +259,6 @@ export function useSessionConversation(options: {
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
-    queueItems.value = [];
     stopElapsed();
   }
 
@@ -315,13 +315,15 @@ export function useSessionConversation(options: {
 
   // ===== 会话/工具事件处理 =====
 
-  /** 当前会话待发送队列（CV-S09）：pi followUp 队列快照（FIFO 序，[0] 最先派发） */
-  const queueItems = ref<string[]>([]);
+  /** 当前会话待发送队列（CV-S09）：pi followUp 队列快照（FIFO 序，[0] 最先派发）。
+   * 按会话镜像全部 queueUpdated 事件（不过滤当前会话）：切走再切回时徽标不丢，
+   * 否则切换清空 + 非当前会话事件被丢弃后无查询接口可恢复（徽标永久丢失） */
+  const queueBySession = reactive(new Map<string, string[]>());
+  const queueItems = computed(() => queueBySession.get(options.getSessionId() ?? '') ?? []);
 
   function onQueueUpdated(payload: unknown): void {
     const p = payload as { sessionId: string; followUp?: string[] };
-    if (p.sessionId !== options.getSessionId()) return;
-    queueItems.value = Array.isArray(p.followUp) ? p.followUp : [];
+    queueBySession.set(p.sessionId, Array.isArray(p.followUp) ? p.followUp : []);
   }
 
   function onMessage(payload: unknown): void {

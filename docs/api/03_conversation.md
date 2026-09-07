@@ -28,7 +28,7 @@
 
 - `data: null`：正常（消息已在对话区即时展示；后续内容靠事件推送）。
 
-**CV-S09 消息队列（v1.1）**：会话处于流式中时调用本接口 = **入队**（非报错）。适配器以 `session.isStreaming` 分流：streaming 中经 pi `prompt(content, { streamingBehavior: 'followUp' })` 入队，pi 在当前轮收尾后自动按 FIFO 逐条投递（每条投递时发 `message_start(role=user)`，适配器确认后转发 `conversation.message`，UI 渲染普通 user 气泡）；队列变更经 `conversation.queueUpdated` 全量推送。上限 5 条由 UI 层软校验（超限拒绝 + toast）；忙时输入框不再禁用（placeholder 提示 Enter 排队发送）。
+**CV-S09 消息队列（v1.1；v1.2 修分流竞态）**：会话处于流式中时调用本接口 = **入队**（非报错）。适配器以 `session.isStreaming` + 直发提交门分流（v1.2：pi `prompt()` 置位 `isStreaming` 前有 preflight 窗口——鉴权/压缩预检 await，期间到达的消息先等上一条直发提交（preflightResult 回调）再分流，防止误直发与启动中的轮次相撞）：streaming 中经 pi `prompt(content, { streamingBehavior: 'followUp' })` 入队，pi 在当前轮收尾后自动按 FIFO 逐条投递（每条投递时发 `message_start(role=user)`，适配器确认后转发 `conversation.message`，UI 渲染普通 user 气泡）；队列变更经 `conversation.queueUpdated` 全量推送（UI 按会话镜像维护，切走再切回徽标不丢，v1.2）。上限 5 条由 UI 层软校验（超限拒绝 + toast）；忙时输入框不再禁用（placeholder 提示 Enter 排队发送）。
 
 | code | 说明                    |
 | ---- | --------------------- |

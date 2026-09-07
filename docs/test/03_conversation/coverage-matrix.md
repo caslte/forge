@@ -199,9 +199,19 @@
 | QC-001 | CV-S09 | 输入框队列区 | 会话流式中（慢回复脚本） | 脚本 delay 900ms；两条排队文本 | mock-backend | 忙时连发两条→看徽标→开浮窗→等自动派发 | 徽标计数 1→2；浮窗只读（无按钮）FIFO 展示；脚本结束后逐条派发为 user 气泡、徽标清空；无 console error |
 | QC-002 | CV-S09 | 输入框队列区 | 队列已满 5 条 | q1~q5 + 第 6 条 | mock-backend | 忙时连发 5 条→第 6 条 Enter | toast「队列已满」；输入框内容保留；计数仍 5 |
 | QC-003 | CV-S09 | 输入框+队列区 | 队列 2 条流式中 | 两条待发文本 | mock-backend | 点停止 | 徽标消失；被清空文本按 \n\n 拼接回填输入框（pi TUI ESC 同款，零丢失） |
+| QC-004 | CV-S09 | 输入框队列区+会话树 | 会话 A 流式中已入队 1 条，双会话（A/B） | 长脚本 delay 8000ms 防派发干扰 | mock-backend | A 入队→切 B（无徽标）→切回 A | 徽标仍在且计数不变（队列镜像按会话维护，切走再切回不丢；旧缺陷：resetForSession 清空 + 非当前会话事件被丢，徽标永久丢失） |
 | AC-IH-001/002 | CV-S10 | 输入框 | 发送 3 条后清空输入框 | msg-1~3 | mock-backend | 空输入 ↑↑↓↓ | ↑ 回填最近→更早；↓ 反向；走过最新清空回当前编辑 |
 | AC-IH-003 | CV-S10 | 输入框 | 输入框非空 | 任意文本 | mock-backend | 非空时按 ↑/↓ | 不触发翻阅（方案 B，让出默认光标移动） |
 | AC-IH-004 | CV-S10 | localStorage | 未发任何消息 | - | mock-backend | 检查存储 | 无 forge.inputHistory.* 键（草稿态不入栈） |
 | AC-IH-005 | CV-S10 | 双会话 | A/B 各发一条 | A-only/B-only | mock-backend | 切会话后 ↑ | 历史按 sessionId 隔离；历史模式残留文本随切换清空 |
 | AC-IH-006 | CV-S10 | 输入框 | 发送 2 条后刷新页面 | persist-1/2 | mock-backend | 刷新→↑↑ | localStorage 持久化跨刷新生效 |
 | AC-IH-007 | CV-S10 | 输入框 | 连续发送相同内容 | same-msg ×2 | mock-backend | 翻阅 | 去重不产生重复条目 |
+
+#### unit（CV-S09 分流竞态回归，v1.2；实现为 forge-desktop test/pi/piConversationAdapter.test.ts）
+
+> 背景：pi `prompt()` 在置位 `isStreaming` 前有 preflight 窗口（鉴权/压缩预检 await），期间适配器若仅以 `isStreaming` 分流，窗口内到达的消息会误走直发与启动中的轮次相撞（already processing → abort 误杀在途轮 / 双重并发轮次），队列徽标不出现且报错。修复：适配器增设直发提交门（pendingSubmit），同会话后续消息等待上一条直发提交（preflightResult 回调）后再分流。
+
+| 用例 ID | 关联 AC | 测试对象 | 风险维度 | 前置条件 | 输入 | 操作 | 预期结果 | 负向断言 |
+|---|---|---|---|---|---|---|---|---|
+| U-CV-014 | CV-S09 | 适配器 sendMessage 分流（PreflightGate fake） | 状态/并发一致性 | 首条直发挂起在 preflight（isStreaming=false） | 第二条消息在窗口内到达 | 完成提交（isStreaming=true + preflightResult） | 窗口内第二条不产生新直发调用；提交完成后以 followUp 入队 | 提交完成前不得提前入队（pi 空闲时 followUp 会滞留队列） |
+| U-CV-015 | CV-S09 | 提交门释放（factory 失败路径） | 错误反馈/不悬挂 | factory 抛错 | 并发两条消息 | 等待提交结果 | 等待中的第二条同样收到错误并返回，不得永久悬挂 | 不得因首条失败导致后续消息无响应 |

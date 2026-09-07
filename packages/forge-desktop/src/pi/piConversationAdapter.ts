@@ -286,6 +286,12 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private eventHandlers: PiConversationEventHandlers = {};
   /** 队列镜像（CV-S09）：sessionId -> pi 当前 followUp 队列文本（FIFO 序），来自 queue_update 事件 */
   private readonly queueMirror = new Map<string, string[]>();
+  /** 直发提交门（CV-S09 竞态修复）：sessionId -> 本会话在途直发的提交 promise。
+   * pi 的 prompt() 在置位 isStreaming 前有 preflight 窗口（鉴权/压缩预检等 await），
+   * 期间 isStreaming 仍为 false；后续消息若据它分流会误走直发与启动中的轮次相撞
+   * （already processing / 双重并发轮次）。故从直发起（含 factory/preflight）到提交
+   * 完成（preflightResult 回调）期间，同会话后续 sendMessage 先等此 promise 再分流。 */
+  private readonly pendingSubmit = new Map<string, Promise<void>>();
   /** 待派发确认（CV-S09）：已离开队列但尚未收到 message_start(user) 的文本（FIFO 序），
    * 用于区分「派发」（转发 user 气泡）与「清空」（不转发）；直发起点/取消时清空 */
   private readonly pendingDelivery = new Map<string, string[]>();
@@ -363,6 +369,13 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     content: string,
     options: PiAgentSessionFactoryOptions = {},
   ): Promise<void> {
+    // CV-S09 竞态修复：同会话上一条直发尚未提交给 pi（factory/preflight 窗口）时
+    // 先等它提交完成再分流；循环重读防止排队等待者相继触发新直发时序交错。
+    for (;;) {
+      const submitting = this.pendingSubmit.get(sessionId);
+      if (submitting === undefined) break;
+      await submitting;
+    }
     // P1-D：同一会话复用已持有的 AgentSession lease，避免每轮重建上下文
     const existing = this.leases.get(sessionId);
     if (existing !== undefined && existing.session.isStreaming === true) {
@@ -373,14 +386,30 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       await existing.session.prompt(content, { streamingBehavior: 'followUp' });
       return;
     }
+    // CV-S09 竞态修复：登记提交门（同步完成，先于下方首个 await），任何出口都会
+    // 释放等待者：preflightResult 提前放行，异常/收尾路径兑底放行（resolve 幂等）。
+    let releaseSubmit!: () => void;
+    const submitted = new Promise<void>((resolve) => {
+      releaseSubmit = resolve;
+    });
+    this.pendingSubmit.set(sessionId, submitted);
+    const releaseWaiters = (): void => {
+      releaseSubmit();
+      if (this.pendingSubmit.get(sessionId) === submitted) this.pendingSubmit.delete(sessionId);
+    };
     let lease: PiAgentSessionLease<MinimalPiSession>;
-    if (existing === undefined) {
-      lease = await this.factory(options);
-      this.leases.set(sessionId, lease);
-      this.leaseModels.set(sessionId, typeof options.model === 'string' ? options.model : undefined);
-    } else {
-      lease = existing;
-      await this.applyModelChange(sessionId, lease, options);
+    try {
+      if (existing === undefined) {
+        lease = await this.factory(options);
+        this.leases.set(sessionId, lease);
+        this.leaseModels.set(sessionId, typeof options.model === 'string' ? options.model : undefined);
+      } else {
+        lease = existing;
+        await this.applyModelChange(sessionId, lease, options);
+      }
+    } catch (err) {
+      releaseWaiters(); // factory/模型切换失败：释放等待者（不悬挂后续消息）
+      throw err;
     }
     this.partialContent.set(sessionId, '');
     this.forwardedClean.set(sessionId, '');
@@ -431,9 +460,11 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.bindSlashCommandBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     try {
       // 附件统一给路径：路径行已随 content 发送，模型自行 read；
-      // 非视觉模型遇图片时 pi-ai 传输层自动降级占位，adapter 恒单参调用
-      await lease.session.prompt(content);
+      // 非视觉模型遇图片时 pi-ai 传输层自动降级占位，adapter 恒单参调用。
+      // preflightResult：pi 完成预检并提交轮次时回调，用于提前放行提交门等待者
+      await lease.session.prompt(content, { preflightResult: () => releaseWaiters() });
     } catch (err) {
+      releaseWaiters();
       // 轮次已结束（无论成败）：进行中快照不再需要，避免与已落盘消息重复
       this.livePartial.delete(sessionId);
       const error = err instanceof Error ? err : new Error(String(err));
@@ -459,6 +490,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       this.errorEmittedThisTurn.delete(sessionId);
       throw new Error(message);
     }
+    releaseWaiters(); // 轮次结束兑底释放（真实 pi 在 preflightResult 已提前放行，此处幂等）
     // 轮次正常结束：进行中快照不再需要（终态消息已由 message_end 清理/落盘）
     this.livePartial.delete(sessionId);
     const hadError = this.errorEmittedThisTurn.has(sessionId);
@@ -692,6 +724,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
    * wu-06：同时退订该会话在子 agent 扩展事件总线上的订阅，避免迟到事件误处理。
    */
   async removeSession(sessionId: string): Promise<void> {
+    this.pendingSubmit.delete(sessionId); // CV-S09：会话删除时清理提交门（等待者由 release 兑底）
     const unsub = this.unsubs.get(sessionId);
     if (unsub !== undefined) {
       try {

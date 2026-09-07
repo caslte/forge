@@ -689,7 +689,12 @@ test('附件统一给路径：prompt 恒单参调用，残留 attachments 选项
     attachments: [{ kind: 'image', name: 'a.png', mimeType: 'image/png', data: 'aGVsbG8=' }],
   } as never);
   assert.equal(fake.promptCalls.length, 2);
-  assert.equal(fake.imageCalls.length, 0, '任何情况下不再传 images 参数');
+  // CV-S09 竞态修复后直发会传 { preflightResult } 选项对象（非 images）；
+  // 断言退化为：任何第二参都不得携带 images（数组或 images 键）
+  const imagesPassed = fake.imageCalls.filter(
+    (c) => Array.isArray(c) || (c as { images?: unknown }).images !== undefined,
+  );
+  assert.equal(imagesPassed.length, 0, '任何情况下不再传 images 参数');
 });
 
 // ===== wu-06：子 agent 事件映射、终止通道与删除清理 =====
@@ -1005,7 +1010,10 @@ test('CV-S09：streaming 中 sendMessage 以 followUp 入队，不应用思考�
   await adapter.sendMessage('s1', '排队消息');
 
   assert.deepEqual(fake.promptCalls, ['第一轮', '排队消息']);
-  assert.equal((fake.imageCalls[0] as { streamingBehavior?: string }).streamingBehavior, 'followUp');
+  const followUpOpt = fake.imageCalls.find(
+    (c) => (c as { streamingBehavior?: string }).streamingBehavior === 'followUp',
+  );
+  assert.ok(followUpOpt !== undefined, '排队消息应以 streamingBehavior:followUp 入队');
   assert.equal(fake.setThinkingLevelCalls.length, thinkingCallsBefore, '入队不应用思考级别');
 });
 
@@ -1075,4 +1083,98 @@ test('CV-S09：cancelStream 清空队列并返回文本，清空不派发（无 
   const userAfterClear = userMessages.length;
   fake.emit({ type: 'message_start', message: { role: 'user', content: 'q1' } } as MinimalEvent);
   assert.equal(userMessages.length, userAfterClear, '取消后 user message_start 不再转发');
+});
+
+/** 模拟 pi 直发 preflight 窗口的 fake：prompt 先挂起（鉴权/压缩预检，isStreaming 尚 false），
+ *  测试手动放行提交；提交后进入轮次执行窗口，再手动放行收尾。 */
+class PreflightGateFakePiSession extends FakePiSession {
+  isStreaming = false;
+  /** followUp 入队记录（真实 pi：同步 push + queue_update 后立即返回） */
+  followUpCalls: string[] = [];
+  /** preflight 阶段抛出的错误（非空时提交放行后抛出，模拟鉴权失败） */
+  submitError: Error | null = null;
+  private submitGate: (() => void) | undefined;
+  private turnGate: (() => void) | undefined;
+
+  async prompt(text: string, opts?: unknown): Promise<void> {
+    const o = opts as
+      | { streamingBehavior?: string; preflightResult?: (ok: boolean) => void }
+      | undefined;
+    if (o?.streamingBehavior === 'followUp') {
+      this.followUpCalls.push(text);
+      return;
+    }
+    this.promptCalls.push(text);
+    // preflight 窗口：挂起且 isStreaming 保持 false（真实 pi 在 _runAgentPrompt 才置位）
+    await new Promise<void>((res) => {
+      this.submitGate = res;
+    });
+    if (this.submitError !== null) {
+      o?.preflightResult?.(false);
+      throw this.submitError;
+    }
+    this.isStreaming = true;
+    o?.preflightResult?.(true);
+    // 轮次执行窗口
+    await new Promise<void>((res) => {
+      this.turnGate = res;
+    });
+    this.isStreaming = false;
+  }
+
+  /** 放行 preflight（模拟 pi 完成鉴权/压缩预检并提交轮次） */
+  completeSubmit(): void {
+    this.submitGate?.();
+  }
+
+  /** 放行轮次收尾 */
+  finishTurn(): void {
+    this.turnGate?.();
+  }
+}
+
+/** 排空微任务队列（node:test 无 vue nextTick，用 setImmediate 两跳保证 Promise 链走完） */
+async function settle(): Promise<void> {
+  await new Promise<void>((res) => setImmediate(res));
+  await new Promise<void>((res) => setImmediate(res));
+}
+
+test('CV-S09 竞态回归：直发 preflight 窗口内到达的消息等待提交后入队，不二次直发', async () => {
+  const fake = new PreflightGateFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+
+  // 第一条直发：挂在 preflight（isStreaming 仍 false，模拟鉴权/压缩预检进行中）
+  const first = adapter.sendMessage('s1', '第一条');
+  await settle();
+  assert.equal(fake.isStreaming, false, '前置：第一条仍在 preflight 窗口');
+
+  // 第二条在窗口内到达：旧缺陷行为是 isStreaming=false → 误走直发与启动中的轮次相撞
+  const second = adapter.sendMessage('s1', '第二条');
+  await settle();
+  assert.equal(fake.promptCalls.length, 1, 'preflight 窗口内不得对第二条二次直发');
+  assert.deepEqual(fake.followUpCalls, [], '提交完成前不得提前 followUp（pi 仍空闲会滞留队列）');
+
+  // pi 完成提交：isStreaming=true + preflightResult(true) → 第二条应 followUp 入队
+  fake.completeSubmit();
+  await second;
+  assert.deepEqual(fake.followUpCalls, ['第二条'], '提交完成后第二条应以 followUp 入队');
+
+  fake.finishTurn();
+  await first;
+  assert.deepEqual(fake.promptCalls, ['第一条']);
+});
+
+test('CV-S09 竞态回归：上一条直发 factory 失败时释放等待者，后续消息不悬挂', async () => {
+  let fail = true;
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => {
+    if (fail) throw new Error('factory 失败');
+    return { session: fake, dispose: () => undefined };
+  });
+
+  const first = adapter.sendMessage('s1', 'a');
+  const second = adapter.sendMessage('s1', 'b');
+
+  await assert.rejects(first, /factory 失败/);
+  await assert.rejects(second, /factory 失败/, '等待中的消息必须被释放并收到同一错误，不得悬挂');
 });

@@ -258,6 +258,9 @@ async function onAddProject(path: string): Promise<void> {
     await call('project/addProject', { path });
     await loadProjects();
     bumpProjectToFront(path);
+    // 新建即选中：归属切到新项目（v3.48 用户反馈：排第一但未选中）；
+    // 走 onPickProject 语义——草稿保留，与下拉选中一致
+    await onPickProject(path);
     showToast('项目已添加', 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));

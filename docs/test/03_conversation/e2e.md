@@ -294,4 +294,5 @@
 | E-CV-019 | 034/035/036 | P1 | mock-backend | @ 补全触发/过滤/选中进待发区 + 空态降级 || QC-001 | CV-S09 | P0 | mock-backend | 忙时入队/徽标浮窗/自动派发（慢回复脚本） |
 | QC-002 | CV-S09 | P1 | mock-backend | 上限 5 条拒绝 + 输入保留 |
 | QC-003 | CV-S09 | P0 | mock-backend | 停止清队 + \n\n 回填（TUI ESC 同款） |
+| QC-004 | CV-S09 | P1 | mock-backend | 切走再切回徽标不丢（队列镜像按会话维护，v1.2） |
 | AC-IH-001~007 | CV-S10 | P1 | mock-backend | 空输入 ↑↓ 翻阅/隔离/持久化/去重/草稿态 |

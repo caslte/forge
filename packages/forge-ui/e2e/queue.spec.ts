@@ -120,3 +120,48 @@ test('QC-003 @P0 停止 = 清空队列 + 文本回填输入框（pi TUI ESC 同�
   await expect(page.locator('.queue-badge')).toHaveCount(0);
   await expect(page.locator('.compose-input')).toHaveValue('被撤回甲\n\n被撤回乙');
 });
+
+test('QC-004 @P1 切走再切回：待发送徽标不丢失（队列镜像按会话维护）', async ({ page }) => {
+  const guard = attachHealthGuards(page);
+  // 长脚本：流式持续足够久，排除切换期间派发导致的徽标自然清空
+  const slowScript = [
+    { type: 'message' as const, delayMs: 8000, payload: { role: 'assistant', content: 'ok', ts: new Date().toISOString() } },
+  ];
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSendScript(page, SESSION_ID, slowScript);
+  await seedSessions(page, [
+    mkSession(),
+    {
+      sessionId: 'e2e-queue-other',
+      projectPath: 'D:/work/aiwork/forge',
+      alias: '其他会话',
+      status: 'idle',
+      lastActiveAt: new Date().toISOString(),
+    },
+  ]);
+  await page.reload();
+  await waitForMock(page);
+  await seedSendScript(page, SESSION_ID, slowScript);
+  await expect(page.locator('.tree-panel')).toBeVisible();
+  await page.locator('.tree-session', { hasText: ALIAS }).click();
+
+  await startTurn(page, '首条消息');
+  await queueMessage(page, '排队一');
+  const badge = page.locator('.queue-badge');
+  await expect(badge).toHaveText('待发送 1');
+
+  // 切走：其他会话无队列，无徽标
+  await page.locator('.tree-session', { hasText: '其他会话' }).click();
+  await expect(page.locator('.compose-input')).toBeVisible();
+  await expect(badge).toHaveCount(0);
+
+  // 切回：徽标仍在（旧缺陷：resetForSession 清空 + 非当前会话事件被丢，徽标永久丢失）
+  await page.locator('.tree-session', { hasText: ALIAS }).click();
+  await expect(page.locator('.compose-input')).toBeVisible();
+  await expect(badge).toHaveText('待发送 1');
+
+  // 收尾：停止流式，避免残留
+  await page.locator('.cancel-btn').click();
+  guard.assertHealthy();
+});
