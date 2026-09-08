@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { ToolEvent } from '../types';
+import { parseFileToolInput } from '../composables/useChangedFiles';
 import DiffView from './DiffView.vue';
 
 const props = defineProps<{
@@ -36,19 +37,17 @@ const toolSummaryLabel = computed(() => {
   return props.event.summary ?? '';
 });
 
-/** edit 类工具：提取 file_path/old_string/new_string 三元组供并排 diff */
-const diffTriple = computed<{ filePath: string | null; oldString: string | null; newString: string | null } | null>(() => {
-  const input = props.event.input;
-  if (!input || typeof input !== 'object') return null;
-  const hasOld = 'old_string' in input;
-  const hasNew = 'new_string' in input;
-  if (!hasOld && !hasNew) return null;
-  const asText = (v: unknown): string | null => (typeof v === 'string' ? v : null);
-  return {
-    filePath: asText(input.file_path),
-    oldString: asText(input.old_string),
-    newString: asText(input.new_string),
-  };
+/** 修改文件类工具的 diff 列表（pi edit 多 hunk 逐块一项；形状判定共享 parseFileToolInput，
+ *  同时兼容 pi 真实 {path,edits}/{path,content} 与旧形状 {file_path,old_string,new_string}） */
+const diffs = computed(() => {
+  const parsed = parseFileToolInput(props.event.input);
+  if (!parsed) return [];
+  return parsed.parts.map((part, i) => ({
+    filePath: parsed.path,
+    oldString: part.oldText,
+    newString: part.newText,
+    showPath: i === 0,
+  }));
 });
 </script>
 
@@ -68,13 +67,17 @@ const diffTriple = computed<{ filePath: string | null; oldString: string | null;
         <span v-else class="mini-badge success">{{ statusLabel }}</span>
       </span>
     </button>
-    <div v-if="(!hideDiff && diffTriple) || event.summary" class="tool-item-body">
-      <DiffView
-        v-if="!hideDiff && diffTriple"
-        :file-path="diffTriple.filePath"
-        :old-string="diffTriple.oldString"
-        :new-string="diffTriple.newString"
-      />
+    <div v-if="(!hideDiff && diffs.length > 0) || event.summary" class="tool-item-body">
+      <template v-if="!hideDiff">
+        <DiffView
+          v-for="(diff, i) in diffs"
+          :key="i"
+          class="tc-diff"
+          :file-path="diff.showPath ? diff.filePath : null"
+          :old-string="diff.oldString"
+          :new-string="diff.newString"
+        />
+      </template>
       <pre v-if="event.summary" class="tool-summary">{{ event.summary }}</pre>
     </div>
   </div>
@@ -183,6 +186,11 @@ const diffTriple = computed<{ filePath: string | null; oldString: string | null;
   padding: 0 12px 12px 32px;
   font-size: 12px;
   color: var(--muted-foreground);
+}
+
+/* 多 hunk 时多个 DiffView 的纵向间距 */
+.tc-diff + .tc-diff {
+  margin-top: 8px;
 }
 
 .tool-calls.open .tool-item-body {

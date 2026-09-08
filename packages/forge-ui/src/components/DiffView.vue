@@ -23,12 +23,14 @@ const visibleRows = computed(() =>
     <div v-if="filePath" class="diff-file">{{ filePath }}</div>
     <div class="diff-table" role="table">
       <div v-for="(row, i) in visibleRows" :key="i" class="diff-row" role="row">
+        <span class="diff-num" role="rowheader">{{ row.left ? row.left.line : '' }}</span>
         <pre
           v-if="row.left"
           :class="['diff-cell', `cell-${row.left.type}`]"
           role="cell"
         >{{ row.left.text }}</pre>
         <pre v-else class="diff-cell cell-empty" role="cell"></pre>
+        <span class="diff-num" role="rowheader">{{ row.right ? row.right.line : '' }}</span>
         <pre
           v-if="row.right"
           :class="['diff-cell', `cell-${row.right.type}`]"
@@ -72,7 +74,20 @@ const visibleRows = computed(() =>
 
 .diff-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 30px minmax(0, 1fr) 30px minmax(0, 1fr);
+}
+
+/* 行号列（旧/新文件行号独立计数，空侧不留号） */
+.diff-num {
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  text-align: right;
+  color: var(--muted-foreground);
+  opacity: 0.65;
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  user-select: none;
 }
 
 .diff-cell {
@@ -86,7 +101,7 @@ const visibleRows = computed(() =>
   color: var(--foreground);
 }
 
-.diff-cell:first-child {
+.diff-cell:nth-child(2) {
   border-right: 1px solid var(--border);
 }
 

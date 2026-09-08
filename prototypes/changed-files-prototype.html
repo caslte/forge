@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI 回复 · 改动文件汇总卡片 交互原型 · forge</title>
+<style>
+/* ============================================================
+   设计令牌：取自 packages/forge-ui/src/design-tokens.css（light/dark）
+   ============================================================ */
+:root {
+  --background: oklch(1 0 0);
+  --foreground: #333333;
+  --card: oklch(1 0 0);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --brand: oklch(0.35 0 0);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-accent: oklch(0.62 0.09 170);
+  --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.62 0.14 152);
+  --border: oklch(0.92 0.004 286.32);
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 10px; --radius-xl: 14px;
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 4%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 6%);
+  --shadow-lg: 0 18px 50px oklch(0 0 0 / 6%);
+  --font-sans: "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+:root[data-theme='dark'] {
+  --background: oklch(0.26 0.006 286.2);
+  --foreground: oklch(0.88 0.002 286.3);
+  --card: oklch(0.26 0.006 286.2);
+  --muted: oklch(0.3 0.005 286.2);
+  --muted-foreground: oklch(0.7 0.008 286.3);
+  --brand: oklch(0.88 0.008 286.3);
+  --brand-foreground: oklch(0.2 0.01 286.3);
+  --brand-accent: oklch(0.78 0.1 170);
+  --destructive: oklch(0.7 0.18 27.325);
+  --success: oklch(0.72 0.15 152);
+  --border: oklch(0.32 0.005 286.3);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 18%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 24%);
+  --shadow-lg: 0 24px 60px oklch(0 0 0 / 24%);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--background);
+  color: var(--foreground);
+  padding: 36px 24px 72px;
+  transition: background 0.2s, color 0.2s;
+}
+.page { max-width: 980px; margin: 0 auto; }
+
+/* ---------- 页头 ---------- */
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.2px; }
+.page-head p { margin-top: 6px; font-size: 13px; line-height: 1.7; color: var(--muted-foreground); max-width: 760px; }
+.page-head code { font-family: var(--font-mono); font-size: 12px; background: var(--muted); border-radius: 4px; padding: 1px 5px; }
+.theme-toggle {
+  flex-shrink: 0; border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+  font-size: 13px; padding: 7px 14px; border-radius: var(--radius-md); cursor: pointer; box-shadow: var(--shadow-sm);
+  font-family: var(--font-sans);
+}
+.theme-toggle:hover { background: var(--muted); }
+
+/* ---------- 原型控制台 ---------- */
+.console {
+  margin-top: 22px; border: 1px dashed var(--border); border-radius: var(--radius-lg);
+  padding: 14px 16px; background: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+.console-tag {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 1px;
+  color: var(--muted-foreground); font-weight: 600; margin-bottom: 10px;
+}
+.console-tag::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--brand-accent); }
+.console-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.console-note { margin-top: 10px; font-size: 12px; color: var(--muted-foreground); line-height: 1.7; }
+.console-note b { color: var(--foreground); font-weight: 600; }
+.cbtn {
+  border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+  font-size: 12.5px; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-family: var(--font-sans);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.cbtn:hover { border-color: var(--brand-accent); color: var(--brand-accent); }
+.cbtn.active { background: var(--brand-accent); border-color: var(--brand-accent); color: oklch(0.985 0 0); }
+.cbtn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-foreground); }
+
+/* ---------- 仿会话窗口舞台 ---------- */
+.stage {
+  margin-top: 22px; border: 1px solid var(--border); border-radius: var(--radius-xl);
+  background: var(--card); box-shadow: var(--shadow-lg); overflow: hidden;
+  animation: rise 0.45s cubic-bezier(0.22, 0.8, 0.3, 1) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+.stage-bar { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.stage-bar .fake-title { font-size: 15px; font-weight: 700; }
+.stage-bar .fake-sub { font-size: 11.5px; color: var(--muted-foreground); margin-top: 2px; }
+
+.stage-body { padding: 20px 22px 24px; display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 24px; align-items: start; }
+@media (max-width: 860px) { .stage-body { grid-template-columns: 1fr; } }
+
+/* ---------- 会话消息流 ---------- */
+.conv { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.msg { max-width: 94%; min-width: 0; }
+.msg.user { align-self: flex-end; }
+.msg-bubble {
+  padding: 10px 14px; border-radius: 14px; font-size: 13.5px; line-height: 1.75;
+  background: color-mix(in oklab, var(--muted) 62%, transparent);
+}
+.msg.user .msg-bubble { background: var(--brand); color: var(--brand-foreground); }
+.msg.assistant .msg-bubble { border: 1px solid var(--border); background: var(--card); }
+.msg-footer { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted-foreground); }
+.msg.user .msg-footer { justify-content: flex-end; }
+.msg-copy {
+  display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent;
+  color: var(--muted-foreground); font-size: 11px; cursor: pointer; font-family: var(--font-sans);
+}
+.msg-copy:hover { color: var(--foreground); }
+.msg-copy svg { width: 12px; height: 12px; }
+
+/* 工具组（仿 forge tool-group 折叠卡） */
+.tool-group {
+  border: none; border-radius: 12px; align-self: flex-start; max-width: 94%; min-width: 0;
+  background: color-mix(in oklab, var(--muted) 58%, transparent); overflow: hidden;
+}
+.tool-group-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px;
+  font-size: 12px; color: var(--muted-foreground); border: none; background: transparent;
+  cursor: pointer; user-select: none; text-align: left; font-family: var(--font-sans);
+}
+.tool-group-head:hover { background: var(--muted); }
+.tg-label { font-weight: 600; color: var(--foreground); white-space: nowrap; }
+.tg-count { font-weight: 500; white-space: nowrap; }
+.tg-names { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
+.tg-chip {
+  display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11px;
+  color: var(--muted-foreground); background: color-mix(in oklab, var(--muted) 55%, transparent);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; white-space: nowrap;
+}
+.tg-chip .ok { color: var(--success); }
+.tg-chip .run { color: var(--brand-accent); }
+.tg-chip .err { color: var(--destructive); }
+
+/* ============================================================
+   ★ 改动文件汇总卡片（本原型主角）
+   ============================================================ */
+.changed-files {
+  align-self: flex-start; max-width: 94%; min-width: 0;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--card);
+  box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.cf-head {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 10px 13px;
+  border: none; background: transparent; cursor: pointer; user-select: none; text-align: left;
+  font-family: var(--font-sans); font-size: 12.5px; color: var(--foreground);
+}
+.cf-head:hover { background: var(--muted); }
+.cf-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--muted-foreground); }
+.cf-count { font-weight: 600; white-space: nowrap; }
+.cf-spacer { flex: 1; min-width: 0; }
+.cf-total { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.cf-add { color: var(--success); font-weight: 600; }
+.cf-del { color: var(--destructive); font-weight: 600; margin-left: 6px; }
+.cf-chevron { flex-shrink: 0; color: var(--muted-foreground); font-size: 11px; transition: transform 0.2s; }
+.changed-files.collapsed .cf-chevron { transform: rotate(-90deg); }
+
+.cf-body-shell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 0.2s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; }
+.changed-files.collapsed .cf-body-shell { grid-template-rows: 0fr; }
+.cf-body { min-height: 0; overflow: hidden; display: flex; flex-direction: column; transition: padding 0.2s; }
+.changed-files.collapsed .cf-body { padding-top: 0; padding-bottom: 0; }
+
+.cf-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 13px;
+  border: none; border-top: 1px solid var(--border); background: transparent;
+  cursor: pointer; user-select: none; text-align: left; font-family: var(--font-mono); font-size: 12px;
+  transition: background 0.12s;
+}
+.cf-row:hover { background: var(--muted); }
+.cf-row.expanded { background: color-mix(in oklab, var(--brand-accent) 7%, transparent); }
+.cf-row-icon { width: 13px; height: 13px; flex-shrink: 0; color: var(--muted-foreground); }
+.cf-name { color: var(--foreground); font-weight: 600; white-space: nowrap; }
+.cf-path { color: var(--muted-foreground); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cf-row .cf-total { margin-left: auto; flex-shrink: 0; }
+
+/* 行内展开的 diff */
+.cf-diff-wrap { border-top: 1px solid var(--border); background: color-mix(in oklab, var(--muted) 40%, transparent); padding: 8px 10px 10px 26px; display: flex; flex-direction: column; gap: 8px; }
+.hunk-tag {
+  align-self: flex-start; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-foreground);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; background: var(--card);
+}
+.diff {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px minmax(0, 1fr); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; background: var(--card); font-family: var(--font-mono); font-size: 11px; line-height: 1.65;
+}
+.diff-num {
+  padding: 0 6px; text-align: right; color: var(--muted-foreground); opacity: 0.6;
+  background: color-mix(in oklab, var(--muted) 45%, transparent); user-select: none; min-width: 0;
+}
+.diff-cell { padding: 0 8px; white-space: pre-wrap; word-break: break-all; min-width: 0; }
+.diff-cell.empty { background: color-mix(in oklab, var(--muted) 55%, transparent); }
+.diff-cell.equal { color: var(--muted-foreground); }
+.diff-cell.removed { background: color-mix(in oklab, var(--destructive) 12%, transparent); color: var(--foreground); }
+.diff-cell.added { background: color-mix(in oklab, var(--success) 14%, transparent); color: var(--foreground); }
+.diff-note { font-size: 10.5px; color: var(--muted-foreground); font-family: var(--font-sans); }
+
+/* 流式指示 */
+.conv-thinking { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted-foreground); padding: 4px 2px; }
+.conv-thinking .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand-accent); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand-accent) 45%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
+.hidden { display: none !important; }
+.fade-in { animation: rise 0.3s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+
+/* ---------- 右栏：规则速览 ---------- */
+.rules { display: flex; flex-direction: column; gap: 8px; }
+.rules-title { font-size: 14px; font-weight: 600; }
+.rule {
+  display: flex; gap: 8px; padding: 8px 11px; font-size: 12px; line-height: 1.65;
+  border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--muted-foreground);
+}
+.rule b { color: var(--foreground); font-weight: 600; }
+.rule .k { flex-shrink: 0; width: 7px; height: 7px; border-radius: 2px; margin-top: 5px; background: var(--brand-accent); }
+.rule .k.red { background: var(--destructive); }
+
+.footnote { margin-top: 18px; font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
+.footnote b { color: var(--foreground); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>AI 回复 · 改动文件汇总卡片 交互原型</h1>
+      <p>在每轮 AI 回复末尾（<code>useTurnFooter</code> 同一分轮口径）插入一张「N 个文件已更改」汇总卡：
+        头部为总数与 <b style="color:var(--success)">+A</b> <b style="color:var(--destructive)">-R</b> 统计，
+        行级展示文件名 / 相对路径 / 行级增删，点击行内联展开并排 diff（复用 DiffView，多编辑块逐块展示）。
+        数据来源为本轮成功的 edit / write 工具入参。</p>
+    </div>
+    <button class="theme-toggle" id="themeToggle">切换深色</button>
+  </div>
+
+  <div class="console">
+    <span class="console-tag">原型控制台 · 模拟一轮对话与流式过程</span>
+    <div class="console-row">
+      <button class="cbtn primary" id="btnDemo">▶ 流式演示（工具逐个完成）</button>
+      <button class="cbtn" data-scene="static">静态：多文件（默认折叠）</button>
+      <button class="cbtn" data-scene="expanded">静态：展开态</button>
+      <button class="cbtn" data-scene="none">无文件改动轮次</button>
+    </div>
+    <div class="console-note">
+      流式演示 = user 发问 → 工具组出现并逐个完成 → <b>卡片随文件工具完成逐步出现并增长（默认折叠）</b>。
+      卡片头部可展开/折叠；<b>点击文件行展开 diff（含行号），再点收起，行间互斥</b>。
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-bar">
+      <div>
+        <div class="fake-title">会话 · forge 主窗口</div>
+        <div class="fake-sub">项目 D:\works\ai_work\forge · 分轮口径：user 消息为界</div>
+      </div>
+    </div>
+    <div class="stage-body">
+      <div class="conv" id="conv">
+        <!-- JS 渲染 -->
+      </div>
+
+      <div class="rules">
+        <div class="rules-title">规则速览</div>
+        <div class="rule"><span class="k"></span><span><b>出现位置</b>：每轮回复末尾，footer 所在末卡之下</span></div>
+        <div class="rule"><span class="k"></span><span><b>计入</b>：edit（逐 hunk 数行）/ write（行数计新增）；同文件同轮聚合</span></div>
+        <div class="rule"><span class="k red"></span><span><b>不计入</b>：失败（error）工具、read / bash 等非改文件工具（按入参形状识别）</span></div>
+        <div class="rule"><span class="k red"></span><span><b>write 局限</b>：入参无旧内容，删除行记 0（总 -R 偏小）</span></div>
+        <div class="rule"><span class="k"></span><span><b>历史会话</b>：从 pi 会话文件恢复工具入参后同样显示</span></div>
+        <div class="rule"><span class="k"></span><span><b>顺带修复</b>：真实 pi 会话工具卡 / 工具组 diff 不渲染（键名不匹配）</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <b>已确认</b>：① 卡片默认折叠；② diff 行内展开并带行号；③ 不出现引导性收尾文案。
+    <br><b>仍待确认</b>：① 卡片位于末卡 footer 之下（当前方案）还是气泡内 footer 之上；② 文件行是否需要跳转外部编辑器入口（当前仅行内展开 diff）。
+  </div>
+</div>
+
+<script>
+/* ================= 主题 ================= */
+const themeBtn = document.getElementById('themeToggle');
+themeBtn.onclick = () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme === 'dark';
+  root.dataset.theme = dark ? 'light' : 'dark';
+  themeBtn.textContent = dark ? '切换浅色' : '切换深色';
+};
+
+const conv = document.getElementById('conv');
+const $h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; };
+const iconFile = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5h-7a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-11z"/><path d="M14 2.5v6h6.5"/></svg>';
+const iconCopy = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+
+/* ================= 演示数据：一轮的文件改动 =================
+   hunk: { s: [旧起始行, 新起始行], rows: [[kind, old, new]] } */
+const FILES = [
+  {
+    path: 'packages/forge-ui/src/components/MessageCard.vue',
+    added: 42, removed: 8, op: 'edit',
+    hunks: [
+      { s: [141, 141], rows: [
+        ['equal', 'const footers = computeTurnFooters(msgs);', 'const footers = computeTurnFooters(msgs);'],
+        ['mod', "out.push({ key, kind: 'message', msg });", "out.push({ key, kind: 'message', msg, ...footer });"],
+        ['add', null, "const turnFiles = collectTurnChangedFiles(msgs);"],
+        ['add', null, "if (turnFiles) out.push({ kind: 'files-summary', files: turnFiles });"],
+        ['equal', 'return out;', 'return out;'],
+      ] },
+      { s: [279, 283], rows: [
+        ['mod', '<div class="msg-footer">', '<div v-if="showFooter" class="msg-footer">'],
+        ['add', null, '<ChangedFilesCard :files="turnFiles" :project-path="projectPath" />'],
+        ['equal', '</div>', '</div>'],
+      ] },
+    ],
+  },
+  {
+    path: 'packages/forge-ui/src/composables/useTurnFooter.ts',
+    added: 12, removed: 3, op: 'edit',
+    hunks: [
+      { s: [22, 22], rows: [
+        ['mod', 'export function computeTurnFooters(msgs) {', 'export function computeTurnFooters(msgs) {'],
+        ['add', null, '// 分轮口径：user 消息为界'],
+        ['equal', '  const out = new Map();', '  const out = new Map();'],
+        ['del', '  for (let i = 0; i < msgs.length; i++) {', null],
+        ['add', null, '  for (let i = turnStart; i < msgs.length; i++) {'],
+        ['equal', '    flushTurn(i);', '    flushTurn(i);'],
+      ] },
+    ],
+  },
+  {
+    path: 'packages/forge-ui/src/components/ChangedFilesCard.vue',
+    added: 86, removed: 0, op: 'write',
+    hunks: [
+      { s: [1, 1], rows: [
+        ['add', null, '<' + 'script setup lang="ts">'],
+        ['add', null, 'defineProps<{ files: ChangedFileEntry[]; projectPath?: string }>();'],
+        ['add', null, 'const expandedPath = ref<string | null>(null);'],
+        ['add', null, '<\/script>'],
+        ['add', null, '<template> … 卡片头部 + 文件行 + 行内 diff … </template>'],
+      ] },
+    ],
+  },
+  {
+    path: 'docs/changelog.md',
+    added: 3, removed: 0, op: 'write',
+    hunks: [
+      { s: [1, 1], rows: [
+        ['add', null, '## v3.57'],
+        ['add', null, '- 会话回复末尾新增改动文件汇总卡片'],
+        ['add', null, '- 修复真实 pi 会话工具卡 diff 不渲染'],
+      ] },
+    ],
+  },
+  {
+    path: 'package.json',
+    added: 1, removed: 1, op: 'edit',
+    hunks: [
+      { s: [3, 3], rows: [
+        ['mod', '  "version": "0.1.0",', '  "version": "0.1.1",'],
+      ] },
+    ],
+  },
+];
+const TOTAL = FILES.reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
+const base = (p) => p.split('/').pop();
+const rel = (p) => p; // 项目根已剥离
+
+/* ================= 渲染片段 ================= */
+function bubbleUser(text) {
+  return $h(`<div class="msg user fade-in"><div class="msg-bubble">${text}</div>
+    <div class="msg-footer"><span class="msg-copy">${iconCopy}复制</span><span>14:32</span></div></div>`);
+}
+function bubbleAssistant(text, withFooter) {
+  return $h(`<div class="msg assistant fade-in"><div class="msg-bubble">${text}</div>
+    ${withFooter ? `<div class="msg-footer"><span class="msg-copy">${iconCopy}复制</span><span>14:33</span></div>` : ''}</div>`);
+}
+function toolGroup(n, doneCount) {
+  const chips = FILES.slice(0, Math.min(n, 2)).map(f => `<span class="tg-chip">${base(f.path)} <span class="${n > doneCount ? 'run' : 'ok'}">●</span></span>`).join('');
+  return $h(`<div class="tool-group fade-in"><button class="tool-group-head">
+    <span class="tg-label">工具调用</span><span class="tg-count">${n} 次</span>
+    <span class="tg-names">${chips}${n > 2 ? `<span class="tg-chip">…</span>` : ''}</span></button></div>`);
+}
+function thinking() {
+  return $h('<div class="conv-thinking fade-in" id="thinking"><span class="dot"></span>正在思考…</div>');
+}
+
+/* diff 行：kind = equal | mod | add | del；s = [旧起始行, 新起始行] */
+function diffEl(hunk) {
+  let o = hunk.s[0], n = hunk.s[1];
+  const cells = [];
+  const num = (v) => `<div class="diff-num">${v ?? ''}</div>`;
+  for (const [kind, l, r] of hunk.rows) {
+    if (kind === 'equal') {
+      cells.push(num(o) + `<div class="diff-cell equal">${esc(l)}</div>` + num(n) + `<div class="diff-cell equal">${esc(r)}</div>`);
+      o += 1; n += 1;
+    } else if (kind === 'mod') {
+      cells.push(num(o) + `<div class="diff-cell removed">${esc(l)}</div>` + num(n) + `<div class="diff-cell added">${esc(r)}</div>`);
+      o += 1; n += 1;
+    } else if (kind === 'del') {
+      cells.push(num(o) + `<div class="diff-cell removed">${esc(l)}</div>` + num('') + `<div class="diff-cell empty"></div>`);
+      o += 1;
+    } else {
+      cells.push(num('') + `<div class="diff-cell empty"></div>` + num(n) + `<div class="diff-cell added">${esc(r)}</div>`);
+      n += 1;
+    }
+  }
+  return $h(`<div class="diff">${cells.join('')}</div>`);
+}
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+/* ★ 汇总卡片：files 为 FILES 的前 n 项 */
+function changedFilesCard(n, collapsedInit) {
+  const files = FILES.slice(0, n);
+  const ta = files.reduce((a, f) => a + f.added, 0);
+  const tr = files.reduce((a, f) => a + f.removed, 0);
+  const card = $h(`<div class="changed-files fade-in${collapsedInit ? ' collapsed' : ''}">
+    <button class="cf-head">
+      <span class="cf-icon">${iconFile}</span>
+      <span class="cf-count">${files.length} 个文件已更改</span>
+      <span class="cf-spacer"></span>
+      <span class="cf-total"><span class="cf-add">+${ta}</span><span class="cf-del">-${tr}</span></span>
+      <span class="cf-chevron">▾</span>
+    </button>
+    <div class="cf-body-shell"><div class="cf-body"></div></div>
+  </div>`);
+  const body = card.querySelector('.cf-body');
+
+  files.forEach((f) => {
+    const row = $h(`<button class="cf-row">
+      <span class="cf-row-icon">${iconFile}</span>
+      <span class="cf-name">${base(f.path)}</span>
+      <span class="cf-path">${rel(f.path)}</span>
+      <span class="cf-total"><span class="cf-add">+${f.added}</span><span class="cf-del">-${f.removed}</span></span>
+    </button>`);
+    const wrap = $h('<div class="cf-diff-wrap hidden"></div>');
+    f.hunks.forEach((hunk, i) => {
+      if (f.hunks.length > 1) wrap.appendChild($h(`<span class="hunk-tag">hunk ${i + 1}/${f.hunks.length}</span>`));
+      wrap.appendChild(diffEl(hunk));
+    });
+    wrap.appendChild($h('<span class="diff-note">diff 为节选示意 · 实现为完整并排 diff（复用 DiffView）</span>'));
+    row.onclick = () => {
+      const open = !wrap.classList.contains('hidden');
+      // 行间互斥：先收起全部
+      body.querySelectorAll('.cf-diff-wrap').forEach(w => w.classList.add('hidden'));
+      body.querySelectorAll('.cf-row').forEach(r => r.classList.remove('expanded'));
+      if (!open) { wrap.classList.remove('hidden'); row.classList.add('expanded'); }
+    };
+    body.appendChild(row);
+    body.appendChild(wrap);
+  });
+
+  card.querySelector('.cf-head').onclick = () => card.classList.toggle('collapsed');
+  return card;
+}
+
+/* ================= 场景 ================= */
+function clearConv() { conv.innerHTML = ''; }
+
+function renderStatic(collapsedInit = true) {
+  clearConv();
+  conv.appendChild(bubbleUser('把 footer 按轮次分组，并在回复末尾加一张改动文件汇总卡片'));
+  conv.appendChild(bubbleAssistant('好的，我来实现。先改 useTurnFooter 的分轮逻辑，再新增 ChangedFilesCard 组件。', false));
+  conv.appendChild(toolGroup(6, 6));
+  conv.appendChild(bubbleAssistant('完成。改动如下：', true));
+  conv.appendChild(changedFilesCard(5, collapsedInit));
+}
+
+function renderNone() {
+  clearConv();
+  conv.appendChild(bubbleUser('帮我看看这个组件的实现思路'));
+  conv.appendChild(bubbleAssistant('我读了 useSessionConversation.ts 和 useTurnFooter.ts（read 工具不产生文件改动），思路是……', true));
+  const note = $h('<div class="diff-note" style="padding:2px;">↑ 本轮无 edit / write → 不出现汇总卡片</div>');
+  conv.appendChild(note);
+}
+
+let timers = [];
+function stopTimers() { timers.forEach(clearTimeout); timers = []; }
+
+function renderStreaming() {
+  clearConv(); stopTimers();
+  conv.appendChild(bubbleUser('把 footer 按轮次分组，并在回复末尾加一张改动文件汇总卡片'));
+
+  timers.push(setTimeout(() => {
+    conv.appendChild(thinking());
+    timers.push(setTimeout(() => {
+      document.getElementById('thinking')?.remove();
+      const tg = toolGroup(1, 0);
+      conv.appendChild(tg);
+      // 工具逐个完成：卡片在第 1 个文件工具完成时出现（默认折叠），随后增长
+      const steps = [1, 2, 3, 5];
+      steps.forEach((n, i) => {
+        timers.push(setTimeout(() => {
+          conv.querySelector('.changed-files')?.remove();
+          conv.appendChild(changedFilesCard(n, true));
+          if (i < steps.length - 1) {
+            const nextCount = steps[i + 1];
+            conv.querySelector('.tool-group .tg-count').textContent = nextCount + ' 次';
+          }
+        }, 900 + i * 1000));
+      });
+    }, 800));
+  }, 300));
+}
+
+document.querySelectorAll('[data-scene]').forEach(b => {
+  b.onclick = () => {
+    stopTimers();
+    const s = b.dataset.scene;
+    if (s === 'static') renderStatic(true);
+    else if (s === 'expanded') renderStatic(false);
+    else renderNone();
+  };
+});
+document.getElementById('btnDemo').onclick = renderStreaming;
+
+renderStatic(true);
+</script>
+</body>
+</html>

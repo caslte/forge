@@ -480,6 +480,7 @@ watch(
               :item="item"
               :streaming="item.kind === 'message' && isMessageStreaming(item.idx)"
               :session-id="props.sessionId ?? createdSessionId ?? ''"
+              :project-path="props.session?.projectPath ?? ''"
               @toggle-group="toggleGroup"
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->

@@ -1,5 +1,15 @@
 # 变更日志
 
+## v3.60 (功能：AI 回复改动文件汇总卡片 + 真实 pi 会话 diff 渲染修复)
+
+- 交互原型：`prototypes/changed-files-prototype.html`（流式渐进 / 静态折叠 / 展开态 / 无改动轮次四场景，令牌取自 design-tokens.css）。用户确认：卡片默认折叠、diff 带行号、不出现引导性收尾文案、卡片位于轮末 footer 之下。
+- ui 新增「改动文件汇总卡片」：`useChangedFiles.ts`（parseFileToolInput 按入参形状识别修改文件类工具——pi 真实 `{path,edits[]}`/`{path,content}` 与旧形状 `{file_path,old_string,new_string}` 全兼容，read/bash 形状不命中；countDiffLines 经 buildSideBySideDiff 数行；collectTurnChangedFiles 按轮收集，分轮口径同 useTurnFooter，同轮同文件聚合）+ `ChangedFilesCard.vue`（头部「N 个文件已更改」+ 总计与行级 +A -R；默认折叠；行点击行内展开 diff，edit 多 hunk 逐块 hunk i/n 分隔；路径按会话项目根转相对展示）。`displayItems` 新增 `files-summary` 项，轮末（下一条 user 前 / 流式末尾）插入，仅计 `status=completed` 的工具。
+- ui 修复：真实 pi 会话工具卡 / 工具组 diff 不渲染——`toToolDiff`/`ToolCallCard` 原只认旧键名 `file_path/old_string/new_string`，pi 真实入参不匹配导致 diff 恒空；统一改共享 `parseFileToolInput`，edit 多 hunk 逐 DiffView 渲染（仅首块显示文件名）。`DiffView` 全局增加行号列（旧/新文件行号独立计数，空侧不留号）。
+- desktop：`loadPiSessionHistory` 预扫描 assistant 消息 toolCall parts 建 toolCallId→arguments 映射，回填历史 tool 消息 `input`（条件性添加，无匹配不加字段，旧数据形态不变）；toolResult 缺 toolName 时从 toolCall part 兜底。历史会话切回同样显示卡片。
+- 文档：`api/04_tool.md` §2 更正为真实 pi 入参形状（原文档 file_path/old_string/new_string 为 mock 形状，即本次 bug 根源）+ 前端消费口径；`api/03_conversation.md` queryHistory 补历史 tool 消息 `input` 说明。
+- 验证：typecheck 三包 0 错；单测 core 365 / ui 178（+17 changedFiles）/ desktop 187（+2 history 回填）全过；E2E 新增 `changedFiles.spec` 4/4（历史回显折叠与行内 diff、工具卡 diff 修复、流式渐进出现、失败与 read 不计入）；全量 E2E 80 过 / 2 挂（smoke、E-SM-001 为 HEAD 存量已知失败，v3.52 已 stash 基线验证与本次无关）。
+- 未提交：本 run 全部改动在工作区，待用户决定提交。
+
 ## v3.52 (开发交付：PM-S05 分支查看与切换，dev-flow run 20260907175149 COMPLETE)
 
 - 交付：4 WU 全部 D4 通过 + D5 Fan-in + D6 模块 QA PASS（gap 0）。

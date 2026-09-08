@@ -19,7 +19,7 @@
 {
   "sessionId": "sess_xxx",
   "toolEventId": "evt_1",
-  "tool": { "name": "edit", "input": { "file_path": "src/a.ts", "old_string": "..." } },
+  "tool": { "name": "edit", "input": { "path": "src/a.ts", "edits": [{ "oldText": "...", "newText": "..." }] } },
   "status": "running"
 }
 ```
@@ -56,22 +56,17 @@
 
 ## 2. Diff 数据
 
-edit 类工具（含 `oldText`/`newText`）在 `tool.completed` 中附带 Diff 所需字段：
+**真实 pi 入参形状**（`tool.input` 由 pi 事件原样透传）：
 
-```json
-{
-  "tool": {
-    "name": "edit",
-    "input": {
-      "file_path": "src/a.ts",
-      "old_string": "old",
-      "new_string": "new"
-    }
-  }
-}
-```
+- edit：`{ "path": "src/a.ts", "edits": [{ "oldText": "...", "newText": "..." }] }`——同一文件可含多个编辑块（hunk）
+- write：`{ "path": "src/a.ts", "content": "..." }`——全量写入
 
-前端用 `old_string`/`new_string` 渲染并排 Diff（TD-TE-01 A）。若旧文本缺失则降级显示新文本。
+> 更正：本节此前写的 `file_path`/`old_string`/`new_string` 为 mock/旧形状，真实 pi 链路不出现；前端按形状判定同时兼容两者。
+
+**前端消费**（共享解析器 `parseFileToolInput`，按入参形状识别"修改文件类"工具，不依赖工具名——read/bash 等形状不命中）：
+
+- 工具卡 / 工具组 diff：edit 按 `edits[]` 逐块渲染并排 diff（每块一个 DiffView，仅首块显示文件名）；write 按全量新增渲染；旧形状按单块处理。
+- 改动文件汇总卡片（每轮回复末尾，CV 改动文件卡片）：仅统计 `status=completed` 的工具；edit 逐块经 `buildSideBySideDiff` 数新增/删除行，write 以 content 行数计新增（入参无旧内容，删除行记 0）；同轮同文件聚合（行数求和、diff 块按序拼接）。
 
 ---
 

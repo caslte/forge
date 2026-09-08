@@ -3,6 +3,7 @@ import { call, subscribe, type ConversationCompactedPayload } from '../bridge.ts
 import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
 import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
+import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
@@ -108,25 +109,22 @@ export function useSessionConversation(options: {
 
   // ===== 展示项组装（消息 / 连续 ≥2 工具聚组） =====
 
-  /** 从 ConversationMessage（role=tool）构造 ToolDiff（Edit 类含 file_path/old_string/new_string） */
-  function toToolDiff(message: ConversationMessage): ToolDiff | null {
-    const input = message.input;
-    if (!input || typeof input !== 'object') return null;
-    if (!('old_string' in input) && !('new_string' in input)) return null;
-    const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
-    return {
-      id: message.toolEventId ?? `${message.ts}-${input.file_path ?? ''}`,
-      filePath: text(input.file_path),
-      oldString: text(input.old_string),
-      newString: text(input.new_string),
-    };
+  /** 从 ConversationMessage（role=tool）构造 ToolDiff 列表（edit 多 hunk 逐块一项；
+   *  入参形状判定共享 parseFileToolInput：pi 真实 {path,edits}/{path,content} 与旧形状全兼容） */
+  function toToolDiffs(message: ConversationMessage): ToolDiff[] {
+    const parsed = parseFileToolInput(message.input);
+    if (!parsed) return [];
+    const idBase = message.toolEventId ?? message.ts;
+    return parsed.parts.map((part, i) => ({
+      id: `${idBase}-${i}`,
+      filePath: parsed.path,
+      oldString: part.oldText,
+      newString: part.newText,
+    }));
   }
 
   function groupDiffs(tools: ConversationMessage[]): ToolDiff[] {
-    return tools.flatMap((tool) => {
-      const diff = toToolDiff(tool);
-      return diff ? [diff] : [];
-    });
+    return tools.flatMap(toToolDiffs);
   }
 
   /**
@@ -143,10 +141,18 @@ export function useSessionConversation(options: {
     const msgs = messages.value;
     // 轮次 footer：一次回复被工具调用拆成多张 assistant 卡片时，仅末卡显示复制+时间
     const footers = computeTurnFooters(msgs);
+    // 改动文件汇总：按轮收集成功的 edit/write 工具（键位 = 轮末位置，见 collectTurnChangedFiles）
+    const turnFiles = collectTurnChangedFiles(msgs);
+    const pushFilesSummary = (pos: number): void => {
+      const summary = turnFiles.get(pos);
+      if (summary) out.push({ key: summary.key, kind: 'files-summary', summary });
+    };
     let i = 0;
     while (i < msgs.length) {
       const cur = msgs[i]!;
       if (cur.role !== 'tool') {
+        // 轮末插入点：上一轮的汇总卡片排在下一条 user 消息之前
+        if (cur.role === 'user') pushFilesSummary(i);
         const footer = footers.get(i);
         out.push({
           key: itemKey(cur),
@@ -188,6 +194,8 @@ export function useSessionConversation(options: {
         }
       }
     }
+    // 轮末插入点（末轮）：流式中轮未结束时汇总卡片始终位于消息流末尾
+    pushFilesSummary(msgs.length);
     return out;
   });
 

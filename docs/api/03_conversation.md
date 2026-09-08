@@ -96,6 +96,8 @@ UI 据此渲染输入框工具区的「待发送 N」徽标与只读浮窗（无
 }
 ```
 
+**tool 消息**：历史中的工具结果消息（`role=tool`）带 `toolEventId / toolName / status`，并尽可能带 `input`——从 pi 会话 assistant 消息的 toolCall.arguments 恢复；极旧会话或无匹配 toolCall 时不带该字段。`input` 供前端渲染工具卡 diff 与每轮「改动文件汇总卡片」，入参形状见 api/04_tool.md §2。
+
 **流式语义**：pi 仅在 `message_end` 时把 assistant 消息写入会话文件。轮次进行中查询历史时，
 响应末尾会额外包含一条**未完成 assistant 快照**（流式清洗后全文）；轮次结束后不再返回该快照，
 不会与已落盘的终态消息重复。这保证流式中切换会话再切回时，后续增量有正确的追加基点（界面不截断）。

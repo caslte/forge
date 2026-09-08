@@ -11,9 +11,11 @@
  * 同一 key 的组件始终唯一，patch 不再跨列表位置错位。
  */
 import type { ConversationMessage, SessionStatus, ToolEvent } from '../types';
+import type { ChangedFileSummary } from '../composables/useChangedFiles';
 import MessageCard from './MessageCard.vue';
 import DiffView from './DiffView.vue';
 import ToolCallCard from './ToolCallCard.vue';
+import ChangedFilesCard from './ChangedFilesCard.vue';
 
 /** 工具调用 diff（Edit 类工具入参渲染用） */
 export type ToolDiff = {
@@ -43,6 +45,11 @@ export type DisplayItem =
       totalCount: number;
       diffs: ToolDiff[];
       collapsed: boolean;
+    }
+  | {
+      key: string;
+      kind: 'files-summary';
+      summary: ChangedFileSummary;
     };
 
 const props = defineProps<{
@@ -51,6 +58,8 @@ const props = defineProps<{
   streaming: boolean;
   /** 工具事件归属会话（ToolCallCard event.sessionId） */
   sessionId: string;
+  /** 会话项目根路径（改动文件汇总卡片的相对路径归一；空串按原路径展示） */
+  projectPath?: string;
 }>();
 
 const emit = defineEmits<{
@@ -85,6 +94,12 @@ function isToolMessage(m: ConversationMessage): boolean {
       :copy-text="item.copyText"
     />
   </template>
+
+  <ChangedFilesCard
+    v-else-if="item.kind === 'files-summary'"
+    :summary="item.summary"
+    :project-path="projectPath"
+  />
 
   <div v-else class="tool-group" :class="{ collapsed: item.collapsed }">
     <button class="tool-group-head" @click="emit('toggle-group', item.key)">
