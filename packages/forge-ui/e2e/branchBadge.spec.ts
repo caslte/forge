@@ -108,8 +108,12 @@ test('PM-E2E-006 @P0 @mock-backend E-PM-006：点徽标弹浮窗，过滤生效�
   await expect(panel.locator('.git-item.active')).toHaveText(/dev-v0.1.0/);
   await expect(panel.locator('.git-item.active .git-current')).toHaveText('当前');
 
-  // 过滤：输入关键字后只剩匹配项
-  await panel.locator('.git-filter').fill('feat');
+  // 过滤：真实点击聚焦 + 键盘输入（回归防护：panel 曾因 @mousedown.prevent
+  // 吞掉聚焦默认行为导致真实点击无法输入，而 fill() 程序化聚焦会漏测该 bug）
+  await panel.locator('.git-filter').click();
+  await expect(panel.locator('.git-filter')).toBeFocused();
+  await page.keyboard.type('feat');
+  await expect(panel.locator('.git-filter')).toHaveValue('feat');
   await expect(panel.locator('.git-item')).toHaveCount(1);
   await expect(panel.locator('.git-item')).toHaveText(/feat\/login/);
 

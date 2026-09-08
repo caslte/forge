@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import type { GitBranchInfo } from '../types';
 import { filterBranches, shouldAskConfirm, displayBranch } from '../utils/branchBadge';
 
@@ -22,6 +22,7 @@ const confirming = ref(false);
 const pendingBranch = ref('');
 const stderr = ref<string | null>(null);
 const rootRef = ref<HTMLElement | null>(null);
+const filterRef = ref<HTMLInputElement | null>(null);
 
 const currentLabel = computed(() => (info.value ? displayBranch(info.value) : null));
 const filtered = computed(() =>
@@ -103,6 +104,8 @@ function togglePanel(): void {
   query.value = '';
   stderr.value = null;
   panelOpen.value = true;
+  // 打开即聚焦过滤框，可直接输入
+  void nextTick(() => filterRef.value?.focus());
 }
 
 /** 点选分支：dirty 且目标≠当前先确认；6001 时浮窗内展示 stderr、浮窗不关 */
@@ -153,10 +156,12 @@ async function doSwitch(branch: string): Promise<void> {
       <span class="git-pill-name">{{ currentLabel }}</span>
     </button>
 
-    <!-- 分支切换浮窗：向上弹出，参照 slash-menu 定位风格 -->
-    <div v-if="panelOpen" class="git-panel" @mousedown.prevent>
+    <!-- 分支切换浮窗：向上弹出，参照 slash-menu 定位风格。
+         注意不可加 @mousedown.prevent，否则会吞掉输入框聚焦的默认行为导致无法输入 -->
+    <div v-if="panelOpen" class="git-panel">
       <template v-if="!confirming">
         <input
+          ref="filterRef"
           v-model="query"
           class="git-filter"
           type="text"
@@ -210,8 +215,12 @@ async function doSwitch(branch: string): Promise<void> {
   flex-shrink: 0;
 }
 
-/* 与项目 pill 同排、去掉边框/背景/圆角，与其“提示性徽标”语义一致（UX 调整） */
+/* 与项目 pill 同排、去掉边框/背景/圆角，与其“提示性徽标”语义一致（UX 调整）。
+   图标与文字顶部对齐：inline 默认基线对齐会让 13px 图标顶部高出文字（视觉不对齐） */
 .git-pill {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 2px;
   border: none;
   background: transparent;
   padding: 4px 6px;
