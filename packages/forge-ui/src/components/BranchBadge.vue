@@ -30,11 +30,13 @@ const filtered = computed(() =>
 
 async function refresh(): Promise<void> {
   try {
-    info.value = await window.forge
-      .invoke('git/getBranchInfo', { path: props.projectPath })
-      .then((r) => (r.code === 0 ? (r.data as GitBranchInfo) : null));
+    const r = await window.forge.invoke('git/getBranchInfo', { path: props.projectPath });
+    // 仅成功时更新 info；失败（1002/5000/网络）保留旧值，避免一过性错误让徽标闪烁消失
+    if (r.code === 0 && r.data) {
+      info.value = r.data as GitBranchInfo;
+    }
   } catch {
-    info.value = null;
+    // 静默：保留旧 info
   }
 }
 
@@ -48,6 +50,8 @@ watch(
 );
 
 let unsub: (() => void) | null = null;
+/** 开浮窗前保存的焦点元素，关闭后还原到输入框 */
+let savedFocus: HTMLElement | null = null;
 function onFocus(): void {
   void refresh();
 }
@@ -63,6 +67,11 @@ function closePanel(): void {
   panelOpen.value = false;
   confirming.value = false;
   stderr.value = null;
+  // 还原开浮窗前的焦点（点击 git-pill 后焦点被按钮抢走，关闭后需还回输入框）
+  if (savedFocus && document.contains(savedFocus)) {
+    savedFocus.focus();
+  }
+  savedFocus = null;
 }
 
 onMounted(() => {
@@ -89,6 +98,8 @@ function togglePanel(): void {
     closePanel();
     return;
   }
+  // 记录开浮窗前的焦点，关闭时还原
+  savedFocus = (document.activeElement as HTMLElement | null) ?? null;
   query.value = '';
   stderr.value = null;
   panelOpen.value = true;
