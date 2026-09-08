@@ -169,7 +169,7 @@ async function doSwitch(branch: string): Promise<void> {
       <template v-else>
         <div class="menu-hint">确认切换分支</div>
         <div class="git-confirm-desc">
-          工作区有未提交更改，切换到 <b>{{ pendingBranch }}</b> 可能与目标分支冲突或丢失修改。建议先提交或暂存（stash）。
+          工作区有未提交更改，切换到 <b>{{ pendingBranch }}</b> 可能冲突或丢失修改。
         </div>
         <div class="git-confirm-actions">
           <button type="button" class="git-btn" @click="closePanel">取消</button>
@@ -324,6 +324,7 @@ async function doSwitch(branch: string): Promise<void> {
   font-size: 12px;
   color: var(--foreground);
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .git-confirm-actions {
