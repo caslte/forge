@@ -183,6 +183,12 @@ async function doSwitch(branch: string): Promise<void> {
 <style scoped>
 .git-badge {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* scoped 样式不会继承宿主（InstructionInput）的 .meta-link svg 尺寸规则，
@@ -191,6 +197,21 @@ async function doSwitch(branch: string): Promise<void> {
   width: 13px;
   height: 13px;
   flex-shrink: 0;
+}
+
+/* 与项目 pill 同排、去掉边框/背景/圆角，与其“提示性徽标”语义一致（UX 调整） */
+.git-pill {
+  border: none;
+  background: transparent;
+  padding: 4px 6px;
+  border-radius: 6px;
+  line-height: 1;
+  font-weight: 500;
+  color: inherit;
+}
+
+.git-pill:hover {
+  background: var(--card);
 }
 
 /* busy 禁用态：语义对齐 .compose-input:disabled（灰置 + not-allowed） */

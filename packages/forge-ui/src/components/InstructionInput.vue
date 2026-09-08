@@ -1889,6 +1889,9 @@ watch(
 /* 项目选择器（SM-S01 v3.21）：pill + 下拉 */
 .proj-wrap {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .proj-pill {
