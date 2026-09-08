@@ -181,7 +181,7 @@ test('PM-E2E-008a @P0 @mock-backend E-PM-008：dirty 工作区弹确认框，取
   const panel = page.locator('.git-panel');
   await panel.locator('.git-item', { hasText: 'main' }).click();
   await expect(panel.locator('.menu-hint')).toHaveText('确认切换分支');
-  await expect(panel.locator('.git-confirm-desc')).toContainText('main');
+  await expect(panel.locator('.git-confirm-desc')).toContainText('未提交更改');
 
   // 取消：浮窗关闭，分支不变
   await panel.locator('.git-btn', { hasText: '取消' }).click();
