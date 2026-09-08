@@ -57,7 +57,10 @@ export type ForgeMethod =
   | 'subagent/queryList'
   | 'subagent/stop'
   | 'subagent/clearFinished'
-  | 'subagent/queryOutput';
+  | 'subagent/queryOutput'
+  // pi（07）
+  | 'pi/getInfo'
+  | 'pi/updatePlugins';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -202,6 +205,17 @@ export interface SubagentUpdatedPayload {
 export interface SubagentRemovedPayload {
   sessionId: string;
   agentIds: string[];
+}
+
+/** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json） */
+export interface PiGetInfoResult {
+  /** forge 产品版本（app.getVersion()） */
+  forgeVersion: string;
+}
+
+/** pi/updatePlugins 响应 data（更新器输出尾部，失败时 UI 展示排查信息） */
+export interface PiUpdatePluginsResult {
+  output: string;
 }
 
 /**

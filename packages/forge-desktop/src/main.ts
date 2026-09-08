@@ -167,7 +167,11 @@ app.whenReady().then(() => {
     () => safeStorage,
   );
   keychain.restoreEnv();
-  const { methodTable, eventBus } = createForgeCore(storePath, { keychain });
+  const { methodTable, eventBus } = createForgeCore(storePath, {
+    keychain,
+    // 设置页「版本更新」展示用产品版本
+    forgeVersion: app.getVersion(),
+  });
   registerIpc(methodTable, eventBus);
 
   // 首条消息卡顿修复：项目打开即后台预热 pi 扩展加载（jiti 冷编译 3~9s 不再落在

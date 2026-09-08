@@ -52,6 +52,10 @@ import {
 import { getPiSupportedThinkingLevels, resolvePiModel } from './pi/piModelResolver.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 import { PiTrustStoreAdapter } from './pi/piTrustStoreAdapter.ts';
+import {
+  updatePiExtensions,
+  type PiUpdateResult,
+} from './pi/piRuntime.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
 export type MethodTable = Record<string, (params: unknown) => RpcResult | Promise<RpcResult>>;
@@ -78,11 +82,14 @@ export interface ForgeCoreDeps {
   piAgentSessionFactory?: PiAgentSessionFactory<MinimalPiSession>;
   /** wu-06：done 门控超时窗口（默认 30 分钟）。测试用小窗口验证兜底释放。 */
   subagentDoneTimeoutMs?: number;
-  /**
-   * wu-06：主轮看门狗窗口（默认 30 分钟）。主轮结束信号整体丢失（适配器 prompt
+  /** wu-06：主轮看门狗窗口（默认 30 分钟）。主轮结束信号整体丢失（适配器 prompt
    * 永不返回）且窗口内无任何会话事件活动时，强制放行 done。测试用小窗口验证。
    */
   subagentMainTurnTimeoutMs?: number;
+  /** forge 产品版本（设置页「版本更新」展示）；main.ts 传 app.getVersion()，缺省 0.0.0-dev */
+  forgeVersion?: string;
+  /** 更新共享扩展的可注入端口（测试 mock）；缺省跑内置引擎 CLI 的 pi update --extensions */
+  piUpdateExtensions?: () => Promise<PiUpdateResult>;
 }
 
 /**
@@ -528,6 +535,24 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
   };
 
+  // pi（07）：设置页「关于」Tab——forge 版本 + 更新组件。
+  // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照。
+  // readPiExtensionList 保留在 piRuntime，供 IN-F02/F04 预装与联动更新使用。
+  const piMethods: MethodTable = {
+    'pi/getInfo': async () => ({
+      code: 0,
+      message: 'success',
+      data: { forgeVersion: deps.forgeVersion ?? '0.0.0-dev' },
+    }),
+    'pi/updatePlugins': async () => {
+      const result = await (deps.piUpdateExtensions ?? updatePiExtensions)();
+      if (!result.ok) {
+        return { code: 6002, message: '组件更新失败', data: { output: result.output } };
+      }
+      return { code: 0, message: 'success', data: { output: result.output } };
+    },
+  };
+
   // wu-06：conversation/sendMessage 看门狗布防——发送期间监视主轮结束信号；
   // prompt 返回（完成/中止/抛错）即信号已到，finally 撤防。prompt 永不返回时
   // 由 interval 检测无活动窗口后强制放行（见 armMainTurnWatchdog）。
@@ -572,6 +597,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...toolApi.methods,
     ...modelApi.methods,
     ...subagentMethods,
+    ...piMethods,
     // 重写 cancelStream 为级联终止版本；sendMessage 加主轮看门狗布防
     'conversation/cancelStream': wrappedCancelStream,
     'conversation/sendMessage': wrappedSendMessage,

@@ -10,6 +10,55 @@
 - 验证：typecheck 三包 0 错；单测 core 365 / ui 178（+17 changedFiles）/ desktop 187（+2 history 回填）全过；E2E 新增 `changedFiles.spec` 4/4（历史回显折叠与行内 diff、工具卡 diff 修复、流式渐进出现、失败与 read 不计入）；全量 E2E 80 过 / 2 挂（smoke、E-SM-001 为 HEAD 存量已知失败，v3.52 已 stash 基线验证与本次无关）。
 - 未提交：本 run 全部改动在工作区，待用户决定提交。
 
+## v3.59 (功能：设置页改 Tab 结构「通用/关于」，版本更新迁入关于)
+
+- 用户决策：设置页内容变多，改 Tab 结构。`SettingsPanel.vue`：header 下新增 Tab（通用/关于，active 底线 brand-accent）；「通用」= 模型配置 + 外观（现状不变）；「关于」= 版本更新分区（单栏 about-body，max-width 760px）。
+- 同步落实原型反馈：版本更新分区**移除内置组件清单**（v-if Tab + 负向 e2e 断言）。
+- 契约收缩：`pi/getInfo` 仅返回 `forgeVersion`（plugins 字段移除；ipc-contract/bridge/mock-bridge 同步；readPiExtensionList 保留在 piRuntime 供 IN-F02/F04 使用）。
+- 原型 `updater-prototype.html` 增加设置页 Tab 模拟（通用/关于）。
+- 验证：typecheck（ui/desktop）0 错；desktop 单测 piRuntime 5/5；e2e settings.spec 9/9（一次 waitForMock 环境抖动重跑通过）。
+- 追加（原型确认后）：Tab 样式定稿**方案 A 分段控件 + 滑动选中块动效**（muted 容器 + 绝对定位 thumb，transform/width 0.28s cubic-bezier；深色用前景色 14% 混合提亮；函数式 ref 测量 offsetLeft/offsetWidth，watch(activeTab)+resize+onMounted 校准）；「关于」Tab 移除「forge 版本与内置组件更新」desc 行；原型整体重写（补丁编辑与 IDE 保存多次互相覆盖，改整文件重写——同文件多次 Edit 严禁并行）。
+
+## v3.58 (原型：模块 07 更新体系交互原型 + 敲定三项反馈)
+
+- 新增 `prototypes/updater-prototype.html`（单文件，明暗可切，令牌取自 design-tokens.css）：展示设置页「版本更新」分区全状态（已是最新/发现新版+toast/下载进度/重启安装/检查失败静默）、自更新状态机示意、后台静默流程模拟面板（updater-state 标志与明细日志）。
+- 原型确认三项反馈并同步文档（PRD 07 / api/07_pi.md / db/07_installer / test/07_pi/*）：
+  1. 「重启安装」点击后弹确认框（含新版本号与影响说明），确认才执行安装重启 → AC-IN-009 修订；
+  2. 设置页不再展示内置组件清单（含已实现的清单 UI 移除，随 dev 调整；AC-PI-002 改为负向断言，AC-PI-003 作废）；
+  3. 组件变更明细（包名 · 旧版本 → 新版本 · 来源）写结构化日志（§3.5 字段明确），updater-state.json 新增 `components` 版本快照（db schema 补字段）。
+- 待用户最终确认原型后调用 dev 实现 IN-S01~04（含 PU 展示形态调整）。
+
+## v3.57 (文档：模块 07 补齐待开发部分下游文档，dev 可接手)
+
+- DB：新增 `db/07_installer/schema.md`——userData 独立 `updater-state.json`（用户拍板：不进 forge-store），字段 lastRunForgeVersion / preinstallDone / preinstallDoneAt / lastUpdateCheckAt + schemaVersion；损坏按默认值重建；单写者原子写。
+- API：`api/07_pi.md` 扩展自更新契约（IN-S03 待开发）——updater/getState、updater/checkForUpdates、updater/downloadUpdate、updater/quitAndInstall 四方法 + `updater.stateChanged` 事件（须登记 FORGE_EVENTS 白名单）；错误码 6003（检查失败，UI 静默）/6004（下载/校验失败）/6005（安装启动失败）；预装/联动更新无 RPC（后台静默）。api/index.md 错误码表同步。
+- 测试设计：`test/07_pi/coverage-matrix.md` 补 AC-IN-001~014 全基线（unit U-IN-001~004 / API A-IN-001~003 / E2E E-IN-001~004 / manual 发布前 checklist 5 项）+ 契约完整性走既有 ipcEventContract 静态扫描不单设 AC；新增 `test/07_pi/e2e.md`（自更新 UI 4 用例，mock-backend，含「预装/联动全程无 UI」反向断言）；test/index.md 行更新。
+- artifacts.json：登记 07_installer 模块（prd/verification/api/db/test-e2e/test-api 均 approved）。
+- 状态：模块 07 文档集就绪，可调用 dev 实现 IN-S01~04。
+
+## v3.56 (文档：PRD 08 并入 PRD 07，合并为完整更新体系需求)
+
+- 按用户决策，安装包与联动更新（原 PRD 08）并入 PRD 07，更名为「版本更新与安装包（pi 运行时）」，作为一套完整需求 PRD；`prd/08_installer_update.md` 删除，PRD 文件定名 `prd/07_installer_update.md`。
+- 合并后结构：场景 PU-S01/S02（设置页版本更新分区，已实现）+ IN-S01~04（安装包/预装/自更新/联动更新，待开发）；决策 TD-PI-01~05 + TD-IN-01~06；AC 编号保持稳定（AC-PI-001~008 已实现、AC-IN-001~014 待开发）；自检报告合并全 PASS。
+- 索引（prd/index.md、overview.md）同步：模块 08 移除，07 备注含实现进度。API（api/07_pi.md）与测试设计（test/07_pi/*）不变，安装包部分实现时再扩展。
+
+## v3.55 (PRD：模块 08 安装包与联动更新 确认)
+
+- 新增 `prd/08_installer_update.md`（gen-doc-prd 两轮确认，状态 PRD 已确认）：IN-S01 Windows 安装包（NSIS per-user）/ IN-S02 推荐组件首启静默预装（无感、只增不删、幂等）/ IN-S03 应用自更新（GitHub Releases，发现新版提示一次+设置页常驻入口，用户手动点击更新）/ IN-S04 引擎-插件联动更新（forge 版本变化后台静默更新组件，不提示）。
+- 用户拍板：更新通道 GitHub Releases；预装对客户完全无感（不做设置页入口）；预装清单=当前 10 个插件；组件自动更新不提示、forge 更新包提示+手动；Windows only v1；semver 单 latest 通道。
+- 14 条 AC（AC-IN-001~014）+ 自检报告全 PASS；索引/overview 同步。实现排期未开始。
+
+## v3.54 (功能：模块 07 版本更新分区 + BranchBadge 两处修复)
+
+- BranchBadge 修复（用户报障）：过滤分支输入框无法聚焦/输入——浮窗容器 `@mousedown.prevent` 吞掉 mousedown 聚焦默认行为；移除该修饰符（外层 onDocMouseDown 已按 `.git-badge` 放行）+ 打开浮窗自动聚焦过滤框；E-PM-006 过滤步骤从 `fill()` 改真实点击+键盘输入防回归。徽标图标与文字改顶部对齐（inline-flex + flex-start，原基线对齐致图标高出文字）+ 间距 2px。
+- 模块 07 版本更新（设置页「版本更新」分区，明面 forge 产品更新，内部更新 pi 共享扩展）：
+  - 需求对齐结论：全局 pi CLI 检测/更新不做；预装推荐插件与安装包/联动更新另立专项 PRD；引擎（内置 SDK）版本不露出。
+  - core/desktop：`piRuntime.ts`（readPiExtensionList 读 ~/.pi/agent/settings.json packages + npm 实体版本，JSONC 剥离复用 piModelsFileAdapter.stripJsonComments 并导出；updatePiExtensions 经 ELECTRON_RUN_AS_NODE 跑内置引擎 CLI `pi update --extensions --no-approve`，超时 10 分钟，输出尾部 ≤4000 字符）；createForgeCore 注入 piMethods（pi/getInfo、pi/updatePlugins，6002+output 失败信封，更新器可注入）；main.ts 注入 app.getVersion()。
+  - ui：SettingsPanel 新增「版本更新」分区（版本行 + 更新组件按钮 busy 态 + 组件清单/未安装红标/空态；失败内联展示错误与输出尾部，不弹 toast）；契约 ipc-contract/bridge 同步；mock-bridge 默认 mock。
+  - 文档：prd/07_pi_runtime.md、api/07_pi.md、api/index.md（6002 + 模块行）、test/07_pi/*（矩阵 + api.md）、test/index.md、prd/index.md。
+- 验证：typecheck（ui/desktop）0 错；desktop 单测 piRuntime 5/5；e2e settings.spec 10/10（新增版本更新 3 用例）。
+- 未提交：本 run 全部改动在工作区，待用户决定提交。
+
 ## v3.52 (开发交付：PM-S05 分支查看与切换，dev-flow run 20260907175149 COMPLETE)
 
 - 交付：4 WU 全部 D4 通过 + D5 Fan-in + D6 模块 QA PASS（gap 0）。

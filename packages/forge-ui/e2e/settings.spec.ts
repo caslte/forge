@@ -314,3 +314,62 @@ test('多模态 E-MP-006v b：取消勾选保存传 vision=false，列表标签�
   page.locator('.provider-item').filter({ hasText: 'Vision-1' }).getByRole('button', { name: '编辑' }).click();
   await expect(visionCheckbox(page)).not.toBeChecked();
 });
+
+// ===== 关于 Tab · 版本更新（07：pi/getInfo + pi/updatePlugins，明面 forge 产品更新） =====
+
+test('版本更新：关于 Tab 展示 forge 版本，更新成功 toast，且不渲染组件清单', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('pi/getInfo', () => ({
+      code: 0,
+      message: 'ok',
+      data: { forgeVersion: '0.1.0' },
+    }));
+    window.__forgeMock!.seed('pi/updatePlugins', () => ({
+      code: 0,
+      message: 'ok',
+      data: { output: 'updated pi-mcp-adapter to 2.33.0' },
+    }));
+  });
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
+  await expect(page.locator('.settings-stage')).toBeVisible();
+
+  // 默认通用 Tab：模型配置可见，版本更新分区不可见
+  await expect(page.locator('.provider-item').first()).toBeVisible();
+  await expect(page.locator('.update-section')).toHaveCount(0);
+
+  // 切到关于 Tab：版本行展示；负向断言——不渲染组件清单（明细仅日志与 updater-state）
+  await page.locator('.settings-tab', { hasText: '关于' }).click();
+  await expect(page.locator('.update-section .version-value')).toHaveText('0.1.0');
+  await expect(page.locator('.plugin-list')).toHaveCount(0);
+  await expect(page.locator('.plugin-item')).toHaveCount(0);
+
+  // 更新：成功 toast + 按钮复位
+  await page.locator('.update-section .section-action').click();
+  await expect(page.locator('.toast .toast-message')).toContainText('更新完成');
+  await expect(page.locator('.update-section .section-action')).toHaveText('更新组件');
+  await expect(page.locator('.update-section .section-error')).toHaveCount(0);
+});
+
+test('版本更新：更新失败展示错误与输出尾部，按钮恢复可点', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('pi/getInfo', () => ({
+      code: 0,
+      message: 'ok',
+      data: { forgeVersion: '0.1.0' },
+    }));
+    window.__forgeMock!.seed('pi/updatePlugins', () => ({
+      code: 6002,
+      message: '组件更新失败',
+      data: { output: 'npm error code E404\nnpm error 404 Not Found' },
+    }));
+  });
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
+  await page.locator('.settings-tab', { hasText: '关于' }).click();
+
+  await page.locator('.update-section .section-action').click();
+  await expect(page.locator('.update-section .section-error')).toContainText('组件更新失败');
+  await expect(page.locator('.update-output')).toContainText('npm error code E404');
+  await expect(page.locator('.update-section .section-action')).toBeEnabled();
+  // 失败不弹成功 toast（无任何 toast 元素）
+  await expect(page.locator('.toast .toast-message')).toHaveCount(0);
+});

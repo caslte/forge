@@ -60,6 +60,17 @@
         "test-e2e": { "path": "docs/test/06_subagent/e2e.md", "status": "approved" },
         "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
       }
+    },
+    "07_installer": {
+      "status": "approved",
+      "artifacts": {
+        "prd": { "path": "docs/prd/07_installer_update.md", "status": "approved" },
+        "verification": { "path": "docs/test/07_pi/coverage-matrix.md", "status": "approved" },
+        "api": { "path": "docs/api/07_pi.md", "status": "approved" },
+        "db": { "path": "docs/db/07_installer/schema.md", "status": "approved" },
+        "test-e2e": { "path": "docs/test/07_pi/e2e.md", "status": "approved" },
+        "test-api": { "path": "docs/test/07_pi/api.md", "status": "approved" }
+      }
     }
   }
 }

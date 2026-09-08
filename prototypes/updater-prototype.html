@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>模块 07 · 版本更新与安装包 交互原型 · forge</title>
+<style>
+/* ============================================================
+   设计令牌：取自 packages/forge-ui/src/design-tokens.css（light/dark）
+   项目无 docs/specs/ui.md，本原型沿用 forge 实际令牌，所见即所得
+   ============================================================ */
+:root {
+  --background: oklch(1 0 0);
+  --foreground: #333333;
+  --card: oklch(1 0 0);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --brand: oklch(0.35 0 0);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-accent: oklch(0.62 0.09 170);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.92 0.004 286.32);
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 10px; --radius-xl: 14px;
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 4%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 6%);
+  --shadow-lg: 0 18px 50px oklch(0 0 0 / 6%);
+  --font-sans: "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+:root[data-theme='dark'] {
+  --background: oklch(0.26 0.006 286.2);
+  --foreground: oklch(0.88 0.002 286.3);
+  --card: oklch(0.26 0.006 286.2);
+  --muted: oklch(0.3 0.005 286.2);
+  --muted-foreground: oklch(0.7 0.008 286.3);
+  --brand: oklch(0.88 0.008 286.3);
+  --brand-foreground: oklch(0.2 0.01 286.3);
+  --brand-accent: oklch(0.78 0.1 170);
+  --destructive: oklch(0.7 0.18 27.325);
+  --border: oklch(0.32 0.005 286.3);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 18%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 24%);
+  --shadow-lg: 0 24px 60px oklch(0 0 0 / 24%);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--background);
+  color: var(--foreground);
+  padding: 36px 24px 72px;
+  transition: background 0.2s, color 0.2s;
+}
+.page { max-width: 980px; margin: 0 auto; }
+
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.2px; }
+.page-head p { margin-top: 6px; font-size: 13px; line-height: 1.7; color: var(--muted-foreground); max-width: 780px; }
+.page-head code { font-family: var(--font-mono); font-size: 12px; background: var(--muted); border-radius: 4px; padding: 1px 5px; }
+.theme-toggle {
+  flex-shrink: 0; border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+  font-size: 13px; padding: 7px 14px; border-radius: var(--radius-md); cursor: pointer; box-shadow: var(--shadow-sm);
+  font-family: var(--font-sans);
+}
+.theme-toggle:hover { background: var(--muted); }
+
+/* ---------- Tab 样式候选（整页级预览） ---------- */
+.candidates { margin-top: 26px; }
+.cand-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 900px) { .cand-grid { grid-template-columns: 1fr; } }
+.cand { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); padding: 12px 14px 14px; }
+.cand-head { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; font-size: 12.5px; }
+.cand-head b { color: var(--foreground); }
+.cand-head span { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.6; }
+.mini-stage { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--background); overflow: hidden; }
+.ms-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 12px 14px 10px; }
+.ms-title { font-size: 14px; font-weight: 700; }
+.ms-sub { font-size: 10.5px; color: var(--muted-foreground); margin-top: 2px; }
+.ms-close { color: var(--muted-foreground); font-size: 12px; }
+.ms-tabs { padding: 0 14px; }
+.ms-content { padding: 12px 14px 16px; }
+.ms-sec { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.ms-sec-title { font-size: 12.5px; font-weight: 600; }
+.ms-btn { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); }
+.ms-verrow { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--muted); font-size: 11.5px; color: var(--muted-foreground); }
+.ms-verrow b { font-family: var(--font-mono); color: var(--foreground); font-size: 12.5px; }
+.ms-general { padding: 12px 14px 16px; font-size: 11.5px; color: var(--muted-foreground); line-height: 1.7; }
+
+/* A 分段控件（含滑动选中块） */
+.seg { position: relative; display: inline-flex; gap: 2px; background: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.seg-thumb {
+  position: absolute; top: 3px; bottom: 3px; left: 0; background: var(--card);
+  border-radius: 999px; box-shadow: var(--shadow-sm);
+  transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.3, 1), width 0.28s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+:root[data-theme='dark'] .seg-thumb { background: color-mix(in oklab, var(--foreground) 14%, var(--card)); }
+.seg-item {
+  position: relative; z-index: 1; border: none; background: transparent; color: var(--muted-foreground);
+  font-size: 13px; padding: 6px 18px; border-radius: 999px; cursor: pointer; font-family: var(--font-sans); transition: color 0.2s;
+}
+.seg-item:hover { color: var(--foreground); }
+.seg-item.on { color: var(--foreground); font-weight: 600; }
+
+/* B 胶囊实底 */
+.pills { display: inline-flex; gap: 8px; }
+.pill {
+  border: 1px solid var(--border); background: transparent; color: var(--muted-foreground); font-size: 13px;
+  padding: 6px 18px; border-radius: 999px; cursor: pointer; font-family: var(--font-sans); transition: all 0.18s;
+}
+.pill:hover { color: var(--foreground); border-color: var(--muted-foreground); }
+.pill.on { background: var(--brand); border-color: var(--brand); color: var(--brand-foreground); font-weight: 600; }
+
+/* C 下划线增强 */
+.uline { display: inline-flex; gap: 18px; border-bottom: 1px solid var(--border); }
+.uline-item {
+  border: none; background: transparent; color: var(--muted-foreground); font-size: 13.5px;
+  padding: 6px 2px 9px; cursor: pointer; font-family: var(--font-sans);
+  border-bottom: 2.5px solid transparent; margin-bottom: -1px; transition: all 0.18s;
+}
+.uline-item:hover { color: var(--foreground); }
+.uline-item.on { color: var(--foreground); font-weight: 600; border-bottom-color: var(--brand-accent); }
+
+/* ---------- 原型控制台 ---------- */
+.console {
+  margin-top: 22px; border: 1px dashed var(--border); border-radius: var(--radius-lg);
+  padding: 14px 16px; background: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+.console-tag {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 1px;
+  color: var(--muted-foreground); font-weight: 600; margin-bottom: 10px;
+}
+.console-tag::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--brand-accent); }
+.console-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.console-note { margin-top: 10px; font-size: 12px; color: var(--muted-foreground); line-height: 1.7; }
+.console-note b { color: var(--foreground); font-weight: 600; }
+.cbtn {
+  border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+  font-size: 12.5px; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-family: var(--font-sans);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.cbtn:hover { border-color: var(--brand-accent); color: var(--brand-accent); }
+.cbtn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-foreground); }
+.cbtn.primary:hover { filter: brightness(1.12); color: var(--brand-foreground); }
+
+/* ---------- 仿设置页舞台 ---------- */
+.stage {
+  margin-top: 22px; border: 1px solid var(--border); border-radius: var(--radius-xl);
+  background: var(--card); box-shadow: var(--shadow-lg); overflow: hidden;
+  animation: rise 0.45s cubic-bezier(0.22, 0.8, 0.3, 1) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+.stage-bar { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px 10px; }
+.stage-bar .fake-title { font-size: 15px; font-weight: 700; }
+.stage-bar .fake-sub { font-size: 11.5px; color: var(--muted-foreground); margin-top: 2px; }
+.stage-bar .fake-close {
+  width: 26px; height: 26px; border-radius: var(--radius-md); border: 1px solid var(--border);
+  background: transparent; color: var(--muted-foreground); font-size: 13px; line-height: 1; cursor: default;
+}
+
+/* 主舞台 Tab：分段控件 + 滑动选中块（方案 A，与实现一致） */
+.stage-tabs {
+  position: relative; display: inline-flex; gap: 2px; background: var(--muted);
+  border-radius: 999px; padding: 3px; margin: 0 20px 4px;
+}
+.stage-thumb {
+  position: absolute; top: 3px; bottom: 3px; left: 0; background: var(--card);
+  border-radius: 999px; box-shadow: var(--shadow-sm);
+  transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.3, 1), width 0.28s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+:root[data-theme='dark'] .stage-thumb { background: color-mix(in oklab, var(--foreground) 14%, var(--card)); }
+.stage-tab {
+  position: relative; z-index: 1; padding: 6px 18px; font-size: 13px; color: var(--muted-foreground);
+  background: transparent; border: none; border-radius: 999px; cursor: pointer;
+  font-family: var(--font-sans); transition: color 0.2s;
+}
+.stage-tab:hover { color: var(--foreground); }
+.stage-tab.active { color: var(--foreground); font-weight: 600; }
+
+.tab-general { padding: 18px 20px 26px; color: var(--muted-foreground); font-size: 13px; line-height: 1.8; }
+
+.stage-body { padding: 14px 20px 22px; display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 24px; align-items: start; }
+@media (max-width: 820px) { .stage-body { grid-template-columns: 1fr; } }
+
+.section-title { font-size: 14px; font-weight: 600; }
+
+/* ---------- 版本更新分区 ---------- */
+.update-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.version-row {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--muted);
+}
+.version-label { font-size: 12.5px; color: var(--muted-foreground); }
+.version-value { font-size: 14px; font-weight: 600; font-family: var(--font-mono); }
+.version-arrow { color: var(--muted-foreground); font-size: 12px; }
+.version-next {
+  font-size: 14px; font-weight: 600; font-family: var(--font-mono); color: var(--brand-accent);
+  display: none; align-items: center; gap: 6px;
+}
+.version-next .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand-accent); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand-accent) 45%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
+
+.actions { display: flex; gap: 8px; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 7px 14px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--muted); color: var(--foreground);
+  cursor: pointer; font-family: var(--font-sans); transition: border-color 0.15s, color 0.15s, background 0.15s, opacity 0.15s;
+}
+.btn:hover { border-color: var(--brand-accent); color: var(--brand-accent); }
+.btn:disabled { opacity: 0.55; cursor: default; pointer-events: none; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-foreground); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.12); color: var(--brand-foreground); }
+.btn .spinner {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid color-mix(in oklab, currentColor 25%, transparent); border-top-color: currentColor;
+  animation: spin 0.7s linear infinite; display: none;
+}
+.btn.busy .spinner { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.state-line { font-size: 12.5px; color: var(--muted-foreground); display: none; align-items: center; gap: 8px; min-height: 18px; }
+.state-line.show { display: flex; }
+
+.progress-wrap { display: none; flex-direction: column; gap: 6px; }
+.progress-wrap.show { display: flex; }
+.progress-meta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted-foreground); }
+.progress-meta b { font-family: var(--font-mono); font-weight: 600; color: var(--foreground); }
+.progress-track { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.progress-fill {
+  height: 100%; width: 0%; border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in oklab, var(--brand-accent) 72%, transparent), var(--brand-accent));
+  transition: width 0.35s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
+/* ---------- 右窄栏：状态机 ---------- */
+.machine { display: flex; flex-direction: column; gap: 10px; }
+.machine-title { font-size: 14px; font-weight: 600; }
+.steps { display: flex; flex-direction: column; gap: 6px; }
+.step {
+  display: flex; align-items: center; gap: 8px; padding: 7px 11px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--muted-foreground);
+  font-family: var(--font-mono); transition: all 0.25s;
+}
+.step .k { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border); flex-shrink: 0; transition: all 0.25s; }
+.step.on { border-color: var(--brand-accent); color: var(--foreground); background: color-mix(in oklab, var(--brand-accent) 8%, transparent); }
+.step.on .k { background: var(--brand-accent); border-color: var(--brand-accent); }
+.step.done { color: var(--foreground); }
+.step.done .k { background: var(--muted-foreground); border-color: var(--muted-foreground); }
+
+/* ---------- 后台流程模拟（内部状态，用户不可见） ---------- */
+.bg-panel {
+  margin-top: 22px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--card); box-shadow: var(--shadow-sm);
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); overflow: hidden;
+}
+@media (max-width: 820px) { .bg-panel { grid-template-columns: 1fr; } }
+.bg-col { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.bg-col + .bg-col { border-left: 1px solid var(--border); }
+@media (max-width: 820px) { .bg-col + .bg-col { border-left: none; border-top: 1px solid var(--border); } }
+.bg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bg-title { font-size: 13px; font-weight: 600; }
+.bg-badge { font-size: 10.5px; letter-spacing: 1px; color: var(--muted-foreground); border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px; }
+.bg-desc { font-size: 11.5px; color: var(--muted-foreground); line-height: 1.7; }
+.bg-log, .comp-log {
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.8; color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--muted) 55%, transparent); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 10px 12px; min-height: 132px; max-height: 220px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+.bg-log .t, .comp-log .t { color: var(--brand-accent); }
+.bg-log .warn { color: var(--destructive); }
+.comp-log .chg { color: var(--brand-accent); font-weight: 600; }
+.comp-log .keep { opacity: 0.75; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-family: var(--font-mono); font-size: 11.5px; }
+.kv .k2 { color: var(--muted-foreground); }
+.kv .v2 { color: var(--foreground); }
+.kv .v2.changed { color: var(--brand-accent); }
+
+/* ---------- Toast（仿 forge：左侧渐变竖线） ---------- */
+.toast-zone { position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast {
+  display: flex; align-items: center; gap: 10px; background: var(--popover, var(--card)); color: var(--foreground);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+  padding: 10px 16px 10px 0; font-size: 13px; overflow: hidden;
+  animation: toast-in 0.3s cubic-bezier(0.22, 0.8, 0.3, 1) both;
+}
+.toast::before { content: ""; width: 4px; align-self: stretch; background: linear-gradient(180deg, var(--brand-accent), color-mix(in oklab, var(--brand-accent) 40%, transparent)); }
+.toast.gone { animation: toast-out 0.3s ease both; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(10px); } }
+
+/* ---------- 遮罩（确认弹窗 / 重启） ---------- */
+.mask {
+  position: fixed; inset: 0; background: oklch(0 0 0 / 45%); display: none;
+  align-items: center; justify-content: center; z-index: 90;
+}
+.mask.show { display: flex; }
+.mask .box { background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); padding: 22px 26px; }
+.mask .m-title { font-size: 14.5px; font-weight: 600; }
+.mask .m-desc { margin-top: 8px; font-size: 12.5px; color: var(--muted-foreground); line-height: 1.7; }
+.mask .m-actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+.mask .m-actions .btn { padding: 6px 14px; }
+.mask .spinner { width: 18px; height: 18px; margin: 0 auto 12px; border-radius: 50%; border: 2.5px solid var(--border); border-top-color: var(--brand-accent); animation: spin 0.7s linear infinite; }
+.mask .center { text-align: center; font-size: 13px; }
+.mask .center b { font-family: var(--font-mono); }
+.mask .center .sub { margin-top: 6px; color: var(--muted-foreground); font-size: 12px; }
+
+.footnote { margin-top: 18px; font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
+.footnote b { color: var(--foreground); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>模块 07 · 版本更新与安装包 交互原型</h1>
+      <p>覆盖 PRD 07 全部用户可见行为：手动组件更新、应用自更新「发现新版本 → 提示一次 → 手动点击 → 下载进度 → <b>确认弹窗</b> → 重启安装」、检查失败静默、后台预装 / 联动更新的<b>无感</b>语义。
+        设置页已改 Tab 结构（通用 / 关于），Tab 样式 = <b>方案 A 分段控件 + 滑动选中块</b>。令牌取自 <code>design-tokens.css</code>。</p>
+    </div>
+    <button class="theme-toggle" id="themeToggle">切换深色</button>
+  </div>
+
+  <!-- Tab 样式候选（整页级预览，保留备查） -->
+  <div class="candidates">
+    <div class="console" style="margin-top: 0;">
+      <span class="console-tag">Tab 样式候选备查 · 已选定方案 A（下方主舞台即最终效果）</span>
+      <div class="cand-grid">
+        <div class="cand">
+          <div class="cand-head"><b>A · 分段控件（已选定）</b><span>圆角容器 + 滑动选中块</span></div>
+          <div class="mini-stage">
+            <div class="ms-head"><div><div class="ms-title">设置</div><div class="ms-sub">通用设置与应用信息</div></div><span class="ms-close">✕</span></div>
+            <div class="ms-tabs seg"><span class="seg-thumb"></span><button class="seg-item on">通用</button><button class="seg-item">关于</button></div>
+            <div class="ms-content"><div class="ms-sec"><span class="ms-sec-title">版本更新</span><span class="ms-btn">更新组件</span></div><div class="ms-verrow"><span>当前版本</span><b>0.1.0</b></div></div>
+            <div class="ms-general" style="display:none">外观 + 模型配置（通用 Tab 单栏）</div>
+          </div>
+        </div>
+        <div class="cand">
+          <div class="cand-head"><b>B · 胶囊实底</b><span>选中实底反白，对比最强</span></div>
+          <div class="mini-stage">
+            <div class="ms-head"><div><div class="ms-title">设置</div><div class="ms-sub">通用设置与应用信息</div></div><span class="ms-close">✕</span></div>
+            <div class="ms-tabs pills"><button class="pill on">通用</button><button class="pill">关于</button></div>
+            <div class="ms-content"><div class="ms-sec"><span class="ms-sec-title">版本更新</span><span class="ms-btn">更新组件</span></div><div class="ms-verrow"><span>当前版本</span><b>0.1.0</b></div></div>
+            <div class="ms-general" style="display:none">外观 + 模型配置（通用 Tab 单栏）</div>
+          </div>
+        </div>
+        <div class="cand">
+          <div class="cand-head"><b>C · 下划线增强</b><span>更大字重 + 悬停反馈</span></div>
+          <div class="mini-stage">
+            <div class="ms-head"><div><div class="ms-title">设置</div><div class="ms-sub">通用设置与应用信息</div></div><span class="ms-close">✕</span></div>
+            <div class="ms-tabs uline"><button class="uline-item on">通用</button><button class="uline-item">关于</button></div>
+            <div class="ms-content"><div class="ms-sec"><span class="ms-sec-title">版本更新</span><span class="ms-btn">更新组件</span></div><div class="ms-verrow"><span>当前版本</span><b>0.1.0</b></div></div>
+            <div class="ms-general" style="display:none">外观 + 模型配置（通用 Tab 单栏）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 原型控制台（非 UI 一部分） -->
+  <div class="console">
+    <span class="console-tag">原型控制台 · 模拟更新 feed 与时机</span>
+    <div class="console-row">
+      <button class="cbtn primary" id="btnDemo">▶ 自动演示完整流程</button>
+      <button class="cbtn" data-scene="latest">已是最新</button>
+      <button class="cbtn" data-scene="found">发现新版本</button>
+      <button class="cbtn" data-scene="fail">检查失败（静默）</button>
+      <button class="cbtn" data-scene="reset">重置</button>
+    </div>
+    <div class="console-note">
+      自动演示 = 检查 → 发现新版本（<b>toast 仅提示一次</b>）→ 自动点击「更新」→ 下载进度 → 点「重启安装」→ <b>确认弹窗</b> → 模拟重启完成。
+      <b>检查失败不弹任何错误</b>，仅分区内轻提示。
+    </div>
+  </div>
+
+  <!-- 仿设置页（Tab：通用 / 关于，方案 A 分段控件） -->
+  <div class="stage">
+    <div class="stage-bar">
+      <div>
+        <div class="fake-title">设置</div>
+        <div class="fake-sub">通用设置与应用信息</div>
+      </div>
+      <button class="fake-close">✕</button>
+    </div>
+    <div class="stage-tabs seg" id="stageTabs">
+      <span class="seg-thumb" id="stageThumb"></span>
+      <button class="seg-item on" data-tab="general">通用</button>
+      <button class="seg-item" data-tab="about">关于</button>
+    </div>
+    <div class="tab-general" id="tabGeneral" style="display:none;">
+      模型配置 + 外观——通用 Tab 单栏：外观在顶部、模型配置在下（与实现一致）。
+    </div>
+    <div class="stage-body" id="tabAbout">
+      <!-- 左主栏：版本更新 -->
+      <div class="update-section">
+        <div>
+          <div class="section-title">版本更新</div>
+        </div>
+
+        <div class="version-row">
+          <span class="version-label">当前版本</span>
+          <span class="version-value" id="curVer">0.1.0</span>
+          <span class="version-arrow" id="verArrow" style="display:none;">→</span>
+          <span class="version-next" id="nextVer"><span class="dot"></span><span id="nextVerText">0.2.0</span></span>
+          <span style="flex:1;"></span>
+          <div class="actions">
+            <button class="btn" id="btnCheck">检查更新</button>
+            <button class="btn primary" id="btnUpdate" style="display:none;">更新<span class="spinner"></span></button>
+            <button class="btn primary" id="btnInstall" style="display:none;">重启安装</button>
+          </div>
+        </div>
+
+        <div class="state-line" id="stateLine"><span id="stateText"></span></div>
+
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-meta"><span>正在下载 forge <b id="dlVer">0.2.0</b></span><b id="dlPct">0%</b></div>
+          <div class="progress-track"><div class="progress-fill" id="dlFill"></div></div>
+        </div>
+
+        <div class="actions" id="compActions">
+          <button class="btn" id="btnComp">更新组件<span class="spinner"></span></button>
+        </div>
+      </div>
+
+      <!-- 右窄栏：状态机 -->
+      <div class="machine">
+        <div class="machine-title">自更新状态机</div>
+        <div class="steps" id="steps">
+          <div class="step" data-s="idle"><span class="k"></span>idle</div>
+          <div class="step" data-s="checking"><span class="k"></span>checking</div>
+          <div class="step" data-s="found"><span class="k"></span>found</div>
+          <div class="step" data-s="downloading"><span class="k"></span>downloading</div>
+          <div class="step" data-s="downloaded"><span class="k"></span>downloaded</div>
+          <div class="step" data-s="installing"><span class="k"></span>installing</div>
+        </div>
+        <div class="bg-desc">对应 <code style="font-family:var(--font-mono)">updater.stateChanged</code> 事件流；失败回 idle。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 后台流程模拟（内部状态，用户不可见） -->
+  <div class="bg-panel">
+    <div class="bg-col">
+      <div class="bg-head">
+        <span class="bg-title">后台静默流程 · 预装 / 联动更新</span>
+        <span class="bg-badge">用户不可见</span>
+      </div>
+      <div class="bg-desc">
+        预装（首启补缺）与联动更新（版本变化触发）<b>不产生任何 UI</b>，变更明细逐项记录于此日志。
+      </div>
+      <div class="console-row">
+        <button class="cbtn" data-bg="first">模拟首次启动</button>
+        <button class="cbtn" data-bg="verchange">模拟版本变化启动</button>
+        <button class="cbtn" data-bg="offline">模拟离线启动</button>
+      </div>
+      <div class="bg-log" id="bgLog">— 等待模拟 —</div>
+    </div>
+    <div class="bg-col">
+      <div class="bg-head">
+        <span class="bg-title">updater-state.json</span>
+        <span class="bg-badge">userData · 用户不可见</span>
+      </div>
+      <div class="bg-desc">联动 / 预装幂等依据 + components 组件版本快照（docs/db/07_installer/schema.md）。</div>
+      <div class="kv">
+        <span class="k2">schemaVersion</span><span class="v2">1</span>
+        <span class="k2">lastRunForgeVersion</span><span class="v2" id="stLastRun">0.1.0</span>
+        <span class="k2">preinstallDone</span><span class="v2" id="stPre">false</span>
+        <span class="k2">preinstallDoneAt</span><span class="v2" id="stPreAt">null</span>
+        <span class="k2">lastUpdateCheckAt</span><span class="v2" id="stCheck">null</span>
+        <span class="k2">components</span><span class="v2" id="stCompCount">10 项快照</span>
+      </div>
+      <div class="comp-log" id="stComps"></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <b>已确认</b>：重启安装弹窗确认；设置页不展示组件清单（明细入日志 + components 快照）；Tab = 方案 A 分段控件 + 滑动动效。
+    <br><b>仍待确认</b>：① 检查失败的轻提示文案（当前灰字「检查失败 · 将自动重试」）；② toast 次数（发现新版一次，同版本不重复）；③ 手动「更新组件」按钮保留与否（当前保留）。
+  </div>
+</div>
+
+<!-- 重启安装确认弹窗 -->
+<div class="mask" id="confirmMask">
+  <div class="box" style="min-width: 340px;">
+    <div class="m-title">重启安装 forge <b id="cfVer" style="font-family:var(--font-mono)">0.2.0</b>？</div>
+    <div class="m-desc">将关闭应用并安装更新，完成后自动重启。未提交的内容不受影响。</div>
+    <div class="m-actions">
+      <button class="btn" id="cfCancel">取消</button>
+      <button class="btn primary" id="cfOk">确认安装</button>
+    </div>
+  </div>
+</div>
+
+<!-- 重启遮罩 -->
+<div class="mask" id="rebootMask">
+  <div class="box center">
+    <div class="spinner"></div>
+    <div>正在安装 forge <b id="rbVer">0.2.0</b> …</div>
+    <div class="sub">应用将自动重启</div>
+  </div>
+</div>
+
+<div class="toast-zone" id="toastZone"></div>
+
+<script>
+/* ================= 工具 ================= */
+const $ = (id) => document.getElementById(id);
+
+/* ================= 主题 ================= */
+$('themeToggle').onclick = () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme === 'dark';
+  root.dataset.theme = dark ? 'light' : 'dark';
+  $('themeToggle').textContent = dark ? '切换深色' : '切换浅色';
+};
+
+/* ================= Toast（仿 forge：渐变竖线） ================= */
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  $('toastZone').appendChild(el);
+  setTimeout(() => { el.classList.add('gone'); setTimeout(() => el.remove(), 320); }, 2600);
+}
+
+/* ================= 后台日志 ================= */
+function bgLine(html) {
+  const log = $('bgLog');
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  log.innerHTML += (log.innerHTML ? '\n' : '') + '<span class="t">[' + time + ']</span> ' + html;
+  log.scrollTop = log.scrollHeight;
+}
+
+/* ================= 组件快照（updater-state.json · components 域） ================= */
+let comps = {
+  '@tintinweb/pi-subagents': '0.19.0',
+  '@narumitw/pi-goal': '0.54.4',
+  '@vndv/pi-codegraph': '0.1.10',
+  'pi-mcp-adapter': '2.32.1',
+  'pi-web-access': '0.27.0',
+  'pi-compact-display': '1.3.0',
+  'pi-image-view': '0.4.0',
+  'pi-tool-display': '0.5.0',
+  '@juicesharp/rpiv-todo': '2.9.0',
+  '@dietrichgebert/ponytail': '4.9.0'
+};
+let changedKeys = new Set();
+
+function renderComps() {
+  $('stCompCount').textContent = Object.keys(comps).length + ' 项快照';
+  $('stComps').innerHTML = Object.entries(comps)
+    .map(([k, v]) => changedKeys.has(k)
+      ? '<span class="chg">' + k + ' = ' + v + '</span>'
+      : '<span class="keep">' + k + ' = ' + v + '</span>')
+    .join('\n');
+}
+
+/** 应用一次组件变更：日志逐项记「包名 旧 → 新（来源）」，快照刷新并高亮变更项 */
+function applyCompChanges(changes, source) {
+  bgLine('<span class="t">[组件更新]</span> 来源：' + source + ' · 变更 ' + Object.keys(changes).length + ' 项：');
+  for (const [k, v] of Object.entries(changes)) {
+    bgLine('  ' + k + '  ' + comps[k] + ' → <span class="chg">' + v + '</span>');
+    comps[k] = v; changedKeys.add(k);
+  }
+  renderComps();
+}
+
+/* ================= Tab（方案 A：分段控件 + 滑动选中块） ================= */
+const tabsEl = $('stageTabs'), thumbEl = $('stageThumb');
+const tabBtns = [...tabsEl.querySelectorAll('.seg-item')];
+
+function moveThumb() {
+  const btn = tabsEl.querySelector('.seg-item.on');
+  if (!btn) return;
+  thumbEl.style.width = btn.offsetWidth + 'px';
+  thumbEl.style.transform = 'translateX(' + btn.offsetLeft + 'px)';
+}
+
+function switchTab(tab) {
+  tabBtns.forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  bTab(tab);
+  moveThumb();
+}
+
+function bTab(tab) {
+  $('tabGeneral').style.display = tab === 'general' ? '' : 'none';
+  $('tabAbout').style.display = tab === 'about' ? '' : 'none';
+}
+
+tabBtns.forEach(b => { b.onclick = () => switchTab(b.dataset.tab); });
+window.addEventListener('resize', moveThumb);
+requestAnimationFrame(moveThumb);
+
+/* ================= 更新状态机 ================= */
+const curVer = $('curVer'), verArrow = $('verArrow'), nextVer = $('nextVer'), nextVerText = $('nextVerText');
+const btnCheck = $('btnCheck'), btnUpdate = $('btnUpdate'), btnInstall = $('btnInstall'), btnComp = $('btnComp');
+const stateLine = $('stateLine'), stateText = $('stateText');
+const progressWrap = $('progressWrap'), dlFill = $('dlFill'), dlPct = $('dlPct'), dlVer = $('dlVer');
+const steps = [...document.querySelectorAll('#steps .step')];
+
+let toastShownFor = null;
+let timers = [];
+const later = (fn, ms) => { timers.push(setTimeout(fn, ms)); };
+const every = (fn, ms) => { const iv = setInterval(fn, ms); timers.push(iv); return iv; };
+const stopTimers = () => { timers.forEach(t => { clearTimeout(t); clearInterval(t); }); timers = []; };
+
+function setState(s) {
+  const order = ['idle','checking','found','downloading','downloaded','installing'];
+  steps.forEach(el => {
+    const j = order.indexOf(el.dataset.s);
+    el.classList.toggle('on', el.dataset.s === s);
+    el.classList.toggle('done', j >= 0 && j < order.indexOf(s));
+  });
+}
+
+function resetUI() {
+  stopTimers();
+  setState('idle');
+  verArrow.style.display = 'none'; nextVer.style.display = 'none';
+  btnUpdate.style.display = 'none'; btnInstall.style.display = 'none'; btnCheck.style.display = '';
+  btnUpdate.classList.remove('busy'); btnCheck.classList.remove('busy');
+  progressWrap.classList.remove('show'); dlFill.style.width = '0%'; dlPct.textContent = '0%';
+  stateLine.classList.remove('show'); stateText.textContent = '';
+  btnCheck.disabled = false; btnUpdate.disabled = false;
+}
+
+function sceneLatest() {
+  resetUI();
+  btnCheck.disabled = true; btnCheck.classList.add('busy');
+  setState('checking');
+  later(() => { btnCheck.classList.remove('busy'); btnCheck.disabled = false; setState('idle'); }, 700);
+}
+
+function sceneFound(latest) {
+  resetUI();
+  btnCheck.disabled = true; btnCheck.classList.add('busy');
+  setState('checking');
+  later(() => {
+    btnCheck.classList.remove('busy');
+    setState('found');
+    btnCheck.style.display = 'none';
+    nextVerText.textContent = latest; dlVer.textContent = latest;
+    verArrow.style.display = ''; nextVer.style.display = 'inline-flex';
+    btnUpdate.style.display = '';
+    if (toastShownFor !== latest) { toast('发现新版本 forge ' + latest + '，可在「版本更新」中安装'); toastShownFor = latest; }
+  }, 700);
+}
+
+function sceneDownloading(latest, onDone) {
+  setState('downloading');
+  btnUpdate.disabled = true; btnUpdate.classList.add('busy');
+  progressWrap.classList.add('show');
+  let pct = 0;
+  const iv = every(() => {
+    pct = Math.min(100, pct + 4 + Math.round(Math.random() * 9));
+    dlFill.style.width = pct + '%'; dlPct.textContent = pct + '%';
+    if (pct >= 100) {
+      clearInterval(iv);
+      btnUpdate.classList.remove('busy');
+      later(() => onDone && onDone(), 420);
+    }
+  }, 240);
+}
+
+function sceneInstall(latest) {
+  setState('installing');
+  btnInstall.disabled = true;
+  $('rbVer').textContent = latest;
+  $('rebootMask').classList.add('show');
+  later(() => {
+    $('rebootMask').classList.remove('show');
+    curVer.textContent = latest;
+    verArrow.style.display = 'none'; nextVer.style.display = 'none';
+    progressWrap.classList.remove('show');
+    btnInstall.style.display = 'none'; btnCheck.style.display = '';
+    btnInstall.disabled = false;
+    setState('idle');
+    $('stLastRun').textContent = latest; $('stLastRun').classList.add('changed');
+    $('stCheck').textContent = new Date().toLocaleTimeString();
+    toast('forge 已更新至 ' + latest);
+    bgLine('<span class="t">[联动]</span> forge 版本变化 0.1.0 → ' + latest + '，后台静默更新组件…（用户不可见）');
+    later(() => {
+      applyCompChanges({ 'pi-mcp-adapter': '2.33.0', 'pi-web-access': '0.27.1' }, '联动更新');
+      bgLine('<span class="t">[联动]</span> 完成，lastRunForgeVersion 回写 ' + latest + '，其余 8 项无变化');
+    }, 900);
+  }, 1600);
+}
+
+function sceneFail() {
+  resetUI();
+  btnCheck.disabled = true; btnCheck.classList.add('busy');
+  setState('checking');
+  later(() => {
+    btnCheck.classList.remove('busy'); btnCheck.disabled = false;
+    setState('idle');
+    stateText.textContent = '检查失败 · 将自动重试';
+    stateLine.classList.add('show');
+    bgLine('<span class="warn">[check]</span> feed 不可达（6003）→ 静默，下次启动重试');
+  }, 700);
+}
+
+function autoDemo() {
+  toastShownFor = null;
+  switchTab('about');
+  sceneFound('0.2.0');
+  later(() => {
+    btnUpdate.click();
+    sceneDownloading('0.2.0', () => {
+      setState('downloaded');
+      progressWrap.classList.remove('show');
+      btnUpdate.style.display = 'none';
+      btnInstall.style.display = '';
+      later(() => btnInstall.click(), 900);
+    });
+  }, 1500);
+}
+
+/* ================= 事件绑定 ================= */
+btnCheck.onclick = () => sceneFound('0.2.0');
+btnUpdate.onclick = () => {
+  stopTimers();
+  sceneDownloading(dlVer.textContent || '0.2.0', () => {
+    setState('downloaded');
+    progressWrap.classList.remove('show');
+    btnUpdate.style.display = 'none';
+    btnInstall.style.display = '';
+  });
+};
+/* 重启安装：先弹确认框，确认后才执行 */
+btnInstall.onclick = () => { $('cfVer').textContent = dlVer.textContent || '0.2.0'; $('confirmMask').classList.add('show'); };
+$('cfCancel').onclick = () => $('confirmMask').classList.remove('show');
+$('cfOk').onclick = () => { $('confirmMask').classList.remove('show'); sceneInstall(dlVer.textContent || '0.2.0'); };
+
+/* 手动更新组件（PU-S02）：明细逐项入日志 + 快照刷新 */
+btnComp.onclick = () => {
+  btnComp.classList.add('busy'); btnComp.disabled = true;
+  later(() => {
+    btnComp.classList.remove('busy'); btnComp.disabled = false;
+    applyCompChanges({ 'pi-mcp-adapter': '2.33.0', '@narumitw/pi-goal': '0.54.5' }, '手动更新');
+    toast('更新完成');
+  }, 1300);
+};
+
+document.querySelectorAll('[data-scene]').forEach(b => {
+  b.onclick = () => {
+    toastShownFor = null;
+    const s = b.dataset.scene;
+    if (s === 'latest') sceneLatest();
+    else if (s === 'found') sceneFound('0.2.0');
+    else if (s === 'fail') sceneFail();
+    else resetUI();
+  };
+});
+$('btnDemo').onclick = autoDemo;
+
+/* ================= 后台静默流程模拟 ================= */
+document.querySelectorAll('[data-bg]').forEach(b => {
+  b.onclick = () => {
+    const kind = b.dataset.bg;
+    if (kind === 'first') {
+      bgLog('── 首次启动（preinstallDone=false）──');
+      bgLine('<span class="t">[预装]</span> 后台补缺推荐组件…（用户无感知）');
+      bgLine('  补装 10 项（只增不删）：@tintinweb/pi-subagents@0.19.0、@narumitw/pi-goal@0.54.4、');
+      bgLine('  pi-mcp-adapter@2.32.1、pi-web-access@0.27.0 …（完整清单见 components 快照）');
+      later(() => {
+        bgLine('<span class="t">[预装]</span> 完成，preinstallDone → true（未动用户自装项）');
+        $('stPre').textContent = 'true'; $('stPre').classList.add('changed');
+        $('stPreAt').textContent = new Date().toLocaleTimeString();
+        renderComps();
+      }, 1100);
+    } else if (kind === 'verchange') {
+      bgLog('── 启动：lastRunForgeVersion ≠ 当前版本 ──');
+      bgLine('<span class="t">[联动]</span> 检测到版本变化 → 后台静默 pi update --extensions');
+      later(() => {
+        applyCompChanges({ 'pi-mcp-adapter': '2.33.0', 'pi-web-access': '0.27.1' }, '联动更新');
+        bgLine('<span class="t">[联动]</span> 完成，lastRunForgeVersion 回写；全程无 UI 提示；其余 8 项无变化');
+        $('stLastRun').textContent = curVer.textContent;
+      }, 1100);
+    } else {
+      bgLog('── 离线启动 ──');
+      bgLine('<span class="warn">[预装]</span> 失败 → 静默，标志保持 false，下次启动重试（不阻塞启动）');
+      later(() => {
+        bgLine('<span class="warn">[联动]</span> 跳过（离线）→ 不弹提示、不阻塞');
+      }, 800);
+    }
+  };
+});
+renderComps();
+</script>
+</body>
+</html>

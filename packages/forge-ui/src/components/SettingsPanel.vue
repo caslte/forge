@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 // 从瘦 subpath 导入：@forge/core 根入口 re-export 含 node:events 的 RPC 层，浏览器打包会炸
 import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
+import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
@@ -256,11 +257,77 @@ function selectTheme(mode: ThemeMode): void {
   emit('theme-change', mode);
 }
 
+// ===== 版本更新（07，「关于」Tab）：明面为 forge 产品更新；内部为内置引擎的共享扩展更新 =====
+// 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照
+const activeTab = ref<'general' | 'about'>('general');
+const tabsEl = ref<HTMLElement | null>(null);
+const thumbEl = ref<HTMLElement | null>(null);
+const tabBtns = { general: null as HTMLElement | null, about: null as HTMLElement | null };
+
+function setTabRef(name: 'general' | 'about', el: unknown): void {
+  tabBtns[name] = (el as HTMLElement) ?? null;
+}
+
+/** 滑动选中块：贴齐当前 Tab 的位置与宽度（分段控件动效） */
+function moveThumb(): void {
+  const btn = tabBtns[activeTab.value];
+  const wrap = tabsEl.value;
+  const thumb = thumbEl.value;
+  if (!btn || !wrap || !thumb) return;
+  thumb.style.width = `${btn.offsetWidth}px`;
+  thumb.style.transform = `translateX(${btn.offsetLeft}px)`;
+}
+
+watch(activeTab, () => { void nextTick(moveThumb); });
+
+function onResize(): void { moveThumb(); }
+
+const forgeVersion = ref<string | null>(null);
+const updating = ref(false);
+const updateError = ref<string | null>(null);
+const updateOutput = ref<string | null>(null);
+
+async function loadPiInfo(): Promise<void> {
+  try {
+    const res = await call<PiGetInfoResult>('pi/getInfo');
+    forgeVersion.value = res.forgeVersion;
+  } catch {
+    // 静默降级：版本显示「—」
+  }
+}
+
+/** 更新内置组件：失败在分区内展示错误与更新器输出尾部（不弹 toast） */
+async function onUpdateComponents(): Promise<void> {
+  if (updating.value) return;
+  updating.value = true;
+  updateError.value = null;
+  updateOutput.value = null;
+  try {
+    // 直用 invoke：失败时需读取 data.output（call 会把非 0 信封压成 Error 丢字段）
+    const res = await window.forge.invoke('pi/updatePlugins');
+    if (res.code !== 0) {
+      updateError.value = res.message;
+      updateOutput.value = (res.data as { output?: string } | null)?.output ?? null;
+      return;
+    }
+    toast.success('更新完成');
+    await loadPiInfo();
+  } catch (e) {
+    updateError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    updating.value = false;
+  }
+}
+
 let unsubProviders: (() => void) | null = null;
 
 onMounted(() => {
   void loadProviders();
   void loadModels();
+  void loadPiInfo();
+  // 滑动选中块初始定位（含字体加载后宽度变化的一次校准）
+  void nextTick(moveThumb);
+  window.addEventListener('resize', onResize);
   unsubProviders = subscribe('model.providersChanged', () => {
     void loadProviders();
   });
@@ -269,6 +336,7 @@ onMounted(() => {
 onUnmounted(() => {
   unsubProviders?.();
   if (deleteTimer) clearTimeout(deleteTimer);
+  window.removeEventListener('resize', onResize);
 });
 </script>
 
@@ -277,7 +345,6 @@ onUnmounted(() => {
     <header class="settings-header">
       <div>
         <h1 class="settings-title">设置</h1>
-        <p class="settings-subtitle">管理模型、界面外观</p>
       </div>
       <button class="ghost settings-close" aria-label="关闭设置" @click="emit('close')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -286,13 +353,50 @@ onUnmounted(() => {
       </button>
     </header>
 
-    <div class="settings-body">
+    <!-- Tab：通用（模型配置+外观）/ 关于（版本更新）；分段控件 + 滑动选中块 -->
+    <nav class="settings-tabs" :class="{ isdark: themeMode === 'dark' }" ref="tabsEl">
+      <span class="settings-thumb" ref="thumbEl" aria-hidden="true"></span>
+      <button
+        class="settings-tab"
+        :class="{ active: activeTab === 'general' }"
+        :ref="(el) => setTabRef('general', el)"
+        @click="activeTab = 'general'"
+      >通用</button>
+      <button
+        class="settings-tab"
+        :class="{ active: activeTab === 'about' }"
+        :ref="(el) => setTabRef('about', el)"
+        @click="activeTab = 'about'"
+      >关于</button>
+    </nav>
+
+    <div class="settings-body" v-if="activeTab === 'general'">
+      <!-- 外观（通用 Tab 顶部） -->
+      <section class="settings-section aside">
+        <h2 class="section-title">外观</h2>
+        <div class="theme-swatches">
+          <button
+            v-for="t in themeSwatches"
+            :key="t.mode"
+            class="theme-swatch"
+            :class="{ active: themeMode === t.mode }"
+            @click="selectTheme(t.mode)"
+          >
+            <span class="swatch-color" :style="{ background: t.color }">
+              <svg v-if="themeMode === t.mode" class="swatch-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </span>
+            <span class="swatch-label">{{ t.label }}</span>
+          </button>
+        </div>
+      </section>
+
       <!-- 模型配置 -->
       <section class="settings-section main">
         <div class="section-head">
           <div>
             <h2 class="section-title">模型配置</h2>
-            <p class="section-desc">每个模型单独一条。选中的「主会话模型」用于当前对话。</p>
           </div>
           <button class="section-action" @click="toggleForm">
             <svg v-if="!showAddForm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -455,27 +559,25 @@ onUnmounted(() => {
           </div>
         </div>
       </section>
+    </div>
 
-      <!-- 外观 -->
-      <section class="settings-section aside">
-        <h2 class="section-title">外观</h2>
-        <p class="section-desc">切换浅色 / 深色主题</p>
-        <div class="theme-swatches">
-          <button
-            v-for="t in themeSwatches"
-            :key="t.mode"
-            class="theme-swatch"
-            :class="{ active: themeMode === t.mode }"
-            @click="selectTheme(t.mode)"
-          >
-            <span class="swatch-color" :style="{ background: t.color }">
-              <svg v-if="themeMode === t.mode" class="swatch-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-            </span>
-            <span class="swatch-label">{{ t.label }}</span>
+    <!-- 关于 Tab：版本更新（组件明细不展示，走日志与 updater-state） -->
+    <div class="about-body" v-if="activeTab === 'about'">
+      <section class="settings-section update-section">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">版本更新</h2>
+          </div>
+          <button class="section-action" :disabled="updating" @click="onUpdateComponents">
+            {{ updating ? '更新中…' : '更新组件' }}
           </button>
         </div>
+        <div class="version-row">
+          <span class="version-label">当前版本</span>
+          <span class="version-value">{{ forgeVersion ?? '—' }}</span>
+        </div>
+        <div v-if="updateError" class="section-error">{{ updateError }}</div>
+        <pre v-if="updateOutput" class="update-output">{{ updateOutput }}</pre>
       </section>
     </div>
   </div>
@@ -494,9 +596,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 4px 18px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 18px;
+  padding: 4px 4px 14px;
 }
 
 .settings-title {
@@ -526,16 +626,60 @@ onUnmounted(() => {
   height: 17px;
 }
 
-/* 两栏布局：模型配置为主区，外观为右侧窄栏，减少留白 */
+/* Tab：通用 / 关于 —— 分段控件 + 滑动选中块（方案 A，原型确认） */
+.settings-tabs {
+  position: relative;
+  display: inline-flex;
+  gap: 2px;
+  background: var(--muted);
+  border-radius: 999px;
+  padding: 3px;
+  margin-bottom: 18px;
+}
+
+.settings-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  background: var(--card);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.3, 1), width 0.28s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
+/* 深色主题：选中块用前景色混合提亮，避免与容器贴平 */
+.settings-tabs.isdark .settings-thumb {
+  background: color-mix(in oklab, var(--foreground) 14%, var(--card));
+}
+
+.settings-tab {
+  position: relative;
+  z-index: 1;
+  border: none;
+  background: transparent;
+  padding: 6px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: color 0.2s;
+}
+
+.settings-tab:hover { color: var(--foreground); }
+
+.settings-tab.active { color: var(--foreground); font-weight: 600; }
+
+/* 通用 Tab：单栏，外观在上、模型配置在下 */
 .settings-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding-right: 8px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
+  display: flex;
+  flex-direction: column;
   gap: 24px;
-  align-items: start;
 }
 
 .settings-section {
@@ -610,18 +754,72 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
 }
 
-/* 主题色板 */
+/* 「关于」Tab：单栏承载版本更新分区 */
+.about-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+}
+
+.about-body .update-section { max-width: 760px; }
+
+.section-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}
+
+.version-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.version-label {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.version-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+}
+
+.update-output {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 主题色板（通用 Tab 顶部：横向排布） */
 .theme-swatches {
   display: flex;
   gap: 12px;
 }
 
-.settings-section.aside .theme-swatches {
-  flex-direction: column;
-  gap: 8px;
-}
-
 .theme-swatch {
+  min-width: 160px;
   display: flex;
   align-items: center;
   gap: 10px;

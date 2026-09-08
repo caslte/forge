@@ -693,6 +693,11 @@ const bridge: ForgeBridge = {
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };
       case 'model/getSessionModel':
         return { code: 0, message: 'ok', data: { model: modelList[0], effective: modelList[0] } };
+      case 'pi/getInfo':
+        // 设置页「关于」Tab（组件明细不回传 UI；测试可 seed 覆盖）
+        return { code: 0, message: 'ok', data: { forgeVersion: '0.1.0' } };
+      case 'pi/updatePlugins':
+        return { code: 0, message: 'ok', data: { output: 'all extensions are up to date' } };
       default:
         return { code: 0, message: 'ok', data: null };
     }

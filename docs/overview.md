@@ -51,6 +51,7 @@
 | 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转 | prd/04_tool_execution.md | PRD 已确认 |
 | 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择；扩展：思考级别选择（输入框）、上下文 1M 配置 | prd/05_model_provider.md | PRD 已确认（含扩展 MP-S05/MP-S06） |
 | 06 | 子 Agent 管理 | 主会话状态与后台子 agent 联动、Tab 栏+结果视图监控、停止级联/单个终止 | prd/06_subagent_management.md | PRD 已确认 |
+| 07 | 版本更新与安装包 | 设置页「版本更新」分区（已实现）；Windows 安装包、预装推荐组件、应用自更新与引擎-插件联动更新（待开发） | prd/07_installer_update.md | PRD 已确认 |
 
 ### 配套设计文档
 

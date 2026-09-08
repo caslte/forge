@@ -45,7 +45,9 @@ export type ForgeMethod =
   | 'subagent/clearFinished'
   | 'subagent/queryOutput'
   | 'git/getBranchInfo'
-  | 'git/switchBranch';
+  | 'git/switchBranch'
+  | 'pi/getInfo'
+  | 'pi/updatePlugins';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -152,6 +154,16 @@ export interface GetSlashCommandsResult {
  */
 export interface SlashCommandsUpdatedPayload {
   sessionId: string;
+}
+
+/** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json）。与 @forge/desktop ipc-contract 同步 */
+export interface PiGetInfoResult {
+  forgeVersion: string;
+}
+
+/** pi/updatePlugins 响应 data（更新器输出尾部；失败时 UI 展示排查信息） */
+export interface PiUpdatePluginsResult {
+  output: string;
 }
 
 /** preload 注入的 window.forge 桥 */
