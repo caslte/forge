@@ -133,6 +133,9 @@ watch(allCollapsed, (v) => emit('fold-state', v), { immediate: true });
 
 function collapseAll(): void {
   collapsedPaths.value = new Set(props.projects.map((p) => p.path));
+  // 顺手把每个项目里已"展开显示 N 个"的会话列表也恢复到默认截断（VISIBLE_SESSION_LIMIT 条），
+  // 否则用户收起全部后再单独展开某个项目，会话会保持之前的全量展开态——与"收起"语义不符。
+  expandedSessionLists.value = new Set();
 }
 
 function expandAll(): void {
@@ -601,7 +604,7 @@ onUnmounted(() => {
               v-else
               class="tree-node-title"
               :title="project.path"
-              @dblclick.stop="startRenameProject(project)"
+              @click.stop="toggleExpand(project.path)"
             >{{ projectDisplayName(project) }}</div>
           </div>
 
