@@ -2,7 +2,7 @@
 
 > 模块：03 对话与消息
 > 来源：PRD 03（docs/prd/03_conversation.md）
-> 状态：已确认（含扩展 CV-S06 会话历史导航、CV-S08 斜杠命令）
+> 状态：已确认（含扩展 CV-S06 会话历史导航、CV-S08 斜杠命令、CV-S11 Todo 面板）
 > 层级映射：unit=纯渲染/校验逻辑；API=IPC 方法 + CanonicalEvent 流式事件契约；E2E=对话区 UI + 渲染；CV-S08 真实命令执行链路见 test/integration/pi-core.md PIC-007
 
 ---
@@ -83,6 +83,19 @@
 | AC-CV-034 | CV-S01 扩展 @ 文件补全 | 交互与反馈/状态流转 | 正常流程：行内 @ 触发 + 键盘选择 | P1 | 是 | U-CV-013 | - | E-CV-019 | 行内 @token（@ 前为空白/行首）弹项目白名单文件补全；↑↓ 循环、Enter/Tab/点击选中、Esc 关闭；邮箱式 token（@ 前非空白）与无项目路径不触发 |
 | AC-CV-035 | CV-S01 扩展 @ 文件补全 | 数据一致性 | 正常流程：选中进待发区，与附件三入口同链路 | P0 | 是 | U-CV-013 | A-CV-014 | E-CV-019 | 选中后 @token 移除、文件经 addPaths 白名单/嗅探入待发区，发送时与三入口同格式（@路径行，v3.30）；不合格式拒绝并提示 |
 | AC-CV-036 | CV-S01 扩展 @ 文件补全 | 异常失败/后端健康 | 异常：拉取失败/无匹配降级 | P1 | 是 | U-CV-013 | A-CV-014 | E-CV-019 | 拉取失败或无匹配显示「无匹配文件」，不阻塞输入与发送；候选按项目缓存，切项目失效重拉；主进程遍历目录缺失返回 [] 不抛错 |
+
+### 覆盖基线（扩展 CV-S11 Todo 面板）
+
+> 前端层（TodoPanel.vue + todoSnapshot 按 sessionId 内存隔离 + 保证进行中可视的滚动策略）+ 后端层（TE-S05 IPC 透传 details，详见 test/04_tool 覆盖矩阵 AC-TE-011\~013）。面板只读不写、不跨进程持久化，关闭 APP 随进程消失，与 rpiv-todo TUI 面板共享单数据源。
+
+| AC ID | PRD 功能点 | 风险维度 | 场景 | 优先级 | 必测 | Unit ID | API ID | E2E ID | 核心断言 |
+|---|---|---|---|---|---|---|---|---|---|
+| AC-CV-037 | CV-S11 Todo 面板 | 跨模块协作 / 数据一致性 | 正常流程：收到 todo 完成事件后渲染面板 | P0 | 是 | U-CV-016 | A-CV-015 | E-CV-020 | 收到 `tool.completed(toolName='todo', result.details)` 后输入框上方出现面板；标题展示「已完成 X / 共 Y 个」计数；任务行按状态符号+subject+activeForm 渲染；details 缺失/非对象/tasks 非数组均静默忽略 |
+| AC-CV-038 | CV-S11 Todo 面板 | 展示正确性 / 字段边界 | 正常流程：任务行按状态渲染 | P0 | 是 | U-CV-017 | - | E-CV-021 | `○ pending`（dim 空心点）/ `● in_progress`（呼吸点 warning + 括号 activeForm，灰色文字 muted）/ `✓ completed`（success + 删除线）；subject 空显示「（无标题）」；activeForm 空不渲染括号；长 subject 按码点截断 + 省略号 |
+| AC-CV-039 | CV-S11 Todo 面板 | 状态流转 / 交互 | 正常流程：点击头部切换折叠 | P0 | 是 | U-CV-018 | - | E-CV-022 | 点击头部任意位置切换折叠/展开；折叠态仅渲染标题+chevron、不渲染任务行；折叠状态按 sessionId 内存隔离（切会话不串、刷新页面重置为默认展开）；hover 不自动展开/收起 |
+| AC-CV-040 | CV-S11 Todo 面板 | 状态渲染 / 边界 | 边界：空快照卸载 + 超量收口 | P1 | 是 | U-CV-019 | - | E-CV-023 | 可见 task=0（仅墓碑 / 初始空 / clear 后）→ 面板从 DOM 卸载、不留高度与占位；visible task>50 → 渲染前 50 行 + 「+N more」收口；输入框上提补位 |
+| AC-CV-041 | CV-S11 Todo 面板 | 数据一致性 / 异常 | 边界：会话隔离 + details 非法 | P1 | 是 | U-CV-020 | A-CV-015 | E-CV-024 | 切会话 → 旧快照保留在内存 Map，切回时还原；多会话同时有 todo 互不串；details 缺失/非对象/tasks 非数组 → 静默忽略当次事件、不污染对应会话快照、不抛错 |
+| AC-CV-042 | CV-S11 Todo 面板 | 展示与交互 | 正常流程：长任务列表保证进行中可视 | P2 | 是 | U-CV-021 | - | E-CV-025 | 有 in_progress 时保证其在 3 行可视窗口内（不强求顶部，第 1/2/3 行都可，用户不需手动滚动即可看到）；无 in_progress（全部完成）时滚到最后一行让用户看到最终状态；不抢用户手动滚动位置（目标行已可视则 no-op）；触发时机：初次挂载 / 折叠→展开 / 布局变化 |
 
 ---
 
@@ -215,3 +228,29 @@
 |---|---|---|---|---|---|---|---|---|
 | U-CV-014 | CV-S09 | 适配器 sendMessage 分流（PreflightGate fake） | 状态/并发一致性 | 首条直发挂起在 preflight（isStreaming=false） | 第二条消息在窗口内到达 | 完成提交（isStreaming=true + preflightResult） | 窗口内第二条不产生新直发调用；提交完成后以 followUp 入队 | 提交完成前不得提前入队（pi 空闲时 followUp 会滞留队列） |
 | U-CV-015 | CV-S09 | 提交门释放（factory 失败路径） | 错误反馈/不悬挂 | factory 抛错 | 并发两条消息 | 等待提交结果 | 等待中的第二条同样收到错误并返回，不得永久悬挂 | 不得因首条失败导致后续消息无响应 |
+
+#### unit（扩展 CV-S11）
+
+| 用例 ID | 关联 AC | 测试对象 | 风险维度 | 前置条件 | 输入 | 操作 | 预期结果 | 负向断言 |
+|---|---|---|---|---|---|---|---|---|
+| U-CV-016 | AC-CV-037 | todoSnapshot 归约器（applyTodoCompletion 纯函数） | 数据一致性/字段边界 | 初始 null；已有快照 | `tool.completed(tool.name='todo')` 事件 payload（details 含/缺失/非对象/tasks 非数组/含 deleted 墓碑）；非 todo 工具事件；连续多事件 | 归约 | 合法 `todo+details` → 全量替换为 `details.{tasks,nextId}`；`todo+无 details` / `todo+details 非对象` / `todo+tasks 非数组` → 静默忽略、不抛错、不改现有快照；非 todo 工具 → 静默忽略 | details 为 string/number/null 不抛错；非法结构不得污染上一份有效快照 |
+| U-CV-017 | AC-CV-038 | 任务行格式化（formatTodoRow + truncateSubject 纯函数） | 展示正确性/字段边界 | 主题/状态/activeForm/owner fixture（中文/emoji/超长/空） | 3 种状态 × 含/不含 activeForm × 含/不含 owner × 空 subject；CJK 200 字、emoji 50、刚好 120 字、超 200 字 | 渲染 | 状态字符与色正确；in_progress 行括号包裹 activeForm；空 subject 显「（无标题）」；owner 不显；超长按码点截断 + 省略号（恰好 120 字不加省略号） | 不产生半个代理对；不渲染 HTML/不执行 v-html；不依赖外部 i18n 库 |
+| U-CV-018 | AC-CV-039 | 折叠状态机（toggle + sessionKey 隔离） | 状态流转 | useTodoPanelSessionState fake（sessionId → {collapsed}） | 同一 session 内连续 toggle；sessionA 折叠后切 sessionB 再切回；刷新重置 | 驱动 toggle/reset | 同一 session toggle 切换、状态稳定；切到新 session → 新 state（默认展开）；回切旧 session → 还原旧 state（不串）；刷新 → 默认展开 | 不持久化到 localStorage；不跨 IPC 同步；状态机无非法流转（已展开 → 展开非法等同一次） |
+| U-CV-019 | AC-CV-040 | 可见任务计算 + 卸载门（selectVisibleTasks + shouldRenderPanel 纯函数） | 状态渲染/边界 | tasks fixture（空、仅墓碑、1~50、51、100） | 空数组；含 1 个 deleted 墓碑；30 个混合状态；51 个任务（含 20 completed + 31 pending）；仅 1 个 in_progress | 过滤 + 可见性判断 | 过滤墓碑后剩余 = visible；visible=0 → 返回 `false`（面板卸载）；visible≤50 → 全部可见；visible>50 → 取前 50 行 + 提示剩余 | visible 计算不含 deleted；卸载门返回 false 时不输出任何高度 |
+| U-CV-020 | AC-CV-041 | 会话切换 + 非法 details 防御（applyTodoCompletion + resetForSession） | 数据一致性/异常 | sessionId 序列；非法 details fixture | 切 sessionA→B（B 初始 null）；B 收到合法 details → 填充；切回 A 仍为 null；非法 details（undefined/null/"str"/42/tasks="str"/tasks=[null]）；持续多次非法事件 | 归约 + 切会话 | 切会话清空快照；新会话独立积累；非法 details 静默忽略、不抛错、不修改上一份有效快照；连续 10 次非法 events 不累积错误 | 不抛异常到上层；不污染 store；非法 events 不发 toast/error |
+
+#### api（扩展 CV-S11；IPC 事件契约）
+
+| 用例 ID | 关联 AC | 接口 | 前置条件 | 请求数据 | 预期响应/错误码 | 数据落地 | 断言点 |
+|---|---|---|---|---|---|---|---|
+| A-CV-015 | AC-CV-037/041 | tool.completed（todo 工具，TE-S05 details 透传） | mock todo 完成事件；mock 普通工具完成事件 | `tool.name='todo'` 含 `result.details={tasks,nextId}`；`tool.name='todo'` 无 `result.details`；`tool.name='read'` 含 `result.details`（仅验证透传，UI 不消费）；`tool.name='todo'` `result.details` 为 string/null/tasks 非数组 | 事件正常推送 | todoSnapshot 仅在合法 details 到达时更新 | todo 工具合法 details → 前端 useSessionConversation 写入 todoSnapshot；todo 工具无 details / 非法 details → 静默忽略、toastSnapshot 不变；非 todo 工具 details 不被 03 消费；IPC 事件序列化兼容（详见 test/04_tool 覆盖矩阵 AC-TE-011\~013） |
+
+#### e2e（扩展 CV-S11）
+
+| 用例 ID | 关联 AC | 页面 | 前置场景 | 测试数据 | 自动化等级 | 操作 | 断言 |
+|---|---|---|---|---|---|---|---|
+| E-CV-020 | AC-CV-037 | 主会话对话区 | 主会话激活 | seed mock todo 事件序列（4 个任务：2 completed + 1 in_progress + 1 pending） | mock-backend | 触发 todo 工具完成事件 | 输入框上方出现面板；标题「已完成 2 / 共 4 个」；任务行渲染 4 行（✓×2、●、○）；无 console error |
+| E-CV-021 | AC-CV-038 | 主会话对话区 | 已挂载面板 | seed 含/不含 activeForm / 含/不含 owner / 空 subject / 超长 subject | mock-backend | 观察面板渲染 | 三种状态字符与色正确；空 subject 显「（无标题）」；activeForm 在 ● 行括号展示；超长 subject 按码点截断 + 省略号 |
+| E-CV-022 | AC-CV-039 | 主会话对话区 | 已挂载面板（默认展开） | - | mock-backend | 点击标题头部 → 观察 → 再点击；切子 agent Tab → 切回主会话 | 折叠态仅渲染标题 + chevron、不渲染任务行；展开态渲染全部任务行；折叠/展开带高度+透明度过渡动画（≤200ms）；切走再切回折叠状态保留（sessionId 隔离）；hover 不触发展开/收起 |
+| E-CV-023 | AC-CV-040 | 主会话对话区 | 不同快照规模 | seed：空快照 / 仅墓碑 / 51 任务 / 5 任务 | mock-backend | 观察 DOM 与高度 | 空快照 / 仅墓碑 → 面板从 DOM 卸载、不留高度与占位；51 任务 → 渲染前 50 行 + 「+N more」收口；5 任务 → 列表可视区固定 3 行高度、超出内部滚动（细滚动条 ≤6px）；输入框上提补位 |
+| E-CV-024 | AC-CV-041 | 多会话画布 | sessionA 已挂载 todo 面板；sessionB 无 | seed sessionA 面板快照；sessionB 不发 todo 事件 | mock-backend | 切到 sessionB → 观察；sessionB 触发非法 details 事件（缺失/非对象/tasks 非数组）；切回 sessionA | sessionB 面板卸载；非法 details 静默忽略、不报错；切回 sessionA 面板快照还原（独立快照） |

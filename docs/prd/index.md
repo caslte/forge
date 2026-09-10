@@ -8,8 +8,8 @@
 |---|---|---|---|---|
 | 01 | 项目管理 | prd/01_project_management.md | PRD 已确认 | 工作台入口；对齐 pi cwd；信任继承 pi；扩展 PM-S05 分支查看与切换（输入框项目区徽标+浮窗切换） |
 | 02 | 会话管理 | prd/02_session_management.md | PRD 已确认 | 多会话并行；多窗口画布；复用 pi session |
-| 03 | 对话与消息 | prd/03_conversation.md | PRD 已确认 | 流式响应、Markdown/Mermaid、取消、历史；扩展：会话历史导航 CV-S06（主会话时间线+浮窗预览+点击定位）、斜杠命令 CV-S08（输入 / 浮窗选择 pi 生态命令，codex 风格美化） |
-| 04 | 工具执行展示 | prd/04_tool_execution.md | PRD 已确认 | tool 卡片、并排 Diff、状态流转 |
+| 03 | 对话与消息 | prd/03_conversation.md | PRD 已确认 | 流式响应、Markdown/Mermaid、取消、历史；扩展：会话历史导航 CV-S06（主会话时间线+浮窗预览+点击定位）、斜杠命令 CV-S08（输入 / 浮窗选择 pi 生态命令，codex 风格美化）、消息队列 CV-S09（忙时入队+徽标）、输入历史翻阅 CV-S10（空输入 ↑/↓）、Todo 面板 CV-S11（输入框上方只读+折叠面板，复用 pi todo 工具 details 快照，依赖模块 04 TE-S05 IPC 透传） |
+| 04 | 工具执行展示 | prd/04_tool_execution.md | PRD 已确认 | tool 卡片、并排 Diff、状态流转；扩展 TE-S05 tool.completed.result 增加可选 details 透传（为模块 03 CV-S11 等结构化消费场景提供 IPC 支撑） |
 | 05 | 模型与 Provider 配置 | prd/05_model_provider.md | PRD 已确认 | models.json 可视化编辑、密钥安全、全局+会话模型；扩展：思考级别选择（输入框）、上下文 1M 配置 |
 | 06 | 子 Agent 管理 | prd/06_subagent_management.md | PRD 已确认 | 主会话状态联动、Tab 栏+结果视图监控、停止级联/单个终止 |
 | 07 | 版本更新与安装包（pi 运行时） | prd/07_installer_update.md | PRD 已确认 | 同一套完整更新体系：设置页「版本更新」分区（forge 版本 + 组件清单 + 手动更新，**已实现**）；Windows 安装包、首启静默预装推荐组件、应用自更新（GitHub Releases 提示+手动）、引擎-插件联动更新（**待开发**） |
@@ -19,6 +19,15 @@
 - `草稿-待确认`：第 1、2 节生成中，待用户确认
 - `PRD 已确认`：第 3、4 节完成，可作为事实来源
 - `开发中` / `已完成`：按开发进度更新
+
+## 跨模块扩展索引
+
+| 扩展 ID | 跨模块影响 | 承接模块 | 发起需求 |
+|---|---|---|---|
+| CV-S06 → 模块 03 | 纯前端派生，零新增接口 | 模块 03 自含 | ZCode 风格会话历史浮窗（2026-08-29） |
+| CV-S08 → 模块 03 | 首个真实扩展经 forge-extensions 桥接 | 模块 03 + 03 扩展 | 输入 `/` 斜杠命令浮窗（2026-09-02） |
+| CV-S09/CV-S10 → 模块 03 | 消息队列/输入历史，纯前端 | 模块 03 自含 | 输入框增强（2026-09-04） |
+| **CV-S11 ↔ TE-S05** | **CV-S11 消费 TE-S05 透传的 details 字段** | **模块 03 + 模块 04** | **输入框上方 todo 面板（2026-09-10）** |
 
 ## 更新规则
 

@@ -35,20 +35,19 @@ test('E-SM-005-3：四边吸附区判定（left/right/top/bottom）', () => {
   assert.equal(detectSnapZone(300, 370, 600, 400), 'bottom');
 });
 
-test('E-SM-005-4：左半区吸附矩形铺满整高（带统一内边距）', () => {
+test('E-SM-005-4：左半区吸附矩形完全贴边铺满整高（不留画布缝隙）', () => {
+  const g = MW_GAP;
   const r = snapRectFor('left', 600, 400);
-  assert.deepEqual(r, { x: MW_GAP, y: MW_GAP, w: Math.round((600 - MW_GAP * 3) / 2), h: 400 - MW_GAP * 2 });
+  assert.deepEqual(r, { x: 0, y: 0, w: Math.round((600 - g) / 2), h: 400 });
 });
 
-test('E-SM-005-5：4 窗格排布 2×2 严丝合缝（四角不重叠不越界）', () => {
+test('E-SM-005-5：4 窗格排布 2×2 严丝合缝（四角不重叠不越界，贴边覆盖画布）', () => {
   const n = 4;
   const cw = 600;
   const ch = 400;
   const wins = arrangeAutoLayout(n, cw, ch);
   assert.equal(wins.length, 4);
   const g = MW_GAP;
-  const hw = Math.round((cw - g * 3) / 2);
-  const hh = Math.round((ch - g * 3) / 2);
   // 四个格角坐标应恰好拼接成 2×2（x0=x1、x2=x3、y0=y2、y1=y3）
   assert.equal(wins[0]!.x + wins[0]!.w + g, wins[1]!.x);
   assert.equal(wins[2]!.x + wins[2]!.w + g, wins[3]!.x);
@@ -58,15 +57,21 @@ test('E-SM-005-5：4 窗格排布 2×2 严丝合缝（四角不重叠不越界�
     assert.ok(w.x >= 0 && w.y >= 0, '窗口不越界');
     assert.ok(w.x + w.w <= cw && w.y + w.h <= ch, '窗口右/下不越界');
   }
-  assert.equal(hw, hh > 0 ? hw : hw, '半格尺寸 > 0');
+  // 四角紧贴画布（顶/左 x=0、y=0；底/右恰好落在画布边界）
+  assert.equal(wins[0]!.x, 0, '左上贴左');
+  assert.equal(wins[0]!.y, 0, '左上贴上');
+  assert.equal(wins[1]!.x + wins[1]!.w, cw, '右上贴右');
+  assert.equal(wins[2]!.y + wins[2]!.h, ch, '左下贴下');
 });
 
-test('E-SM-005-6：2 窗口自动排布为左右各半', () => {
+test('E-SM-005-6：2 窗口自动排布为左右各半（两端贴边，之间留 MW_GAP）', () => {
   const wins = arrangeAutoLayout(2, 600, 400);
   assert.equal(wins.length, 2);
+  assert.equal(wins[0]!.x, 0, '左窗贴左');
   assert.equal(wins[0]!.x + wins[0]!.w + MW_GAP, wins[1]!.x);
-  assert.equal(wins[0]!.h, 400 - MW_GAP * 2);
-  assert.equal(wins[1]!.h, 400 - MW_GAP * 2);
+  assert.equal(wins[1]!.x + wins[1]!.w, 600, '右窗贴右');
+  assert.equal(wins[0]!.h, 400, '左窗顶底贴边');
+  assert.equal(wins[1]!.h, 400, '右窗顶底贴边');
 });
 
 test('E-SM-005-7：最小尺寸 clamp（窗口不小于 180×120、不越界）', () => {

@@ -706,7 +706,7 @@ onUnmounted(() => {
               />
             </div>
           </div>
-          <div v-else-if="currentProject && (currentSession || draftMode)" class="session-stage">
+          <div v-else-if="currentProject" class="session-stage">
             <ConversationView
               :session-id="currentSessionId"
               :project="currentProject"
@@ -722,24 +722,9 @@ onUnmounted(() => {
               @remove-project="onRemoveProject"
             />
           </div>
-          <div v-else-if="currentProject" class="no-session">
-            <div class="no-session-card">
-              <div class="no-session-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
-              <p class="no-session-title">{{ currentProject.alias ?? basename(currentProject.path) }}</p>
-              <p class="hint">点击左侧 + 新建会话开始对话</p>
-            </div>
-          </div>
           <div v-else class="no-session">
             <div class="no-session-card">
-              <div class="no-session-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
+              <span class="no-session-wordmark" aria-hidden="true">forge</span>
               <p class="no-session-title">选择项目或创建新项目开始</p>
               <button class="primary" @click="openFolderPicker">打开项目</button>
             </div>
@@ -1094,17 +1079,19 @@ onUnmounted(() => {
   box-shadow: var(--shadow-md);
 }
 
-.no-session-icon {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto 12px;
-  color: var(--muted-foreground);
-  opacity: 0.6;
-}
-
-.no-session-icon svg {
-  width: 100%;
-  height: 100%;
+.no-session-wordmark {
+  display: block;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.05em;
+  line-height: 1;
+  color: var(--foreground);
+  opacity: 0.14;
+  font-size: 64px;
+  -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+  margin: 0 auto 14px;
+  user-select: none;
 }
 
 .no-session-title {

@@ -51,36 +51,38 @@ export function detectSnapZone(px: number, py: number, cw: number, ch: number): 
 }
 
 /**
- * 吸附矩形：按吸附区计算铺满矩形（带统一内边距）。
+ * 吸附矩形：按吸附区计算铺满矩形。贴边窗口完全覆盖画布边缘（不留缝隙露出画布背景），
+ * 仅在窗口与窗口之间保留统一间距 MW_GAP。
  * @param zone 吸附区
  * @param cw 画布宽
  * @param ch 画布高
  */
 export function snapRectFor(zone: SnapZone, cw: number, ch: number): SnapRect {
   const g = MW_GAP;
-  const hw = Math.round((cw - g * 3) / 2);
-  const hh = Math.round((ch - g * 3) / 2);
-  const L = g;
-  const R = g * 2 + hw;
-  const T = g;
-  const B = g * 2 + hh;
+  // hw/hh = 单窗贴边占满后的半区尺寸；两边都贴边，中间仅留 g 间距
+  const hw = Math.round((cw - g) / 2);
+  const hh = Math.round((ch - g) / 2);
+  const L = 0;
+  const R = hw + g;
+  const T = 0;
+  const B = hh + g;
   switch (zone) {
     case 'left':
-      return { x: L, y: T, w: hw, h: ch - g * 2 };
+      return { x: L, y: T, w: hw, h: ch };
     case 'right':
-      return { x: R, y: T, w: hw, h: ch - g * 2 };
+      return { x: R, y: T, w: cw - R, h: ch };
     case 'top':
-      return { x: L, y: T, w: cw - g * 2, h: hh };
+      return { x: L, y: T, w: cw, h: hh };
     case 'bottom':
-      return { x: L, y: B, w: cw - g * 2, h: hh };
+      return { x: L, y: B, w: cw, h: ch - B };
     case 'tl':
       return { x: L, y: T, w: hw, h: hh };
     case 'tr':
-      return { x: R, y: T, w: hw, h: hh };
+      return { x: R, y: T, w: cw - R, h: hh };
     case 'bl':
-      return { x: L, y: B, w: hw, h: hh };
+      return { x: L, y: B, w: hw, h: ch - B };
     case 'br':
-      return { x: R, y: B, w: hw, h: hh };
+      return { x: R, y: B, w: cw - R, h: ch - B };
   }
 }
 
@@ -104,25 +106,26 @@ export interface AutoWin {
  */
 export function arrangeAutoLayout(n: number, cw: number, ch: number): AutoWin[] {
   const g = MW_GAP;
-  const hw = Math.round((cw - g * 3) / 2);
-  const hh = Math.round((ch - g * 3) / 2);
-  const L = g;
-  const T = g;
-  const R = g * 2 + hw;
-  const B = g * 2 + hh;
+  // 贴边占满；窗口之间留 g 间距
+  const hw = Math.round((cw - g) / 2);
+  const hh = Math.round((ch - g) / 2);
+  const L = 0;
+  const T = 0;
+  const R = hw + g;
+  const B = hh + g;
   const out: AutoWin[] = [];
   if (n <= 2) {
     const halves: AutoWin[] = [
-      { x: L, y: T, w: hw, h: ch - g * 2 },
-      { x: R, y: T, w: hw, h: ch - g * 2 },
+      { x: L, y: T, w: hw, h: ch },
+      { x: R, y: T, w: cw - R, h: ch },
     ];
     for (let i = 0; i < n; i += 1) out.push(halves[i]!);
   } else {
     const cells: AutoWin[] = [
       { x: L, y: T, w: hw, h: hh },
-      { x: R, y: T, w: hw, h: hh },
-      { x: L, y: B, w: hw, h: hh },
-      { x: R, y: B, w: hw, h: hh },
+      { x: R, y: T, w: cw - R, h: hh },
+      { x: L, y: B, w: hw, h: ch - B },
+      { x: R, y: B, w: cw - R, h: ch - B },
     ];
     for (let i = 0; i < n; i += 1) {
       if (i < 4) {

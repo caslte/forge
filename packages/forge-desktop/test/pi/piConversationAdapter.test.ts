@@ -34,7 +34,7 @@ interface MinimalEvent {
 /** 工具事件捕获器（P1-A 映射验证） */
 interface ToolCapture {
   started: Array<{ toolEventId: string; name: string; input: unknown }>;
-  completed: Array<{ toolEventId: string; text: string | null }>;
+  completed: Array<{ toolEventId: string; text: string | null; details: unknown }>;
   errors: Array<{ toolEventId: string; message: string }>;
 }
 
@@ -42,7 +42,7 @@ function captureToolHandlers(adapter: PiConversationAdapter): ToolCapture {
   const cap: ToolCapture = { started: [], completed: [], errors: [] };
   adapter.setEventHandlers({
     onToolStarted: (_sid, e) => cap.started.push({ toolEventId: e.toolEventId, name: e.tool.name, input: e.tool.input }),
-    onToolCompleted: (_sid, e) => cap.completed.push({ toolEventId: e.toolEventId, text: e.result.text }),
+    onToolCompleted: (_sid, e) => cap.completed.push({ toolEventId: e.toolEventId, text: e.result.text, details: e.result.details }),
     onToolError: (_sid, e) => cap.errors.push({ toolEventId: e.toolEventId, message: e.error.message }),
   });
   return cap;
@@ -449,7 +449,7 @@ test('工具开始与成功结束映射为 started/completed 回调', async () =
   assert.deepEqual(cap.started, [
     { toolEventId: 'call-1', name: 'read', input: { path: 'a.ts' } },
   ]);
-  assert.deepEqual(cap.completed, [{ toolEventId: 'call-1', text: '文件内容' }]);
+  assert.deepEqual(cap.completed, [{ toolEventId: 'call-1', text: '文件内容', details: undefined }]);
   assert.equal(cap.errors.length, 0);
 });
 
@@ -487,6 +487,93 @@ test('同一会话两次发送复用同一 pi 会话实例', async () => {
 
   assert.equal(factoryCalls, 1, '工厂只应被调用一次');
   assert.deepEqual(fake.promptCalls, ['第一轮', '第二轮'], '两次 prompt 都落在同一会话实例');
+});
+
+// ===== TE-S05: tool_execution_end result.details 透传 =====
+
+test('TE-S05: pi 工具 result.details 透传到 onToolCompleted.result.details（todo 工具场景）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const cap = captureToolHandlers(adapter);
+
+  await adapter.sendMessage('session-todo', '列todo', {});
+  fake.emit({ type: 'tool_execution_start', toolCallId: 'call-todo', toolName: 'todo', args: { action: 'list' } });
+  fake.emit({
+    type: 'tool_execution_end',
+    toolCallId: 'call-todo',
+    toolName: 'todo',
+    result: {
+      content: [{ type: 'text', text: '[ ] #1: 修复\n[x] #2: 完成' }],
+      details: {
+        action: 'list',
+        tasks: [
+          { id: 1, subject: '修复', status: 'pending' },
+          { id: 2, subject: '完成', status: 'completed' },
+        ],
+        nextId: 3,
+      },
+    },
+    isError: false,
+  });
+
+  assert.equal(cap.completed.length, 1);
+  const completed = cap.completed[0];
+  assert.equal(completed?.toolEventId, 'call-todo');
+  assert.equal(completed?.text, '[ ] #1: 修复\n[x] #2: 完成');
+  assert.deepEqual(completed?.details, {
+    action: 'list',
+    tasks: [
+      { id: 1, subject: '修复', status: 'pending' },
+      { id: 2, subject: '完成', status: 'completed' },
+    ],
+    nextId: 3,
+  });
+});
+
+test('TE-S05: pi 工具 result 无 details → onToolCompleted.result.details 为 undefined（序列化后字段不出现）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const cap = captureToolHandlers(adapter);
+
+  await adapter.sendMessage('session-read', '读一下', {});
+  fake.emit({ type: 'tool_execution_start', toolCallId: 'call-read', toolName: 'read', args: { path: 'a.ts' } });
+  fake.emit({
+    type: 'tool_execution_end',
+    toolCallId: 'call-read',
+    toolName: 'read',
+    result: { content: [{ type: 'text', text: 'file contents' }] },
+    isError: false,
+  });
+
+  const completed = cap.completed[0];
+  assert.equal(completed?.toolEventId, 'call-read');
+  assert.equal(completed?.text, 'file contents');
+  // 序列化后 details 字段不应出现
+  const serialized = JSON.parse(JSON.stringify(completed));
+  assert.equal('details' in serialized, false, 'details 未提供时序列化结果不出现该字段');
+});
+
+test('TE-S05: pi 工具 result.details 为非对象（string/number）原样透传不抛错', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const cap = captureToolHandlers(adapter);
+
+  for (const badDetails of ['plain string', 42, null, [1, 2], { any: 'object' }]) {
+    await adapter.sendMessage(`session-bad-${Math.random()}`, 'x', {});
+    const id = `call-bad-${Math.random()}`;
+    fake.emit({ type: 'tool_execution_start', toolCallId: id, toolName: 'weird', args: {} });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: id,
+      toolName: 'weird',
+      result: { content: [{ type: 'text', text: 'ok' }], details: badDetails },
+      isError: false,
+    });
+  }
+
+  // 最后一个 completed 事件应原值透传 details
+  const last = cap.completed[cap.completed.length - 1];
+  assert.deepEqual(last?.details, { any: 'object' });
 });
 
 test('不同会话各自持有独立 pi 会话实例', async () => {

@@ -174,7 +174,12 @@ export interface PiToolStartedPayload {
 /** 工具完成事件载荷（映射 pi tool_execution_end 且 isError=false） */
 export interface PiToolCompletedPayload {
   toolEventId: string;
-  result: { text: string | null; image: string | null };
+  /**
+   * TE-S05：result 增加可选 details 字段透传 pi 工具结构化详情（如 rpiv-todo
+   * 工具的 `{ action, tasks, nextId }`）。仅补充不重写，原 text/image 字段语义
+   * 不变；pi 工具未携带 details 时 result 中不出现该字段。
+   */
+  result: { text: string | null; image: string | null; details?: unknown };
 }
 
 /** 工具错误事件载荷（映射 pi tool_execution_end 且 isError=true） */
@@ -1123,9 +1128,16 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           error: { message: text ?? '工具执行失败' },
         });
       } else {
+        // TE-S05: 从 pi 工具结果透传 details（仅当 details 是合法值时携带，undefined/null 跳过）
+        const details = extractToolResultDetails(event.result);
+        const resultPayload: { text: string | null; image: null; details?: unknown } = {
+          text,
+          image: null,
+        };
+        if (details !== undefined) resultPayload.details = details;
         this.eventHandlers.onToolCompleted?.(sessionId, {
           toolEventId: event.toolCallId,
-          result: { text, image: null },
+          result: resultPayload,
         });
       }
     }
@@ -1202,6 +1214,19 @@ function extractToolResultText(result: unknown): string | null {
     .filter((t) => t !== '')
     .join('\n');
   return text === '' ? null : text;
+}
+
+/**
+ * TE-S05：从 pi 工具结果提取 details 字段透传（保留原值，不解析）。
+ * 仅当 details 是有效值（非 undefined / 非 null）时返回；其余情况返回 undefined
+ * 让上层判定省略字段（JSON omit 语义，向后兼容）。
+ */
+function extractToolResultDetails(result: unknown): unknown {
+  if (!isRecord(result)) return undefined;
+  if (!('details' in result)) return undefined;
+  const details = (result as Record<string, unknown>).details;
+  if (details === undefined || details === null) return undefined;
+  return details;
 }
 
 /**

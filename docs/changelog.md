@@ -1,5 +1,21 @@
 # 变更日志
 
+## v3.63 (修正：Todo 面板按会话隔离 + 长列表锁进行中)
+
+- 需求：用户反馈「切换会话丢失 todo 任务窗口」+「任务超 3 且 pending > 3 时滚动条锁到 in_progress」（2026-10）。
+- 方案：**(1)** `useSessionConversation` 的 `todoSnapshot` 由单 ref 改为 `reactive(new Map<sessionId, TodoSnapshot>())`，对外暴露的 `todoSnapshot` 改 computed = 当前会话 Map 槽位；`resetForSession` 不再清空 todo，按 sessionId 隔离、切走再切回还原上次视图；`onToolCompleted` 的 todo 分支按当前 `sessionId` 写入对应槽位，多会话同时有 todo 互不串。**(2)** TodoPanel 新增可见性保证（v3.63 修正）：有 in_progress 时保证其在 3 行可视窗口内（不强求顶部，用户不需手动滚动即可看到），无 in_progress（全部完成）时滚到最后一行；触发时机：初次挂载 / 折叠→展开 / 布局变化；函数内部检查目标行已可视则 no-op，不抢用户手动滚动位置。v3.63 初版阈值「总任务>3 且 pending>3」过于严格被用户反馈后去掉。
+- 限制：仅内存，APP 退出随进程消失；切走会话不清空，切回时还原上一份有效快照；用户手动滚动后状态变化才重新贴顶（与默认下动一律贴顶的差异是用户主动下动不会被抢）。
+- 文档：`prd/03_conversation.md` CV-S11 业务规则 / 交互反馈 / 状态流转 / AC 表（AC-CV-041 改为会话隔离语义，新增 AC-CV-042 可见性保证，v3.63 修正去阈值）+ TD-CV-11 改为 B 方案 + 自检表；`api/03_conversation.md` §10 订阅约定同步；`test/03_conversation/coverage-matrix.md` AC-CV-041 / 新增 AC-CV-042；`artifacts.json` `CV-S11_todo_panel` 加 `amended: 2026-10` 与 `AC-CV-042`。
+- 代码：`composables/useSessionConversation.ts`（单 ref → reactive Map + computed）、`components/TodoPanel.vue`（ensureTargetRowVisible + layoutKey 触发 + watch/onMounted）。
+
+## v3.62 (功能：输入框上方 Todo 面板 + tool.completed 透传 details)
+
+- 需求：用户要求「想做一个 todo 的页面展示，参考 opencode 的折叠式 checklist 形式」（附 opencode 参考图 2026-09-10）。
+- 方案：**(1)** forge-ui 在主会话输入框上方渲染只读 todo 面板（TodoPanel.vue + useTodoPanelSessionState），复用 pi `todo` 工具返回的 `details` 快照作为单数据源（与 pi TUI 端 rpiv-todo 面板同款视觉：标题「已完成 X / 共 Y 个」+ 状态字符 `○/◐/✓` + activeForm 括号 + 完成态删除线 + tree 前缀 `├─/└─`），点击头部任意位置折叠/展开；**(2)** 仅做只读 + 折叠，不做快捷键、手动增删改、拖拽、依赖图编辑、跨会话重放、持久化；**(3)** 空任务时整个面板从 DOM 卸载（不留高度、不留占位）；**(4)** IPC 契约扩展：模块 04 TE-S05 在 `tool.completed.result` 上增加可选 `details` 字段透传 pi 工具结构化详情（补充不重写，旧使用方零变更；JSON omit 语义）。
+- 文档：`prd/03_conversation.md` 加 CV-S11（5 项 AC + 1.2/1.3/1.4/2/3.3/3.4/3.5/4 全节承接） + `prd/04_tool_execution.md` 加 TE-S05（3 项 AC + 同节承接）；`prd/index.md` 跨模块索引添 `CV-S11 ↔ TE-S05`；`artifacts.json` 添 `extensions` 节点；`api/04_tool.md` 添 `details` 字段示例 + `api/03_conversation.md` 添 §10 订阅约定；`test/03_conversation/coverage-matrix.md` + `test/04_tool/coverage-matrix.md` 添 5 + 3 行 AC + 对应 unit/api/e2e 设计。
+- 范围：仅前/中端（forge-ui + forge-desktop IPC + forge-core 契约）；pi TUI 端 rpiv-todo 不动（单数据源自然一致）。
+- 待开发：进入 dev-tdd 完成实现。
+
 ## v3.61 (功能：模块 07 IN-S01~04 交付——安装包、静默预装、应用自更新、组件联动更新)
 
 - dev-flow run `20260908164205` 完成（5 WU：startup-state / updater-rpc / updater-ui / updater-e2e / packaging；D0~D8 全过，QA 三轮终审 PASS）。

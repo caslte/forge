@@ -5,6 +5,7 @@ import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
 import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
+import { applyTodoCompletion, type TodoSnapshot } from '../utils/todoPanel.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
@@ -87,6 +88,16 @@ export function useSessionConversation(options: {
   const activeAgentId = ref<string | null>(null);
   /** 待二次确认的停止请求（结果视图头部"终止"） */
   const pendingStopAgentId = ref<string | null>(null);
+
+  // ===== Todo 面板快照（CV-S11；按 sessionId 内存隔离，切走再切回不丢，关闭 APP 随进程消失） =====
+  // Map 替代单 ref：切会话不清空，切换回历史会话时还原上次的 todo 视图。
+  // "会话自己清理" 不需要主动 GC —— 自然清空（所有 task 被删）时 shouldRenderPanel=false 面板自动卸载。
+  const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
+  /** 当前会话 todo 快照（模板 v-bind 自动解包，外部消费接口不变） */
+  const todoSnapshot = computed<TodoSnapshot | null>(() => {
+    const sid = options.getSessionId();
+    return sid === null ? null : (todoSnapshots.get(sid) ?? null);
+  });
 
   const isEmpty = computed(() => messages.value.length === 0 && !isStreaming.value && !loadingHistory.value);
 
@@ -259,7 +270,8 @@ export function useSessionConversation(options: {
   }
 
   /** 会话切换：重置状态（视图侧的回看模式/高亮等由视图自理）；
-   * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09） */
+   * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09）；
+   * todoSnapshots 不清：按 sessionId 隔离，切回历史会话还原上次的 todo 视图（CV-S11 修正） */
   function resetForSession(): void {
     messages.value = [];
     toolEventIndex.clear();
@@ -441,10 +453,25 @@ export function useSessionConversation(options: {
     const p = payload as {
       toolEventId: string;
       sessionId?: string;
-      result?: { text: string | null };
+      tool?: { name?: string };
+      result?: { text: string | null; details?: unknown };
       summary?: string;
     };
     if (p.sessionId !== undefined && p.sessionId !== options.getSessionId()) return;
+    // CV-S11：仅识别 tool.name === 'todo' 才消费 details（TE-S05 透传）；
+    // 非法 details 由 reducer 静默忽略；不依赖 toolEventIndex —— todo 工具可能只发 completed 无 started
+    // 按当前 sessionId 读写：切到其他会话不影响本会话 todo，本会话 todo 也不会串到其他会话
+    if (p.tool?.name === 'todo') {
+      const sid = options.getSessionId();
+      if (sid !== null) {
+        const prev = todoSnapshots.get(sid) ?? null;
+        const next = applyTodoCompletion(prev, {
+          toolName: 'todo',
+          details: p.result?.details,
+        });
+        if (next !== prev) todoSnapshots.set(sid, next);
+      }
+    }
     const idx = toolEventIndex.get(p.toolEventId);
     if (idx === undefined) return;
     markToolEnd(p.toolEventId);
@@ -616,6 +643,7 @@ export function useSessionConversation(options: {
   });
 
   return {
+    todoSnapshot,
     // 状态
     messages,
     isStreaming,

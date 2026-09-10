@@ -363,3 +363,47 @@ UI 据此渲染输入框工具区的「待发送 N」徽标与只读浮窗（无
 
 - **命令执行无专用接口**：选中命令以原始命令串（如 `/skill:git-push `  ）经 `conversation/sendMessage` 原样发送，由 pi 运行时原生解析执行（TD-CV-09，零拦截零注册表）；AC-CV-031 的集成验证走真实 pi 会话。
 
+***
+
+## 10. Todo 面板（扩展 CV-S11）
+
+> 状态：已确认（输入框上方只读 todo 面板，复用 pi `todo` 工具返回的 `details` 快照；不新增 RPC、不跨进程持久化、APP 退出随进程消失）。消费 `tool.completed` 事件中 `result.details` 字段（IPC 透传详见 `docs/api/04_tool.md` §1 TE-S05）。2026-10 修正：todo 快照按 sessionId 内存隔离，切走再切回不丢；总任务 > 3 且 pending > 3 且存在 in_progress 时面板展开自动锁到 in_progress 行顶部。
+
+### 订阅约定
+
+- 模块 03 在 `useSessionConversation.onToolCompleted` 回调中识别 `tool.name === 'todo'` 且 `result.details` 存在，把 `details` 视为 `{ tasks, nextId }` 写入当前 `sessionId` 对应的 `todoSnapshots` Map 槽位；其余工具完成（含未携带 details 的 todo 完成）不改动快照。
+- 切换会话（`sessionId` 变化）→ 不清空 `todoSnapshots`，切回历史会话时还原上次的 todo 视图（按 sessionId 隔离，多会话同时有 todo 互不串）；新会话从未收到 `tool.completed(todo)` 时面板不渲染。
+- `details` 缺失/结构非法（非对象 / `tasks` 非数组）→ 静默忽略当次事件，不抛错、不污染对应会话快照。
+
+### `todoSnapshot` 数据契约
+
+```ts
+type TodoSnapshot = {
+  tasks: Array<{
+    id: number;
+    subject: string;
+    status: 'pending' | 'in_progress' | 'completed' | 'deleted';
+    activeForm?: string;
+    blockedBy?: number[];
+  }>;
+  nextId: number;
+} | null;
+```
+
+- 面板渲染前过滤 `status === 'deleted'` 墓碑（与 rpiv-todo TUI 端同款）；剩余按 (completed → in_progress → pending)、组内按 `id` 升序渲染。
+- 面板仅承载主会话，子 agent 结果视图与画布小窗不渲染。
+- 面板只读，不向 pi 发送任何写请求；不消费 `tool.started`（仅消费 completed 终态，避免流式状态噪声）。
+- 折叠状态按 `sessionId` 内存维护（不写 localStorage、不跨会话同步、不发 IPC）。
+
+### 状态机
+
+```
+空快照 (卸载)  ── tool.completed(todo, details.t 非空) ──> 展开 (有任务)
+展开  ── 点击头部  ──> 折叠 (仅标题)
+折叠  ── 点击头部  ──> 展开
+任意状态  ── tool.completed(todo, details.t 删空) ──> 空快照 (卸载)
+任意状态  ── 会话切换 ──> 空快照 (卸载)
+```
+
+> 验收 AC-CV-037\~041 详见 `docs/test/03_conversation/coverage-matrix.md`。
+

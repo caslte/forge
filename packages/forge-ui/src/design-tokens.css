@@ -79,6 +79,9 @@
   /* 过渡 */
   --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* decelerate：快出发、缓落地。用于「位移并停靠」类动效（空会话输入框下沉到底部），
+     不引入 overshoot 回弹——工具型界面里回弹会显得晃动 */
+  --transition-decelerate: 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :root[data-theme='dark'] {

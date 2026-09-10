@@ -1292,7 +1292,7 @@ watch(
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? `${spinnerFrame} 助手回复中，Enter 排队发送…` : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '输入问题或指令… Enter 发送，Ctrl+V 粘贴截图'"
+      :placeholder="isStreaming ? `${spinnerFrame} 助手回复中，Enter 排队发送…` : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '今天聊点啥，/ 查看命令，@ 找文件，Enter 发送，Ctrl+V 粘贴截图'"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"

@@ -29,6 +29,15 @@
         "api": { "path": "docs/api/03_conversation.md", "status": "approved" },
         "test-e2e": { "path": "docs/test/03_conversation/e2e.md", "status": "approved" },
         "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
+      },
+      "extensions": {
+        "CV-S11_todo_panel": {
+          "status": "approved",
+          "added": "2026-09-10",
+          "amended": "2026-10",
+          "ac_ids": ["AC-CV-037", "AC-CV-038", "AC-CV-039", "AC-CV-040", "AC-CV-041", "AC-CV-042"],
+          "depends_on": ["TE-S05_ipc_details"]
+        }
       }
     },
     "04_tool": {
@@ -39,6 +48,14 @@
         "api": { "path": "docs/api/04_tool.md", "status": "approved" },
         "test-e2e": { "path": "docs/test/04_tool/e2e.md", "status": "approved" },
         "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
+      },
+      "extensions": {
+        "TE-S05_ipc_details": {
+          "status": "approved",
+          "added": "2026-09-10",
+          "ac_ids": ["AC-TE-011", "AC-TE-012", "AC-TE-013"],
+          "depends_on": []
+        }
       }
     },
     "05_model": {

@@ -47,8 +47,8 @@
 |---|---|---|---|---|
 | 01 | 项目管理 | 本地目录注册为项目、项目列表、打开/移除、项目信任；扩展：分支查看与切换（PM-S05，输入框项目区徽标） | prd/01_project_management.md | PRD 已确认（含扩展 PM-S05） |
 | 02 | 会话管理 | 会话创建/切换/删除/重命名，多会话并行，多窗口跨项目并排观察 | prd/02_session_management.md | PRD 已确认 |
-| 03 | 对话与消息 | 发消息、流式响应、Markdown/代码/Mermaid 渲染、取消、历史；扩展：会话历史导航（主会话时间线+浮窗预览+点击定位）、斜杠命令（输入 / 浮窗选择 pi 生态命令/skills/模板，codex 风格美化，pi 原生识别） | prd/03_conversation.md | PRD 已确认（含扩展 CV-S06、CV-S08） |
-| 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转 | prd/04_tool_execution.md | PRD 已确认 |
+| 03 | 对话与消息 | 发消息、流式响应、Markdown/代码/Mermaid 渲染、取消、历史；扩展：会话历史导航（主会话时间线+浮窗预览+点击定位）、斜杠命令（输入 / 浮窗选择 pi 生态命令/skills/模板，codex 风格美化，pi 原生识别）、消息队列（忙时入队+徽标，v1.1）、输入历史翻阅（空输入 ↑/↓，v1.1）、Todo 面板（输入框上方只读+折叠面板，复用 pi `todo` 工具 details 快照，v1.2，依赖模块 04 TE-S05 IPC 透传） | prd/03_conversation.md | PRD 已确认（含扩展 CV-S06、CV-S08、CV-S09、CV-S10、CV-S11） |
+| 04 | 工具执行展示 | tool call/result 卡片、并排 Diff、状态流转；扩展 TE-S05 `tool.completed.result` 增加可选 `details` 透传（为模块 03 CV-S11 等结构化消费场景提供 IPC 支撑，补充不重写） | prd/04_tool_execution.md | PRD 已确认（含扩展 TE-S05） |
 | 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择；扩展：思考级别选择（输入框）、上下文 1M 配置 | prd/05_model_provider.md | PRD 已确认（含扩展 MP-S05/MP-S06） |
 | 06 | 子 Agent 管理 | 主会话状态与后台子 agent 联动、Tab 栏+结果视图监控、停止级联/单个终止 | prd/06_subagent_management.md | PRD 已确认 |
 | 07 | 版本更新与安装包 | 设置页「版本更新」分区（已实现）；Windows 安装包、预装推荐组件、应用自更新与引擎-插件联动更新（待开发） | prd/07_installer_update.md | PRD 已确认 |

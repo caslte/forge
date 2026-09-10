@@ -13,6 +13,7 @@ import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
 import type { PiGetInfoResult, UpdaterSnapshot } from '../bridge';
 import { useToast } from '../composables/useToast';
+import { usePreferences } from '../composables/usePreferences';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
 /**
@@ -69,6 +70,7 @@ const themeSwatches: { mode: ThemeMode; label: string; color: string }[] = [
 ];
 
 const toast = useToast();
+const { showDiff, setShowDiff } = usePreferences();
 
 const canSubmitForm = computed(() => {
   return (
@@ -267,12 +269,12 @@ function selectTheme(mode: ThemeMode): void {
 
 // ===== 版本更新（07，「关于」Tab）：明面为 forge 产品更新；内部为内置引擎的共享扩展更新 =====
 // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照
-const activeTab = ref<'general' | 'about'>('general');
+const activeTab = ref<'general' | 'personal' | 'about'>('general');
 const tabsEl = ref<HTMLElement | null>(null);
 const thumbEl = ref<HTMLElement | null>(null);
-const tabBtns = { general: null as HTMLElement | null, about: null as HTMLElement | null };
+const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, about: null as HTMLElement | null };
 
-function setTabRef(name: 'general' | 'about', el: unknown): void {
+function setTabRef(name: 'general' | 'personal' | 'about', el: unknown): void {
   tabBtns[name] = (el as HTMLElement) ?? null;
 }
 
@@ -557,7 +559,7 @@ onUnmounted(() => {
       </button>
     </header>
 
-    <!-- Tab：通用（模型配置+外观）/ 关于（版本更新）；分段控件 + 滑动选中块 -->
+    <!-- Tab：通用（模型配置+外观）/ 个性化 / 关于（版本更新）；分段控件 + 滑动选中块 -->
     <nav class="settings-tabs" :class="{ isdark: themeMode === 'dark' }" ref="tabsEl">
       <span class="settings-thumb" ref="thumbEl" aria-hidden="true"></span>
       <button
@@ -566,6 +568,12 @@ onUnmounted(() => {
         :ref="(el) => setTabRef('general', el)"
         @click="activeTab = 'general'"
       >通用</button>
+      <button
+        class="settings-tab"
+        :class="{ active: activeTab === 'personal' }"
+        :ref="(el) => setTabRef('personal', el)"
+        @click="activeTab = 'personal'"
+      >个性化</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'about' }"
@@ -761,6 +769,28 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 个性化 Tab：用户个性化偏好（首个：对话框 diff 展示开关） -->
+    <div class="personal-body" v-if="activeTab === 'personal'">
+      <section class="settings-section">
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">显示代码 Diff</span>
+            <span class="pref-desc">关闭后对话框不再展示代码变更对比，页面更简洁</span>
+          </div>
+          <button
+            class="pref-switch"
+            :class="{ on: showDiff }"
+            role="switch"
+            :aria-checked="showDiff"
+            aria-label="显示代码 Diff"
+            @click="setShowDiff(!showDiff)"
+          >
+            <span class="pref-knob"></span>
+          </button>
         </div>
       </section>
     </div>
@@ -1001,6 +1031,80 @@ onUnmounted(() => {
   font-size: 13px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-lg);
+}
+
+/* 「个性化」Tab：单栏偏好列表 */
+.personal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pref-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.pref-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pref-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.pref-desc {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+.pref-switch {
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s;
+}
+
+.pref-switch.on {
+  background: var(--brand);
+}
+
+.pref-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.2s;
+}
+
+.pref-switch.on .pref-knob {
+  transform: translateX(18px);
 }
 
 /* 「关于」Tab：单栏承载版本更新分区；不限制宽度——版本行拉满到底，右侧不留空 */
