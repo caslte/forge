@@ -268,7 +268,8 @@ interface MockControl {
       | 'conversation.statusChanged'
       | 'conversation.compacting'
       | 'conversation.compacted'
-      | 'conversation.slashCommandsUpdated',
+      | 'conversation.slashCommandsUpdated'
+      | 'updater.stateChanged',
     payload: Record<string, unknown>,
   ): void;
   /** 注入查询会话列表/历史的种子覆盖 */
@@ -698,6 +699,37 @@ const bridge: ForgeBridge = {
         return { code: 0, message: 'ok', data: { forgeVersion: '0.1.0' } };
       case 'pi/updatePlugins':
         return { code: 0, message: 'ok', data: { output: 'all extensions are up to date' } };
+      case 'app/getUpdateDebug':
+        // 调试控制台开关（默认关闭=普通用户不可见；测试可 seed 覆盖）
+        return { code: 0, message: 'ok', data: { enabled: false } };
+      case 'updater/getState':
+        // 设置页「版本更新」状态快照（mock 固定 idle；测试可 seed 覆盖）
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
+        };
+      case 'updater/checkForUpdates':
+        // mock 无新版：回到 idle、latestVersion=null（不发提示）
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
+        };
+      case 'updater/downloadUpdate':
+        // mock 下载起步：downloading 0%（进度经 updater.stateChanged 事件推送，可 emit 模拟）
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'downloading', currentVersion: '0.1.0', latestVersion: null, downloadProgress: 0, error: null },
+        };
+      case 'updater/quitAndInstall':
+        // mock 不真正退出重启：返回 idle 快照
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
+        };
       default:
         return { code: 0, message: 'ok', data: null };
     }

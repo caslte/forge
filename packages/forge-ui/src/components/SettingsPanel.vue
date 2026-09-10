@@ -1,9 +1,17 @@
+<script lang="ts">
+/**
+ * 模块级「已 toast 版本」记忆：SettingsPanel 随设置视图 v-if 挂载/卸载，
+ * 发现新版本的 toast 需跨面板重开去重（同版本只提示一次）。
+ */
+let lastNotifiedUpVersion: string | null = null;
+</script>
+
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 // 从瘦 subpath 导入：@forge/core 根入口 re-export 含 node:events 的 RPC 层，浏览器打包会炸
 import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
-import type { PiGetInfoResult } from '../bridge';
+import type { PiGetInfoResult, UpdaterSnapshot } from '../bridge';
 import { useToast } from '../composables/useToast';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
@@ -283,9 +291,6 @@ watch(activeTab, () => { void nextTick(moveThumb); });
 function onResize(): void { moveThumb(); }
 
 const forgeVersion = ref<string | null>(null);
-const updating = ref(false);
-const updateError = ref<string | null>(null);
-const updateOutput = ref<string | null>(null);
 
 async function loadPiInfo(): Promise<void> {
   try {
@@ -296,45 +301,244 @@ async function loadPiInfo(): Promise<void> {
   }
 }
 
-/** 更新内置组件：失败在分区内展示错误与更新器输出尾部（不弹 toast） */
-async function onUpdateComponents(): Promise<void> {
-  if (updating.value) return;
-  updating.value = true;
-  updateError.value = null;
-  updateOutput.value = null;
-  try {
-    // 直用 invoke：失败时需读取 data.output（call 会把非 0 信封压成 Error 丢字段）
-    const res = await window.forge.invoke('pi/updatePlugins');
-    if (res.code !== 0) {
-      updateError.value = res.message;
-      updateOutput.value = (res.data as { output?: string } | null)?.output ?? null;
-      return;
-    }
-    toast.success('更新完成');
-    await loadPiInfo();
-  } catch (e) {
-    updateError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    updating.value = false;
+// ===== 应用自更新（07 IN-S03）：发现新版 toast 一次 + 分区常驻；检查/下载/安装失败静默可重试 =====
+// 快照镜像：updater.stateChanged 到达即整体替换；失败（6003/6004/6005）不弹窗、不出现红色报错横幅
+const upSnapshot = ref<UpdaterSnapshot | null>(null);
+/** 检查在途本地标记（checkForUpdates invoke 往返；状态跃迁本身经事件推送） */
+const upChecking = ref(false);
+/** 「重启安装」确认弹窗显隐（fixed 遮罩 + 居中 box，IN-F03 弹窗确认语义） */
+const upConfirming = ref(false);
+/** quitAndInstall 在途标记（确认安装按钮 busy） */
+const upInstalling = ref(false);
+/** 安装失败（6005）后本地回到 downloaded 可重试态（后端 fail 收敛为 idle，快照仅保留 latestVersion） */
+const upInstallRetry = ref(false);
+/** 检查完成且无新版本：版本行内显示「✓ 已是最新」徽标（按钮仍保留，可再次手动检查） */
+const upCheckedUpToDate = ref(false);
+
+/**
+ * 快照落位 + 派生反应。
+ * - 发现新版本（status=found）：toast.info 一次，同版本不重复（记忆在模块级，跨面板重开不重复）。
+ * - 离开 downloaded 态收起确认条；新检查/下载周期开始清除安装重试标记。
+ */
+function applyUpSnapshot(snap: UpdaterSnapshot | null | undefined): void {
+  if (!snap || typeof snap.status !== 'string') return;
+  upSnapshot.value = snap;
+  // 调试日志：每次状态快照落位（事件推送 / invoke 返回）记录迁移与错误文本
+  upLog(
+    `state=${snap.status} current=${snap.currentVersion} latest=${snap.latestVersion ?? '-'}` +
+      ` progress=${snap.downloadProgress ?? '-'}` +
+      (snap.error ? ` error=${snap.error}` : ''),
+  );
+  // 离开「已是最新」态：发现新版本 / 下载 / 失败（idle 带 latest 或 error）时清除徽标
+  if (snap.status !== 'idle' || snap.latestVersion !== null || snap.error !== null) {
+    upCheckedUpToDate.value = false;
+  }
+  if (snap.status !== 'idle' && snap.status !== 'installing') {
+    upInstallRetry.value = false;
+  }
+  if (snap.status !== 'downloaded' && upConfirming.value) {
+    upConfirming.value = false;
+  }
+  if (snap.status === 'found' && snap.latestVersion && snap.latestVersion !== lastNotifiedUpVersion) {
+    lastNotifiedUpVersion = snap.latestVersion;
+    toast.info(`发现新版本 ${snap.latestVersion}`);
   }
 }
 
+/** 调试控制台（原型风格滚动日志）：展开可见，记录 updater 状态迁移 / 调用结果，用于排查更新链路 */
+const upDebugOn = ref(false);
+const upDebugLines = ref<string[]>([]);
+const upDebugScrollEl = ref<HTMLElement | null>(null);
+function upLog(line: string): void {
+  const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  upDebugLines.value.push(`[${ts}] ${line}`);
+  if (upDebugLines.value.length > 300) {
+    upDebugLines.value.splice(0, upDebugLines.value.length - 300);
+  }
+  // 新日志追加后自动滚到底，便于观察
+  void nextTick(() => {
+    const el = upDebugScrollEl.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+}
+
+/** 复制全部调试日志到剪贴板（Electron 渲染进程下 navigator.clipboard 可用，失败回退 execCommand） */
+async function onCopyDebugLog(): Promise<void> {
+  if (upDebugLines.value.length === 0) return;
+  const text = upDebugLines.value.join('\n');
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // 回退：临时 textarea + execCommand（极少数环境 clipboard API 不可用）
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    upLog(`copyDebugLog → 已复制 ${upDebugLines.value.length} 行`);
+  } catch (e) {
+    upLog(`copyDebugLog → 失败 ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** 调试控制台开关：由本地配置文件（userData/updater-debug.json）决定——普通用户不创建即不可见 */
+const upDebugEnabled = ref(false);
+async function loadUpDebugEnabled(): Promise<void> {
+  try {
+    const res = await call<{ enabled: boolean }>('app/getUpdateDebug');
+    upDebugEnabled.value = res.enabled;
+  } catch {
+    upDebugEnabled.value = false;
+  }
+}
+
+/** 分区常驻的「发现新版本」信息（found 之后有值；下载/安装失败后端保留该值供重试） */
+const upFoundVersion = computed<string | null>(() => upSnapshot.value?.latestVersion ?? null);
+
+/** 下载进度百分比（原型：版本行下方进度条数据源） */
+const upDownloadPct = computed<number>(() => Math.round(upSnapshot.value?.downloadProgress ?? 0));
+
+/** 主按钮形态：检查更新 → 更新（下载中 busy，进度走进度条）→ 重启安装 → 安装中…（busy 禁点） */
+interface UpBtnView {
+  action: 'check' | 'download' | 'install' | null;
+  label: string;
+  busy: boolean;
+}
+
+const upBtnView = computed<UpBtnView>(() => {
+  const snap = upSnapshot.value;
+  const status = snap?.status ?? 'idle';
+  const latest = snap?.latestVersion ?? null;
+  if (upChecking.value || status === 'checking') {
+    return { action: null, label: '检查中…', busy: true };
+  }
+  if (status === 'downloading') {
+    return { action: null, label: '更新', busy: true };
+  }
+  if (status === 'installing') {
+    return { action: null, label: '安装中…', busy: true };
+  }
+  if (status === 'downloaded' || (upInstallRetry.value && latest !== null)) {
+    return { action: 'install', label: '重启安装', busy: false };
+  }
+  if (latest !== null) {
+    return { action: 'download', label: '更新', busy: false };
+  }
+  return { action: 'check', label: '检查更新', busy: false };
+});
+
+/** 初始状态拉取（getState 快照还原；found 时按需补一次 toast） */
+async function refreshUpState(): Promise<void> {
+  try {
+    applyUpSnapshot(await call<UpdaterSnapshot>('updater/getState'));
+  } catch {
+    // 静默：快照缺失按未检查态展示
+  }
+}
+
+/** 检查更新（进入「关于」Tab 自动触发一次 + 按钮手动触发）；6003 静默回可重试态 */
+async function onCheckUpdates(): Promise<void> {
+  if (upChecking.value) return;
+  upChecking.value = true;
+  upLog('checkForUpdates → 发起检查');
+  try {
+    const res = await call<UpdaterSnapshot>('updater/checkForUpdates');
+    upLog(`checkForUpdates → 返回（state=${res.status}）`);
+    applyUpSnapshot(res);
+    // 检查完成且无新版本（idle 且无 error）→ 版本行显示「✓ 已是最新」徽标（按钮保留可重查）
+    upCheckedUpToDate.value = res.status === 'idle' && !res.latestVersion && !res.error;
+  } catch (e) {
+    // 检查失败（6003）：无打断性提示，分区保持可重试；失败原因入调试日志
+    upLog(`checkForUpdates → 失败 ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    upChecking.value = false;
+  }
+}
+
+/** 下载更新；下载进度经 updater.stateChanged 事件推送，6004 静默回「发现新版本 + 更新」可重试态 */
+async function onDownloadUpdate(): Promise<void> {
+  upLog('downloadUpdate → 发起下载');
+  try {
+    const res = await call<UpdaterSnapshot>('updater/downloadUpdate');
+    upLog(`downloadUpdate → 返回（state=${res.status}）`);
+    applyUpSnapshot(res);
+  } catch (e) {
+    // 下载失败（6004）：静默，失败快照已经事件落位（latestVersion 保留）
+    upLog(`downloadUpdate → 失败 ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** 确认后执行安装重启：成功即退出（视觉不再返回）；6005 静默回到 downloaded 可重试态 */
+async function onQuitAndInstall(): Promise<void> {
+  if (upInstalling.value) return;
+  upInstalling.value = true;
+  upConfirming.value = false;
+  upLog('quitAndInstall → 确认安装');
+  try {
+    // 直用 invoke：需按 code 分流（call 会把非 0 信封压成 Error 丢字段）
+    const res = await window.forge.invoke('updater/quitAndInstall');
+    if (res.code === 0) {
+      applyUpSnapshot(res.data as UpdaterSnapshot | null);
+    } else {
+      upLog(`quitAndInstall → 返回 code ${res.code}（${res.message}）`);
+      upInstallRetry.value = true;
+    }
+  } catch (e) {
+    upLog(`quitAndInstall → 失败 ${e instanceof Error ? e.message : String(e)}`);
+    upInstallRetry.value = true;
+  } finally {
+    upInstalling.value = false;
+  }
+}
+
+/** 主按钮点击：按派生态分发 */
+function onUpBtnClick(): void {
+  const action = upBtnView.value.action;
+  if (action === 'check') {
+    void onCheckUpdates();
+  } else if (action === 'download') {
+    void onDownloadUpdate();
+  } else if (action === 'install') {
+    upConfirming.value = true;
+  }
+}
+
+/** updater.stateChanged：整体替换快照（含下载进度步进） */
+function onUpStateChanged(payload: unknown): void {
+  applyUpSnapshot(payload as UpdaterSnapshot | null);
+}
+
+// 进入「关于」Tab 自动检查一次（PRD §3.4：检查随分区打开自动触发）
+watch(activeTab, (tab) => {
+  if (tab === 'about') void onCheckUpdates();
+});
+
 let unsubProviders: (() => void) | null = null;
+let unsubUpdater: (() => void) | null = null;
 
 onMounted(() => {
   void loadProviders();
   void loadModels();
   void loadPiInfo();
+  void refreshUpState();
+  void loadUpDebugEnabled();
   // 滑动选中块初始定位（含字体加载后宽度变化的一次校准）
   void nextTick(moveThumb);
   window.addEventListener('resize', onResize);
   unsubProviders = subscribe('model.providersChanged', () => {
     void loadProviders();
   });
+  unsubUpdater = subscribe('updater.stateChanged', onUpStateChanged);
 });
 
 onUnmounted(() => {
   unsubProviders?.();
+  unsubUpdater?.();
   if (deleteTimer) clearTimeout(deleteTimer);
   window.removeEventListener('resize', onResize);
 });
@@ -561,23 +765,68 @@ onUnmounted(() => {
       </section>
     </div>
 
-    <!-- 关于 Tab：版本更新（组件明细不展示，走日志与 updater-state） -->
+    <!-- 关于 Tab：版本更新（无独立标题；版本行直接承载「Forge 版本」+ 检查更新/更新/重启安装，发现新版行内展示 v0.1.0 → v0.2.0） -->
     <div class="about-body" v-if="activeTab === 'about'">
       <section class="settings-section update-section">
-        <div class="section-head">
-          <div>
-            <h2 class="section-title">版本更新</h2>
-          </div>
-          <button class="section-action" :disabled="updating" @click="onUpdateComponents">
-            {{ updating ? '更新中…' : '更新组件' }}
-          </button>
-        </div>
+        <!-- 版本行 + 同行右侧操作按钮；行占满到底（about-body 不限制宽度） -->
         <div class="version-row">
-          <span class="version-label">当前版本</span>
-          <span class="version-value">{{ forgeVersion ?? '—' }}</span>
+          <span class="version-label">Forge 版本</span>
+          <span class="version-value">v{{ forgeVersion ?? '—' }}</span>
+          <template v-if="upFoundVersion !== null">
+            <span class="version-arrow">→</span>
+            <span class="version-next"><span class="dot"></span>v{{ upFoundVersion }}</span>
+          </template>
+          <span class="version-spacer"></span>
+          <span class="version-actions">
+            <span v-if="upCheckedUpToDate" class="up-uptodate">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+              已是最新
+            </span>
+            <button
+              class="up-btn"
+              :class="{ 'is-cta': upBtnView.action !== 'check' }"
+              :disabled="upBtnView.busy"
+              @click="onUpBtnClick"
+            >{{ upBtnView.label }}</button>
+          </span>
         </div>
-        <div v-if="updateError" class="section-error">{{ updateError }}</div>
-        <pre v-if="updateOutput" class="update-output">{{ updateOutput }}</pre>
+        <!-- 下载进度（原型：版本行下方进度条；检查/下载/安装失败静默回可重试态） -->
+        <div v-if="upSnapshot?.status === 'downloading'" class="up-progress">
+          <div class="up-progress-meta"><span>正在下载 forge {{ upFoundVersion }}</span><b>{{ upDownloadPct }}%</b></div>
+          <div class="up-progress-track"><div class="up-progress-fill" :style="{ width: upDownloadPct + '%' }"></div></div>
+        </div>
+        <!-- 调试控制台（仅本地配置文件开启后可见；滚动日志展示 updater 状态迁移/调用结果/错误） -->
+        <div v-if="upDebugEnabled" class="up-debug">
+          <button class="up-debug-toggle" @click="upDebugOn = !upDebugOn">
+            {{ upDebugOn ? '收起调试日志' : '展开调试日志' }}
+          </button>
+          <div v-if="upDebugOn" class="up-debug-console">
+            <div class="up-debug-ver">
+              <span>当前 {{ forgeVersion ?? '—' }}</span>
+              <span>快照 {{ upSnapshot?.status ?? '—' }}</span>
+              <span v-if="upSnapshot?.error" class="up-debug-err">错误 {{ upSnapshot.error }}</span>
+              <span class="up-debug-spacer"></span>
+              <button class="up-debug-copy" :disabled="upDebugLines.length === 0" @click="onCopyDebugLog">复制全部</button>
+            </div>
+            <div v-if="upDebugLines.length === 0" class="up-debug-empty">暂无日志：进入「关于」Tab 后自动记录检查与状态迁移</div>
+            <div ref="upDebugScrollEl" class="up-debug-scroll">
+              <div v-for="(l, i) in upDebugLines" :key="i" class="up-debug-line">{{ l }}</div>
+            </div>
+          </div>
+        </div>
+        <!-- 重启安装确认弹窗（IN-F03）：fixed 遮罩 + 居中 box；取消停留当前版本，确认后关闭应用安装并自动重启 -->
+        <div v-if="upConfirming" class="up-confirm" role="dialog" aria-modal="true" @click.self="upConfirming = false">
+          <div class="up-confirm-box">
+            <div class="up-confirm-main">
+              <span class="up-confirm-title">安装 forge {{ upFoundVersion }}</span>
+              <span class="up-confirm-desc">关闭应用并安装更新，完成后自动重启。</span>
+            </div>
+            <div class="up-confirm-actions">
+              <button class="ghost small" @click="upConfirming = false">取消</button>
+              <button class="primary small" :disabled="upInstalling" @click="onQuitAndInstall">确认安装</button>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </div>
@@ -754,7 +1003,7 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
 }
 
-/* 「关于」Tab：单栏承载版本更新分区 */
+/* 「关于」Tab：单栏承载版本更新分区；不限制宽度——版本行拉满到底，右侧不留空 */
 .about-body {
   flex: 1;
   min-height: 0;
@@ -763,10 +1012,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 760px;
 }
-
-.about-body .update-section { max-width: 760px; }
 
 .section-action:disabled {
   opacity: 0.6;
@@ -776,40 +1022,306 @@ onUnmounted(() => {
 
 .version-row {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap; /* 窄窗口放不下时整行换行，避免右侧内容被截断显示半截 */
+  align-items: center;
   gap: 10px;
+  row-gap: 8px;
   padding: 10px 14px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-lg);
-  background: var(--card);
+  background: var(--muted);
+}
+
+/* 操作区（徽标 + 按钮）作为整体：行内放不下时整体换到下一行，不拆散 */
+.version-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  min-width: 0;
 }
 
 .version-label {
   font-size: 12.5px;
-  color: var(--muted-foreground);
+  color: var(--foreground);
 }
 
 .version-value {
   font-size: 14px;
   font-weight: 600;
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font-family: var(--font-mono);
 }
 
-.update-output {
-  margin: 0;
+/* 发现新版：版本行内「0.1.0 → 0.2.0」（原型 updater-prototype） */
+.version-arrow {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.version-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--brand);
+}
+
+.version-next .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: upPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes upPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand) 45%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+
+.version-spacer {
+  flex: 1;
+}
+
+/* 下载进度（原型：版本行下方进度条） */
+.up-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.up-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+.up-progress-meta b {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.up-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.up-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--brand) 72%, transparent);
+  transition: width 0.35s cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
+/* 调试控制台（展开可见，滚动日志——排查更新链路） */
+.up-debug {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.up-debug-toggle {
+  align-self: flex-start;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.up-debug-toggle:hover {
+  color: var(--brand);
+}
+
+.up-debug-console {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
   background: var(--muted);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  /* 调试控制台允许选中文本（覆盖 body 的 user-select: none），便于复制日志 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.up-debug-ver {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
+}
+
+.up-debug-spacer {
+  flex: 1;
+}
+
+.up-debug-copy {
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  border-radius: 6px;
+  padding: 2px 10px;
   font-size: 11.5px;
-  line-height: 1.55;
-  max-height: 160px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.up-debug-copy:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.up-debug-copy:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.up-debug-err {
+  color: var(--destructive);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.up-debug-empty {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+}
+
+.up-debug-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
   overflow-y: auto;
-  white-space: pre-wrap;
+  padding-right: 4px;
+}
+
+.up-debug-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--foreground);
   word-break: break-all;
+  /* 允许行内文本被拖选复制 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.up-btn {
+  flex-shrink: 0;
+  min-width: 84px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 500;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+/* 检查完成且无新版本：「✓ 已是最新」徽标（按钮仍保留可再次检查） */
+.up-uptodate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--success);
+}
+
+.up-uptodate svg {
+  width: 13px;
+  height: 13px;
+}
+
+.up-btn.is-cta {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-foreground);
+}
+
+.up-btn.is-cta:hover {
+  background: var(--brand-hover);
+  border-color: var(--brand-hover);
+  color: var(--brand-foreground);
+}
+
+.up-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}
+
+.up-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn var(--transition-base);
+}
+
+.up-confirm-box {
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-lg);
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.up-confirm-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.up-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.up-confirm-desc {
+  font-size: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+.up-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* 主题色板（通用 Tab 顶部：横向排布） */

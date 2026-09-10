@@ -56,6 +56,12 @@ import {
   updatePiExtensions,
   type PiUpdateResult,
 } from './pi/piRuntime.ts';
+import {
+  createAppUpdaterPort,
+  createUpdaterMethods,
+  type AppUpdaterPort,
+} from './pi/appUpdater.ts';
+import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
 export type MethodTable = Record<string, (params: unknown) => RpcResult | Promise<RpcResult>>;
@@ -90,6 +96,16 @@ export interface ForgeCoreDeps {
   forgeVersion?: string;
   /** 更新共享扩展的可注入端口（测试 mock）；缺省跑内置引擎 CLI 的 pi update --extensions */
   piUpdateExtensions?: () => Promise<PiUpdateResult>;
+  /** wu-07 IN-S03：应用自更新端口（main.ts 组装真实 electron-updater 注入）；
+   * 缺省 feed=null 的降级端口（updater/* 检查一律 6003，不触碰网络） */
+  appUpdater?: AppUpdaterPort;
+  /** QA-G1/G4：updater-state.json 路径（userData 目录下，main.ts 注入）。缺省 null=
+   * 手动更新成功后跳过 components 快照持久化、lastUpdateCheckAt 不回写，仅输出结构化日志
+   * （既有单测未注入该路径，行为保持兼容） */
+  updaterStatePath?: string;
+  /** 更新调试开关（main.ts 读 userData/updater-debug.json，enabled=true 时前端显示调试控制台）。
+   * 缺省 false=普通用户不可见 */
+  getUpdateDebugEnabled?: () => boolean;
 }
 
 /**
@@ -549,9 +565,32 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       if (!result.ok) {
         return { code: 6002, message: '组件更新失败', data: { output: result.output } };
       }
+      // QA-G1（AC-PI-005）：手动更新成功 → 读快照比对输出「来源=手动」结构化日志，
+      // 并以 readPiExtensionList 最新实体版本整体刷新 updater-state components 快照
+      //（recordManualComponentUpdate 绝不抛出；updaterStatePath 缺省 null=跳过持久化仅输出日志）
+      recordManualComponentUpdate({
+        statePath: deps.updaterStatePath ?? null,
+        agentDir,
+        logger: (line) => console.log('[startup-update]', line),
+      });
       return { code: 0, message: 'success', data: { output: result.output } };
     },
   };
+
+  // updater（07 IN-S03）：应用自更新 RPC（updater/getState | checkForUpdates | downloadUpdate |
+  // quitAndInstall，错误码 6003/6004/6005）。端口可注入（main.ts 组装真实 electron-updater 端口，
+  // feed 取 FORGE_GH_OWNER/FORGE_GH_REPO）；缺省（不注入 autoUpdaterLike）降级端口——
+  // 检查一律 6003，不触碰网络（dev 无 feed 场景）。状态跃迁（含下载进度步进）经共享
+  // eventBus 发 updater.stateChanged（FORGE_EVENTS 白名单已登记，主进程转发渲染进程）。
+  const updaterMethods: MethodTable = createUpdaterMethods(
+    deps.appUpdater ??
+      createAppUpdaterPort({
+        getCurrentVersion: () => deps.forgeVersion ?? '0.0.0-dev',
+        emit: (event, payload) => eventBus.emit(event, payload),
+        // QA-G4：检查成功完成回写 lastUpdateCheckAt（观测字段）；statePath 未注入则跳过
+        onCheckComplete: () => touchLastUpdateCheckAt(deps.updaterStatePath ?? null),
+      }),
+  );
 
   // wu-06：conversation/sendMessage 看门狗布防——发送期间监视主轮结束信号；
   // prompt 返回（完成/中止/抛错）即信号已到，finally 撤防。prompt 永不返回时
@@ -598,6 +637,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...modelApi.methods,
     ...subagentMethods,
     ...piMethods,
+    ...updaterMethods,
+    // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）
+    'app/getUpdateDebug': async () => ({
+      code: 0,
+      message: 'success',
+      data: { enabled: deps.getUpdateDebugEnabled?.() ?? false },
+    }),
     // 重写 cancelStream 为级联终止版本；sendMessage 加主轮看门狗布防
     'conversation/cancelStream': wrappedCancelStream,
     'conversation/sendMessage': wrappedSendMessage,

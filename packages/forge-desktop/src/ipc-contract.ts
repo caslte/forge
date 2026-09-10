@@ -11,6 +11,7 @@
  * - 主进程侧：见 `preload.ts`（bridge）与 `main.ts`（路由 + 事件转发）
  */
 import type { RpcResult, ConversationCompactedPayload } from '@forge/core';
+import type { AppUpdaterSnapshot } from './pi/appUpdater.ts';
 
 /** 全部可调用方法（= forge-core 各 Api 的 methods map 键并集） */
 export type ForgeMethod =
@@ -60,7 +61,13 @@ export type ForgeMethod =
   | 'subagent/queryOutput'
   // pi（07）
   | 'pi/getInfo'
-  | 'pi/updatePlugins';
+  | 'pi/updatePlugins'
+  | 'app/getUpdateDebug'
+  // updater（07 IN-S03 应用自更新）
+  | 'updater/getState'
+  | 'updater/checkForUpdates'
+  | 'updater/downloadUpdate'
+  | 'updater/quitAndInstall';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -103,7 +110,8 @@ export type ForgeEvent =
   | 'tool.error'
   | 'model.providersChanged'
   | 'subagent.updated'
-  | 'subagent.removed';
+  | 'subagent.removed'
+  | 'updater.stateChanged';
 
 /** 全部事件名运行时数组（主进程遍历注册转发，避免遗漏事件） */
 export const FORGE_EVENTS: readonly ForgeEvent[] = [
@@ -127,6 +135,7 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'model.providersChanged',
   'subagent.updated',
   'subagent.removed',
+  'updater.stateChanged',
 ];
 
 /** 子 Agent 信息（API 06 §0 业务对象；与 forge-ui types.ts 的 Subagent 字段一致） */
@@ -217,6 +226,18 @@ export interface PiGetInfoResult {
 export interface PiUpdatePluginsResult {
   output: string;
 }
+
+/** 自更新状态机（07 IN-S03）：idle → checking → found → downloading → downloaded → installing；失败回 idle */
+export type UpdaterStatus = AppUpdaterSnapshot['status'];
+
+/** updater/getState 响应 data（自更新状态快照，docs/api/07_pi.md §3.1） */
+export type UpdaterSnapshot = AppUpdaterSnapshot;
+
+/**
+ * updater.stateChanged 事件 payload（docs/api/07_pi.md §4）。
+ * 与 getState.data 同构（全局单例状态，无 sessionId）；任意跃迁都发（含下载进度步进）。
+ */
+export type UpdaterStateChangedPayload = AppUpdaterSnapshot;
 
 /**
  * conversation.compacted 事件 payload（P3-A）：一次上下文压缩完成。

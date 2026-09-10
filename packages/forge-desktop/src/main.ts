@@ -11,11 +11,17 @@
  * 单窗口（v1 MVP）；多窗口多会话为后续迭代。
  */
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createForgeCore, invoke, type MethodTable } from './createForgeCore.ts';
+import { createAppUpdaterPort, type AutoUpdaterLike } from './pi/appUpdater.ts';
 import { warmPiResourceLoader } from './pi/createPiAgentSessionFactory.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
+import { defaultPiAgentDir } from './pi/piRuntime.ts';
+import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
+import { defaultUpdaterStatePath } from './pi/updaterState.ts';
 import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT } from './ipc-contract.ts';
@@ -23,6 +29,19 @@ import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * electron-updater 是 CJS 且 autoUpdater 经 Object.defineProperty(getter) 导出，
+ * Node ESM 的 cjs-module-lexer 无法静态识别该命名导出（SyntaxError: Named export not found）。
+ * 经 createRequire 取真实 CJS 导出对象；类型仍以声明文件为准（typeof import）。
+ */
+const require = createRequire(import.meta.url);
+const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
+/**
+ * forge 产品版本：读包内 package.json（dist/../package.json）。
+ * 不能用 app.getVersion()——dev 未打包时 app 路径解析到 dist/（无 package.json），
+ * 会回退成 Electron 自身版本（如 40.9.3），导致关于页与更新器 currentVersion 错乱。
+ */
+const appVersion = (require('../package.json') as { version: string }).version;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -159,20 +178,107 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
   );
 }
 
+/** electron-updater autoUpdater 的最小端口适配（IN-S03）：方法/事件签名对齐 AutoUpdaterLike */
+class ElectronUpdaterAdapter implements AutoUpdaterLike {
+  checkForUpdates(): Promise<unknown> {
+    return autoUpdater.checkForUpdates();
+  }
+  downloadUpdate(): Promise<unknown> {
+    return autoUpdater.downloadUpdate();
+  }
+  quitAndInstall(): void {
+    // Windows NSIS：非静默安装（isSilent=false）→ 更新时弹出安装器窗口显示安装进度，
+    // 装完 --force-run 自动运行应用；成功则应用退出重启（不返回）
+    autoUpdater.quitAndInstall(false, true);
+  }
+  on(event: string, listener: (info: unknown) => void): unknown {
+    // electron-updater 的 on 收窄了事件名联合；端口侧放宽为 string，经断言对齐签名
+    type AutoUpdaterEvent = Parameters<typeof autoUpdater.on>[0];
+    return autoUpdater.on(event as AutoUpdaterEvent, listener as never);
+  }
+}
+
+/** 更新源（GitHub Releases）：FORGE_GH_OWNER/FORGE_GH_REPO 均存在才返回显式覆盖，
+ *  否则 null——打包产物回退 app-update.yml 内置 feed，dev 不装配（6003 静默） */
+function resolveUpdaterFeed(): { owner: string; repo: string } | null {
+  const owner = process.env.FORGE_GH_OWNER;
+  const repo = process.env.FORGE_GH_REPO;
+  return owner && repo ? { owner, repo } : null;
+}
+
+/** 更新调试开关：userData/updater-debug.json 存在且 enabled=true 才开启（仅维护者本地排查用，
+ *  普通用户不创建该文件即不可见）。每次调用实时读取，改文件后无需重启应用 */
+function readUpdateDebugEnabled(userDataPath: string): boolean {
+  try {
+    const raw = fs.readFileSync(path.join(userDataPath, 'updater-debug.json'), 'utf8');
+    const value = JSON.parse(raw) as { enabled?: unknown };
+    return value?.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 app.whenReady().then(() => {
   const storePath = path.join(app.getPath('userData'), 'forge-store.json');
+  // QA-G1/G4：updater-state.json（手动更新 components 快照 + lastUpdateCheckAt 持久化路径）
+  const updaterStatePath = defaultUpdaterStatePath(app.getPath('userData'));
   // P3-D：Windows 下优先用 safeStorage（DPAPI）持久化密钥；不可用时回退环境变量适配器
   const keychain = new SafeStorageKeychainAdapter(
     path.join(app.getPath('userData'), 'forge-keyvault.json'),
     () => safeStorage,
   );
   keychain.restoreEnv();
+  // IN-S03：真实 electron-updater 装配。feed 来源两路：
+  // - env（FORGE_GH_OWNER/FORGE_GH_REPO）→ setFeedURL 显式覆盖（发版/测试可指定仓库）；
+  // - env 未配置但为打包产物（app.isPackaged）→ 不 setFeedURL，electron-updater 回退
+  //   app-update.yml 内置 publish 配置（即 electron-builder.yml 填的仓库）；
+  // - dev（未打包且无 env）→ 不装配 adapter，checkForUpdates 一律 6003 由 UI 静默处理。
+  // 手动下载模式：checkForUpdates 只发现，下载由 updater/downloadUpdate 触发（进度经事件推送）。
+  const updaterFeed = resolveUpdaterFeed();
+  autoUpdater.autoDownload = false;
+  if (updaterFeed) {
+    autoUpdater.setFeedURL({
+      provider: 'github',
+      owner: updaterFeed.owner,
+      repo: updaterFeed.repo,
+      // 当前默认私有仓库：electron-updater 仅在此开关下读取 GH_TOKEN/GITHUB_TOKEN 并走
+      // PrivateGitHubProvider（GitHub API 带认证）；公开后移除 private 字段回退公开 feed。
+      // 注：打包产物未设 env 时回退 app-update.yml 内置 publish（electron-builder.yml 同样
+      // 带 private: true），两条路径行为一致。
+      private: true,
+    });
+  }
+  // eventBus 由 createForgeCore 返回，端口 emit 先以闭包晚绑定（跃迁都发生在组装完成之后）
+  let coreEventBus: NodeJS.EventEmitter | null = null;
+  const appUpdater = createAppUpdaterPort({
+    getCurrentVersion: () => appVersion,
+    autoUpdaterLike: updaterFeed || app.isPackaged ? new ElectronUpdaterAdapter() : null,
+    emit: (event, payload) => coreEventBus?.emit(event, payload),
+    logger: (line) => console.log('[updater]', line),
+    // QA-G4：检查成功（code 0）后回写 updater-state.json 的 lastUpdateCheckAt（观测字段）
+    onCheckComplete: () => touchLastUpdateCheckAt(updaterStatePath),
+  });
   const { methodTable, eventBus } = createForgeCore(storePath, {
     keychain,
     // 设置页「版本更新」展示用产品版本
-    forgeVersion: app.getVersion(),
+    forgeVersion: appVersion,
+    // IN-S03：应用自更新端口（updater/* RPC + updater.stateChanged 事件）
+    appUpdater,
+    // QA-G1：手动组件更新成功后刷新 updater-state components 快照（缺省 null=跳过持久化）
+    updaterStatePath,
+    // 更新调试开关（userData/updater-debug.json，实时读取；false=普通用户不可见调试控制台）
+    getUpdateDebugEnabled: () => readUpdateDebugEnabled(app.getPath('userData')),
   });
+  coreEventBus = eventBus;
   registerIpc(methodTable, eventBus);
+
+  // IN-S03：启动自动检查一次更新（fire-and-forget；失败静默，错误经 updater.stateChanged 传递）
+  const updaterCheck = methodTable['updater/checkForUpdates'];
+  if (updaterCheck) {
+    void Promise.resolve()
+      .then(() => updaterCheck({}))
+      .catch(() => {});
+  }
 
   // 首条消息卡顿修复：项目打开即后台预热 pi 扩展加载（jiti 冷编译 3~9s 不再落在
   // 首条发送路径上）；启动时自动打开首个项目也会触发 project.opened，单点覆盖
@@ -180,6 +286,17 @@ app.whenReady().then(() => {
     const opened = (payload as { path?: unknown }).path;
     if (typeof opened === 'string' && opened !== '') void warmPiResourceLoader(opened);
   });
+
+  // 模块 07：首启静默预装推荐组件 + 版本变化联动更新（IN-F02/IN-F04）
+  // 后台 fire-and-forget，不阻塞启动；编排内部绝不抛出，仅结构化日志（无 UI 提示）
+  void createStartupUpdate({
+    statePath: updaterStatePath,
+    agentDir: defaultPiAgentDir(),
+    currentVersion: appVersion,
+    logger: (line) => console.log('[startup-update]', line),
+  })
+    .run()
+    .catch(() => {});
 
   const win = createWindow(!!process.env.FORGE_DEV_SERVER_URL);
   const devUrl = process.env.FORGE_DEV_SERVER_URL;

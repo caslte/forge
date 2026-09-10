@@ -1,15 +1,17 @@
 {
   "name": "@forge/desktop",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "private": true,
-  "description": "forge 桌面壳：Electron 窗口/托盘/单例/原生对话框/通知/自动更新（骨架，后续工作单元实现）",
+  "description": "forge",
   "type": "module",
   "main": "./dist/main.js",
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --test"
+    "test": "node --experimental-strip-types --test",
+    "dist:dir": "npm run build -w @forge/ui && npm run build && electron-builder --dir --config electron-builder.yml --publish never",
+    "dist": "npm run build -w @forge/ui && npm run build && electron-builder --config electron-builder.yml --publish never"
   },
   "engines": {
     "node": ">=22"
@@ -18,10 +20,12 @@
     "@earendil-works/pi-ai": "0.84.3",
     "@earendil-works/pi-coding-agent": "0.84.3",
     "@forge/core": "*",
-    "@forge/extensions": "*"
+    "@forge/extensions": "*",
+    "electron-updater": "^6.6.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "electron": "^40.9.3"
+    "electron": "^40.9.3",
+    "electron-builder": "^25.1.8"
   }
 }

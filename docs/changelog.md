@@ -1,5 +1,17 @@
 # 变更日志
 
+## v3.61 (功能：模块 07 IN-S01~04 交付——安装包、静默预装、应用自更新、组件联动更新)
+
+- dev-flow run `20260908164205` 完成（5 WU：startup-state / updater-rpc / updater-ui / updater-e2e / packaging；D0~D8 全过，QA 三轮终审 PASS）。
+- 壳层基础（IN-S02/IN-S04）：`updater-state.json`（userData，schemaVersion/lastRunForgeVersion/preinstallDone/preinstallDoneAt/lastUpdateCheckAt/components，原子写+损坏重建）；内置推荐组件清单 10 个；首启静默预装（settings.packages 补缺只增不删，经内置 CLI `pi install`）与 forge 版本变化联动更新（`pi update --extensions`，失败静默保留旧标志）；main.ts 启动后台编排 fire-and-forget 不阻塞启动。
+- 应用自更新（IN-S03 后端）：集成 electron-updater（GitHub Releases feed）；`updater/getState|checkForUpdates|downloadUpdate|quitAndInstall` 四方法 + `updater.stateChanged` 事件（FORGE_EVENTS 白名单登记，回归锚点见测试）；错误码 6003/6004/6005；启动自动检查；feed 未配置静默降级不触碰网络；手动更新成功回写 components 快照 +「包名 旧→新 (来源=手动)」结构化日志（QA G1）；检查完成回写 lastUpdateCheckAt（QA G4）。
+- 应用自更新（IN-S03 前端）：设置页「关于」Tab 自更新交互——分区打开自动检查 + 手动检查、发现新版 toast 一次 + 分区常驻「发现新版本 + 更新按钮」、下载进度百分比、下载完成「重启安装」→ **居中确认弹窗**（fixed 遮罩 + 居中 box，标题含新版本号 +「关闭应用并安装更新，完成后自动重启。」+ 取消/确认安装，取消停留当前版本；QA G6）；检查/下载/安装失败静默可重试。
+- 安装包（IN-S01）：electron-builder NSIS per-user（oneClick + perMachine=false，免管理员）；`dist`/`dist:dir` 脚本；NSIS 实测产出 forge-0.1.0-x64-setup.exe + latest.yml + app-update.yml（发布前替换 publish owner/repo 占位）。
+- E2E：`updater.spec.ts` E-IN-001~004（发现新版 toast 一次+常驻、下载进度→确认弹窗→quitAndInstall 调用捕获、检查失败静默、无新版/后台更新无提示无「组件/插件」字样——QA G3）；settings.spec 9/9 回归。
+- 验证：typecheck 三包 0 错；单测 core 365 / desktop 223（+31 模块新增）/ ui 178 全过；E2E settings 9/9 + updater 4/4；smoke 为 HEAD 存量已知失败（v3.52 有案）。
+- 文档同步（QA G2）：coverage-matrix AC-PI-004 补 manual 标注 + 发布前 manual checklist 第 6 项；B2 备注更正白名单回归锚点（appUpdater.test.ts）。
+- 未提交：本 run 全部改动在工作区，待用户决定提交。
+
 ## v3.60 (功能：AI 回复改动文件汇总卡片 + 真实 pi 会话 diff 渲染修复)
 
 - 交互原型：`prototypes/changed-files-prototype.html`（流式渐进 / 静态折叠 / 展开态 / 无改动轮次四场景，令牌取自 design-tokens.css）。用户确认：卡片默认折叠、diff 带行号、不出现引导性收尾文案、卡片位于轮末 footer 之下。

@@ -47,7 +47,12 @@ export type ForgeMethod =
   | 'git/getBranchInfo'
   | 'git/switchBranch'
   | 'pi/getInfo'
-  | 'pi/updatePlugins';
+  | 'pi/updatePlugins'
+  | 'app/getUpdateDebug'
+  | 'updater/getState'
+  | 'updater/checkForUpdates'
+  | 'updater/downloadUpdate'
+  | 'updater/quitAndInstall';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -70,7 +75,8 @@ export type ForgeEvent =
   | 'model.providersChanged'
   | 'subagent.updated'
   | 'subagent.removed'
-  | 'git.branchChanged';
+  | 'git.branchChanged'
+  | 'updater.stateChanged';
 
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
 export interface ForgeResult<T = unknown> {
@@ -165,6 +171,36 @@ export interface PiGetInfoResult {
 export interface PiUpdatePluginsResult {
   output: string;
 }
+
+/** app/getUpdateDebug 响应 data（本地配置文件开启后返回 true——调试控制台仅对开发/维护者可见） */
+export interface GetUpdateDebugResult {
+  enabled: boolean;
+}
+
+/** 自更新状态机（07 IN-S03）：idle → checking → found → downloading → downloaded → installing；失败回 idle。与 @forge/desktop ipc-contract 同步 */
+export type UpdaterStatus =
+  | 'idle'
+  | 'checking'
+  | 'found'
+  | 'downloading'
+  | 'downloaded'
+  | 'installing';
+
+/** updater/getState 响应 data（自更新状态快照，docs/api/07_pi.md §3.1）。与 @forge/desktop ipc-contract 同步 */
+export interface UpdaterSnapshot {
+  status: UpdaterStatus;
+  /** 当前 forge 版本 */
+  currentVersion: string;
+  /** 检测到的新版本号（found 之后有值） */
+  latestVersion: string | null;
+  /** 下载进度 0-100（downloading 时有值） */
+  downloadProgress: number | null;
+  /** 最近一次失败原因（静默展示用，不主动弹错） */
+  error: string | null;
+}
+
+/** updater.stateChanged 事件 payload：与 getState.data 同构（全局单例状态，无 sessionId）；任意跃迁都发（含下载进度步进） */
+export type UpdaterStateChangedPayload = UpdaterSnapshot;
 
 /** preload 注入的 window.forge 桥 */
 export interface ForgeBridge {

@@ -1,0 +1,44 @@
+# electron-builder 打包配置（IN-S01 / AC-IN-001/003）
+# 产物：NSIS per-user 安装包（win-unpacked 冒烟 + release/*.exe）+ latest.yml
+# 注意：publish.owner/repo 决定安装包内 app-update.yml 内嵌的更新 feed（electron-updater 运行时读取）。
+#       仓库必须 public（或另建公开的 release 仓库只放安装包），私有仓库用户无法自动下载更新。
+appId: dev.forge.desktop
+productName: forge
+directories:
+  # 默认输出目录是 dist，会与 tsc 产物 dist/ 冲突，改为 release/
+  output: release
+files:
+  - dist/**/*
+  - package.json
+asar: true
+# UI 产物放在 resources/forge-ui/dist（asar 之外）：
+# main.ts 生产模式按 __dirname/../../forge-ui/dist/index.html 加载
+# （asar 内 dist → 回退两级 → resources/forge-ui/dist），ui 已配置 base: './' 适配 loadFile
+extraResources:
+  - from: ../forge-ui/dist
+    to: forge-ui/dist
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # v1 不做代码签名（未配置 signtoolOptions/certificateSubjectName）
+nsis:
+  # 安装向导模式（非一键）：首次安装可选安装目录、生成快捷方式。
+  # 自动更新配合 main.ts quitAndInstall(isSilent=false)：更新时弹出安装器窗口显示安装进度。
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # 快捷方式：开始菜单必建，桌面快捷方式默认创建
+  createStartMenuShortcut: true
+  createDesktopShortcut: true
+  shortcutName: forge
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+publish:
+  provider: github
+  owner: caslte
+  repo: forge
+  # 当前默认私有仓库：此开关让 electron-updater 运行时读取 GH_TOKEN 走
+  # PrivateGitHubProvider（GitHub API 带认证）。仓库公开后删除 private 字段，
+  # 即自动回退公开 feed（无 token 时同样兼容，见 main.ts resolveUpdaterFeed 注释）。
+  private: true
