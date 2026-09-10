@@ -52,7 +52,7 @@ const diffs = computed(() => {
 </script>
 
 <template>
-  <div :class="['tool-calls', `tool-${event.status}`, { open }]">
+  <div :class="['tool-calls', `tool-${event.status}`, { open, 'has-diff': !hideDiff && diffs.length > 0 }]">
     <button class="tool-calls-head" @click="open = !open">
       <svg class="tc-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="9 6 15 12 9 18" />
@@ -93,6 +93,12 @@ const diffs = computed(() => {
   align-self: flex-start;
   max-width: 94%;
   min-width: 0;
+}
+
+/* 含 diff 时顶满整行（diff 并排双栏需要宽度；纯文本卡片保持收窄） */
+.tool-calls.has-diff {
+  width: 100%;
+  max-width: 100%;
 }
 
 .tool-calls-head {

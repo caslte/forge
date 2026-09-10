@@ -83,7 +83,8 @@ function toggleRow(path: string): void {
 <style scoped>
 .changed-files {
   align-self: flex-start;
-  max-width: 94%;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 12px;

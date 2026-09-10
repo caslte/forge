@@ -170,7 +170,7 @@ function isToolMessage(m: ConversationMessage): boolean {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 94%;
+  max-width: 100%;
 }
 .tool-group-diff {
   background: var(--card);
