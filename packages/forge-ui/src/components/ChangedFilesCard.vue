@@ -68,6 +68,7 @@ function toggleRow(path: string): void {
               <span v-if="file.parts.length > 1" class="hunk-tag">hunk {{ i + 1 }}/{{ file.parts.length }}</span>
               <DiffView
                 :file-path="file.parts.length > 1 ? `hunk ${i + 1}/${file.parts.length}` : null"
+                :highlight-path="file.path"
                 :old-string="part.oldText"
                 :new-string="part.newText"
               />

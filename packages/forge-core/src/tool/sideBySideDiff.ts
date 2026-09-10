@@ -14,6 +14,8 @@
  * - 两者皆空 → 空列表
  */
 
+import hljs from 'highlight.js';
+
 /** 单侧单元格类型 */
 export interface SideBySideCell {
   type: 'equal' | 'removed' | 'added';
@@ -138,4 +140,84 @@ function removedOnly(lines: string[]): SideBySideRow[] {
     left: { type: 'removed' as const, text, line: idx + 1 },
     right: null,
   }));
+}
+
+/** 文件扩展名到 highlight.js 语言的映射（与 markdown 高亮白名单对齐） */
+const EXT_TO_HLJS_LANG: Record<string, string> = {
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  jsx: 'javascript',
+  ts: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  tsx: 'typescript',
+  json: 'json',
+  html: 'xml',
+  htm: 'xml',
+  xml: 'xml',
+  vue: 'xml',
+  css: 'css',
+  scss: 'css',
+  less: 'css',
+  sh: 'bash',
+  bash: 'bash',
+  ps1: 'powershell',
+  py: 'python',
+  java: 'java',
+  go: 'go',
+  rs: 'rust',
+  c: 'c',
+  h: 'c',
+  cpp: 'cpp',
+  hpp: 'cpp',
+  cs: 'csharp',
+  sql: 'sql',
+  yaml: 'yaml',
+  yml: 'yaml',
+  md: 'markdown',
+};
+
+/** 超长单行跳过高亮直接转义，避免 hljs 在压缩行上卡顿 */
+const HIGHLIGHT_MAX_LINE = 2000;
+
+/**
+ * 按文件路径识别代码语言（供 Diff 单行高亮用）。
+ * @param filePath 文件路径（可为 null；hunk 标签等无扩展名返回 undefined）
+ * @returns highlight.js 语言名，未知扩展名/无路径时返回 undefined（纯文本展示）
+ */
+export function detectDiffLanguage(filePath: string | null | undefined): string | undefined {
+  if (!filePath) return undefined;
+  const name = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return undefined;
+  const lang = EXT_TO_HLJS_LANG[name.slice(dot + 1).toLowerCase()];
+  if (!lang) return undefined;
+  return hljs.getLanguage(lang) ? lang : undefined;
+}
+
+/** 转义 HTML 特殊字符（无语言/降级时纯文本展示用） */
+function escapeDiffHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * 高亮 Diff 单行文本为可 v-html 的安全 HTML。
+ * @param line 单行源码（不含换行）
+ * @param language detectDiffLanguage 的返回值；undefined 时仅转义
+ * @returns 转义后或 hljs 高亮后的 HTML（hljs 输出已转义，可直接 v-html）
+ */
+export function highlightDiffLine(line: string, language: string | undefined): string {
+  if (line === '') return '';
+  if (!language || line.length > HIGHLIGHT_MAX_LINE) return escapeDiffHtml(line);
+  try {
+    if (!hljs.getLanguage(language)) return escapeDiffHtml(line);
+    return hljs.highlight(line, { language }).value;
+  } catch {
+    return escapeDiffHtml(line);
+  }
 }

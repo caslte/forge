@@ -74,6 +74,7 @@ const diffs = computed(() => {
           :key="i"
           class="tc-diff"
           :file-path="diff.showPath ? diff.filePath : null"
+          :highlight-path="diff.filePath"
           :old-string="diff.oldString"
           :new-string="diff.newString"
         />
