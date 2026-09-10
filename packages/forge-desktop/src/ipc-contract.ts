@@ -85,6 +85,7 @@ export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
 /** preload ↔ main 附件通道（统一给路径：嗅探 + 截图落盘 + 缩略图读取） */
 export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';
 export const IPC_CLIPBOARD_SAVE_IMAGE = 'forge:clipboard:saveImage';
+export const IPC_CLIPBOARD_SAVE_TEXT = 'forge:clipboard:saveText';
 export const IPC_FILE_READ_IMAGE = 'forge:file:readImage';
 /** @ 补全候选：项目内白名单文件绝对路径列表（v3.30 输入框 @ 弹文件补全） */
 export const IPC_FILE_LIST_PROJECT = 'forge:file:listProjectFiles';
@@ -307,6 +308,8 @@ export interface ForgeFile {
   scanAttachments(paths: string[]): Promise<Array<{ path: string; name: string; flagged: boolean }>>;
   /** 粘贴截图落盘：base64 图片写入系统临时目录，返回真实路径；失败返回 null */
   savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null>;
+  /** 超长粘贴文本落盘：纯文本写入系统临时目录 txt，返回真实路径；失败返回 null */
+  savePastedText(text: string): Promise<{ path: string; name: string } | null>;
   /** 磁盘图片读为 data URL（仅输入框缩略图/预览用）；缺失/超大/非图片返回 null */
   readImage(path: string): Promise<string | null>;
 }

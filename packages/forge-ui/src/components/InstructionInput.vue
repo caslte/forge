@@ -11,6 +11,7 @@ import {
 } from '../utils/slashCommand';
 import { baseName, isImagePath } from '../attachmentText';
 import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
+import { shouldConvertPasteToFile } from '../utils/pasteText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
@@ -840,32 +841,77 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
 }
 
 /**
- * 粘贴事件：剪贴板含文本时优先走默认文本粘贴（如从 Excel 复制）；
- * 否则拦截文件/截图为路径附件。
+ * 粘贴事件（三路）：
+ * - 剪贴板无文本：拦截文件/截图为路径附件；
+ * - 纯文本超长（>PASTE_TEXT_TO_FILE_CHARS）：拦截并落盘临时 txt，转附件 chip；
+ * - 其余文本：默认粘贴（如从 Excel 复制的小表）。
  */
 async function onPaste(ev: ClipboardEvent): Promise<void> {
   if (inputLocked.value) return;
   const cd = ev.clipboardData;
   if (!cd) return;
-  if (cd.getData('text/plain').trim() !== '') return;
-  const files: File[] = [];
-  for (const item of cd.items) {
-    if (item.kind === 'file') {
-      const f = item.getAsFile();
-      if (f) files.push(f);
+  const pastedText = cd.getData('text/plain');
+  if (pastedText.trim() === '') {
+    const files: File[] = [];
+    for (const item of cd.items) {
+      if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
     }
+    if (files.length === 0) return;
+    ev.preventDefault();
+    const diskPaths: string[] = [];
+    for (const f of files) {
+      try {
+        await collectFile(f, diskPaths);
+      } catch (e) {
+        showAttachError(e instanceof Error ? e.message : '图片读取失败');
+      }
+    }
+    await addPaths(diskPaths);
+    return;
   }
-  if (files.length === 0) return;
+  if (!shouldConvertPasteToFile(pastedText)) return;
   ev.preventDefault();
-  const diskPaths: string[] = [];
-  for (const f of files) {
-    try {
-      await collectFile(f, diskPaths);
-    } catch (e) {
-      showAttachError(e instanceof Error ? e.message : '图片读取失败');
-    }
+  await convertPastedTextToFile(pastedText);
+}
+
+/**
+ * 超长粘贴文本落盘转附件：主进程写临时 txt → addPaths（白名单+密钥嗅探）→ chip。
+ * 落盘失败/附件位满时降级：原文仍在剪贴板，提示用户分段粘贴（内容优先不丢）。
+ */
+async function convertPastedTextToFile(pastedText: string): Promise<void> {
+  let saved: { path: string; name: string } | null = null;
+  try {
+    saved = await window.forge.file.savePastedText(pastedText);
+  } catch {
+    saved = null;
   }
-  await addPaths(diskPaths);
+  if (!saved) {
+    insertTextAtCaret(pastedText);
+    showAttachError('超长文本转附件失败，已直接粘贴');
+    return;
+  }
+  const ok = await addPaths([saved.path]);
+  if (!ok) {
+    showAttachError('附件已满或格式受限，超长文本未转存，请分段粘贴');
+  }
+}
+
+/** 光标处手动插入文本（落盘失败降级用，等价默认粘贴；超限由下次 onInput 截断） */
+function insertTextAtCaret(insertion: string): void {
+  const el = textareaRef.value;
+  const caret = el ? (el.selectionStart ?? text.value.length) : text.value.length;
+  const end = el ? (el.selectionEnd ?? caret) : caret;
+  text.value = text.value.slice(0, caret) + insertion + text.value.slice(end);
+  autoGrow();
+  nextTick(() => {
+    if (!el) return;
+    el.focus();
+    const pos = caret + insertion.length;
+    el.setSelectionRange(pos, pos);
+  });
 }
 
 /** 拖拽悬停高亮态 */

@@ -227,6 +227,8 @@ export interface ForgeBridge {
     scanAttachments(paths: string[]): Promise<Array<{ path: string; name: string; flagged: boolean }>>;
     /** 粘贴截图落盘到系统临时目录，返回真实路径；失败返回 null */
     savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null>;
+    /** 超长粘贴文本落盘为临时 txt，返回真实路径；失败返回 null */
+    savePastedText(text: string): Promise<{ path: string; name: string } | null>;
     /** 磁盘图片读为 data URL（仅缩略图/预览用）；缺失/超大/非图片返回 null */
     readImage(path: string): Promise<string | null>;
     /** @ 补全候选：项目内白名单文件绝对路径（BFS 浅层优先，上限 2000）；项目缺失/不可读返回 [] */

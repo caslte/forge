@@ -22,9 +22,9 @@ import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
 import { defaultPiAgentDir } from './pi/piRuntime.ts';
 import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 import { defaultUpdaterStatePath } from './pi/updaterState.ts';
-import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles } from './attachments.ts';
+import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -161,6 +161,17 @@ function registerIpc(methodTable: MethodTable, eventBus: NodeJS.EventEmitter): v
     }
     try {
       return savePasteImage(base64Data, typeof ext === 'string' ? ext : 'png');
+    } catch {
+      return null;
+    }
+  });
+  // 超长粘贴文本落盘：大文本不进输入框，先写成临时 txt 再给路径
+  ipcMain.handle(IPC_CLIPBOARD_SAVE_TEXT, (_e, text: unknown) => {
+    if (typeof text !== 'string' || text === '') {
+      return null;
+    }
+    try {
+      return savePastedText(text);
     } catch {
       return null;
     }

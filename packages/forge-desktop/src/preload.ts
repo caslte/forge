@@ -19,6 +19,7 @@ import {
   IPC_SHELL_OPEN_PATH,
   IPC_ATTACHMENT_SCAN,
   IPC_CLIPBOARD_SAVE_IMAGE,
+  IPC_CLIPBOARD_SAVE_TEXT,
   IPC_FILE_READ_IMAGE,
   IPC_FILE_LIST_PROJECT,
   type ForgeMethod,
@@ -65,6 +66,9 @@ const fileControl = {
   },
   async savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null> {
     return ipcRenderer.invoke(IPC_CLIPBOARD_SAVE_IMAGE, base64Data, ext) as Promise<{ path: string; name: string } | null>;
+  },
+  async savePastedText(text: string): Promise<{ path: string; name: string } | null> {
+    return ipcRenderer.invoke(IPC_CLIPBOARD_SAVE_TEXT, text) as Promise<{ path: string; name: string } | null>;
   },
   async readImage(p: string): Promise<string | null> {
     return ipcRenderer.invoke(IPC_FILE_READ_IMAGE, p) as Promise<string | null>;

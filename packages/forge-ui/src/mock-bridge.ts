@@ -760,6 +760,7 @@ const bridge: ForgeBridge = {
     scanAttachments: async (paths) =>
       paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() ?? p, flagged: false })),
     savePasteImage: async () => null,
+    savePastedText: async () => null,
     readImage: async () => null,
     // 浏览器 dev/e2e 无真实盘：固定小清单，@ 补全链路可走通（本地过滤逻辑在渲染层）
     listProjectFiles: async () => [
