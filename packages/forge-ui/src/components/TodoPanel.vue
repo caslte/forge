@@ -24,14 +24,27 @@
   - 无 in_progress（全部完成 / 无中状态）时：滚到最后一行，让用户看到最终状态
   - 触发时机：初次挂载 / 折叠→展开 / 布局变化（in_progress 出现/消失/换 id、任务总数变化）
   - 函数内部检查目标行是否已可视，已可视则 no-op——不抢用户手动滚动位置
+
+  全部完成自动收起（用户需求 2026-10）：
+  - visible 非空且全 completed → 停留 TODO_AUTO_COLLAPSE_DELAY_MS（看清末态 ✓ +
+    数字翻滚）→ 自动折叠（复用 todo-collapse 200ms 高度+透明度动画）
+    → 间隔 TODO_AUTO_HIDE_DELAY_MS → 自动隐藏（todo-panel-hide 260ms 淡出+下沉，
+    播完后从 DOM 卸载，不占位）
+  - 新任务到达（出现 pending/in_progress）→ 取消待触发定时器，已自动折叠的展开、
+    已隐藏的重新出现（默认展开）
+  - 用户手动点头部折叠/展开 → 取消待触发的自动定时器（本次快照不再自动收起，
+    以手动意图为准）；折叠/隐藏状态均按 sessionId 内存隔离
 -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { Ref } from 'vue';
 import {
   formatTodoRow,
+  isAllCompleted,
   selectVisibleTasks,
   shouldRenderPanel,
+  TODO_AUTO_COLLAPSE_DELAY_MS,
+  TODO_AUTO_HIDE_DELAY_MS,
   type TodoSnapshot,
 } from '../utils/todoPanel';
 
@@ -71,12 +84,60 @@ const counts = computed(() => {
 });
 /** 可见性门（visible=0 → false，面板卸载） */
 const isVisible = computed(() => shouldRenderPanel(visibleTasks.value));
+/** 全部完成（自动收起的触发条件：非空且全 completed） */
+const allCompleted = computed(() => isAllCompleted(visibleTasks.value));
+/** 自动隐藏态：按 sessionId 内存维护（true = 已播完隐藏动画并卸载） */
+const dismissedBySession = ref<Map<string, boolean>>(new Map());
+const dismissed = computed(() => {
+  if (!props.sessionId) return false;
+  return dismissedBySession.value.get(props.sessionId) ?? false;
+});
+/** 实际渲染门（含自动隐藏；离开动画由外层 todo-panel-hide Transition 承载） */
+const effectiveVisible = computed(() => isVisible.value && !dismissed.value);
 /** 面板头部 chevron（折叠态 ▸ / 展开态 ▾） */
 const chevron = computed(() => (collapsed.value ? '▸' : '▾'));
 
-/** 切换折叠：按 sessionId 维护折叠状态 */
+/** 由自动流程置起折叠的会话（用于区分手动折叠：仅自动折叠在新任务到达时自动展开） */
+const autoFoldedSessions = new Set<string>();
+let collapseTimer: ReturnType<typeof setTimeout> | null = null;
+let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearAutoTimers(): void {
+  if (collapseTimer !== null) {
+    clearTimeout(collapseTimer);
+    collapseTimer = null;
+  }
+  if (hideTimer !== null) {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+}
+
+function setCollapsedFor(sid: string, value: boolean): void {
+  const newMap = new Map(collapsedBySession.value);
+  newMap.set(sid, value);
+  collapsedBySession.value = newMap;
+}
+
+function setDismissedFor(sid: string, value: boolean): void {
+  const newMap = new Map(dismissedBySession.value);
+  newMap.set(sid, value);
+  dismissedBySession.value = newMap;
+}
+
+function armHideTimer(sid: string): void {
+  if (hideTimer !== null) clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    hideTimer = null;
+    setDismissedFor(sid, true);
+  }, TODO_AUTO_HIDE_DELAY_MS);
+}
+
+/** 切换折叠：按 sessionId 维护折叠状态；手动操作取消待触发的自动收起 */
 function toggleCollapsed(): void {
   if (!props.sessionId) return;
+  clearAutoTimers();
+  autoFoldedSessions.delete(props.sessionId);
   const next = !collapsed.value;
   const newMap = new Map(collapsedBySession.value);
   newMap.set(props.sessionId, next);
@@ -137,7 +198,69 @@ function ensureTargetRowVisible(): void {
 // 初次挂载：collapsed=true 时 ul 未挂载，下一次展开由 watch 接手
 onMounted(() => {
   void nextTick(ensureTargetRowVisible);
+  armAutoFoldIfNeeded();
 });
+
+onBeforeUnmount(() => {
+  clearAutoTimers();
+});
+
+/**
+ * 任务内容签名（id + status 序列）：任务增删/状态流转即变化，用于重估自动收起。
+ * 仅用 id + status（不含 subject/activeForm），避免同态文本编辑误触发重计时。
+ */
+function tasksKey(): string {
+  return visibleTasks.value.map((t) => `${t.id}:${t.status}`).join(',');
+}
+
+/** 按当前快照决定是否挂起自动折叠→隐藏；条件不满足则取消待触发定时器 */
+function armAutoFoldIfNeeded(): void {
+  const sid = props.sessionId;
+  if (!sid || !isVisible.value) {
+    clearAutoTimers();
+    return;
+  }
+  if (!allCompleted.value) {
+    // 新任务到达：取消自动收起，已自动折叠的展开、已隐藏的重新出现
+    clearAutoTimers();
+    if (dismissed.value) setDismissedFor(sid, false);
+    if (autoFoldedSessions.has(sid)) {
+      autoFoldedSessions.delete(sid);
+      if (collapsed.value) setCollapsedFor(sid, false);
+    }
+    return;
+  }
+  // 已全部完成且已隐藏：无事可做（切回历史已收起会话时保持隐藏）
+  if (dismissed.value) return;
+  clearAutoTimers();
+  if (collapsed.value) {
+    // 用户已手动折叠：跳过折叠段，直接安排隐藏段
+    armHideTimer(sid);
+    return;
+  }
+  collapseTimer = setTimeout(() => {
+    collapseTimer = null;
+    // 快照可能已变化（新任务/切会话/手动折叠）：复核后再折叠
+    if (props.sessionId !== sid || !isVisible.value || !allCompleted.value) return;
+    if (dismissedBySession.value.get(sid) ?? false) return;
+    setCollapsedFor(sid, true);
+    autoFoldedSessions.add(sid);
+    armHideTimer(sid);
+  }, TODO_AUTO_COLLAPSE_DELAY_MS);
+}
+
+// 自动收起触发：会话切换 / 任务内容变化 / 完成态翻转 / 卸载重挂载
+watch(
+  () => ({
+    sid: props.sessionId,
+    tasks: tasksKey(),
+    completed: allCompleted.value,
+    baseVisible: isVisible.value,
+  }),
+  () => {
+    armAutoFoldIfNeeded();
+  },
+);
 
 // 后续触发：折叠→展开 / 布局变化（in_progress 位置或最后一行变动）
 watch(
@@ -161,16 +284,19 @@ defineExpose({
   collapsed,
   visibleTasks,
   isVisible,
+  allCompleted,
+  effectiveVisible,
 });
 </script>
 
 <template>
-  <div
-    v-if="isVisible"
-    class="todo-panel"
-    :class="{ 'todo-panel-collapsed': collapsed }"
-    data-testid="todo-panel"
-  >
+  <Transition name="todo-panel-hide">
+    <div
+      v-if="effectiveVisible"
+      class="todo-panel"
+      :class="{ 'todo-panel-collapsed': collapsed }"
+      data-testid="todo-panel"
+    >
     <button
       type="button"
       class="todo-heading"
@@ -204,7 +330,8 @@ defineExpose({
         >+{{ overflowCount }} more</li>
       </ul>
     </Transition>
-  </div>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -341,6 +468,29 @@ defineExpose({
   overflow: hidden;
 }
 
+/*
+ * 全部完成自动隐藏：整块面板淡出 + 下沉 10px（沉进输入框背后）+ 高度收起，
+ * 260ms 播完后从 DOM 卸载（不占位）；出现时反向淡入上浮。
+ * max-height 取 120px 包住折叠态标题行（隐藏总是发生在折叠之后）。
+ */
+.todo-panel-hide-enter-active,
+.todo-panel-hide-leave-active {
+  transition: opacity 260ms ease, transform 260ms ease, max-height 260ms ease,
+    padding 260ms ease, margin 260ms ease;
+  overflow: hidden;
+  max-height: 120px;
+}
+.todo-panel-hide-enter-from,
+.todo-panel-hide-leave-to {
+  max-height: 0 !important;
+  opacity: 0;
+  transform: translateY(10px);
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  overflow: hidden;
+}
+
 .todo-row {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   white-space: nowrap;
@@ -412,7 +562,9 @@ defineExpose({
 @media (prefers-reduced-motion: reduce) {
   .todo-panel,
   .todo-collapse-enter-active,
-  .todo-collapse-leave-active {
+  .todo-collapse-leave-active,
+  .todo-panel-hide-enter-active,
+  .todo-panel-hide-leave-active {
     transition: none;
   }
   .num-roll-enter-active,

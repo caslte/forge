@@ -5,6 +5,9 @@ import {
   applyTodoCompletion,
   selectVisibleTasks,
   shouldRenderPanel,
+  isAllCompleted,
+  TODO_AUTO_COLLAPSE_DELAY_MS,
+  TODO_AUTO_HIDE_DELAY_MS,
   formatTodoRow,
   truncateSubject,
   type TodoSnapshot,
@@ -179,6 +182,48 @@ test('shouldRenderPanel: visible>0 → true', () => {
   assert.equal(
     shouldRenderPanel([{ id: 1, subject: 'a', status: 'pending' } as TodoTask]),
     true,
+  );
+});
+
+// ===== isAllCompleted: 自动折叠→隐藏触发条件 =====
+
+test('isAllCompleted: 空数组 → false（空快照走卸载门，不走自动收起）', () => {
+  assert.equal(isAllCompleted([]), false);
+});
+
+test('isAllCompleted: 非空且全 completed → true', () => {
+  assert.equal(
+    isAllCompleted([
+      { id: 1, subject: 'a', status: 'completed' },
+      { id: 2, subject: 'b', status: 'completed' },
+    ] as TodoTask[]),
+    true,
+  );
+});
+
+test('isAllCompleted: 含 pending/in_progress 任一 → false', () => {
+  assert.equal(
+    isAllCompleted([
+      { id: 1, subject: 'a', status: 'completed' },
+      { id: 2, subject: 'b', status: 'pending' },
+    ] as TodoTask[]),
+    false,
+  );
+  assert.equal(
+    isAllCompleted([
+      { id: 1, subject: 'a', status: 'completed' },
+      { id: 2, subject: 'b', status: 'in_progress' },
+    ] as TodoTask[]),
+    false,
+  );
+});
+
+test('自动收起延迟常量：折叠停留 > 隐藏间隔，且均为正整数', () => {
+  assert.ok(Number.isInteger(TODO_AUTO_COLLAPSE_DELAY_MS) && TODO_AUTO_COLLAPSE_DELAY_MS > 0);
+  assert.ok(Number.isInteger(TODO_AUTO_HIDE_DELAY_MS) && TODO_AUTO_HIDE_DELAY_MS > 0);
+  assert.ok(
+    TODO_AUTO_COLLAPSE_DELAY_MS > TODO_AUTO_HIDE_DELAY_MS,
+    '先让用户看清末态，再播折叠+隐藏两段动画',
   );
 });
 

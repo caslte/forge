@@ -90,6 +90,20 @@ export function shouldRenderPanel(visibleTasks: readonly TodoTask[]): boolean {
   return visibleTasks.length > 0;
 }
 
+/**
+ * 全部完成判定（自动折叠→隐藏的触发条件）：
+ * visible 非空且每一条都是 completed（pending / in_progress 任一存在即未完成）。
+ * deleted 已被 selectVisibleTasks 过滤，不参与判定。
+ */
+export function isAllCompleted(visibleTasks: readonly TodoTask[]): boolean {
+  return visibleTasks.length > 0 && visibleTasks.every((t) => t?.status === 'completed');
+}
+
+/** 全部完成 → 自动折叠前的停留时长（让用户看清末态 ✓ + 数字翻滚，毫秒） */
+export const TODO_AUTO_COLLAPSE_DELAY_MS = 2000;
+/** 自动折叠 → 自动隐藏的间隔（折叠 200ms 动画播完即隐藏，毫秒） */
+export const TODO_AUTO_HIDE_DELAY_MS = 200;
+
 // ===== 行渲染（HTML/CSS class 输出，供 v-html 渲染）=====
 
 /** 任务行最大码点（中文按 CJK 宽度 2 计的可视宽度不是这里的关注点；这里按码点截断防半代理对） */
