@@ -230,3 +230,75 @@ test('E-CV-FILES-004 @P1 @mock-backend：失败 / read 工具不计入汇总卡�
 
   health.assertHealthy();
 });
+
+test('E-CV-FILES-005 @P1 @mock-backend：文件行右键菜单「打开所在目录」调用 shell.openPath（dirname）', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-cf-5', '右键打开目录')]);
+  await seedHistory(page, 'sess-cf-5', [
+    { id: 'm1', role: 'user', content: '改个文件', ts: '2026-09-08T05:00:00.000Z' },
+    {
+      id: 't1', role: 'tool', content: 'Edited', ts: '2026-09-08T05:00:05.000Z',
+      toolEventId: 'te-1', toolName: 'edit', status: 'completed',
+      input: {
+        path: `${PROJECT}/packages/forge-ui/src/a.ts`,
+        edits: [{ oldText: 'a', newText: 'b' }],
+      },
+    },
+    { id: 'm2', role: 'assistant', content: '完成', ts: '2026-09-08T05:00:10.000Z' },
+  ]);
+  // 监听 shell.openPath 调用（验证右键菜单真的把路径交给 IPC）
+  await page.evaluate(() => {
+    const w = window as unknown as { __openPathCalls: string[] };
+    w.__openPathCalls = [];
+    const orig = window.forge.shell.openPath.bind(window.forge.shell);
+    window.forge.shell.openPath = (p: string) => {
+      w.__openPathCalls.push(p);
+      return orig(p);
+    };
+  });
+  await page.reload();
+  await waitForMock(page);
+  // 必须在 reload 之后设置（reload 会清掉 window 注入）
+  await page.evaluate(() => {
+    const w = window as unknown as { __openPathCalls: string[] };
+    w.__openPathCalls = [];
+    const orig = window.forge.shell.openPath.bind(window.forge.shell);
+    window.forge.shell.openPath = (p: string) => {
+      w.__openPathCalls.push(p);
+      return orig(p);
+    };
+  });
+  await openSeededSession(page, '右键打开目录');
+
+  const card = page.locator('.changed-files');
+  await card.locator('.cf-head').click();
+  const row = card.locator('.cf-row', { hasText: 'a.ts' });
+  await expect(row).toBeVisible();
+
+  // 右键触发菜单：Teleport 到 body，不在 card 子树下
+  await row.click({ button: 'right' });
+  const menu = page.locator('.cf-context-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.cf-context-menu-item')).toHaveText('打开所在目录');
+
+  // 点菜单项 → shell.openPath 收到包含目录（剥文件名）
+  await menu.locator('.cf-context-menu-item').click();
+  const calls = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
+  expect(calls).toEqual([`${PROJECT}/packages/forge-ui/src`]);
+
+  // 点外部收起菜单
+  await row.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  await expect(menu).toHaveCount(0);
+
+  // Escape 也能收起
+  await row.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+
+  health.assertHealthy();
+});

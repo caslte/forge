@@ -6,8 +6,8 @@
  * 交互：头部折叠/展开（默认折叠，状态不持久化）；点击文件行内联展开该文件 diff
  * （行间互斥，再点收起）；edit 多 hunk 逐块渲染（hunk i/n 标签分隔），单 hunk 不显示头部条。
  */
-import { computed, ref } from 'vue';
-import type { ChangedFileSummary } from '../composables/useChangedFiles';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import type { ChangedFileEntry, ChangedFileSummary } from '../composables/useChangedFiles';
 import DiffView from './DiffView.vue';
 
 const props = defineProps<{
@@ -20,6 +20,11 @@ const props = defineProps<{
 const collapsed = ref(true);
 /** 当前展开 diff 的文件（按 path 唯一）；null = 全部收起 */
 const expandedPath = ref<string | null>(null);
+/** 右键菜单：目标文件 path（null=收起）+ 视口坐标 */
+const contextMenuPath = ref<string | null>(null);
+const contextMenuX = ref(0);
+const contextMenuY = ref(0);
+const contextMenuRef = ref<HTMLElement | null>(null);
 
 const files = computed(() => props.summary.files);
 
@@ -31,9 +36,68 @@ function relPath(path: string): string {
   return p;
 }
 
+/** 把工具入参 path 规整为绝对路径：相对路径则拼项目根前缀；空 / 已是绝对 → 原样返回。
+ *  已 normalize 为正斜杠（useChangedFiles.parseFileToolInput），无需再替换 \\ */
+function absoluteFilePath(p: string): string {
+  const looksAbsolute = p.startsWith('/') || /^[a-zA-Z]:\//.test(p);
+  if (looksAbsolute) return p;
+  const root = props.projectPath?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
+  return root !== '' ? `${root}/${p}` : p;
+}
+
+/** 取正斜杠路径的目录部分；根目录 / 单段名原样返回（让 openPath 自己失败即可） */
+function dirOf(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i > 0 ? p.slice(0, i) : p;
+}
+
 function toggleRow(path: string): void {
   expandedPath.value = expandedPath.value === path ? null : path;
 }
+
+function onRowContextMenu(file: ChangedFileEntry, ev: MouseEvent): void {
+  ev.preventDefault();
+  contextMenuPath.value = file.path;
+  // 视口边界保护：菜单宽 ~160 / 高 ~38，留 8px 余量
+  const w = 168;
+  const h = 38;
+  contextMenuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
+  contextMenuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
+}
+
+function closeContextMenu(): void {
+  contextMenuPath.value = null;
+}
+
+function onContextMenuOpenDir(): void {
+  const filePath = contextMenuPath.value;
+  closeContextMenu();
+  if (!filePath) return;
+  const dir = dirOf(absoluteFilePath(filePath));
+  void window.forge.shell.openPath(dir);
+}
+
+function onDocumentClick(ev: MouseEvent): void {
+  if (contextMenuPath.value === null) return;
+  const menuEl = contextMenuRef.value;
+  const target = ev.target as Node | null;
+  if (menuEl && target && menuEl.contains(target)) return;
+  closeContextMenu();
+}
+
+function onDocumentKeydown(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape' && contextMenuPath.value !== null) closeContextMenu();
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick, true);
+  document.addEventListener('keydown', onDocumentKeydown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick, true);
+  document.removeEventListener('keydown', onDocumentKeydown);
+});
 </script>
 
 <template>
@@ -54,6 +118,7 @@ function toggleRow(path: string): void {
           <button
             :class="['cf-row', { expanded: expandedPath === file.path }]"
             @click="toggleRow(file.path)"
+            @contextmenu.prevent="onRowContextMenu(file, $event)"
           >
             <svg class="cf-row-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5h-7a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-11z" /><path d="M14 2.5v6h6.5" /></svg>
             <span class="cf-name">{{ file.name }}</span>
@@ -78,6 +143,25 @@ function toggleRow(path: string): void {
       </div>
     </div>
   </div>
+
+  <!-- 文件右键菜单：Teleport 到 body，避免被卡片 overflow / stacking 裁剪遮挡 -->
+  <Teleport to="body">
+    <div
+      v-if="contextMenuPath !== null"
+      ref="contextMenuRef"
+      class="cf-context-menu"
+      :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
+      @click.stop
+      @contextmenu.prevent
+    >
+      <button type="button" class="cf-context-menu-item" @click="onContextMenuOpenDir">
+        <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        打开所在目录
+      </button>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -243,5 +327,47 @@ function toggleRow(path: string): void {
   border-radius: 999px;
   padding: 1px 8px;
   background: var(--card);
+}
+
+/* 文件右键菜单：Teleport 到 body，避免被卡片 overflow 裁剪；样式沿用 project-action-menu 视觉 */
+.cf-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cf-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.cf-context-menu-item:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.cf-context-menu-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
 }
 </style>
