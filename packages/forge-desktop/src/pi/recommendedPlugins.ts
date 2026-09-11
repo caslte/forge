@@ -1,11 +1,11 @@
 /**
  * 内置推荐组件清单（docs/prd/07_installer_update.md IN-F02 / TD-IN-03）。
  *
- * v1 = 当前 10 个（清单固化在 forge 包内，可随版本演进）；
+ * v1 = 当前 11 个（清单固化在 forge 包内，可随版本演进）；
  * 预装 = 与 ~/.pi/agent settings.packages 对比补缺（只增不删），经内置 CLI 逐项安装。
  */
 
-/** 推荐组件清单（v1 固化 10 项，顺序即预装顺序） */
+/** 推荐组件清单（v1 固化 11 项，顺序即预装顺序） */
 export const RECOMMENDED_PLUGINS: string[] = [
   '@tintinweb/pi-subagents',
   '@narumitw/pi-goal',
@@ -17,6 +17,7 @@ export const RECOMMENDED_PLUGINS: string[] = [
   'pi-tool-display',
   '@juicesharp/rpiv-todo',
   '@dietrichgebert/ponytail',
+  '@juicesharp/rpiv-ask-user-question',
 ];
 
 /**

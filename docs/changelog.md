@@ -1,5 +1,12 @@
 # 变更日志
 
+## v3.64 (扩充：推荐组件清单 v1=10 → 11，添加 ask_user_question)
+
+- 需求：模型在多分支决策场景下频繁猜测，希望让模型在不确定时主动向用户确认（原生 pi TUI 终端插件 `@juicesharp/rpiv-ask-user-question`）。
+- 方案：仅完成最小接入（插件上架）。`RECOMMENDED_PLUGINS` 末尾追加 `@juicesharp/rpiv-ask-user-question`，首启静默预装后即被自动写入共享 `~/.pi/agent/settings.packages`。forge UI 内对该工具调用尚无原生 host dialog（Electron 非 TTY，插件原生 TUI 不工作），模型调它时仍会走标准失败路径；完整 UI 接入（按 prototypes/ask-user-question-prototype.html 设计 AskUserQuestionPanel.vue）作为后续独立 work item。
+- 文档：`prd/07_installer_update.md` IN-F02 业务规则 / TD-IN-03 / 清单 v1 数 = 10 → 11 三处；新建 `test/07_installer_update/coverage-matrix.md`（AC-IN-015 验证清单包含 ask_user_question）；`recommendedPlugins.ts` 顶部 JSDoc `10 → 11`。
+- 范围：仅 plugins 清单 + 文档同步；UI 组件未交付。
+
 ## v3.63 (修正：Todo 面板按会话隔离 + 长列表锁进行中)
 
 - 需求：用户反馈「切换会话丢失 todo 任务窗口」+「任务超 3 且 pending > 3 时滚动条锁到 in_progress」（2026-10）。
