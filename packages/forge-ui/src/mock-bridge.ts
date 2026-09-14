@@ -269,6 +269,7 @@ interface MockControl {
       | 'conversation.compacting'
       | 'conversation.compacted'
       | 'conversation.slashCommandsUpdated'
+      | 'conversation.askUserQuestionRequested'
       | 'updater.stateChanged',
     payload: Record<string, unknown>,
   ): void;
@@ -285,6 +286,8 @@ interface MockControl {
   getSubagents(sessionId: string): Array<Record<string, unknown>>;
   /** 配置 cancelStream 行为（级联/单点） */
   setCancelStream(opts: MockCancelOpts): void;
+  /** 读取最近一次问卷回填载荷（Path 2；null = 尚无回填） */
+  getLastAskUserReply(): Record<string, unknown> | null;
 }
 
 declare global {
@@ -311,6 +314,9 @@ const sendQueues = new Map<string, string[]>();
 
 /** mock cancelStream 行为配置（默认级联，与真实后端语义一致） */
 let cancelOpts: MockCancelOpts = { cascadeSubagents: true };
+
+/** 最近一次问卷回填载荷（Path 2；浏览器 dev/e2e 断言用，真实端交给扩展侧 Promise） */
+let lastAskUserReply: Record<string, unknown> | null = null;
 
 /** 子 agent 是否处于活跃态（排队中/运行中） */
 function isActive(status: Subagent['status']): boolean {
@@ -740,6 +746,18 @@ const bridge: ForgeBridge = {
       listeners[event] = (listeners[event] ?? []).filter((fn) => fn !== listener);
     };
   },
+  askUserQuestion: {
+    // 与真实 preload 同构：复用同一事件多路复用（订阅 conversation.askUserQuestionRequested）
+    onRequest: (listener) =>
+      bridge.on('conversation.askUserQuestionRequested', (payload) =>
+        listener(payload as never),
+      ),
+    reply: async (params) => {
+      // 浏览器 dev/e2e：记录最近一次回填供断言（真实端交给扩展侧 Promise）
+      lastAskUserReply = params as unknown as Record<string, unknown>;
+      return { code: 0, message: 'ok', data: { delivered: true } };
+    },
+  },
   window: {
     minimize: () => {},
     toggleMaximize: () => {},
@@ -886,6 +904,9 @@ const mockControl: MockControl = {
   },
   setCancelStream(opts) {
     cancelOpts = { ...opts };
+  },
+  getLastAskUserReply() {
+    return lastAskUserReply === null ? null : { ...lastAskUserReply };
   },
 };
 

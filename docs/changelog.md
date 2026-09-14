@@ -1,5 +1,140 @@
 # 变更日志
 
+## v3.72 (修复：问卷面板 setup 崩溃打空整块对话区 + 补齐 CV-S12 浏览器级回归锁)
+
+- 用户反馈（两条，真机试用 v3.71）：①「右侧对话框不显示了」；②「后台也报错」。
+- **修复（真 bug：`showAnswered` 撞 TDZ，面板 setup 抛错连累整个对话区）**：
+  - **现象**：左侧项目/会话树正常，**右侧对话区整块空白**（消息流、输入框、Todo 面板全无）。
+  - **根因链**：v3.71 的「答完即收」watch 写在 `const showAnswered` 声明**之前**。Vue 的 `doWatch` 建 effect 时会**同步求值一次** getter 以收集依赖（**不需要** `immediate: true`），这次求值撞上 `const` 的 TDZ →
+    `ReferenceError: Cannot access 'showAnswered' before initialization` → 组件 setup 抛错 → 渲染中断 → **整个 `ConversationView` 的更新失败**。
+  - **为什么真机只看到无关报错**：终端里那两条 `ERROR:net\base\network_change_notifier_win.cc ... WSALookupServiceBegin failed with: 10108` 是 Chromium 在 Windows 上探测网络变化失败的无害告警（Electron 常见噪声），`[appupdater] 更新源未配置` / `[startup-update] [静默] 预设失败: pi-compact-display 内置引擎 CLI 不存在` 是 dev 环境的正常降级（内置引擎 CLI 只在打包产物里，dev 走不到 `pi install`，该路径设计上就是「静默保留旧标志」）。**三者都与本次空白无关**，真正的错误只在 Electron 渲染进程的 console 里。
+  - **修复**：把「已答折叠态」的四个 computed（`answeredSummary`/`answeredTotal`/`answeredCountFinal`/`answeredHeading`）与三个开关（`showInteractive`/`showAnswered`/`visible`）及 `headingText` **整体上移到自动收起 watch 之前**，并在原处留下「顺序敏感、不要下移」的注释。
+- **补齐 CV-S12 的浏览器级回归锁（本次真正堵住缺口的动作）**：E-CV-026/027 在 v3.69~v3.71 期间**只写在 `docs/test/03_conversation/e2e.md`，没有对应 spec 文件**（`forge-ui/e2e/` 下 grep 不到任何 ask 用例），于是 v3.69/v3.71 变更日志里那句「组件层无回归锁，E-CV-026/027 是唯一验证路径」实际上等于**没有验证路径** —— 这个 TDZ 崩溃就是这样漏到真机的。
+  - 新增 `packages/forge-ui/e2e/askUserQuestion.spec.ts`（6 条，覆盖原设计的 E-CV-026/027 并新增 E-CV-028）：`ASK-E2E-001` 渲染/标题行操作条/末步才可提交/preview 固定 240px 与 1.4:1 分栏；`ASK-E2E-002`「自己答」单选互斥 + 多选并列 + 预览列表黑点在框内；`ASK-E2E-003` 0 答禁用提交 + 回填原始 label（多选自定义并入 `selected` 末位）+ 答完即收且迟到 `tool.completed` 不复活；`ASK-E2E-004` 读秒 >0 且递减 + 归零回填已答部分；`ASK-E2E-005` 非本会话问卷不认领；`ASK-E2E-006`（**新增 E-CV-028**）首屏对话区三件套渲染 + 输入框可用 + 无 pageerror。
+  - 踩到的测试自身坑（已写进用例注释）：两次独立 `boundingBox()` 之间消息区会自适应滚动 → 绝对坐标漂移；改为**一次 `evaluate` 内原子取几何**，并只比「面板自身高度 / 预览相对面板的偏移」，不比绝对 y。
+- **验证**：`forge-ui` **264/264** 单测、`vue-tsc` 0 错、新增 e2e `askUserQuestion.spec.ts` **6/6 通过**。**反向验证**：把 `showAnswered` 挪回 watch 之后（还原 v3.71 缺陷态）→ 6 条**全部变红**（`ask-panel` 与 `compose-box` 都找不到，正是真机「整块对话区空白」），挪回前面即 6/6 全绿。
+- **另发现的既有问题（本次未修，与问卷无关，建议单独排期）**：全量 e2e 95 passed / **10 failed**，经核对均为既有漂移而非本次改动引入 —— `smoke.spec.ts` 断言的 `.workspace-brand` 在 `src/` 中**已不存在**（选器过期）；`updater.spec.ts` E-IN-001/002 断言 `0.2.0` 而 UI 现渲染 `v0.2.0`（`SettingsPanel.vue:807` 为 `v{{ upFoundVersion }}`）；`branchBadge`（`.git-item` 3 vs 4、`__conflict__` 分支缺失）、`mw-restore`（画布几何 4px vs 0px）、`queue`/`session`/`todoPanel` 各 1 条（hero-mode 几何、首条消息建会话、队列徽标）为环境/数据/顺序相关。这些用例与 ask_user_question 链路无任何代码交集，但**其中 `SESSION-E2E-001`、`QC-001`、`TSC-E2E-009b` 是否隐藏真实功能回归需单独确认**。
+- 文档：`docs/test/03_conversation/e2e.md`（CV-S12 标题扩为 E-CV-026~028、新增 E-CV-028 设计段、标注落地 spec 与用例名、覆盖表加行）、`coverage-matrix.md`（新增 E-CV-028 行；AC-CV-043 的 E2E 列补 E-CV-028）、本变更日志。
+
+
+## v3.71 (改进：问卷答完即收（自动折叠关闭）+ 空 payload 禁用提交)
+
+- 用户反馈：「回答完了之后自动关闭这个窗口，回答完成就不需要了，AI 已经拿到答案了，关闭方式可以参考 todo，折叠关闭」。
+- **答完即收**：提交后摘要（`已答 n/N · 答案摘要 [· 备注]`）只亮 `ASK_ANSWERED_AUTO_CLOSE_MS = 1500ms`，随后面板 `emit('dismiss')` → 父级清状态 → 复用既有 `ask-panel-hide` 过渡（淡出 + 下沉 + 折叠，240ms）整体卸载。对齐 TodoPanel 的「先收起、后隐藏」节奏。收起动作**由父级执行**（摘要的存续属于 composable 状态仓，组件自己藏起来的话切走再切回会复活）。
+- **必须一起处理的 race（否则收起后会重新弹出）**：收尾是**乐观**的 —— `settle` 先落摘要，权威的 `tool.completed`（`applyCompletion`）随后才到；若只删表，迟到的权威摘要会把它写回去，面板就在用户眼前**重新弹出**。故状态仓新增 `suppressed` 集合：`dismissAnswered`（自动收起）与 `clearAnswered`（用户发下一条消息）都打标记，`answered` computed 统一兜住；新问卷 `accept` 时解除。
+  - 顺带修掉一个既存缺陷：`clearAnswered` 原本只删表不打标记，同样会被迟到的 `tool.completed` 顶回来。
+- **提交按钮在 payload 为空时禁用**（新增纯函数 `canSubmitAnswers`）：空 payload 落到扩展侧是 `DECLINE_MESSAGE` + `details.cancelled = true`，与用户点「取消」**完全同一条信号**。此前「0 答时点提交」与「点取消」无法区分，那条著名的 *"User declined to answer questions"* 就是这么来的。禁用后这条信号只能由显式取消产出（含「只填备注、一题未选」—— 契约 §2.1 里它同样走取消分支）。
+- **唯一保留面板的情形**：`deliveryFailed`（用户点了提交、答案没送达扩展侧）→ **不自动收**，摘要留在界面上。否则答案静默消失、用户以为已答完，模型却只能等到超时拿 `DECLINE`，答案直接丢了。
+  - 该标记必须**显式传递**而不是从 `cancelled && answers 非空` 推断：**超时归零**同样满足这个形状（已答部分会被主动回填、`cancelled` 为真），但那条路径答案是**送达成功**的 —— 误判会让「答了几题后挂机超时」留下永不收起的过期卡片，正是本次要消除的现象。故 `AskUserAnsweredState` 增加 `deliveryFailed?`，由 composable 按 `!payload.cancelled && !delivered` 置位。
+  - `applyCompletion` 还必须**保留**该标记：权威 `details` 里没有这个本地判定，直接覆盖会把「答案没送出去」抹成一次普通取消。
+- 实现位置：`utils/askUserQuestion.ts`（`ASK_ANSWERED_AUTO_CLOSE_MS` / `canSubmitAnswers` / `shouldAutoCloseAnswered` / `deliveryFailed` 字段）、`composables/askQuestionStore.ts`（`suppressed` + `dismissAnswered` + 权威覆盖时保留 `deliveryFailed`）、`AskUserQuestionPanel.vue`（`dismiss` emit + 收起定时器 + 按钮禁用 + `draftAnswers` 复用）、`useSessionConversation.ts` / `ConversationView.vue`（`dismissAskAnswered` 接线）。
+  - 收起定时器监听 `showAnswered`（布尔）而非 `props.answered`（对象）：权威 `details` 会整体替换摘要对象，监听对象会让计时器被重新触发、消失时机随「权威结果何时到达」飘。
+- **验证**：`forge-ui` **264/264**（252 → +12：纯逻辑 7 + 状态仓 5）、`vue-tsc` 0 错。**反向验证**：注释掉 `answered` 里的抑制判断 → 恰好「dismissAnswered 后迟到 completed 不得重新弹出」与「clearAnswered 同样抑制」两条**变红**、其余 11 条保持绿，证明锁定在与 bug 同一位置。
+- 文档：PRD CV-S12 交互条目重写、新增 **AC-CV-050**（答完即收 + 空 payload 禁用提交）、AC-CV-043 措辞更新；`coverage-matrix.md` U-CV-022（函数清单与断言）、U-CV-025（抑制集与反向验证）、新增 AC-CV-050 行；`e2e.md` E-CV-026 新增「答完即收」与「提交按钮禁用」两组断言；`artifacts.json`、`test/index.md` AC 范围同步。
+
+## v3.70 (修复：问卷预览内列表黑点落到框外 + 预览列收窄)
+
+- 用户反馈（两条，真机试用 v3.69）：
+  1. 「右侧预览的 ul、ol 的黑点在框外，让他显示在框内」；
+  2. 「我觉得预览的这种是不是框可以窄一点」。
+- 修复 1（**黑点在框外 —— 全局 reset 吃掉列表内边距**）：
+  - **根因链**：`global.css` 有 `* { margin: 0; padding: 0 }` 通用重置，作者样式压过浏览器对 `ul/ol` 默认的 `padding-inline-start: 40px` → `padding-left` 变 0；而 `list-style-position` 仍是默认的 `outside`，黑点画在内容盒**左侧**，`.ask-preview-body` 只有 10px 内边距托不住 → 黑点落在 x ≈ 10 − 11.5 ≈ **−1.5px**，露在圆角框外（列表序号 `1.` 同样被切）。`MessageCard.vue:547` 当初正是靠显式 `padding-left: 0 + list-style-position: inside` 绕开同一个坑。
+  - **修复**：`.ask-preview-body` 显式补回列表样式 —— `padding-left: 1.3em` + `list-style-position: outside`（保留悬挂缩进，换行文字与首行对齐）+ 嵌套列表不叠加外边距 + 末块不拖底部空隙。
+  - **顺带修掉一个同源缺陷**：容器上的 `white-space: pre-wrap`（给纯文本预览用）会把 marked 输出中标记之间的换行空白节点渲染成换行 → 每两个列表项之间多出一整行空隙。列表容器恢复 `white-space: normal`，`li` 内部仍保留 `pre-wrap`。
+- 修复 2（预览列收窄）：分栏比例 `1fr : 1fr` → **`1.4fr : 1fr`**（820px 面板下预览 390 → 325px，选项列 455px）。依据：分栏态下选项描述已被 `.ask-split .ask-option-desc` 隐藏，左列只剩选项名，不需要一半宽度。
+- **验证**：`forge-ui` 252/252、`vue-tsc` 0 错；另用 Playwright 起探针页（抽真实 `.vue` scoped 样式 + 真实 `renderMarkdown`）在 Chromium 里实测：旧态 `ul` 内容盒距框内沿仅 10px、黑点 x ≈ −1.5px（框外），新态内容盒 24.9px（框内）；`ul` 高度 86px → 35px 证实空行消失；窄至 200px 预览仍不越界。
+
+## v3.69 (修复：问卷面板倒计时恒显示 0（响应式缓存）+ 多选下「自己答」与选项并列)
+
+- 用户反馈（两条，真机试用 v3.68）：
+  1. 「多选的情况下，自己答可以作为其中一个答案，而无需把其他选项取消勾选」；
+  2. 「右上角的读秒倒计时，现在一直是 0」。
+- 修复 1（**倒计时恒为 0 —— 真 bug，computed 缓存了首屏空值**）：
+  - **根因链**：面板挂在 `v-if="!showResultView"` 下，**常驻挂载**（首屏没有问卷也渲染）→ 此时 `askDeadline` computed 就求值一次，把 `undefined → null` **缓存**；而它依赖的 `askDeadlines` 是**普通 `Map`**（旁边三个表都是 `reactive`，唯独这个漏了）→ 后续 `set` 不产生依赖变更 → computed 永不重算 → 面板拿到的 `deadline` 恒为 `null` → `tick()` 里 `if (at === null) return` 每次直接返回 → `remaining` 停在初值 **0**。
+  - **修复 a**：把四个会话级表 + 三个 computed 抽成 `forge-ui/src/composables/askQuestionStore.ts` 的 `createAskQuestionStore`（只依赖 vue 响应式原语，`bridge` 仅作类型引用），四张表统一 `reactive`。抽出来的目的是**可测** —— 组件层没有组件测试设施，这组状态原本零回归锁。
+  - **修复 b**：`AskUserQuestionPanel` 增加 `watch(() => props.deadline)` 自愈兜底：只要拿到有效截止时刻就保证秒表在跑（`props.request !== null` 时），释放（提交 / `tool.completed`）时停表归零。防「某条路径只更新了 deadline」再次静默卡 0。
+  - **回归锁 + 反向验证**：新增 `forge-ui/test/askQuestionStore.test.ts`（9 例），前两条专钉这个时序（先读一次 computed 缓存空值 → 再 `accept` → 再读）。**反向验证**：把 `deadlines` 改回普通 `Map`，恰好这 2 条变红、其余 7 条保持绿 —— 证明锁在了正确的位置。
+- 修复 2（**多选下「自己答」与选项并列**）：原先三个地方把「自己答」写死成与选项互斥（`selectOption` 多选分支清 `custom`、`selectCustom` 无条件清 `selected`、`onCustomInput` 无条件清 `selected`），多选时只能二选一。现按题型分治：
+  - **单选**：保持严格互斥（选选项即清文本，反之亦然）—— 契约 §2.1 的 `kind` 三态下 `custom` 优先于 `option`，残留文本会静默覆盖刚勾的选项。
+  - **多选**：两者**并列**，勾普通选项不动「自己答」的文本，反之亦然；点「自己答」变成**开关**（收起只折输入框、**不丢文本**）。
+  - **提交形态**：多选的 `custom` **并入 `selected` 末位**（与「自己答」行排末尾的视觉顺序一致），**不**另起 `kind='custom'` 条目 —— 对模型而言这仍是「一个多选答案」，多产一条会改变 `content.text` 的段数与 `<serial>` 语义。契约 §2.1 已补这一条（`selected` 本就是 `string[]`，未限定只能是选项 label）。
+  - **选中态**：新增 `customRowSelected` —— 多选下收起输入框后文本仍在答案里，该行必须**保持高亮**，否则界面谎称「没选这一项」而提交的答案里却带着它。选项行文案随之区分（多选显示「可与其他选项同时选」）。
+- 代码：新增 `forge-ui/src/composables/askQuestionStore.ts`、`forge-ui/test/askQuestionStore.test.ts`；`forge-ui/src/composables/useSessionConversation.ts`（四个表 + 三个 computed 改为调用状态仓，`onAskUserQuestionRequested` / `submitAskUserAnswers` / `onToolCompleted` 收敛为 `accept` / `settle` / `applyCompletion`）、`forge-ui/src/components/AskUserQuestionPanel.vue`（deadline watch + 多选并列 + `customRowSelected` + 选项行文案）、`forge-ui/src/utils/askUserQuestion.ts`（多选合并 custom 进 `selected`；`AskDraft.custom` 注释区分题型）、`forge-ui/test/askUserQuestion.test.ts`（+3）。
+- 文档：契约 §2.1 新增「多选里的自定义答案」；PRD `03_conversation.md` CV-S12（业务数据指明状态仓与「必须 reactive」的告诫、交互条目区分单选互斥/多选并列、AC-CV-044 补多选自定义并入 `selected`、AC-CV-047 边界补「常驻挂载下仍须正常读秒」）；`test/03_conversation/coverage-matrix.md`（U-CV-022 补多选并存断言、新增 U-CV-025 状态仓回归锁、E-CV-026）；`test/03_conversation/e2e.md`（E-CV-026 多选并列、E-CV-027 读数必须 > 0）。静态示意稿 `prototypes/ask-user-question-panel-v2.html` 增用例 D（多选并列）。
+- 验证：`forge-ui` 252/252 单测全绿（240 → +3 纯逻辑 + 9 状态仓）、`vue-tsc` 0 错；反向验证见「修复 1」。
+- 已知缺口：组件层交互（选项行高亮、输入框展开/收起、按钮出现消失）仍无组件级自动化回归锁，E-CV-026 / E-CV-027 是唯一验证路径。
+- 剩余风险：末步在 `已答 0/N` 时仍可提交，依旧落 `DECLINE`（等价取消）；要堵需「0 答禁用提交」或二次确认，尚未做。
+
+## v3.68 (改进：问卷面板操作条上移标题行 + 单选自动前进 + 「自己答」折叠为选项 + preview 尺寸稳定)
+
+- 用户反馈（四条，均来自真机试用 v3.67）：
+  1. 右侧 preview 「样式会动会变形，要固定住，不应该跳来跳去」；
+  2. 「选完一个 tab 页，自动切到下一个」，上一题 / 下一题 留给用户手动点；
+  3. 按钮放顶部、「放到待回答左侧」（在「等待回答 · Ns」徽标左边），「已答」也上顶部，取消按钮同样上移；
+  4. 「自己答太宽了，就作为一种选项」—— 不是什么时候都能选/常驻，选其他选项就不填、选了自己答才给填，整体压缩成一个选项。
+- 修复 1（**preview 尺寸稳定**）：`.ask-preview` 由 `height:auto + max-height:260px` 改为**固定 `height:240px` + flex 纵向布局 + body 内滚动**，caption 也 `flex-shrink:0` + 单行省略。原因：preview 是各选项长短差很大的 markdown，高度随内容浮动时，hover 到不同选项会让整个分栏区、面板底部与下方输入框整体上下跳。**这是个易复发点，样式里已写明「不要改回 height:auto / max-height」。**
+- 修复 2（**单选自动前进**）：新增纯函数 `shouldAutoAdvance(multiSelect, index, questionCount)`，`selectOption` 命中单选后调用。三条不前进：多选（前进等于打断继续勾选）、点「自己答」（要留输入时间，`selectCustom` 根本不调）、末步（无路可走）。抽成纯函数是为可单测 —— 组件层没有组件测试设施，规则写在 `selectOption` 里就只能靠 E2E 兜。
+- 修复 3（**操作条上移标题行**）：底部 `.ask-actions` 整块删除，`已答 n/N` / 上一题 / 下一题 / 取消 / 提交答案 全部移入 `.ask-heading`（标题与状态徽标之间）。**结构坑**：原来整个头部是一个 `<button>`（点任意处折叠），里面再塞按钮就是非法 HTML 嵌套 → 头部改为 `div[role=button][tabindex=0]`（保留整行点击 + Enter/Space 折叠），操作条容器加 `@click.stop`，否则点「提交答案」会顺带把面板折叠掉。视觉层级：新增 `.ask-btn-mini`，并让「上一题 / 下一题」透明底降级，形成 导航 < 取消 < 提交 的权重。折叠时操作条随之隐藏。
+- 修复 4（**「自己答」折叠为选项**）：删除原常驻虚线大卡片（`.ask-custom` / `.ask-custom-label`），改为选项列表**末位的一行**（复用 `.ask-option` 全套形态与 radio/checkbox 标记），选中才在分栏区**下方整宽**展开输入框（照抄 rpiv guideline：分栏时不挤进窄选项列）。展开态存组件内 `customOpenByTab`（按 tab 记忆），**不进 `AskDraft`** —— 它是纯 UI 展开态，「选中自己答但还没输入」不应计入「已答 n/N」，所以 `isDraftAnswered` / `buildAskUserAnswers` 等纯逻辑零改动。互斥收紧：**多选分支此前不清 `custom`**（`selectOption` 只在单选分支清），先输入自定义文本再勾多选会让 `buildAskUserAnswers` 的 custom 优先分支静默吃掉刚勾的选项 —— 本次一并修掉，两条分支都清空并撤销展开态。
+- 代码：`forge-ui/src/components/AskUserQuestionPanel.vue`（头部重构 + 选项区重构 + CSS 三处；净增 `.ask-head-actions` / `.ask-btn-mini` / `.ask-option-custom`，删除 `.ask-custom*` / `.ask-actions*` / `.ask-nav` / `.ask-heading-toggle`）；`forge-ui/src/utils/askUserQuestion.ts`（+`shouldAutoAdvance`）；`forge-ui/test/askUserQuestion.test.ts`（+3）。
+- 验证：`forge-ui` 240 单测全绿（237 → +3）；该包 typecheck 0 错。
+- 文档：`prd/03_conversation.md` CV-S12 交互与反馈条目重写（操作条位置 / 自动前进 /「自己答」形态 / preview 固定高度）；`test/03_conversation/coverage-matrix.md` U-CV-022 补 `shouldAutoAdvance` 与断言、E-CV-026 重写；`test/03_conversation/e2e.md` E-CV-026 操作 / 断言 / 负向 / 汇总行同步（新增「点操作条按钮不得顺带折叠」负向断言）。
+- **已知缺口（沿用 v3.67）**：组件层渲染与交互（按钮位置、自动前进、展开/收起）**无自动化回归锁** —— forge-ui 测试均为纯函数 `node:test`，无组件测试设施；E-CV-026 是唯一验证路径，真机观察与 E2E 才能覆盖。
+- 剩余风险（仍未做）：末步仍可在 `已答 0/N` 时提交 → 依旧落 `DECLINE`（等价于取消）；自动前进使「选完即离开该屏」，想反复比对 preview 的用户需靠 hover 或点「上一题」回看（hover 仍会更新预览，未受影响）。
+
+## v3.67 (改进：问卷面板改向导式步骤导航，「提交答案」只在末步出现)
+
+- 用户反馈：多题问卷底部只有「提交答案」没有「下一步」，且提交后面板直接收起，希望是向导式流转。
+- 澄清（不改的部分）：tab 本就是**并列表单分页**而非步骤条 —— 契约允许部分作答（未答题不产出 `answers` 条目），每屏可跳过/可回填/可乱序点，因此终点只需一个动作。原型也只有单个「提交答案」（`prototype.js:174`）；原型 HTML 里 `/* Submit tab */ .review-*` 那套审阅样式是**从未接线的悬空 CSS**（`prototype.js` 内搜不到「审阅」）。「提交后收起」也是既定生命周期：点提交 → 乐观折成已答摘要 → `tool.completed` 用权威 `details` 覆盖 → **下一条用户消息**才真正清掉，不是立即消失。
+- **查出的真问题（本次改动动机）**：`已答 0/N` 时点「提交答案」与点「取消」对模型**完全等价** —— 零段 envelope 直接落到 `DECLINE_MESSAGE = "User declined to answer questions"`，且 `details.cancelled` 被置真（`extensions/src/askUserQuestion/envelope.ts:76-78`）。模型分不清「我点了提交」与「我点了取消」，而 `已答 0/N` 下按钮既不禁用也不改文案。这正是「提交了就关闭了、模型却说 declined」的来源。
+- 修复：向导式步骤导航。
+  - 步骤序列 = 题目 `0..N-1` + 末位「备注」tab，共 `N+1` 步；底部左侧新增「上一题 / 下一题」沿序列逐屏走，与点 tab 同路径（同样重置 hover 预览，避免上一题 preview 残留）。
+  - **「提交答案」改为只在末步渲染** —— 中间步该按钮根本不存在，上述歧义路径被结构性消除。代价：部分作答者需走到末步才能提交（2 题问卷 = 2 次「下一题」）。
+  - tab 仍可自由点击，顺序不强制；两种导航不冲突。
+  - 单题场景无 tab 栏 → `stepCount=1` → 不出导航、提交按钮常驻（**行为与改造前一致**，零回归面）。
+- 代码：`forge-ui/src/utils/askUserQuestion.ts` 新增纯逻辑 `stepCount / isLastStep / canStepPrev / canStepNext`；`AskUserQuestionPanel.vue` 新增 `stepPrev / stepNext` + `.ask-actions-left` / `.ask-nav` 布局（导航按钮刻意弱化配色与尺寸，不与「取消 / 提交答案」抢注意力）+ 组件头注释补向导语义说明。
+- 验证：`forge-ui` 237 单测全绿（+5：步骤计数 / 末步判定 / 前后可用性 / 单题退化 / 末步互斥）；该包 typecheck 0 错。
+- 文档：`test/03_conversation/coverage-matrix.md` U-CV-022 补入 4 个纯函数与导航断言、E-CV-026 补导航与「中间步无提交按钮」断言；`test/03_conversation/e2e.md` E-CV-026 的操作 / UI 断言 / 负向 / 汇总行同步。
+- **已知缺口（如实记录）**：组件层渲染（按钮出现/消失）无自动化回归锁 —— forge-ui 测试均为纯函数 `node:test`，无组件测试设施（与 v3.66 同类缺口）；E-CV-026 是该行为的唯一验证路径，跑 E2E 前勿信单测。
+- 剩余风险（本次未做）：末步仍可在 `已答 0/N` 时点提交 → 依旧落 `DECLINE`（等价于取消）。要彻底堵住需再补「0 答时禁用提交」或「未答满二次确认」，用户本轮只选了导航方案。
+
+## v3.66 (修复：冷启动会话树延迟出现——pi 扩展预热不得在 openProject handler 内同步触发)
+
+- 用户反馈：首次 app 启动后项目树已显示，但会话树一直空白，隔几秒才出内容。
+- 根因（v3.46 首条消息卡顿修复的副作用）：`main.ts` 在 `project.opened` 上挂 `void warmPiResourceLoader(opened)` —— **`void` 只保证不 await，不保证不阻塞**。`resourceLoader.reload()` 的同步前缀（`SettingsManager.create` + `new DefaultResourceLoader` + jiti 首段模块解析，本机 10 个包实测 3~9s）是**在 `project/openProject` 的 RPC handler 内联执行**的（`rpc/projectMethods.ts` 在 handler 内同步 `emit('project.opened')` 之后才 `return`），于是把该请求**自身的 IPC 响应**也堵住：渲染进程卡在 `await call(...)` → `selectProject` 后面的 `loadSessions()` 根本没机会发出 → 会话树空白到编译结束。而项目已渲染是因为 `queryProjectList` 是纯 store 内存读、在 openProject 之前就返回了。
+  - **放大器（结构原因）**：前端把 `loadSessions()` 串在 `openProject()` 之后，但 `session/querySessionList` 传 `{}` 返回**全部**会话、与打开项目零依赖 —— 两个本可并行的请求被写成严格串行。
+  - **首启叠加**：`createStartupUpdate` 在 `preinstallDone=false` 时逐项 `pi install` 推荐组件（子进程 + 网络 + 磁盘），与冷编译抢 I/O，首次启动更明显。
+  - 附注：pi 扩展模块缓存是 loader.js 的**进程内 Map**（按 cwd 记忆），跨进程全冷 → **每次冷启动都要重编译一遍**，不是"只慢第一次"。
+- 修复（两处，均不触碰 pi 的缓存语义）：
+  1. `forge-desktop/src/main.ts`：新增常量 `PI_WARMUP_DEFER_MS = 1500`，`project.opened` 改为 `setTimeout(() => void warmPiResourceLoader(path), PI_WARMUP_DEFER_MS)`，让启动关键路径（项目/会话列表 IPC，毫秒级）先跑完再预热。代价：预热完成时刻推迟同样时长，对首条发送无实质影响。
+  2. `forge-ui/src/App.vue` `onMounted`：`void loadSessions()` 与 `void loadProjects()` **并行**发出，会话请求排到 openProject/预热之前落地。安全性已核实：会话树以 projects 为外层循环按 `projectPath` 分组（`ProjectTree.vue` `sessionsOf`），sessions 先到无副作用；且 `currentProjectPath` 无 watcher，不会重复触发。
+- 验证：
+  - `forge-desktop` 234 单测全过 + `forge-ui` 232 单测全过（合计 466）；两包 typecheck 0 错。
+  - **新增 E2E 回归锁 E-SM-008**（`e2e/session.spec.ts` `SESSION-E2E-008`）：init script 抢在 mock 句柄赋值瞬间注入 `seed('project/openProject')` 延迟 6s + 会话种子，断言 `.tree-project` 先到、且 `.tree-session` 在 **2000ms** 内到位。**已实测 RED→GREEN** —— 仅回退 `App.vue` 那一行并行调用，`.tree-session` 在整个 2000ms 窗口内解析为 0 个元素、用例失败；恢复后 543ms 通过。测试文档同步 `test/02_session/e2e.md` + `coverage-matrix.md`。
+  - 缺口保留：`main.ts` 侧改动（延后预热）仍无自动化覆盖（Electron 入口，不可单测）。
+- **顺带发现（与本次修复无关，未改）**：
+  - `SESSION-E2E-001` 在当前工作区**确定性失败**：期望 `.tree-session` 最后一行为新会话名，实得「已有会话」（数量断言 `toHaveCount(2)` 通过，失败在顺序断言）。已用「仅回退本次 `App.vue` 改动」做对照——**失败与本次改动无关**，属工作区既有问题（疑似新建会话进 activatedOrder 后置顶，与用例 `.last()` 期望不符），需另行定位。
+  - `docs/test/02_session/e2e.md` 的 `E-SM-007` 与 `coverage-matrix.md` 的 `E-SM-007` **指向不同用例**（前者「多窗口窄窗格工具组」→ `mwToolGroupVisible.spec.ts`；后者 AC-SM-028~030 项目选择器 → `session.spec.ts`）。编号冲突，去留待裁定（同模块 07 双覆盖矩阵的同类问题）。
+- 文档同步：`knowledge/pi-extension-cold-load.md` 新增「二次回归」一节（含可复用的排查判据"启动后某块 UI 空白数秒且后续操作正常 → 查是否有重活挂在启动关键路径的同步段上"），并给原「修复模式」条目加上警告——该触发点本身就是本次问题来源。
+- 剩余风险：预热推迟 1500ms 后若用户在该窗口内就发首条消息，仍可能冷编译一次（与 v3.46 记录的「预热与首条发送几乎同时发生」同类）；根因（jiti 编译留在主进程）未动，根治仍需把 pi 会话运行时挪出主进程。
+
+## v3.65 (功能：ask_user_question 内嵌问卷 + 自建内置扩展，移除 rpiv 推荐项)
+
+- 需求：模型在多分支决策场景下频繁猜测，需要能在不确定时主动向用户确认（原型 `prototypes/ask-user-question-prototype.html`：内嵌输入框上方、N+1 tab、左右 preview、多选 checkbox、备注、已答折叠摘要、推荐标记）。
+- 方案：**Path 2 —— forge 自建 pi 内置扩展**，而非接入 rpiv npm 插件。原因：rpiv 插件的完整 UX 依赖 `ctx.ui.custom()`，而该接口在 RPC 宿主恒返回 `undefined`（`rpc-mode.js` 文档原话），forge 走 RPC 通路只能降级到逐题弹窗（单选点按、多选打数字、无 preview、无备注），原型可还原度仅约 15%。自建扩展用 pi 官方 `registerTool` SDK + 照抄 rpiv 的业务契约（schema / envelope），可 100% 还原原型且完全可控。
+  - **扩展层**（`packages/forge-extensions/src/askUserQuestion/`）：`schema.ts`（TypeBox 入参，1–4 题 / 2–4 选项 / label ≤60 / header ≤16）、`types.ts`、`validate.ts`（6 条校验规则）、`envelope.ts`（模型侧三段引导文本逐字照抄 + envelope 三形态）、`format-answer.ts`、`extension.ts`（注册 `ask_user_question` 工具 + 与 pi 解耦的纯逻辑核心）、`channels.ts`。**双阈值超时**：60s 下发面板驱动倒计时（归零由面板主动回填已答部分），extension 实际等 60s + 1.5s 兜底，避免「extension 先超时 → 已答部分丢失」竞态。
+  - **传输层**：`conversation.askUserQuestionRequested`（事件，main→renderer，已登记 `FORGE_EVENTS` 白名单）+ `askUserQuestion/reply`（RPC 方法，renderer→main 唯一上行入口）+ `window.forge.askUserQuestion.{onRequest,reply}`。`sessionId` 为**必需字段**。
+  - **会话隔离**（关键）：`bindAskUserBus` 按**每会话私有总线**订阅，`sessionId` 取自订阅闭包（无需从 `ctx.sessionManager` 反查）；回填经**该会话**总线投递，无 lease 返回 `delivered:false` 且零投递。防的是「N 窗格同时弹 N 份问卷」与错窗格回填 —— 多窗格画布（`MultiWindowCanvas.vue`，PRD 02 TD-SM-02 方案 A）下比「看不到问卷」更危险的是**无报错的错误数据进入模型上下文**。`removeSession` 退订，迟到请求不再上抛。
+  - **UI 层**：`AskUserQuestionPanel.vue`（923 行，原型形态：tab / 左右分栏 preview / 多选 / 备注 / 已答摘要 / 倒计时）+ `utils/askUserQuestion.ts`（纯逻辑，可单测）+ `useSessionConversation` 按 `sessionId` Map 隔离的问卷态。
+- **两处有意偏离 rpiv**（契约 §1.4）：① `preview` **不回流**给模型 —— envelope 不含 `selected preview:` 段（rpiv 回流是因 CLI 无面板被迫为之），`details.answers[].preview` 照常填充供 UI 面板渲染，省 token 且上下文干净；② 新增 `options[].recommended?: boolean` 扩展字段（原型有、rpiv schema 无），UI **双通道**识别：`recommended===true` 或 label **尾部** `(Recommended)` 后缀均渲染「推荐」徽标，后缀**仅显示层**剥离、回填 label 保持原始值（模型有很强的旧习惯，双通道才稳）。
+- **冲突处置**：`recommendedPlugins.ts` 移除 `@juicesharp/rpiv-ask-user-question`（v1 清单 11 → 10）。运行时不靠「先注册者胜」的注册顺序赌运气，而在 `createPiAgentSessionFactory.ts` 注入 `extensionsOverride` **纯代码过滤**该插件 —— 不写用户 `settings.json`，`pi-subagents` / `rpiv-todo` 不受影响，系统 `pi` CLI 仍照常加载该插件（不同宿主，各自独立）。实测确认过滤语法：`extensions: ["-index.ts"]` ✅ 生效；⚠️ 文档 `docs/packages.md:212` 称 `extensions: []` 表示「load none」，**实测仍加载**（走 `collectDefaultResources` 分支），文档与实现不一致，已记档避坑。
+- 代码：新增 `packages/forge-extensions/src/askUserQuestion/*`（8 文件）+ `packages/forge-ui/src/components/AskUserQuestionPanel.vue` + `packages/forge-ui/src/utils/askUserQuestion.ts` + `packages/forge-extensions/test/askUserQuestion/*`（3 文件）+ `packages/forge-ui/test/askUserQuestion.test.ts`；改 `forge-core/src/conversation/conversationService.ts`、`forge-core/src/rpc/conversationMethods.ts`、`forge-core/src/index.ts`、`forge-desktop/src/ipc-contract.ts`、`forge-desktop/src/preload.ts`、`forge-desktop/src/pi/piConversationAdapter.ts`、`forge-desktop/src/pi/createPiAgentSessionFactory.ts`、`forge-desktop/src/pi/recommendedPlugins.ts`、`forge-ui/src/bridge.ts`、`forge-ui/src/mock-bridge.ts`、`forge-ui/src/composables/useSessionConversation.ts`、`forge-ui/src/components/ConversationView.vue`、`forge-desktop/test/pi/piConversationAdapter.test.ts`、`forge-desktop/test/pi/startupUpdate.test.ts`。
+- 依赖：`packages/forge-extensions` 声明 `"typebox": "1.3.7"`（**包名是 `typebox`，不是 `@sinclair/typebox`**；版本与 pi 0.84.3 的 pin 一致）。注意 pi **不** re-export `Type`，必须从 `typebox` 直接 `import { type Static, Type } from 'typebox'`。
+- 文档：`plan/ask-user-question-contract.md`（契约冻结，三层归属表 + 落地接线点 + 开放项全裁定）+ `plan/ask-user-question-extension.md`（开发计划 WU-00~11）；`prd/03_conversation.md` 新增 CV-S12 与 AC-CV-043~049；`api/03_conversation.md` 新增 §11（事件 + RPC 方法 + preload + 桥接约定 + 状态机）；`test/03_conversation/coverage-matrix.md` 新增 U-CV-022~024 / A-CV-016 / E-CV-025~027，并补上 **CV-S11 遗留未展开**的 E-CV-020~025；`test/03_conversation/e2e.md` 新增 E-CV-020~027 章节与汇总行；`prd/07_installer_update.md` 与 `test/07_pi/coverage-matrix.md`、`test/07_installer_update/coverage-matrix.md` 同步清单 11 → 10 与 AC-IN-015 语义反转；`artifacts.json` 登记 `CV-S12_ask_user_question`。
+- 验证：`forge-extensions` 43 单测全绿（schema 约束 / 校验 / envelope / 超时 / 取消 / 部分作答 / execute 端到端 / 注册面）；`forge-ui` 单测全绿；`forge-desktop` 适配器新增 6 例（会话隔离 / 畸形载荷 8 种 / 退订 / leaseless 降级）全绿；全仓 typecheck 通过。**顺带修出一个真 bug**：`removeSession` 未退订新增的问卷 channel（由退订测试暴露）。
+- 已知未验证：`execute` await 期间是否阻塞 agent 主循环（需真实 pi 会话）；真实 `pi.events` 总线上的往返；`extensionsOverride` 与自建工具的联合效果。
+- 文档结构待整理：模块 07 存在两份覆盖矩阵（`test/07_pi/` 为 artifacts.json 引用的规范版，`test/07_installer_update/` 为 v3.64 新建），E-IN 编号重叠且语义不同，合并去留待裁定。
+
 ## v3.64 (扩充：推荐组件清单 v1=10 → 11，添加 ask_user_question)
 
 - 需求：模型在多分支决策场景下频繁猜测，希望让模型在不确定时主动向用户确认（原生 pi TUI 终端插件 `@juicesharp/rpiv-ask-user-question`）。

@@ -10,7 +10,15 @@
  * - UI 侧：`window.forge.invoke('project/queryProjectList')` / `window.forge.on('tool.started', fn)`
  * - 主进程侧：见 `preload.ts`（bridge）与 `main.ts`（路由 + 事件转发）
  */
-import type { RpcResult, ConversationCompactedPayload } from '@forge/core';
+import type {
+  RpcResult,
+  ConversationCompactedPayload,
+  AskUserQuestionRequestPayload,
+  AskUserQuestionReplyParams,
+  AskUserQuestionAnswer,
+  AskUserQuestionItem,
+  AskUserQuestionOption,
+} from '@forge/core';
 import type { AppUpdaterSnapshot } from './pi/appUpdater.ts';
 
 /** 全部可调用方法（= forge-core 各 Api 的 methods map 键并集） */
@@ -67,7 +75,10 @@ export type ForgeMethod =
   | 'updater/getState'
   | 'updater/checkForUpdates'
   | 'updater/downloadUpdate'
-  | 'updater/quitAndInstall';
+  | 'updater/quitAndInstall'
+  // ask_user_question（Path 2）：renderer → main 的问卷回填（唯一上行入口，
+  // 必须是方法而非事件——main.ts 只经 IPC_INVOKE → invoke(methodTable) 接收）
+  | 'askUserQuestion/reply';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -106,6 +117,7 @@ export type ForgeEvent =
   | 'conversation.compacting'
   | 'conversation.compacted'
   | 'conversation.slashCommandsUpdated'
+  | 'conversation.askUserQuestionRequested'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -130,6 +142,8 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'conversation.compacting',
   'conversation.compacted',
   'conversation.slashCommandsUpdated',
+  // Path 2：主进程不转发未登记事件（静默丢弃），漏登记 → 渲染进程收不到 → 面板永不出现
+  'conversation.askUserQuestionRequested',
   'tool.started',
   'tool.completed',
   'tool.error',
@@ -246,6 +260,40 @@ export type UpdaterStateChangedPayload = AppUpdaterSnapshot;
  */
 export type { ConversationCompactedPayload };
 
+/**
+ * ask_user_question（Path 2）跨进程类型再导出。
+ * 事实来源在 `@forge/core`（与扩展侧 `channels.ts` / `schema.ts` 同构）；
+ * forge-ui 不依赖本包，按仓库惯例在 `bridge.ts` 独立声明同形类型。
+ */
+export type {
+  AskUserQuestionRequestPayload,
+  AskUserQuestionReplyParams,
+  AskUserQuestionAnswer,
+  AskUserQuestionItem,
+  AskUserQuestionOption,
+};
+
+/**
+ * window.forge.askUserQuestion：问卷双向通道（Path 2，契约 §4.2）。
+ *
+ * 为何单独开一条而不复用 `window.forge.on`：问卷是**请求-应答**语义（有 requestId
+ * 需要回填），与其余单向广播事件性质不同；语义化命名让消费方不易漏掉回填步骤。
+ * 底层仍走同一套 IPC（事件 + invoke），不新增物理通道。
+ */
+export interface ForgeAskUserQuestion {
+  /**
+   * 订阅问卷请求（等价 `window.forge.on('conversation.askUserQuestionRequested')`，
+   * 仅收窄 payload 类型）。返回取消订阅函数。
+   * 多窗格场景下每个窗格各自订阅并**按 sessionId 认领**（契约 §4.4）。
+   */
+  onRequest(listener: (payload: AskUserQuestionRequestPayload) => void): () => void;
+  /**
+   * 回填作答。必须携带 `sessionId + requestId`，主进程按二者匹配等待中的请求；
+   * `cancelled=true` 时 `answers` 仍应带已答部分（超时/取消保留已答，契约 §2.1）。
+   */
+  reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<{ delivered: boolean }>>;
+}
+
 /** IPC 主通道：渲染进程发起方法调用 */
 export const IPC_INVOKE = 'forge:invoke';
 
@@ -280,6 +328,8 @@ export interface ForgeBridge {
    * - subagent.removed: SubagentRemovedPayload（{ sessionId, agentIds }）
    */
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
+  /** ask_user_question（Path 2）双向通道：订阅问卷请求 + 回填作答 */
+  askUserQuestion: ForgeAskUserQuestion;
   /** 原生对话框（目录选择等） */
   dialog: ForgeDialog;
 }

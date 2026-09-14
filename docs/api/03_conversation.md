@@ -407,3 +407,159 @@ type TodoSnapshot = {
 
 > 验收 AC-CV-037\~041 详见 `docs/test/03_conversation/coverage-matrix.md`。
 
+***
+
+## 11. ask_user_question 内嵌问卷（扩展 CV-S12）
+
+> 状态：已确认。与 CV-S11 的关键差别：**问卷是双向的**——请求由扩展经会话总线发出（main → renderer），作答必须经 RPC 方法返回（renderer → main），而不是事件。因此本节同时定义**事件**与**方法**两种契约，且 `sessionId` 为**必需字段**（多窗格画布下用于会话隔离）。
+>
+> 设计依据：`docs/plan/ask-user-question-contract.md`（契约冻结）+ `docs/plan/ask-user-question-extension.md`（开发计划）。
+
+### 工具契约（模型侧，非 IPC）
+
+`ask_user_question` 是 `@forge/extensions` 中的 forge 内置 pi 扩展注册的工具（**不是** rpiv npm 插件）。模型侧契约三层归属：
+
+| 层 | 内容 | 归属 |
+|---|---|---|
+| SDK | `registerTool` / `ToolDefinition` / `execute` | pi 官方 |
+| 业务 | `questions[]` 入参、`details` 出参、envelope 文本 | 照抄 rpiv 插件（本地固化，不跟随上游） |
+| 传输 | 本节定义的事件 / RPC 方法 / requestId / 超时 | forge 自定 |
+
+入参：
+
+```ts
+type QuestionParams = {
+  questions: Array<{
+    question: string;          // 完整问题
+    header: string;            // ≤16 字符（tab 标题）
+    options: Array<{
+      label: string;           // ≤60 字符，1–5 词
+      description: string;
+      preview?: string;        // 可选 markdown（mockup / 代码 / 配置示例）
+      recommended?: boolean;   // ★ forge 扩展字段（第二处有意偏离，见契约 §1.4）
+    }>;                        // 2–4 个
+    multiSelect?: boolean;     // 默认 false
+  }>;                          // 1–4 题
+};
+```
+
+出参 `details`（UI 渲染「已答摘要」的数据源）：
+
+```ts
+type QuestionnaireResult = {
+  answers: Array<{
+    questionIndex: number;
+    question: string;
+    kind: 'option' | 'multi' | 'custom';
+    answer: string | null;     // multi 恒为 null
+    selected?: string[];       // 仅 multi：按勾选顺序的 label 列表
+    preview?: string;          // 所选选项的 preview（不回流给模型，仅供 UI 面板）
+    notes?: string;
+  }>;
+  cancelled: boolean;          // 「取消」与「无输入」共用同一句 DECLINE_MESSAGE，UI 必须读本字段而非文本
+  globalNote?: string;
+  error?: string;              // 校验失败（questions 非法等）
+};
+```
+
+**本项目两处有意偏离 rpiv**：① `preview` **不回流**给模型（envelope 不含 `selected preview:` 段），但 `details.answers[].preview` 照常填充供 UI 渲染；② 新增 `options[].recommended?: boolean`，UI 同时兼容 label 尾部 `(Recommended)` 后缀（双通道，后缀仅显示层剥离，回填保持原始 label）。
+
+### conversation.askUserQuestionRequested（事件）
+
+**触发**：扩展 `execute` 校验通过后，经该会话私有总线 emit `ask-user:request`，desktop 桥接层补齐 `sessionId` 后转发为本事件。
+
+```json
+{
+  "sessionId": "sess_xxx",
+  "requestId": "req-1",
+  "timeoutMs": 60000,
+  "questions": [
+    {
+      "question": "用哪个缓存实现？",
+      "header": "Cache",
+      "multiSelect": false,
+      "options": [
+        { "label": "内存缓存", "description": "快但进程内", "recommended": true },
+        { "label": "Redis", "description": "跨进程", "preview": "```ts\ncreateClient()\n```" }
+      ]
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| sessionId | string | **必需**。发起会话的 ID；多窗格据此认领（缺该项一律忽略，不做「无 sessionId 归当前会话」兜底） |
+| requestId | string | 本轮问卷唯一 ID，回填时原样带回以匹配 pending |
+| timeoutMs | number | 下发给面板驱动倒计时；面板归零时**主动回填**已答部分（extension 侧实际等待 `timeoutMs + 1.5s` 兜底，双阈值避免竞态） |
+| questions | array | 1–4 题，每题 2–4 选项（同工具入参） |
+
+**UI 契约**：面板挂**会话作用域**壳层（不得挂 App 级）；订阅后按 `sessionId` 与 `getSessionId()` 比对认领，与当前会话不符则忽略。
+
+### askUserQuestion/reply（RPC 方法）
+
+**说明**：问卷作答的唯一上行入口。**必须是方法而非事件**——主进程只经 `IPC_INVOKE → invoke(methodTable, …)` 接收上行调用（`main.ts` 的事件通道仅用于下行推送）。
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| sessionId | string | 是 | 会话 ID（与请求事件一致） |
+| requestId | string | 是 | 本轮问卷 ID |
+| answers | array | 是 | 已答条目（**部分作答只含已答项**，长度即「已答 n/N」） |
+| cancelled | boolean | 是 | 取消 / 超时 / 无输入均为 true |
+| globalNote | string | 否 | 全局备注；空/空白不传 |
+
+响应 data：
+
+```json
+{ "delivered": true }
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| delivered | boolean | `true` = 已投递到该会话总线；`false` = 该会话无 lease（扩展未激活 / 会话已删）→ 作答被丢弃，模型收到 DECLINE |
+
+**错误码**：
+
+| code | 说明 |
+| ---- | --- |
+| 1001 | 参数错误（sessionId / requestId 为空串；answers 非数组；cancelled 非布尔） |
+| 5000 | 服务内部异常（意外抛出） |
+
+> `delivered=false` 是**正常降级**，仍返回 `code 0`——不视为错误，避免 UI 弹错。
+
+### preload 暴露面
+
+```ts
+window.forge.askUserQuestion = {
+  onRequest(listener: (payload: AskUserQuestionRequestPayload) => void): () => void;
+  reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<{ delivered: boolean }>>;
+};
+```
+
+`onRequest` 与 `window.forge.on('conversation.askUserQuestionRequested', …)` 共用同一事件多路复用；`reply` 经 `IPC_INVOKE` 调 `askUserQuestion/reply`。
+
+### 桥接约定（forge-desktop 内部，非 UI 契约）
+
+- **下行**：`bindAskUserBus(sessionId, lease)` 订阅该会话私有总线上的 `ask-user:request`，校验载荷（缺 requestId / questions 空或非数组 / timeoutMs 非正 → 静默忽略）后补齐 `sessionId` 上抛 `onAskUserQuestionRequested`。`removeSession` 时退订（迟到请求不再上抛）。
+- **上行**：`replyAskUserQuestion(sessionId, requestId, payload)` 经**该会话**总线的 `ask-user:reply:{requestId}` 投递；无 lease 返回 `false` 且零投递。
+- **会话隔离**：每会话一条私有事件总线（`DefaultResourceLoader` 构造在每会话 factory 闭包内且未传 `eventBus`），`sessionId` 取自订阅闭包，无需从 `ctx.sessionManager` 反查。
+- **事件白名单**：`conversation.askUserQuestionRequested` 必须登记在 `FORGE_EVENTS`；漏登记时主进程静默丢弃 → 面板永不出现且无报错（这类故障最难排查）。
+
+### 状态机
+
+```
+无问卷 ── askUserQuestionRequested(sessionId 匹配) ──> 面板展开 (倒计时启动)
+面板展开 ── 用户提交 / 取消 / ESC ──> 回填 (cancelled=false|true) ──> 面板收为已答摘要
+面板展开 ── 倒计时归零 ──> 主动回填「已答部分 + cancelled:true」──> 摘要标「已取消」
+面板展开 ── 会话切换 ──> 面板卸载 (问卷态按 sessionId 保留在 Map)
+面板展开 ── 新一轮 request 到达 ──> 上一轮摘要让位，替换为新问卷
+```
+
+- 问卷态按 `sessionId` 内存维护（不持久化、APP 退出随进程消失）。
+- 子 agent 结果视图激活时不渲染面板。
+- `settled` 门保证「提交」与「归零」竞态只上报一次。
+
+> 验收 AC-CV-043\~049 详见 `docs/test/03_conversation/coverage-matrix.md`。
+

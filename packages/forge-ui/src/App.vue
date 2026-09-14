@@ -502,6 +502,11 @@ watch([sessions, currentSessionId], () => {
 });
 
 onMounted(() => {
+  // 会话列表与项目列表并行拉取（而非串在 openProject 之后）：querySessionList 不传
+  // projectPath 时返回全部会话，与「打开项目」本身无依赖。若保持串行，openProject
+  // 触发的 pi 扩展预热（主进程 jiti 冷编译 3~9s 占满事件循环）会把会话查询一起堵住，
+  // 表现为「项目已显示、会话树空白数秒」。并行后会话请求先于预热落地。
+  void loadSessions();
   void loadProjects();
   void loadModels();
   unsubSessionRemoved = subscribe('session.removed', (payload) => {

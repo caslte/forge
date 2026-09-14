@@ -467,6 +467,15 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       conversationService.ingestReportedCommands(sessionId, commands as SlashCommand[]);
       conversationApi.emitSlashCommandsUpdated(sessionId);
     },
+    // Path 2 ask_user_question：模型调用工具后扩展经会话总线投递问卷，适配器按会话
+    // 订阅并补齐 sessionId 后上抛；此处转发 conversation.askUserQuestionRequested
+    // （已登记 FORGE_EVENTS 白名单，main.ts 才转发到渲染进程）。
+    // 载荷带必需 sessionId，多窗格各窗格按它认领，只在发起会话的窗格弹面板（契约 §4.4）。
+    // 问卷请求也是会话活动，刷新主轮看门狗避免长等待被误判定死。
+    onAskUserQuestionRequested: (_sessionId, payload) => {
+      pokeMainTurnActivity(payload.sessionId);
+      conversationApi.emitAskUserQuestionRequested(payload);
+    },
   });
 
   // setCompletionHandler 不再调用：done 由 subagentService.notifyMainTurnEnd 门控

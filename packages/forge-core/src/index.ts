@@ -70,6 +70,12 @@ export type {
   SlashCommand,
   SlashCommandResources,
   GetSlashCommandsParams,
+  AskUserQuestionOption,
+  AskUserQuestionItem,
+  AskUserQuestionRequestPayload,
+  AskUserQuestionAnswer,
+  AskUserQuestionReplyParams,
+  AskUserQuestionReplyData,
 } from './conversation/conversationService.ts';
 
 // 对话与消息 RPC 方法层（wu-03-rpc）

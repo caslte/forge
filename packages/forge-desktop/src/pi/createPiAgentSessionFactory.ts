@@ -11,7 +11,7 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
-import { slashCommandReporterExtension } from '@forge/extensions';
+import { askUserQuestionExtension, slashCommandReporterExtension } from '@forge/extensions';
 
 import type {
   MinimalPiSession,
@@ -202,7 +202,24 @@ export function createPiAgentSessionFactory(
       agentDir,
       settingsManager,
       eventBus: subagentEventBus,
-      extensionFactories: [slashCommandReporterExtension],
+      // CV-S08：命令上报扩展（slash-commands:reported）。
+      // Path 2（ask_user_question 自建内置扩展，契约见 docs/plan/ask-user-question-contract.md）：
+      // 与 rpiv 插件工具同名，靠下方 extensionsOverride 屏蔽插件本体，二者不共存。
+      extensionFactories: [slashCommandReporterExtension, askUserQuestionExtension],
+      // 冲突处置（契约 §5 / 计划 §3.5）：用户环境 ~/.pi/agent/settings.json 的 packages
+      // 含 @juicesharp/rpiv-ask-user-question，DefaultResourceLoader.reload() 会经
+      // packageManager.resolve() 把它也加载进来并注册同名 ask_user_question。
+      // pi 的统一工具命名优先级的规则是「先注册者胜」但加载顺序无保证（runner.js:280），
+      // 会出现「有时自建生效、有时插件生效」的薛定谔状态。
+      // 这里在内存里直接过滤掉该扩展——纯代码，不写用户 settings.json；
+      // 只屏蔽这一个包，pi-subagents / rpiv-todo 不受影响（TodoPanel 不回归）；
+      // 系统 pi CLI 是另一个宿主，照常加载插件，左右分栏不受影响。
+      extensionsOverride: (base) => ({
+        ...base,
+        extensions: base.extensions.filter(
+          (ext) => !ext.path.includes('rpiv-ask-user-question'),
+        ),
+      }),
     });
     await resourceLoader.reload();
     createOptions.resourceLoader = resourceLoader;

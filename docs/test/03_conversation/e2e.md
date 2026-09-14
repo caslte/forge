@@ -2,7 +2,7 @@
 
 > 模块：03 对话与消息
 > 来源：`coverage-matrix.md` + PRD 03
-> 状态：已确认（含扩展 CV-S06 E-CV-007~011、扩展 CV-S08 E-CV-014~018）
+> 状态：已确认（含扩展 CV-S06 E-CV-007~011、扩展 CV-S08 E-CV-014~018、扩展 CV-S11 E-CV-020~025、扩展 CV-S12 E-CV-026~028）
 > 触发：流式 mock 事件序列/时序、XSS fixtures、断流/取消时序复杂，按 contract §D 客观触发展开。
 
 ---
@@ -269,6 +269,146 @@
 
 ---
 
+## 扩展 CV-S11 Todo 面板（E-CV-020~025）
+
+> v3.63 在 coverage-matrix 定义了 E-CV-020~025，但未在本文件展开。本次（CV-S12 引入时）补齐，
+> 使 coverage-matrix 的 e2e 引用不再悬空。
+
+## E-CV-020 Todo 面板渲染（AC-CV-037）
+
+- **关联 AC**：AC-CV-037 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：主会话激活；seed mock `tool.completed(tool.name='todo')` 事件，details 含 4 个任务（2 completed + 1 in_progress + 1 pending）
+- **操作**：触发 todo 工具完成事件 → 观察输入框上方
+- **断言**：
+  - UI：面板出现；标题「已完成 2 / 共 4 个」；渲染 4 行（✓×2、●、○）；● 行括号内展示 activeForm
+  - 数据：只消费 `tool.completed` 终态（不消费 `tool.started`，避免流式噪声）
+  - 负向：非法 details（缺失/非对象/tasks 非数组）静默忽略、不抛错
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-021 任务行格式化（AC-CV-038）
+
+- **关联 AC**：AC-CV-038 | **优先级**：P1 | **自动化等级**：mock-backend
+- **前置**：已挂载面板；seed 含/不含 activeForm、含/不含 owner、空 subject、超长 subject（CJK 200 字 / emoji 50）
+- **操作**：观察面板渲染
+- **断言**：
+  - UI：三种状态字符与色正确；空 subject 显「（无标题）」；● 行括号展示 activeForm；超长 subject 按码点截断 + 省略号（恰好 120 字不加省略号）
+  - 数据：owner 不展示；不渲染 HTML（无 v-html）
+  - 负向：不产生半个代理对（emoji 截断安全）
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-022 折叠切换与会话隔离（AC-CV-039）
+
+- **关联 AC**：AC-CV-039 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：已挂载面板（默认展开）
+- **操作**：点击标题头部 → 观察 → 再点击 → 切子 agent Tab → 切回主会话；切到另一会话再切回
+- **断言**：
+  - UI：折叠态仅渲染标题 + chevron、不渲染任务行；展开态渲染全部任务行；过渡 ≤200ms；hover 不触发展开/收起
+  - 数据：折叠状态按 `sessionId` 内存隔离（切会话不串、刷新页面重置为默认展开）
+  - 负向：无
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-023 空快照卸载与超量收口（AC-CV-040）
+
+- **关联 AC**：AC-CV-040 | **优先级**：P1 | **自动化等级**：mock-backend
+- **前置**：不同快照规模：空快照 / 仅墓碑 / 51 任务 / 5 任务
+- **操作**：观察 DOM 与高度
+- **断言**：
+  - UI：空快照 / 仅墓碑 → 面板从 DOM 卸载、不留高度与占位；51 任务 → 前 50 行 + 「+N more」；5 任务 → 列表可视区固定 3 行高度、超出内部滚动（细滚动条 ≤6px）；输入框上提补位
+  - 数据：可见 task 计算过滤 `status==='deleted'` 墓碑
+  - 负向：卸载态不输出任何高度
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-024 多会话 todo 隔离 + 非法 details（AC-CV-041）
+
+- **关联 AC**：AC-CV-041 | **优先级**：P1 | **自动化等级**：mock-backend
+- **前置**：多会话画布；sessionA 已挂载 todo 面板；sessionB 无
+- **操作**：切到 sessionB → 观察；sessionB 触发非法 details 事件（缺失/非对象/tasks 非数组）；切回 sessionA
+- **断言**：
+  - UI：sessionB 面板卸载；非法 details 静默忽略、不报错；切回 sessionA 面板快照还原
+  - 数据：两会话快照各自独立，互不覆盖
+  - 负向：连续多次非法事件不累积错误、不发 toast
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-025 长任务列表保证进行中可视（AC-CV-042）
+
+- **关联 AC**：AC-CV-042 | **优先级**：P2 | **自动化等级**：mock-backend
+- **前置**：已挂载面板；seed 20 个任务（in_progress 位于第 5 行）；另一组全部 completed 的 10 个任务
+- **操作**：观察滚动位置 → 用户手动向下滚动 → 再触发一次状态变化
+- **断言**：
+  - UI：有 in_progress 时其落在 3 行可视窗口内（不强求顶部，第 1/2/3 行都可，用户无需手动滚动即可见）；无 in_progress（全部完成）时滚到最后一行
+  - 数据：目标行已可视时 no-op，不抢用户手动滚动位置
+  - 负向：不产生跳动（目标行已可视则无滚动）
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+---
+
+## 扩展 CV-S12 ask_user_question 内嵌问卷（E-CV-026~028）
+
+> 与 CV-S11 的关键差别：问卷是**双向**的（面板 → 主进程 → 扩展 → 模型），
+> 且必须在多窗格画布下按会话隔离投递与回填。
+>
+> **落地位置**：`packages/forge-ui/e2e/askUserQuestion.spec.ts`
+> （E-CV-026 → `ASK-E2E-001/002/003`、E-CV-027 → `ASK-E2E-004/005`、
+> E-CV-028 → `ASK-E2E-006`）。CV-S12 的这三条用例在 v3.69~v3.71 期间**只存在于本文件、
+> 没有对应 spec**，于是组件层唯一的验证路径也是空的 —— `ASK-E2E-006` 正是用来堵住
+> 这个缺口的（详见其断言说明）。
+
+## E-CV-026 问卷面板渲染与作答（AC-CV-043/044/045/046/050）
+
+- **关联 AC**：AC-CV-043/044/045/046 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：主会话激活；mock 扩展 emit 一份 2 题问卷（第 1 题单选、选项带 `preview` 且含推荐项；第 2 题 `multiSelect:true`）
+- **操作**：触发 `conversation.askUserQuestionRequested` → 观察面板 → **点第 1 题（带 preview）某选项 → 观察自动切屏** → 点「上一题」回看 → 用「下一题」手动前进 → hover 各选项观察右侧预览（高度不得变化）→ 第 2 题勾 2 个多选项（观察不自动前进）→ 再点「自己答」选项观察展开输入框且**已勾选项仍保持勾选** → 填文本 → 收起输入框观察该行仍高亮 → 走到末步（备注 tab）点「提交答案」→ 观察折叠摘要
+- **断言**：
+  - UI：输入框上方出现内嵌面板；N+1 tab 可切换；**仅单选且选项带非空 preview** 时左右分栏（多选切回单栏）；推荐项渲染「推荐」徽标且标签**不显示** `(Recommended)` 后缀
+  - **答完即收（AC-CV-050）**：走到末步点「提交答案」→ 摘要（`已答 n/N · 答案摘要 [· 备注：…]`）先出现，约 1.5s 后面板**带着 leave 动画（淡出 + 下沉 + 折叠）整体卸载**，输入框上方回到无面板状态；**摘要不会一直挂着**；卸载后**不得**因迟到的 `tool.completed` 重新弹出（等 2~3s 再断言面板仍不存在）；切到别的会话再切回来，该轮摘要**也不得**复活；随后同一会话再来一轮问卷 → 新面板正常出现、新的摘要正常显示
+  - **提交按钮禁用（AC-CV-050）**：末步 `已答 0/N` 时「提交答案」为 `disabled`（点它不产生任何回填、面板不卸载）；只填备注、一题未选时同样禁用；作答至少一题后按钮恢复可用
+  - **超时也要收（AC-CV-050 负向）**：已答部分题目后挂机等倒计时归零 → 已答部分回填成功、`cancelled:true` → 面板**同样**在约 1.5s 后收起（**不得**因为「`cancelled` 且 answers 非空」被误判成送达失败而留下过期卡片）
+  - **操作条位置**：`已答 n/N` + 上一题 / 下一题 / 取消 / 提交答案 全部在**标题行**（标题与「等待回答 · Ns」徽标之间）；面板**底部无**操作条；折叠面板时操作条随之隐藏、展开后回来
+  - 步骤导航（向导式）：多题时出现「上一题 / 下一题」（首步无「上一题」、末步无「下一题」）；点 tab 与点导航互不冲突（顺序不强制）；**「提交答案」只在末步渲染** —— 中间步断言该按钮不存在（`已答 0/N` 时也无）；单题问卷不出导航、提交按钮常驻
+  - **自动前进**：**单选**点中普通选项后自动切到下一步；**多选不切**（可连续勾选）；点「自己答」**不切**（保留输入时间）；末步不切（无下一步）
+  - **「自己答」形态**：是选项列表**末位的一行**（单选渲染 radio、多选渲染 checkbox），不是独立卡片；未选中时**不渲染**输入框（无占位高度）；选中才在选项区**下方整宽**展开（分栏时跨两列）；**单选**下与普通选项互斥 —— 选任一普通选项即取消该行并清空已输入文本（避免残留 custom 静默覆盖刚选的 option）；**多选**下与普通选项**并列** —— 先勾选项再点「自己答」，已勾选项**保持勾选**（反之亦然），收起输入框**不丢**文本且该行**仍高亮**（文本已计入答案）
+  - **尺寸稳定（禁止跳动）**：hover / 切换不同选项时右侧 preview 面板高度恒定（固定 240px + 内部滚动），面板底部与下方输入框不发生垂直位移；preview 内容超长时面板内滚动而非撑高
+  - **分栏宽度**：预览列窄于选项列（约 1.4 : 1；820px 面板下预览 ≈ 325px、选项列 ≈ 455px），选项列不多占一半宽度
+  - **预览内容排版**：preview 含 `- 优点：…` / `1. …` 列表时，**黑点与序号完整落在圆角框内**（不得被左边框切掉半颗）；列表项之间无多余空行（`pre-wrap` 不得把标记间的换行节点渲染成空行）；嵌套列表有递进缩进
+  - 数据：单选 → `kind='option'` + `answer=<原始 label>`；多选 → `kind='multi'` + `answer=null` + `selected`（保持勾选顺序，**自定义文本并入末位**，不另起 `kind='custom'` 条目）；单选自定义 → `kind='custom'`；部分作答只产出已答条目（摘要显示「已答 n/N」）；回填 label 为原始值（含后缀，剥离仅发生在显示层）；`details.answers[].preview` 保留但 envelope 不含 `selected preview:`
+  - 负向：子 agent 结果视图激活时不渲染面板；选项无 preview 时不产出该字段；句中（非尾部）出现 `(Recommended)` 不误判为推荐；中间步无「提交答案」按钮（规避「0 答提交 ≡ 取消」歧义路径）；点操作条按钮**不得**顺带触发头部折叠；**多选题内不得互斥**（勾普通选项不得取消「自己答」，反之亦然）
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-027 倒计时归零与多窗格会话隔离回填（AC-CV-047/048）
+
+- **关联 AC**：AC-CV-047/048 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：会话 A 面板倒计时进行中（下发 `timeoutMs` ≈ 10s，A 已答 1 题未提交）；会话 B 同时挂载并收到自身问卷
+- **操作**：A 切走再切回观察剩余秒数 → A 归零 → B 同时 emit 请求 → 对 A 提交后再次触发归零
+- **断言**：
+  - UI：剩余秒数按绝对截止时刻连续（切走再切回不重置）；**头部读数必须 > 0 且逐秒递减**（面板首屏即挂载、问卷后到 —— 不得因 computed 缓存首屏空值而恒显示 0）；归零主动回填「已答部分 + `cancelled:true`」；提交 / 取消 / ESC 走同一路径
+  - 数据：**A 的问卷只在 A 窗格出现，B 窗格不弹**；A 的回填只落 A 的会话总线；提交与归零竞态只上报一次（`settled` 门）
+  - 负向：无 lease 会话回填返回 false 且零投递（作答被丢弃 → 模型收到 DECLINE）；缺 `sessionId` 的请求一律忽略
+  - 健康：无 console error / pageerror
+- **证据**：screenshot
+
+## E-CV-028 首屏对话区渲染健康（AC-CV-043 前置）
+
+- **关联 AC**：AC-CV-043 | **优先级**：P0 | **自动化等级**：mock-backend
+- **前置**：冷启动首屏（默认 mock 种子 4 个会话），**不** emit 任何问卷事件
+- **操作**：`goto('/')` → 选中一个会话 → 观察对话区三件套 → 在输入框输入文本
+- **断言**：
+  - UI：`.conv-view` 数量为 1；`.conv-input-wrap` 与 `.compose-box` 可见；无问卷时 `.ask-panel` 不占位（`toHaveCount(0)`）
+  - **输入框可用**：能聚焦并输入（渲染中断时 DOM 可能残留，但事件系统已死 —— 只断言「元素存在」抓不到这类故障）
+  - 健康：**无 pageerror / console error**
+- **为什么必须单列一条**：`AskUserQuestionPanel` 常驻挂载在 `.conv-input-wrap` 内（`v-if="!showResultView"`，首屏无问卷也挂）。它的 setup 一旦抛错，**整个 `ConversationView` 的更新都会失败**，表现为「左侧项目/会话树正常、右侧对话区整块空白」—— 与面板自身完全无关的现象。而组件层没有单测设施（forge-ui 只测纯函数），CSS/声明顺序这类问题只有浏览器级用例兜得住。
+  - 真实案例（v3.71 → v3.72）：「答完即收」的 watch 写在 `const showAnswered` **之前**，`doWatch` 建 effect 时会**同步求值一次** getter（不需要 `immediate`）→ 撞 `const` 的 TDZ → `ReferenceError: Cannot access 'showAnswered' before initialization` → 对话区整块空白。真机现象与终端只留下无害的 Chromium 网络告警，误导性极强。
+  - 反向验证：把 `showAnswered` 挪回 watch 之后，本用例与 E-CV-026/027 全部 6 条一并变红（面板与 composer 都找不到），挪回前面即全绿。
+- **证据**：screenshot
+
+---
+
 ## 覆盖汇总
 
 | 用例 | AC | 优先级 | 自动化等级 | 触发展开项 |
@@ -291,7 +431,17 @@
 | E-CV-016 | 030 | P1 | mock-backend | 四关闭路径 + Enter 恢复发送 |
 | E-CV-017 | 032 | P0 | mock-backend（emit slashCommandsUpdated） | 草稿态 skills 可见 + 激活后扩展命令补全 |
 | E-CV-018 | 033 | P1 | mock-backend | 枚举失败降级不阻塞输入 |
-| E-CV-019 | 034/035/036 | P1 | mock-backend | @ 补全触发/过滤/选中进待发区 + 空态降级 || QC-001 | CV-S09 | P0 | mock-backend | 忙时入队/徽标浮窗/自动派发（慢回复脚本） |
+| E-CV-019 | 034/035/036 | P1 | mock-backend | @ 补全触发/过滤/选中进待发区 + 空态降级 |
+| E-CV-020 | 037 | P0 | mock-backend | 面板渲染 + 标题计数 + 三态任务行 |
+| E-CV-021 | 038 | P1 | mock-backend | 格式化 fixture（activeForm/空 subject/超长/emoji） |
+| E-CV-022 | 039 | P0 | mock-backend | 折叠切换 + sessionId 隔离 |
+| E-CV-023 | 040 | P1 | mock-backend | 空快照卸载 + 51 任务收口 |
+| E-CV-024 | 041 | P1 | mock-backend | 多会话快照隔离 + 非法 details |
+| E-CV-025 | 042 | P2 | mock-backend | 长列表锁 in_progress + 不抢手动滚动 |
+| E-CV-026 | 043/044/045/046/050 | P0 | mock-backend（emit askUserQuestionRequested） | 问卷面板渲染/标题行操作条/步骤导航（末步才可提交）/单选自动前进/「自己答」折叠为选项/preview 尺寸稳定 + 分栏宽度 + 列表黑点在框内/答完即收（1.5s 后卸载且不复活）/0 答禁用提交/回填原始 label |
+| E-CV-027 | 047/048 | P0 | mock-backend（emit askUserQuestionRequested） | 倒计时连续 + 归零回填 + 多窗格隔离 + 无 lease 零投递 |
+| E-CV-028 | 043（前置） | P0 | mock-backend | 首屏对话区三件套渲染 + 面板不占位 + 输入框可用 + 无 pageerror（组件 setup 崩溃打空整块对话区的唯一回归锁） |
+| QC-001 | CV-S09 | P0 | mock-backend | 忙时入队/徽标浮窗/自动派发（慢回复脚本） |
 | QC-002 | CV-S09 | P1 | mock-backend | 上限 5 条拒绝 + 输入保留 |
 | QC-003 | CV-S09 | P0 | mock-backend | 停止清队 + \n\n 回填（TUI ESC 同款） |
 | QC-004 | CV-S09 | P1 | mock-backend | 切走再切回徽标不丢（队列镜像按会话维护，v1.2） |

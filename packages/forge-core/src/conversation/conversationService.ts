@@ -170,6 +170,84 @@ export type ConversationUsageSnapshot = {
   percent: number | null;
 };
 
+/*
+ * ===== ask_user_question 问卷（Path 2 自建内置扩展）=====
+ *
+ * 契约：docs/plan/ask-user-question-contract.md §4（L3 传输契约）。
+ * 跨进程类型按仓库既有惯例在各包独立声明（forge-core 不依赖 @forge/extensions，
+ * forge-ui 也不依赖），字段形状与扩展侧 channels.ts / schema.ts 对齐。
+ */
+
+/** 问卷选项（模型侧入参 + UI 渲染源；preview 仅 UI 展示，不回传模型） */
+export interface AskUserQuestionOption {
+  /** 选项短标签（≤60 字符，1–5 词） */
+  label: string;
+  /** 该选项含义/权衡说明 */
+  description: string;
+  /** 可选 markdown（mockup / 代码 / 配置示例）；有任一 preview 时 UI 切左右分栏 */
+  preview?: string;
+  /** ★ forge 扩展字段：推荐项（UI 渲染「推荐」标记） */
+  recommended?: boolean;
+}
+
+/** 单道问题 */
+export interface AskUserQuestionItem {
+  /** 完整问题（同一次调用内不重复） */
+  question: string;
+  /** ≤16 字符短标签（tab 标题） */
+  header: string;
+  /** 2–4 个选项 */
+  options: AskUserQuestionOption[];
+  /** 默认 false；true 时多选 */
+  multiSelect?: boolean;
+}
+
+/**
+ * `conversation.askUserQuestionRequested` 事件载荷：模型调用工具后下发给
+ * renderer 渲染问卷面板。`sessionId` **必需**——多窗格并排时各窗格按它认领，
+ * 缺失会退化成「无 sessionId 归当前会话」兜底并使所有窗格同时弹问卷（契约 §4.4）。
+ */
+export interface AskUserQuestionRequestPayload {
+  sessionId: string;
+  /** 本次问卷请求 ID（回填时原样带回） */
+  requestId: string;
+  /** 完整问卷（含 preview / recommended） */
+  questions: AskUserQuestionItem[];
+  /** 面板倒计时时长（毫秒，由扩展下发；UI 勿硬编码） */
+  timeoutMs: number;
+}
+
+/** 单题作答（`details.answers[]` 形状，扩展侧 types.ts 同构） */
+export interface AskUserQuestionAnswer {
+  questionIndex: number;
+  question: string;
+  kind: 'option' | 'custom' | 'multi';
+  /** kind='multi' 时恒为 null */
+  answer: string | null;
+  /** 仅 kind='multi'：选中的选项 label 列表 */
+  selected?: string[];
+  /** 每题备注 */
+  notes?: string;
+  /** 命中带 preview 的单选项时填充 */
+  preview?: string;
+}
+
+/**
+ * `askUserQuestion/reply` 请求参数（renderer → main 回填）。
+ * `cancelled=true` 时 `answers` 仍应携带**已答部分**（契约 §2.1「部分作答后取消」）。
+ */
+export interface AskUserQuestionReplyParams {
+  sessionId: string;
+  requestId: string;
+  answers: AskUserQuestionAnswer[];
+  cancelled: boolean;
+  /** 全局备注（可选，空/空白不传） */
+  globalNote?: string;
+}
+
+/** 适配器投递用的作答载荷（sessionId / requestId 由调用方单独传参，不重复携带） */
+export type AskUserQuestionReplyData = Omit<AskUserQuestionReplyParams, 'sessionId' | 'requestId'>;
+
 export interface PiConversationAdapter {
   sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void>;
   loadHistory(sessionId: string): Promise<ConversationMessage[]>;
@@ -182,6 +260,17 @@ export interface PiConversationAdapter {
   getContextUsage?(sessionId: string): Promise<ConversationUsageSnapshot | null> | ConversationUsageSnapshot | null;
   /** 手动压缩（P3-A） */
   compact?(sessionId: string): Promise<ConversationCompactResult>;
+  /**
+   * 问卷回填（Path 2 ask_user_question，契约 §4.4）：把 renderer 的作答投递回
+   * 扩展侧等待中的 Promise。返回是否投递成功（false = 该会话无活跃 lease /
+   * 通道不可用，作答被丢弃——通常意味着超时已先行收敛）。
+   * 未实现时服务层降级为 `{ delivered: false }`。
+   */
+  replyAskUserQuestion?(
+    sessionId: string,
+    requestId: string,
+    payload: AskUserQuestionReplyData,
+  ): Promise<boolean> | boolean;
 }
 
 /** 会话流式状态（每会话内存态，含内存累积文本） */
@@ -525,6 +614,55 @@ export class ConversationService {
     } catch (err) {
       console.error('[getSlashCommands] resource query failed', err);
       return [];
+    }
+  }
+
+  /**
+   * 问卷回填（Path 2 ask_user_question，契约 §4.4 硬约束③）：把 renderer 的作答
+   * 投递回扩展侧等待中的 Promise。
+   *
+   * 校验顺序：sessionId / requestId 非空（1001）→ answers 为数组且 cancelled 为布尔
+   * （1001）→ 会话存在（1002）→ 委托 adapter。适配器按 **sessionId 定位 lease**
+   * （无 lease 不投递）并用 **requestId** 定位等待者（无该 requestId 的监听者则
+   * emit 落空）——两道匹配共同保证「错窗格回填」不会污染别的会话。
+   *
+   * 幂等：面板超时主动回填与用户提交可能竞争，重复投递无副作用
+   * （扩展侧 Promise 首次 resolve 后即忽略后续）。
+   * @param params 回填参数（sessionId / requestId / answers / cancelled / globalNote?）
+   * @returns `{ ok: true, data: { delivered } }`——delivered=false 表示无通道可投递
+   *          （会话无 lease / 适配器不支持），属正常降级不报错
+   */
+  async replyAskUserQuestion(
+    params: AskUserQuestionReplyParams,
+  ): Promise<ConversationResult<{ delivered: boolean }>> {
+    const sessionId = params?.sessionId;
+    const requestId = params?.requestId;
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '参数错误：sessionId 必须为非空字符串' };
+    }
+    if (typeof requestId !== 'string' || requestId.trim() === '') {
+      return { ok: false, code: 1001, message: '参数错误：requestId 必须为非空字符串' };
+    }
+    if (!Array.isArray(params?.answers) || typeof params.cancelled !== 'boolean') {
+      return { ok: false, code: 1001, message: '参数错误：answers 必须为数组、cancelled 必须为布尔' };
+    }
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (this.adapter.replyAskUserQuestion === undefined) {
+      return { ok: true, data: { delivered: false } };
+    }
+    const note = params.globalNote;
+    const data: AskUserQuestionReplyData = {
+      answers: params.answers,
+      cancelled: params.cancelled,
+      ...(typeof note === 'string' && note.trim() !== '' ? { globalNote: note } : {}),
+    };
+    try {
+      const delivered = await this.adapter.replyAskUserQuestion(sessionId, requestId, data);
+      return { ok: true, data: { delivered } };
+    } catch (err) {
+      return { ok: false, code: 5000, message: `问卷回填失败: ${toMessage(err)}` };
     }
   }
 

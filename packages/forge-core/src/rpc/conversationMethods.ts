@@ -36,6 +36,9 @@ import type {
   ConversationCompactingPayload,
   ConversationCompactedPayload,
   GetSlashCommandsParams,
+  AskUserQuestionRequestPayload,
+  AskUserQuestionReplyParams,
+  AskUserQuestionAnswer,
 } from '../conversation/conversationService.ts';
 
 /** 构造成功信封 */
@@ -93,6 +96,9 @@ export class ConversationApi {
       'conversation/getContextUsage': (params) => this.getContextUsage(params),
       'conversation/compact': (params) => this.compact(params),
       'conversation/getSlashCommands': (params) => this.getSlashCommands(params),
+      // Path 2 ask_user_question 回填：renderer → main 只能走方法调用（不是事件），
+      // 故必须落在这里（契约 §4.2.1 ③）。
+      'askUserQuestion/reply': (params) => this.replyAskUserQuestion(params),
     };
   }
 
@@ -234,6 +240,25 @@ export class ConversationApi {
   }
 
   /**
+   * askUserQuestion/reply：问卷回填（Path 2，契约 §4.2.1 ③ / §4.4 ③）。
+   * renderer→main 只能是方法调用，故本方法是问卷作答的唯一上行入口。
+   * 参数校验交给服务层（1001/1002），异常捕获为 5000；
+   * `delivered=false` 属正常降级（会话无 lease），仍返回 code 0。
+   */
+  private replyAskUserQuestion(params: unknown): Promise<RpcResult> {
+    const request: AskUserQuestionReplyParams = {
+      sessionId: (isRecord(params) ? params.sessionId : undefined) as string,
+      requestId: (isRecord(params) ? params.requestId : undefined) as string,
+      answers: (isRecord(params) ? params.answers : undefined) as AskUserQuestionAnswer[],
+      cancelled: (isRecord(params) ? params.cancelled : undefined) as boolean,
+    };
+    if (isRecord(params) && typeof params.globalNote === 'string') {
+      request.globalNote = params.globalNote;
+    }
+    return this.call('askUserQuestion/reply', () => this.service.replyAskUserQuestion(request));
+  }
+
+  /**
    * 会话状态驱动（非 RPC 方法）：发射 conversation.statusChanged。
    * 供 sendMessage 成功后自动调用，也供 UI 层 / 测试直接驱动状态流转。
    * @param sessionId 会话 ID
@@ -324,6 +349,18 @@ export class ConversationApi {
    */
   emitSlashCommandsUpdated(sessionId: string): void {
     this.events.emit('conversation.slashCommandsUpdated', { sessionId });
+  }
+
+  /**
+   * 问卷请求推送（非 RPC 方法，Path 2 ask_user_question）：发射
+   * conversation.askUserQuestionRequested。模型调用 ask_user_question 后，扩展经
+   * 会话事件总线投递问卷，desktop 桥接层按会话订阅并补齐 sessionId，再经此转发
+   * 渲染进程——UI 在**发起会话所属窗格**内渲染面板（契约 §4.4 会话隔离）。
+   * @param payload 问卷请求载荷（sessionId + requestId + questions + timeoutMs）
+   * @returns 无返回值；触发事件 conversation.askUserQuestionRequested
+   */
+  emitAskUserQuestionRequested(payload: AskUserQuestionRequestPayload): void {
+    this.events.emit('conversation.askUserQuestionRequested', payload);
   }
 }
 

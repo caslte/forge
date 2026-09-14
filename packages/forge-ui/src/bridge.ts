@@ -52,7 +52,9 @@ export type ForgeMethod =
   | 'updater/getState'
   | 'updater/checkForUpdates'
   | 'updater/downloadUpdate'
-  | 'updater/quitAndInstall';
+  | 'updater/quitAndInstall'
+  // ask_user_question（Path 2）：问卷回填（renderer → main 的唯一上行入口）
+  | 'askUserQuestion/reply';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -69,6 +71,7 @@ export type ForgeEvent =
   | 'conversation.compacting'
   | 'conversation.compacted'
   | 'conversation.slashCommandsUpdated'
+  | 'conversation.askUserQuestionRequested'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -162,6 +165,82 @@ export interface SlashCommandsUpdatedPayload {
   sessionId: string;
 }
 
+/*
+ * ===== ask_user_question（Path 2 自建内置扩展）=====
+ *
+ * 真相来源：`docs/plan/ask-user-question-contract.md` §1/§2/§4。
+ * 按本文件既有惯例**本地声明**（不 import @forge/core 根入口——其 RPC 层含
+ * node:events，浏览器打包会炸）；字段与扩展侧 schema.ts / channels.ts 同构。
+ */
+
+/** 问卷选项 */
+export interface AskUserQuestionOption {
+  /** 选项短标签（≤60 字符） */
+  label: string;
+  /** 该选项含义/权衡说明 */
+  description: string;
+  /** 可选 markdown（mockup / 代码 / 配置示例）；任一选项有 preview 时切左右分栏 */
+  preview?: string;
+  /** ★ forge 扩展字段：推荐项（渲染「推荐」标记） */
+  recommended?: boolean;
+}
+
+/** 单道问题 */
+export interface AskUserQuestionItem {
+  /** 完整问题 */
+  question: string;
+  /** ≤16 字符短标签（tab 标题） */
+  header: string;
+  /** 2–4 个选项 */
+  options: AskUserQuestionOption[];
+  /** 默认 false；true 时多选（选项行渲染 checkbox） */
+  multiSelect?: boolean;
+}
+
+/** conversation.askUserQuestionRequested 事件 payload（sessionId 必需，多窗格据此认领） */
+export interface AskUserQuestionRequestPayload {
+  sessionId: string;
+  requestId: string;
+  questions: AskUserQuestionItem[];
+  /** 面板倒计时时长（毫秒，由扩展下发；**勿硬编码**） */
+  timeoutMs: number;
+}
+
+/** 单题作答（回填用；cancelled=true 时仍应带已答部分） */
+export interface AskUserQuestionAnswer {
+  questionIndex: number;
+  question: string;
+  kind: 'option' | 'custom' | 'multi';
+  answer: string | null;
+  selected?: string[];
+  notes?: string;
+  preview?: string;
+}
+
+/** askUserQuestion/reply 请求参数 */
+export interface AskUserQuestionReplyParams {
+  sessionId: string;
+  requestId: string;
+  answers: AskUserQuestionAnswer[];
+  cancelled: boolean;
+  /** 全局备注（可选，空/空白不传） */
+  globalNote?: string;
+}
+
+/** askUserQuestion/reply 响应 data */
+export interface AskUserQuestionReplyResult {
+  /** 是否已投递到扩展侧等待中的 Promise（false = 会话无活跃 lease，作答被丢弃） */
+  delivered: boolean;
+}
+
+/** window.forge.askUserQuestion：问卷双向通道 */
+export interface ForgeAskUserQuestion {
+  /** 订阅问卷请求（收窄 payload 类型）；多窗格各自订阅并**按 sessionId 认领** */
+  onRequest(listener: (payload: AskUserQuestionRequestPayload) => void): () => void;
+  /** 回填作答（必须带 sessionId + requestId） */
+  reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<AskUserQuestionReplyResult>>;
+}
+
 /** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json）。与 @forge/desktop ipc-contract 同步 */
 export interface PiGetInfoResult {
   forgeVersion: string;
@@ -206,6 +285,8 @@ export type UpdaterStateChangedPayload = UpdaterSnapshot;
 export interface ForgeBridge {
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
+  /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
+  askUserQuestion: ForgeAskUserQuestion;
   window: {
     minimize(): void;
     toggleMaximize(): void;
@@ -269,4 +350,28 @@ export function subscribe(
   listener: (payload: unknown) => void,
 ): () => void {
   return window.forge.on(event, listener);
+}
+
+/**
+ * 订阅问卷请求（Path 2）：等价 `subscribe('conversation.askUserQuestionRequested')`，
+ * 仅收窄 payload 类型。多窗格场景下每个窗格各自订阅并**按 sessionId 认领**。
+ */
+export function onAskUserQuestionRequest(
+  listener: (payload: AskUserQuestionRequestPayload) => void,
+): () => void {
+  return window.forge.askUserQuestion.onRequest(listener);
+}
+
+/**
+ * 回填问卷作答（Path 2）。成功返回 `{ delivered }`；失败（code≠0）抛错。
+ * 必须携带 `sessionId + requestId`；`cancelled=true` 时 `answers` 仍应带已答部分。
+ */
+export async function replyAskUserQuestion(
+  params: AskUserQuestionReplyParams,
+): Promise<AskUserQuestionReplyResult> {
+  const res = await window.forge.askUserQuestion.reply(params);
+  if (res.code !== 0) {
+    throw new Error(`askUserQuestion/reply 失败（${res.code}）: ${res.message}`);
+  }
+  return res.data as AskUserQuestionReplyResult;
 }

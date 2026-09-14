@@ -43,6 +43,17 @@ const { autoUpdater } = require('electron-updater') as typeof import('electron-u
  */
 const appVersion = (require('../package.json') as { version: string }).version;
 
+/**
+ * `project.opened` 到 pi 扩展预热的延后窗口（毫秒）。
+ *
+ * 预热本身的冷编译是主进程同步 CPU + stat 风暴（10 个扩展包实测 3~9s，占满事件
+ * 循环）。若在 openProject 的 handler 内立即触发，会连该请求自身的 IPC 响应一起
+ * 堵住：渲染进程卡在 await，紧随其后的 session/querySessionList 根本发不出去，
+ * 表现为「项目已显示、会话树空白数秒」。延后到启动关键路径（项目/会话列表 IPC，
+ * 毫秒级）之后再生效，代价是预热完成时刻推迟同样的时长（对首条发送无实质影响）。
+ */
+const PI_WARMUP_DEFER_MS = 1500;
+
 let mainWindow: BrowserWindow | null = null;
 
 /** 创建主窗口（无边框，自定义标题栏）；dev 模式自动挂 DevTools + F12/Ctrl+Shift+I 快捷键 */
@@ -292,10 +303,13 @@ app.whenReady().then(() => {
   }
 
   // 首条消息卡顿修复：项目打开即后台预热 pi 扩展加载（jiti 冷编译 3~9s 不再落在
-  // 首条发送路径上）；启动时自动打开首个项目也会触发 project.opened，单点覆盖
+  // 首条发送路径上）；启动时自动打开首个项目也会触发 project.opened，单点覆盖。
+  // 注意：不能在此同步触发——openProject 的 handler 尚未 return，冷编译的同步段会
+  // 把该 IPC 响应自身堵住（详见 PI_WARMUP_DEFER_MS 注释），故延后一个窗口期。
   eventBus.on('project.opened', (payload) => {
     const opened = (payload as { path?: unknown }).path;
-    if (typeof opened === 'string' && opened !== '') void warmPiResourceLoader(opened);
+    if (typeof opened !== 'string' || opened === '') return;
+    setTimeout(() => void warmPiResourceLoader(opened), PI_WARMUP_DEFER_MS);
   });
 
   // 模块 07：首启静默预装推荐组件 + 版本变化联动更新（IN-F02/IN-F04）

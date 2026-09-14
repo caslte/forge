@@ -1265,3 +1265,176 @@ test('CV-S09 竞态回归：上一条直发 factory 失败时释放等待者，�
   await assert.rejects(first, /factory 失败/);
   await assert.rejects(second, /factory 失败/, '等待中的消息必须被释放并收到同一错误，不得悬挂');
 });
+
+// ===== Path 2：ask_user_question 双向往返（契约 §4.2.1 ① ④ / §4.4）=====
+
+import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel } from '@forge/extensions';
+
+/** 一份最小合法问卷载荷（扩展侧 emit 的形状） */
+function askRequestPayload(): Record<string, unknown> {
+  return {
+    requestId: 'req-1',
+    questions: [
+      {
+        question: '用哪个缓存实现？',
+        header: 'Cache',
+        options: [
+          { label: '内存缓存', description: '快但进程内' },
+          { label: 'Redis', description: '跨进程' },
+        ],
+      },
+    ],
+    timeoutMs: 60_000,
+  };
+}
+
+test('Path 2：按会话订阅 ask-user:request，补齐**必需** sessionId 后上抛 onAskUserQuestionRequested', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => fake.dispose(),
+    events: bus,
+  }));
+  const seen: Array<{ sessionId: string; payload: Record<string, unknown> }> = [];
+  adapter.setEventHandlers({
+    onAskUserQuestionRequested: (sessionId, payload) =>
+      seen.push({ sessionId, payload: payload as unknown as Record<string, unknown> }),
+  });
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, askRequestPayload());
+
+  assert.equal(seen.length, 1, '请求应被上抛一次');
+  assert.equal(seen[0]!.sessionId, 's1');
+  assert.equal(seen[0]!.payload.requestId, 'req-1');
+  assert.equal(seen[0]!.payload.sessionId, 's1', '载荷必须带 sessionId（多窗格据此认领）');
+  assert.equal(seen[0]!.payload.timeoutMs, 60_000, 'timeoutMs 原样透传供面板驱动倒计时');
+  assert.equal(Array.isArray(seen[0]!.payload.questions), true);
+});
+
+test('Path 2：畸形请求载荷一律静默忽略（宁可不弹，也不弹残缺面板）', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => fake.dispose(),
+    events: bus,
+  }));
+  const seen: unknown[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (_sid, payload) => seen.push(payload) });
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, null);
+  bus.emit(ASK_USER_REQUEST_CHANNEL, 'text');
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { questions: [], timeoutMs: 1000 }); // 缺 requestId
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: [], timeoutMs: 1000 }); // 空问卷
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: {}, timeoutMs: 1000 }); // questions 非数组
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: [{}], timeoutMs: 0 }); // timeoutMs 非正
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: [{}], timeoutMs: Number.NaN });
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: '', questions: [{}], timeoutMs: 1000 }); // requestId 空
+
+  assert.equal(seen.length, 0, '八种畸形载荷都不得上抛');
+});
+
+test('Path 2：replyAskUserQuestion 经**该会话**总线投递回填；无 lease 返回 false 不投递', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => fake.dispose(),
+    events: bus,
+  }));
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  const replies: Array<Record<string, unknown>> = [];
+  bus.on(askUserReplyChannel('req-1'), (data) => replies.push(data as Record<string, unknown>));
+
+  const answers = [{ questionIndex: 0, question: 'q', kind: 'option', answer: '内存缓存' }];
+  const ok = adapter.replyAskUserQuestion('s1', 'req-1', { answers, cancelled: false, globalNote: '备注' });
+  assert.equal(ok, true);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0]!.requestId, 'req-1');
+  assert.deepEqual(replies[0]!.answers, answers);
+  assert.equal(replies[0]!.cancelled, false);
+  assert.equal(replies[0]!.globalNote, '备注');
+
+  // 取消态：globalNote 缺省时字段不出现在载荷里（与扩展侧 isAskUserReplyPayload 宽松校验一致）
+  adapter.replyAskUserQuestion('s1', 'req-1', { answers: [], cancelled: true });
+  assert.equal(replies.length, 2);
+  assert.equal(replies[1]!.cancelled, true);
+  assert.equal('globalNote' in replies[1]!, false);
+
+  // 错窗格 / 会话已删 → 无 lease → 不投递（作答被丢弃，模型收到 DECLINE）
+  assert.equal(adapter.replyAskUserQuestion('other', 'req-1', { answers: [], cancelled: false }), false);
+  assert.equal(replies.length, 2, '无 lease 的会话不得产生任何回填');
+});
+
+test('Path 2：会话隔离——每会话各自订阅，sessionId 取自订阅闭包，A 的请求不会投到 B', async () => {
+  const busA = new SubagentTestBus();
+  const busB = new SubagentTestBus();
+  const adapter = new PiConversationAdapter(async (options) => {
+    const fake = new FakePiSession();
+    return { session: fake, dispose: () => fake.dispose(), events: options.sessionId === 'A' ? busA : busB };
+  });
+  const seen: string[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (sessionId) => seen.push(sessionId) });
+  adapter.onMessage('A', () => undefined);
+  adapter.onMessage('B', () => undefined);
+  // 生产路径由 resolveSendOptions(sessionId) 注入 sessionId；测试按同形状传入
+  await adapter.sendMessage('A', 'a 的任务', { sessionId: 'A' });
+  await adapter.sendMessage('B', 'b 的任务', { sessionId: 'B' });
+
+  busA.emit(ASK_USER_REQUEST_CHANNEL, askRequestPayload());
+
+  assert.deepEqual(seen, ['A'], 'A 的总线事件只能认领为 A（总线私有，无需从 ctx 反查）');
+
+  // B 的回填只落在 B 的总线上
+  const repliesA: unknown[] = [];
+  const repliesB: unknown[] = [];
+  busA.on(askUserReplyChannel('req-1'), (d) => repliesA.push(d));
+  busB.on(askUserReplyChannel('req-1'), (d) => repliesB.push(d));
+  adapter.replyAskUserQuestion('B', 'req-1', { answers: [], cancelled: true });
+  assert.equal(repliesA.length, 0, 'A 的总线不得收到 B 会话的回填');
+  assert.equal(repliesB.length, 1);
+});
+
+test('Path 2：removeSession 退订问卷 channel，迟到请求不再上抛（幂等）', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  let disposed = false;
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => (disposed = true),
+    events: bus,
+  }));
+  const seen: unknown[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (_sid, payload) => seen.push(payload) });
+  adapter.onMessage('s-del', () => undefined);
+  await adapter.sendMessage('s-del', '任务');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, askRequestPayload());
+  assert.equal(seen.length, 1);
+
+  await adapter.removeSession('s-del');
+  assert.ok(disposed, 'lease 应被 dispose');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { ...askRequestPayload(), requestId: 'req-2' });
+  assert.equal(seen.length, 1, '退订后迟到请求不得再上抛（否则会弹出无主问卷）');
+  await adapter.removeSession('s-del'); // 幂等
+});
+
+test('Path 2：lease 无事件总线（扩展未激活）时静默降级，不抛错也不上抛', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const seen: unknown[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (_sid, payload) => seen.push(payload) });
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  assert.deepEqual(seen, []);
+  assert.equal(adapter.replyAskUserQuestion('s1', 'req-1', { answers: [], cancelled: true }), false);
+});

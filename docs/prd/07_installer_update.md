@@ -43,7 +43,7 @@
 - 更新成功 toast「更新完成」并刷新清单；失败在分区内展示错误与输出尾部（不弹 toast）。
 - 预装推荐插件对客户**完全无感**：后台静默执行，UI 不出现任何「组件/插件」字样的预装提示。
 - 自更新通道：**GitHub Releases**（electron-updater 对接，打 tag 即发版）。
-- 预装清单：当前 settings.packages 的 11 个插件作为初始推荐清单。
+- 预装清单：当前 settings.packages 的 10 个插件作为初始推荐清单（v2025-11：v3.64 曾扩至 11，因 forge 自建 `ask_user_question` 内置扩展会与之重名，v3.65 移除 `@juicesharp/rpiv-ask-user-question` 回落至 10）。
 - 两类更新两种姿态：
   - **组件（共享插件）自动更新、不用提示**：forge 版本变化触发后台静默更新；
   - **forge 版本更新包提示用户、手动点击更新**：发现新版本 → 提示 → 用户手动点击才下载安装。
@@ -61,7 +61,7 @@
 | TD-PI-05 | PU-S02 可测试性 | 单测不碰真实 CLI/npm | - | 更新器端口可注入（ForgeCoreDeps.piUpdateExtensions） | 已确认（已实现） |
 | TD-IN-01 | IN-S03 自更新通道 | electron-updater 需要更新源；零服务器成本、打 tag 即发版 | 自建静态服务器（generic）；v1 不做在线更新 | **GitHub Releases** | 已确认 |
 | TD-IN-02 | IN-S02 预装时机 | NSIS 内跑 npm 不可靠（无 node 环境、失败不可见）；客户无感要求后台静默 | 仅设置页手动入口（违背「无感」） | **首次运行后台静默补缺**（复用 TD-PI-01 更新器），无任何 UI 提示 | 已确认 |
-| TD-IN-03 | IN-S02 预装清单内容 | 推荐插件需具体清单 | 精简核心集 | **当前 11 个**（清单固化在 forge 包内可随版本演进） | 已确认 |
+| TD-IN-03 | IN-S02 预装清单内容 | 推荐插件需具体清单 | 精简核心集 | **当前 10 个**（清单固化在 forge 包内可随版本演进；v3.65 移除 `@juicesharp/rpiv-ask-user-question`，因 forge 已自建同名 `ask_user_question` 扩展） | 已确认 |
 | TD-IN-04 | IN-S04 联动更新语义 | 组件自动更新不提示；forge 更新包必须用户手动点击 | 仅提示不自动；自动安装 forge 更新 | **启动检测 forge 版本变化 → 后台静默更新插件**；forge 更新包发现后提示、手动点击更新 | 已确认 |
 | TD-IN-05 | IN-S01 平台范围 | 打包/测试成本 | mac/Linux 同步支持 | **Windows NSIS per-user（v1）**，mac/Linux 后续 | 已确认 |
 | TD-IN-06 | IN-S03 版本与通道 | 版本号来源与更新通道数 | 多通道（beta/stable） | **根 package.json semver，单 latest 通道** | 已确认 |
@@ -174,7 +174,7 @@
 
 - 目标：首启开箱即用，对用户完全无感。
 - 前置条件：forge 首次在该 userData 启动。
-- 业务规则：读取内置推荐组件清单（固化在 forge 包内，v1=当前 11 个）；写入共享 `~/.pi/agent`（合并补缺，**只增不删**，不动用户已装/自装项）；用内置引擎更新器执行补装（复用 PU-F02 能力）。执行于非阻塞持久化标记之后，避免每次启动重跑。**补装明细（包名 · 版本 · 来源=预装）写结构化日志，并刷新 updater-state.json 的 components 快照**。
+- 业务规则：读取内置推荐组件清单（固化在 forge 包内，v1=当前 10 个）；写入共享 `~/.pi/agent`（合并补缺，**只增不删**，不动用户已装/自装项）；用内置引擎更新器执行补装（复用 PU-F02 能力）。执行于非阻塞持久化标记之后，避免每次启动重跑。**补装明细（包名 · 版本 · 来源=预装）写结构化日志，并刷新 updater-state.json 的 components 快照**。
 - 业务数据：推荐清单（包名列表，可随版本演进）；「已执行预装」标志（userData，幂等）。
 - 交互与反馈：无任何 UI 提示；后台完成；失败不打断启动。
 - 权限边界：仅写用户自己的 `~/.pi/agent`。
@@ -290,7 +290,7 @@
 | 决策 TD-PI-01~05 | 更新器/归属/版本注入/交互/可测性 | PU-F01/F02 | AC-PI-001~008 | PASS | 已实现 |
 | 决策 TD-IN-01 | GitHub Releases | IN-F03 业务规则 | AC-IN-008 | PASS | 引用 feed |
 | 决策 TD-IN-02 | 首启后台静默预装 | IN-F02 | AC-IN-004 | PASS | 无 UI |
-| 决策 TD-IN-03 | 预装=当前 11 个 | IN-F02 业务规则（清单固化） | AC-IN-004 | PASS | 清单 v1=当前 11 个 |
+| 决策 TD-IN-03 | 预装=当前 10 个 | IN-F02 业务规则（清单固化） | AC-IN-004 | PASS | 清单 v1=当前 10 个（v3.64 曾为 11，v3.65 移除 rpiv-ask-user-question） |
 | 决策 TD-IN-04 | 组件自动不提示 / forge 更新包手动 | IN-F03 + IN-F04 | AC-IN-008/012 | PASS | 两类姿态分离 |
 | 决策 TD-IN-05 | Windows NSIS per-user | IN-F01 | AC-IN-001 | PASS | per-user |
 | 决策 TD-IN-06 | semver 单 latest 通道 | §3.2 + IN-F03 | AC-IN-008 | PASS | 单 feed |

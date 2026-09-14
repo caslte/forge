@@ -106,6 +106,14 @@ test('recommendedPlugins：清单 10 项；missingRecommended 保持推荐顺序
   assert.equal(RECOMMENDED_PLUGINS.length, 10);
   assert.ok(RECOMMENDED_PLUGINS.includes('@tintinweb/pi-subagents'));
   assert.ok(RECOMMENDED_PLUGINS.includes('@dietrichgebert/ponytail'));
+  // Path 2：rpiv-ask-user-question 必须**不在**清单里 —— forge 已自建同名工具
+  // （@forge/extensions 的 ask_user_question），继续预装会让用户环境里出现两个同名
+  // 工具（虽然运行时由 extensionsOverride 屏蔽，也不该再给新用户装）。
+  assert.equal(
+    RECOMMENDED_PLUGINS.includes('@juicesharp/rpiv-ask-user-question'),
+    false,
+    '已从推荐清单移除，防止与新自建 ask_user_question 扩展重名',
+  );
   const missing = missingRecommended(['pi-mcp-adapter', 'pi-web-access']);
   assert.deepEqual(missing, [
     '@tintinweb/pi-subagents',

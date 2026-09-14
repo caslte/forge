@@ -28,6 +28,7 @@
 | CV-S09 | 消息队列（扩展，v1.1） | agent 忙时用户可继续输入并排队，忙完自动按序发出，不心流中断 | 忙时发送 = 入队（pi followUp，UI 不分流竞态）；输入框上方「待发送 N」徽标 + 只读浮窗（FIFO 序）；忙完自动派发，投递时以普通 user 气泡进对话区；上限 5 条（UI 软校验）；停止 = 清队 + 文本 \n\n 拼接回填输入框 | 不做单条删除/编辑（pi 无此 API）；不做立即发送/中断插队；不做队列持久化（纯内存）；不白建队列（完全托管 pi） |
 | CV-S10 | 输入历史翻阅（扩展，v1.1） | 用键盘上下箭头翻阅本会话已发送输入，快速重发/改写（CLI 体验） | 仅输入框为空时 ↑/↓ 触发（防误删正在输入内容）；↑ 逐条回填最近→更早，↓ 反向，走过最新回空；历史按 sessionId 隔离 + localStorage 持久化（上限 100 条，FIFO 淘汰）；连续相同内容去重；草稿态不翻阅不入栈 | 不做跨会话全局历史；不做历史搜索/预览浮窗；不区分「原始消息」与「回填后编辑」；不做发送失败回滚 |
 | CV-S11 | Todo 面板（扩展，v1.2） | 让用户随时看到 agent 当前在做什么、还剩什么，不心流切换 | 在输入框上方渲染只读 todo 列表：标题「已完成 X / 共 Y 个」+ 任务行（pending ○ 空心点 / in_progress ● 呼吸点 / completed ✓ + active form + 删除线），点击标题展开/收起；空列表整个面板隐藏；快照按 sessionId 内存隔离（切走再切回不丢，关闭 APP 随进程消失）；有 in_progress 时保证其在 3 行可视窗口内，全部完成时滚到最后一行 | 不做手动增删改、不做拖拽排序、不做快捷键折叠、不做任务依赖图编辑、不做跨进程持久化（仅在 APP 生命周期内存中） |
+| CV-S12 | ask_user_question 内嵌问卷（扩展，v3.65） | 模型需求不明确时主动向用户提出结构化问题，用户在对话区就地作答，不必切到 CLI 终端 | 模型调用 `ask_user_question` 后在输入框上方渲染内嵌面板：N+1 tab（末位备注）、单选点选 / 多选 checkbox、自定义答案、左右分栏 markdown 预览（preview）、推荐标记、超时倒计时；作答回填给模型继续推理；多窗格下只在发起会话的窗格出现 | 不做问卷历史回放、不做持久化、不把 preview 写回模型上下文、不做跨会话共享；不复用 rpiv 插件（同名冲突，改为 forge 自建内置扩展 + 自有 UI） |
 
 ### 1.3 边界与权限
 
@@ -79,8 +80,9 @@
 | TD-CV-09 | CV-S08 | 命令执行链路决定是否需要拦截层与 forge 命令注册表                          | A: 选中命令原样经既有消息发送链路交给运行时原生解析执行（零拦截、零注册表）；B: forge 拦截 `/xxx` 并按映射表转发（曾考虑映射 /compact 等 TUI 命令，用户已裁定不做）                                             | A（运行时原生识别扩展命令/skill/模板；无 TUI 命令映射层，复杂度最低）                          | 已确认  |
 | TD-CV-10 | CV-S11 | Todo 状态来源决定前端复杂度与 IPC 契约面             | A: 复用 pi `todo` 工具返回的 `result.details`（快照在每次 `tool.completed` 携带，前端只消费不存储）；B: forge 自有 todo 工具（双工具双状态）；C: 从 session JSONL 重放（与 rpiv-todo TUI 同构）                                                                                                                  | A（与 pi TUI 端 rpiv-todo 单数据源一致；前端零状态机，TD-TE-05 扩 IPC 透传 `details`）        | 已确认 |
 | TD-CV-11 | CV-S11 | todo 快照是否跨会话保留决定会话切换体验              | A: 切走会话丢 todo，切回空窗期；B: 按 sessionId 内存隔离，切走再切回还原；C: 拉历史 `tool_result(todo)` 重放 | B（用户修正 2026-10；切回历史会话看上次 todo 是高频诉求，不重启会话不丢状态；APP 退出随进程消失，无需持久化） | 已确认 |
+| TD-CV-12 | CV-S12 | 问卷工具的实现路径决定 UI 可还原度、进程跳转与生态依赖 | A: 继续用 rpiv 插件 + 注入 `uiContext` 走其 `rpc-fallback` walker（只能逐题串行弹窗、多选退化为打数字、无 tab/preview/备注）；B: 第三方 MCP 服务器（工具在独立进程执行，拿不到 `ctx.ui`，做不出交互式对话框）；C: **forge 自建内置扩展**（`extensionFactories` + `pi.registerTool`）注册同名 `ask_user_question`，UI 全自渲染 | **C**（原型 100% 可还原；in-process 无进程跳转；渲染与契约完全自控；随 forge 版本发布）。协议分层：工具注册用 pi 官方 SDK，`questions[]`/`details` 入出参照抄 rpiv 私有约定（本地固化），传输通道（事件/RPC/requestId/超时）为 forge 自有设计。用户环境里的同名 rpiv 插件由 `extensionsOverride` 纯代码屏蔽，不写用户 `settings.json` | 已确认 |
 
-> **已采用的常规默认项**：取消后可继续发送新消息（跟 pi 一致）；增量 DOM 更新；代码高亮自动识别+手动指定；Mermaid 客户端渲染；输入框多行、Shift+Enter 换行、Enter 发送。（扩展 CV-S06）hover 停留 ≥300ms 才弹浮窗防扫过闪烁；浮窗为快照不实时刷新；Esc/移开即关；时间线按消息时间正序、条目单行截断。（扩展 CV-S08）命令列表拉取时机=会话内首次触发浮窗时拉取一次并随会话缓存，切换会话失效重拉（运行期安装的 skill/扩展不热刷新，重开会话生效）；过滤规则=包含匹配（命令名或描述、大小写不敏感；用户裁定 2026-09-03，由前缀匹配放宽——只记得中间文字/描述关键词也能命中；与 pi TUI 前缀规则就此分叉），输入首个空格（命令已确定）后浮窗关闭；无匹配命令时浮窗显示「无匹配命令」而非隐藏；浮窗样式对齐输入框既有浮窗菜单（向上弹出、点外部关闭、出现过渡 ≤150ms）；命令数量多时浮窗内部滚动；单/多窗口输入框行为一致。（扩展 CV-S11）面板默认展开；折叠状态按会话内存维护（不持久化、不跨会话同步）；active task 行展示 `activeForm`（如有）；完成态 task 文字加删除线；hover 折叠态标题展开，移开不自动收起（仅点击切换）。
+> **已采用的常规默认项**：取消后可继续发送新消息（跟 pi 一致）；增量 DOM 更新；代码高亮自动识别+手动指定；Mermaid 客户端渲染；输入框多行、Shift+Enter 换行、Enter 发送。（扩展 CV-S06）hover 停留 ≥300ms 才弹浮窗防扫过闪烁；浮窗为快照不实时刷新；Esc/移开即关；时间线按消息时间正序、条目单行截断。（扩展 CV-S08）命令列表拉取时机=会话内首次触发浮窗时拉取一次并随会话缓存，切换会话失效重拉（运行期安装的 skill/扩展不热刷新，重开会话生效）；过滤规则=包含匹配（命令名或描述、大小写不敏感；用户裁定 2026-09-03，由前缀匹配放宽——只记得中间文字/描述关键词也能命中；与 pi TUI 前缀规则就此分叉），输入首个空格（命令已确定）后浮窗关闭；无匹配命令时浮窗显示「无匹配命令」而非隐藏；浮窗样式对齐输入框既有浮窗菜单（向上弹出、点外部关闭、出现过渡 ≤150ms）；命令数量多时浮窗内部滚动；单/多窗口输入框行为一致。（扩展 CV-S11）面板默认展开；折叠状态按会话内存维护（不持久化、不跨会话同步）；active task 行展示 `activeForm`（如有）；完成态 task 文字加删除线；hover 折叠态标题展开，移开不自动收起（仅点击切换）。（扩展 CV-S12）面板默认展开、点击头部可折叠；ESC 等价「取消」；超时 60s 且归零由面板主动回填已答部分；preview 仅展示不回流；推荐标记双通道识别（显式字段 + label 后缀），后缀仅在显示层剥离。
 
 > **开发期风险（已计入 overview）**：pi 事件 -> `CanonicalEvent` 映射完整性；Mermaid/代码高亮大量内容下渲染性能。
 
@@ -449,6 +451,43 @@
 | AC-CV-040 | 可见 task 数 = 0（仅墓碑 / 初始空 / clear 后）→ 面板从 DOM 卸载，不留占位；visible task 数 > 50 → 渲染前 50 行 + 「+N more」收口 | unit + E2E | 边界 | 状态渲染 | 异常结构、空快照、超量 |
 | AC-CV-041 | 切换会话 → 旧会话的 todoSnapshot 保留在内存 Map 中，切回时还原上次的 todo 视图；details 缺失/结构非法的完成事件静默忽略，不污染对应会话快照 | unit + E2E | 边界 | 数据一致性 | details 缺失 / 非对象 / tasks 非数组；多会话同时有 todo 互不串 |
 | AC-CV-042 | 有 in_progress 时保证其在 3 行可视窗口内（不强求顶部，第 1/2/3 行都可，用户不需手动滚动即可看到）；无 in_progress（全部完成）时滚到最后一行让用户看到最终状态；不抢用户手动滚动位置（已可视则 no-op）；触发时机：初次挂载 / 折叠→展开 / 布局变化（in_progress 出现/消失/换 id、任务总数变化） | unit + E2E | 正常流程 | 展示与交互 | in_progress 已在窗口内不滚；仅一个任务时无滚动作；无可视行（hidden 状态）不滚 |
+
+#### 功能点：CV-S12 ask_user_question 内嵌问卷（扩展，v3.65）
+
+> 说明：本功能承接 v3.64 的「插件上架」阶段，改为**forge 自建内置扩展 + 自有 UI 渲染**（Path 2）。
+> 契约见 `docs/plan/ask-user-question-contract.md`（编码唯一依据），实施计划见 `docs/plan/ask-user-question-extension.md`。
+
+- **目标**：模型在需求不明确时主动向用户提出结构化问题（1–4 题 × 2–4 选项，可多选、可带 markdown 预览），forge 在输入框上方以内嵌面板承载交互，替代 CLI 侧的 TUI 左右分栏；用户作答后答案经原路回填给模型继续推理。
+- **前置条件**：主会话已激活；forge 内置扩展 `ask_user_question` 已注册（随 forge 版本走，不依赖 `~/.pi/agent` 预装）；模型判定需要澄清并调用该工具。用户环境若装有同名 rpiv 插件，由 `extensionsOverride` 在内存中屏蔽（不修改用户 `settings.json`）。
+- **业务规则**：
+  - **协议分层**（TD-CV-12）：工具注册用 pi 官方 `registerTool` SDK；`questions[]` 入参与 `details` 出参照抄 rpiv 私有约定（本地固化，不跟随上游）；传输通道（事件名 / RPC 方法 / `requestId` / 超时）为 forge 自有设计。
+  - **投递**：扩展在 `execute` 内投递 `ask-user:request`（`{ requestId, questions, timeoutMs }`）到**该会话私有**的扩展事件总线 → 适配器按会话订阅并补齐必需 `sessionId` → 上抛 `conversation.askUserQuestionRequested`（已登记 `FORGE_EVENTS` 白名单）→ 渲染进程各窗格按 `sessionId` 认领。
+  - **回填**：`askUserQuestion/reply` RPC（`{ sessionId, requestId, answers, cancelled, globalNote? }`）→ 适配器 `replyAskUserQuestion` 经该会话总线 emit `ask-user:reply:{requestId}` → 扩展侧 await 的 Promise 兑现 → 工具返回 `{ content:[{type:'text',text:envelope}], details }`。
+  - **超时双阈值**：`DEFAULT_ASK_USER_TIMEOUT_MS = 60s` 随请求下发给面板驱动倒计时；面板**归零时主动回填**「已答部分 + `cancelled:true`」；扩展侧实际等待 `60s + ASK_USER_REPLY_GRACE_MS(1.5s)` 作为安全网。错开 1.5s 是为避免「扩展先超时 → 已答部分丢失」的竞态。
+  - **preview 不回流**：`details.answers[].preview` 照常填充供 UI 展示，但模型侧 envelope **不含** `selected preview:` 段（rpiv 因 CLI 无面板被迫回流；forge 有真面板，省 token）。
+  - **推荐标记双通道**：模型可能按新约定置 `options[].recommended = true`，也可能沿用旧习惯在 label 尾部加 `(Recommended)`。UI 两条通道都识别；识别到后缀时**仅显示层**剥离，回填给模型的 label 保持原始值。
+  - **校验**：`validateQuestionnaire` 6 条规则（无题目 / 超 4 题 / 题干重复 / 选项为空 / 保留标签 / 选项标签重复）在扩展侧拦截，失败直接返回 `cancelled:true + error`，不投递面板。
+  - **不**做：问卷历史回放、持久化、跨会话共享、把 preview 写回模型上下文。
+- **业务数据**：会话级内存态，由 `useSessionConversation` 持有的状态仓 `createAskQuestionStore`（`composables/askQuestionStore.ts`）承载 —— 四张按 `sessionId` 索引的表：`requests`（进行中的请求）、`deadlines`（倒计时**绝对截止时刻**）、`answeredStates`（最近一次已答摘要）、`questionSets`（最近一次题目，供摘要回显「已答 n/N」）。⚠️ 四张表**必须**为 `reactive`：面板常驻挂载（`v-if="!showResultView"`，首屏尚无问卷就已渲染），`deadline` computed 会在首屏求值并**缓存空值**，普通 Map 的后续写入不产生依赖变更 → computed 永不重算 → 倒计时恒显示 0（真机出现过；已由 `test/askQuestionStore.test.ts` 两条回归锁用例钉住）。无持久化，APP 退出随进程消失。
+- **交互与反馈**：面板为 opencode 风格浮窗卡片（与 TodoPanel 同款：上/左/右边框 + 顶部圆角、下边沿无 border、底部塞进输入框背后形成延伸一体感），置于输入框正上方，不遮挡消息流。多题时顶部 N+1 tab（末位「备注」），已作答 tab 圆点转 success 色；单选点选、多选 checkbox；任一选项带 preview 时切左右分栏（左选项列表 / 右 markdown 预览，hover 或选中项驱动，**面板高度固定不随 preview 长短变形**，**预览列刻意窄于选项列 = 1.4 : 1** —— 分栏态下选项描述已隐藏，左列不需要一半宽度；宽度比例由单条 `grid-template-columns` 控制）；**预览内 markdown 列表的黑点必须落在框内**（全局 `* { padding:0 }` reset 会清掉 `ul/ol` 的默认内边距，而 `list-style-position` 仍是 `outside`，黑点会被推到内容盒外、露在圆角框外 —— 必须显式把 `padding-left` 还给列表）；**「✎ 自己答」为选项列表末位的一行选项**（单选渲染 radio、多选渲染 checkbox），选中才在其下方整宽展开输入框；**单选下与普通选项互斥**（选普通选项即撤销该行并清空文本），**多选下与普通选项并列**（可同时选中、互不取消；收起输入框不丢文本；提交时文本并入 `selected` 末位，不另起 `kind='custom'` 条目）；**操作条整体位于标题行**（标题与「等待回答」徽标之间，依次为「已答 n/N」「上一题」「下一题」「取消」「提交答案」，点按钮不触发头部折叠），「提交答案」**仅在末步（最后一题之后的备注 tab）出现**；**单选作答后自动前进到下一步**（多选、点「自己答」、末步不前进），「上一题 / 下一题」供手动回看；默认展开、可点击头部折叠；头部右侧显示「等待回答 · {剩余}s」倒计时徽标。**「提交答案」在 payload 为空时禁用**（含「只填了备注、一题未选」）—— 空 payload 落到扩展侧会变成与「取消」完全相同的 `DECLINE` 信号，禁用后产出该信号的唯一入口就是显式点「取消」。**作答后自动收尾（答完即关）**：摘要（「已答 n/N · 答案摘要 · 备注」）只亮约 1.5s，随即面板折叠关闭并卸载 —— 答案已回填给模型，消息流里的工具卡片已留痕，无需再占着输入框上方；收起后该轮摘要不再出现（含迟到的 `tool.completed` 权威摘要，也不会因切走再切回而复活）。**唯一例外**：`deliveryFailed`（用户点了提交、答案却没送达扩展侧）时**保留**摘要可见，否则答案静默丢失、模型只能等到超时拿 `DECLINE`。注意该标记必须**显式传递**（不能靠 `cancelled && answers 非空` 推断 —— 超时归零时已答部分同样非空，而那条路径答案**已经**回填成功，误判会留下一张永不收起的过期卡片），且要**活过权威 `details` 覆盖**（`details` 里没有这个本地判定）。子 agent 结果视图激活时不渲染（仅主会话承载）。
+- **权限边界**：面板只读渲染 + 本地作答，不向模型注入额外指令；作答内容经校验后回填；取消不产生任何模型可见的副作用（统一 `DECLINE_MESSAGE`）。
+- **合法/非法状态流转**：无问卷 ↔ 交互态（请求到达 / tool.completed 收尾，合法）；交互态 → 已答折叠摘要（提交 / 取消 / 倒计时归零，合法）；已答摘要 → 卸载（新一轮问卷到达、用户发新消息、会话切换，合法）；会话删除 → 退订 channel，迟到请求不再上抛（合法）。
+- **异常与边界**：请求载荷畸形（缺 `requestId` / `questions` 空或非数组 / `timeoutMs` 非正数）→ 适配器静默忽略，不投递半成品问卷；`details` 结构非法或含 `error`（校验阶段被拒）或无题目上下文 → 不渲染已答摘要；`delivered=false`（会话已删 / 无 lease / 请求已超时收敛）→ 摘要**据实标「已取消」**（模型此时收到 `DECLINE`），不显示并不存在的成功；越界选项下标 / 空草稿一律跳过不抛错。
+- **数据一致性与幂等**：提交用 `settled` 标志防「倒计时归零回填」与「用户点击提交」竞态重复上报；同一请求重复回填第二次 emit 落空（扩展侧 Promise 已兑现）；已答摘要以 `tool.completed.details` 为权威，提交时的乐观摘要会被覆盖。
+- **跨模块影响**：新增 ForgeEvent `conversation.askUserQuestionRequested`（`FORGE_EVENTS` 白名单）+ ForgeMethod `askUserQuestion/reply`（模块 04 IPC 契约）；`RECOMMENDED_PLUGINS` 移除 `@juicesharp/rpiv-ask-user-question`（11 → 10，模块 07 清单同步）；不修改消息流、不影响会话切换语义。
+
+验收标准：
+
+| AC ID | 验收事实 | 验证层级 | 场景 | 风险维度 | 边界条件 |
+|---|---|---|---|---|---|
+| AC-CV-043 | 模型调用 `ask_user_question` 后，输入框上方出现内嵌面板（N+1 tab、选项列表、备注卡片）；作答后面板自动折叠关闭（摘要亮约 1.5s），工具卡片仍按通用规则进消息流 | E2E | 正常流程 | 跨模块协作 | 内置扩展已装配；主会话激活 |
+| AC-CV-044 | 单选点选产出 `kind='option'`；多选（`multiSelect:true`）渲染 checkbox 行，产出 `kind='multi'` + `selected`（原始 label 列表，保持勾选顺序）；**多选题内「自己答」的文本并入 `selected` 末位**（与选项并列，不另起 `kind='custom'` 条目） | unit + E2E | 正常流程 | 数据一致性 | 单选/多选/自定义文本三态；多选下自定义与选项可同时存在（含只填自定义未勾选项）；单选下仍严格互斥；部分作答只产出已答条目 |
+| AC-CV-045 | 任一选项带 `preview`（仅单选）时切左右分栏渲染 markdown；模型侧 envelope **不含** `selected preview:` 段，而 `details.answers[].preview` 保留 | unit + 集成 | 正常流程 | 展示正确性 | 含/不含 preview；多选即使带 preview 也不分栏 |
+| AC-CV-046 | 推荐标记双通道识别：`options[].recommended===true` 或 label 尾部 `(Recommended)` 均渲染「推荐」徽标；后者在**显示层**剥离后缀，回填给模型的 label 保持原始值 | unit + E2E | 字段边界 | 展示正确性 | 显式字段 / 后缀 / 两者并存 / 句中出现后缀不误判 |
+| AC-CV-047 | 头部可见倒计时（时长取载荷下发的 `timeoutMs`，不硬编码）；归零时面板**主动回填**「已答部分 + `cancelled:true`」；用户点提交 / 取消按钮 / ESC 同样回填 | unit + E2E | 正常流程 | 状态流转 | 提交与倒计时竞态只上报一次；切走再切回剩余秒数连续（绝对截止时刻）；**面板常驻挂载（首屏尚无问卷）时后续到达的请求仍能正常读秒**（不得因 computed 缓存首屏空值而恒显示 0） |
+| AC-CV-048 | **会话隔离**：多窗格并排时问卷只出现在发起会话的窗格；载荷携带必需 `sessionId`；回填校验 `sessionId+requestId`；`removeSession` 退订后迟到请求不再上抛 | unit + E2E | 边界 | 数据一致性 | 两会话各自总线互不串；缺 sessionId 一律忽略（不做「归当前会话」兜底） |
+| AC-CV-049 | 畸形请求载荷（缺 requestId / 空问卷 / timeoutMs 非正）静默忽略不投递；`details` 非法 / 含 `error` / 无题目上下文时不渲染已答摘要；`delivered=false` 时摘要标「已取消」 | unit | 异常 | 降级正确性 | details 为 null/string/数组/缺 answers；error 存在；questions 为空 |
+| AC-CV-050 | **答完即收**：摘要亮 `ASK_ANSWERED_AUTO_CLOSE_MS` 后面板折叠关闭，且该轮摘要不再出现（含迟到的 `tool.completed` 权威摘要）；收起只作用于本会话，新一轮问卷照常显示摘要；`提交答案` 在 payload 为空时禁用 | unit + E2E | 正常流程 | 状态流转 | 已作答 / 主动取消 / 超时归零（已答部分非空也要收）/ `deliveryFailed`（保留摘要，且标记活过权威覆盖）/ 收起后收到权威 details / 收起后同会话再来一轮；只填备注未选任何选项 |
 
 ### 3.4 页面承载
 

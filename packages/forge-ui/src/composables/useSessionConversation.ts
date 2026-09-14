@@ -1,11 +1,20 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { call, subscribe, type ConversationCompactedPayload } from '../bridge.ts';
+import {
+  call,
+  onAskUserQuestionRequest,
+  replyAskUserQuestion,
+  subscribe,
+  type AskUserQuestionAnswer,
+  type AskUserQuestionRequestPayload,
+  type ConversationCompactedPayload,
+} from '../bridge.ts';
 import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
 import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
 import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
 import { applyTodoCompletion, type TodoSnapshot } from '../utils/todoPanel.ts';
+import { createAskQuestionStore } from './askQuestionStore.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
@@ -92,12 +101,41 @@ export function useSessionConversation(options: {
   // ===== Todo 面板快照（CV-S11；按 sessionId 内存隔离，切走再切回不丢，关闭 APP 随进程消失） =====
   // Map 替代单 ref：切会话不清空，切换回历史会话时还原上次的 todo 视图。
   // "会话自己清理" 不需要主动 GC —— 自然清空（所有 task 被删）时 shouldRenderPanel=false 面板自动卸载。
-  const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
-  /** 当前会话 todo 快照（模板 v-bind 自动解包，外部消费接口不变） */
-  const todoSnapshot = computed<TodoSnapshot | null>(() => {
-    const sid = options.getSessionId();
-    return sid === null ? null : (todoSnapshots.get(sid) ?? null);
-  });
+const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
+/** 当前会话 todo 快照（模板 v-bind 自动解包，外部消费接口不变） */
+const todoSnapshot = computed<TodoSnapshot | null>(() => {
+  const sid = options.getSessionId();
+  return sid === null ? null : (todoSnapshots.get(sid) ?? null);
+});
+
+// ===== ask_user_question 面板（Path 2；按 sessionId 内存隔离，与 todo 同策略）=====
+// 契约 docs/plan/ask-user-question-contract.md §4.4：面板必须挂在**会话作用域**内
+// （本 composable 每个窗格一份实例），载荷强制带 sessionId，各窗格按它认领 ——
+// 避免单 webContents 广播导致「N 个窗格同时弹出 N 份问卷」与错窗格回填。
+// 四个会话级表 + 三个 computed 由 `askQuestionStore` 持有：那组状态里有一个**静默失败**
+// 的响应式坑（倒计时表写成普通 Map → deadline computed 缓存首屏空值 → 读秒恒为 0，
+// 真机出现过），抽成不依赖组件上下文与 IPC 运行时的单元后可用 node:test 直接上锁。
+// 注意 getSessionId 必须读响应式源，否则切换会话时三个 computed 不会跟随刷新。
+const askStore = createAskQuestionStore(() => options.getSessionId());
+const { request: askRequest, deadline: askDeadline, answered: askAnswered } = askStore;
+
+/**
+ * 用户在本会话发了新消息 → 清掉「已答摘要」（对话已推进，记录已沉淀进消息流的工具卡片）。
+ * **不动**进行中的请求：那会孤儿化扩展侧仍在等待的 Promise（只能等满超时拿 DECLINE）。
+ */
+function clearAskAnswered(sid: string): void {
+  askStore.clearAnswered(sid);
+}
+
+/**
+ * 已答摘要自动收起（面板折叠关闭）—— `AskUserQuestionPanel` 在摘要亮完后
+ * `emit('dismiss')` 请求执行。收起后该轮摘要不会再显示（含迟到的 `tool.completed`）。
+ */
+function dismissAskAnswered(): void {
+  const sid = options.getSessionId();
+  if (sid === null) return;
+  askStore.dismissAnswered(sid);
+}
 
   const isEmpty = computed(() => messages.value.length === 0 && !isStreaming.value && !loadingHistory.value);
 
@@ -301,6 +339,7 @@ export function useSessionConversation(options: {
     }
     errorMsg.value = null;
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
+    clearAskAnswered(sid);
     isStreaming.value = true;
     startElapsed(sid);
     resetStreamPhase();
@@ -353,6 +392,7 @@ export function useSessionConversation(options: {
     // 否则会把 user 文本写进在途 assistant 占位）
     if (p.message.role === 'user') {
       messages.value.push(p.message);
+      clearAskAnswered(p.sessionId);
       scheduleScroll();
       return;
     }
@@ -423,6 +463,75 @@ export function useSessionConversation(options: {
     void loadHistory();
   }
 
+  // ===== 问卷（Path 2 ask_user_question）=====
+
+  /**
+   * 问卷请求到达（`conversation.askUserQuestionRequested`，契约 §4.4）。
+   *
+   * 会话隔离（三条硬约束之一）：**载荷必须带 `sessionId`**，且只有与本窗格会话一致
+   * 才认领 —— 缺 sessionId 一律忽略，**不做**「无 sessionId 归当前会话」的兜底
+   * （tool 事件的兜底在这里会变成「多窗格各弹一份问卷」）。
+   *
+   * 倒计时记**绝对截止时刻**而非让面板自己起算：面板随会话切换会重新挂载，若每次
+   * 重新起算，切走再切回会把倒计时拉长到超过扩展侧 `timeoutMs + graceMs` 真超时，
+   * 归零回填时 extension 早已收敛（作答被丢弃）。绝对时刻下剩余秒数连续。
+   */
+  function onAskUserQuestionRequested(payload: unknown): void {
+    const p = payload as AskUserQuestionRequestPayload;
+    if (typeof p?.sessionId !== 'string' || p.sessionId === '') return;
+    if (typeof p.requestId !== 'string' || p.requestId === '') return;
+    if (!Array.isArray(p.questions) || p.questions.length === 0) return;
+    if (typeof p.timeoutMs !== 'number' || !Number.isFinite(p.timeoutMs) || p.timeoutMs <= 0) return;
+    if (p.sessionId !== options.getSessionId()) return;
+    askStore.accept(p);
+  }
+
+  /**
+   * 面板提交（用户点提交 / 取消 / 倒计时归零自查）：回填 extension 侧等待中的 Promise。
+   *
+   * 回填带 `sessionId + requestId`，main 侧以二者匹配该会话的 lease（契约 §4.4 ③）。
+   * `delivered=false`（会话已删 / 无 lease / 请求已超时收敛）表示作答被丢弃、模型将收到
+   * `DECLINE` —— 此时摘要**据实标「已取消」**，不显示一个并不存在的成功。
+   *
+   * 收尾是**乐观**的：先本地折成已答摘要（面板立刻从交互态切走），`tool.completed`
+   * 到达后再用权威 `details` 覆盖。
+   */
+  async function submitAskUserAnswers(payload: {
+    answers: AskUserQuestionAnswer[];
+    cancelled: boolean;
+    globalNote?: string;
+  }): Promise<void> {
+    const sid = options.getSessionId();
+    if (sid === null) return;
+    const current = askStore.requestOf(sid);
+    if (current === undefined) return; // 已被 tool.completed 收尾 / 非本会话
+    const questions = askStore.questionsOf(sid) ?? current.questions;
+    let delivered = false;
+    try {
+      const res = await replyAskUserQuestion({
+        sessionId: sid,
+        requestId: current.requestId,
+        answers: payload.answers,
+        cancelled: payload.cancelled,
+        ...(payload.globalNote !== undefined ? { globalNote: payload.globalNote } : {}),
+      });
+      delivered = res.delivered;
+    } catch (e) {
+      console.warn('[ask_user_question] 回填失败', e);
+    }
+    // 「用户点了提交、答案却没送到」才算失败。用户自己点取消、或倒计时归零（那条路径
+    // 也会主动回填已答部分）都属于交互正常结束，不能混为一谈 —— 后者若被判成失败，
+    // 面板会留下永不自动收起的过期卡片。
+    const deliveryFailed = !payload.cancelled && !delivered;
+    askStore.settle(sid, {
+      answers: payload.answers,
+      cancelled: payload.cancelled || !delivered,
+      deliveryFailed,
+      questions,
+      ...(payload.globalNote !== undefined ? { globalNote: payload.globalNote } : {}),
+    });
+  }
+
   function onToolStarted(payload: unknown): void {
     const p = payload as {
       toolEventId: string;
@@ -471,6 +580,14 @@ export function useSessionConversation(options: {
         });
         if (next !== prev) todoSnapshots.set(sid, next);
       }
+    }
+    // Path 2 ask_user_question：工具返回的 details（{answers,cancelled,globalNote?,error?}）
+    // 是「已答摘要」的权威来源。收口三件事：①用 details 覆盖乐观摘要；②清掉进行中
+    // 请求（工具已返回 —— 覆盖「面板未挂载/窗口挂载晚」等未走 submit 的路径，避免面板
+    // 永久停在交互态）；③释放倒计时。
+    if (p.tool?.name === 'ask_user_question') {
+      const sid = options.getSessionId();
+      if (sid !== null) askStore.applyCompletion(sid, p.result?.details);
     }
     const idx = toolEventIndex.get(p.toolEventId);
     if (idx === undefined) return;
@@ -633,6 +750,8 @@ export function useSessionConversation(options: {
       subscribe('tool.error', onToolError),
       subscribe('subagent.updated', onSubagentUpdated),
       subscribe('subagent.removed', onSubagentRemoved),
+      // Path 2：问卷请求（载荷带必需 sessionId，本窗格按它认领）
+      onAskUserQuestionRequest(onAskUserQuestionRequested),
     ];
   });
 
@@ -644,6 +763,12 @@ export function useSessionConversation(options: {
 
   return {
     todoSnapshot,
+    // 问卷（Path 2）
+    askRequest,
+    askDeadline,
+    askAnswered,
+    submitAskUserAnswers,
+    dismissAskAnswered,
     // 状态
     messages,
     isStreaming,

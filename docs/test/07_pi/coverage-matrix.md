@@ -50,9 +50,11 @@
 | AC-IN-012 | IN-F04 | 状态流转 | forge 版本变化→后台静默联动更新组件 | P0 | 是 | U-IN-004 | - | E-IN-004 | 标志不等触发更新；无 UI 提示；成功回写版本 | |
 | AC-IN-013 | IN-F04 | 异常 | 版本未变/离线/CLI 缺失跳过或静默 | P0 | 是 | U-IN-004 | - | - | 不触发/静默；不弹提示；不阻塞 | |
 | AC-IN-014 | IN-F04 | 数据一致性 | 用户自装插件不删除/降级（只升不降） | P0 | 是 | U-IN-001 | - | - | 联动后用户自装项保留 | |
+| AC-IN-015 | IN-F02 | 正常流程 | 推荐清单内容为 10 项，且**不含** `@juicesharp/rpiv-ask-user-question` | P1 | 是 | - | - | - | 包名精确匹配 + 顺序 + 排除项 | v3.64 曾扩至 11（含 rpiv-ask-user-question）；v3.65 因 forge 自建同名 `ask_user_question` 内置扩展（CV-S12）移除该项回落 10。用例设计（U-IN-008 / E-IN-003）见 `docs/test/07_installer_update/coverage-matrix.md`；代码断言见 `forge-desktop/test/pi/startupUpdate.test.ts` |
 
 > 契约完整性（B2）：updater/* 信封与 6003/6004/6005 错误码断言归属 AC-IN-008/009/010/011 的 A-IN-001~003；`updater.stateChanged` 事件登记 FORGE_EVENTS 白名单由 `appUpdater.test.ts` 显式锚点断言回归（ipcEventContract.test.ts 静态扫描覆盖 forge-core 侧），不单设 AC。
 > AC-PI-003（空清单空态）与原 E-PI-003 随组件清单需求移除而作废（PRD 07 编号保留不复用）。
+> **文档结构待整理**：模块 07 存在两份覆盖矩阵 —— 本文件（`07_pi/`，artifacts.json 与 test/index.md 引用的**规范版**）与 `07_installer_update/coverage-matrix.md`（v3.64 为 AC-IN-015 新建）。两者曾用重叠但语义不同的 E-IN-00x 编号。AC-IN-015 已同步登记于本文件；两份文件的合并去留待用户裁定，未擅自删除。
 
 ## 发布前 manual checklist（真机，AC-PI-004/IN-001/002/003/007/009/011）
 

@@ -24,6 +24,10 @@ import {
   IPC_FILE_LIST_PROJECT,
   type ForgeMethod,
   type ForgeEvent,
+  type ForgeResult,
+  type ForgeAskUserQuestion,
+  type AskUserQuestionRequestPayload,
+  type AskUserQuestionReplyParams,
 } from './ipc-contract.ts';
 
 /** window.forge.window 窗口控制实现 */
@@ -106,28 +110,53 @@ function ensureIpcEventListening(): void {
   });
 }
 
+/** 事件订阅内部实现（forge.on 与 forge.askUserQuestion.onRequest 共用同一多路复用） */
+function subscribeEvent(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
+  ensureIpcEventListening();
+  let set = eventListeners.get(event);
+  if (set === undefined) {
+    set = new Set();
+    eventListeners.set(event, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = eventListeners.get(event);
+    if (current === undefined) return;
+    current.delete(listener);
+    if (current.size === 0) {
+      eventListeners.delete(event);
+    }
+  };
+}
+
+/**
+ * window.forge.askUserQuestion（Path 2）：
+ * - onRequest：复用事件多路复用订阅 conversation.askUserQuestionRequested（收窄类型）
+ * - reply：经 IPC_INVOKE 调 askUserQuestion/reply 方法（renderer→main 的唯一上行路径）
+ */
+const askUserQuestionControl: ForgeAskUserQuestion = {
+  onRequest(listener: (payload: AskUserQuestionRequestPayload) => void): () => void {
+    return subscribeEvent('conversation.askUserQuestionRequested', (payload) =>
+      listener(payload as AskUserQuestionRequestPayload),
+    );
+  },
+  reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<{ delivered: boolean }>> {
+    return ipcRenderer.invoke(IPC_INVOKE, {
+      method: 'askUserQuestion/reply' satisfies ForgeMethod,
+      params,
+    }) as Promise<ForgeResult<{ delivered: boolean }>>;
+  },
+};
+
 /** window.forge 桥实现 */
 const forgeBridge = {
   invoke(method: ForgeMethod, params?: Record<string, unknown>) {
     return ipcRenderer.invoke(IPC_INVOKE, { method, params });
   },
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
-    ensureIpcEventListening();
-    let set = eventListeners.get(event);
-    if (set === undefined) {
-      set = new Set();
-      eventListeners.set(event, set);
-    }
-    set.add(listener);
-    return () => {
-      const current = eventListeners.get(event);
-      if (current === undefined) return;
-      current.delete(listener);
-      if (current.size === 0) {
-        eventListeners.delete(event);
-      }
-    };
+    return subscribeEvent(event, listener);
   },
+  askUserQuestion: askUserQuestionControl,
   window: windowControl,
   dialog: dialogControl,
   shell: shellControl,

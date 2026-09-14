@@ -4,6 +4,7 @@ import { call } from '../bridge';
 import type { ProjectItem, SessionItem, ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
 import TodoPanel from './TodoPanel.vue';
+import AskUserQuestionPanel from './AskUserQuestionPanel.vue';
 import MessageListItem from './MessageListItem.vue';
 import ConversationTimelineRail from './ConversationTimelineRail.vue';
 import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
@@ -88,6 +89,11 @@ const {
   onSubagentStopRequest,
   confirmSubagentStop,
   cancelSubagentStop,
+  askRequest,
+  askDeadline,
+  askAnswered,
+  submitAskUserAnswers,
+  dismissAskAnswered,
 } = useSessionConversation({
   getSessionId: () => props.sessionId ?? createdSessionId,
   getStatusHint: () => props.session?.status,
@@ -667,6 +673,20 @@ onUnmounted(() => {
            仅主会话承载（子 agent 结果视图不渲染） -->
       <TodoPanel :session-id="props.sessionId ?? createdSessionId" :todo-snapshot="todoSnapshot" />
 
+      <!-- Path 2 ask_user_question 面板：同样放在 wrap 内、输入框正上方（与 TodoPanel
+           同款「从输入框延伸出去」的浮窗）。挂在会话作用域（每个 ConversationView
+           实例一份）而非 App 级 —— 契约 §4.4 硬约束 2，多窗格并排时各自只渲染自己
+           会话的问卷。子 agent 结果视图不渲染（与 TodoPanel 一致）。 -->
+      <AskUserQuestionPanel
+        v-if="!showResultView"
+        :session-id="props.sessionId ?? createdSessionId"
+        :request="askRequest"
+        :deadline="askDeadline"
+        :answered="askAnswered"
+        @submit="submitAskUserAnswers"
+        @dismiss="dismissAskAnswered"
+      />
+
       <!-- 空会话首屏 hero：absolute 挂在输入区上方，不参与 wrap 高度计算
            （下沉时不与位移叠加）；pointer-events:none 避免遮挡消息区滚动。
            加载历史期间禁用过渡（:css=false）：hero 在加载开始的同一 tick 内
@@ -958,6 +978,13 @@ onUnmounted(() => {
 .conv-input-wrap.hero-mode :deep(.todo-panel) {
   max-width: min(640px, 100cqw);
   /* 保留 -10px 底 margin：面板底部仍塞进输入框背后，保持延伸一体感 */
+  margin: 0 auto -10px;
+}
+
+/* Path 2：问卷面板与 compose-box 同宽居中（与上面 TodoPanel 规则同理，写在
+   ConversationView 才能往上选 .conv-input-wrap 祖先）。 */
+.conv-input-wrap.hero-mode :deep(.ask-panel) {
+  max-width: min(640px, 100cqw);
   margin: 0 auto -10px;
 }
 
