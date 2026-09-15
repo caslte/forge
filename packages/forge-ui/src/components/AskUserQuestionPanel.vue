@@ -740,12 +740,13 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 
+/* 标题图标：中性灰底 + 次级文字色，与整体黑灰白风格对齐（v3.x 用户反馈绿色突兀） */
 .ask-heading-icon {
   width: 16px;
   height: 16px;
   border-radius: 4px;
-  background: color-mix(in oklab, var(--brand-accent) 14%, transparent);
-  color: var(--brand-accent);
+  background: color-mix(in oklab, var(--foreground) 8%, transparent);
+  color: var(--muted-foreground);
   display: grid;
   place-items: center;
   font-size: 10px;
@@ -880,7 +881,7 @@ onBeforeUnmount(() => {
   bottom: -1px;
   height: 2px;
   border-radius: 1px;
-  background: var(--brand-accent);
+  background: var(--foreground);
 }
 .ask-tab-dot {
   width: 5px;
@@ -893,7 +894,7 @@ onBeforeUnmount(() => {
   background: var(--success);
 }
 .ask-tab.active .ask-tab-dot {
-  background: var(--brand-accent);
+  background: var(--foreground);
 }
 .ask-tab-label {
   max-width: 140px;
@@ -952,11 +953,12 @@ onBeforeUnmount(() => {
   transition: background var(--transition-fast);
   min-width: 0;
 }
+/* 选项 hover / 选中：灰色背景替代绿色高亮（用户反馈绿色不好看） */
 .ask-option:hover {
-  background: color-mix(in oklab, var(--brand-accent) 8%, transparent);
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
 }
 .ask-option.selected {
-  background: color-mix(in oklab, var(--brand-accent) 14%, transparent);
+  background: color-mix(in oklab, var(--foreground) 9%, transparent);
 }
 
 .ask-option-marker {
@@ -972,8 +974,8 @@ onBeforeUnmount(() => {
   border-radius: 2px;
 }
 .ask-option.selected .ask-option-marker {
-  border-color: var(--brand-accent);
-  background: var(--brand-accent);
+  border-color: var(--foreground);
+  background: var(--foreground);
 }
 
 .ask-option-label {
@@ -995,8 +997,8 @@ onBeforeUnmount(() => {
   padding: 1px 5px;
   border-radius: 3px;
   font-weight: 600;
-  background: color-mix(in oklab, var(--brand-accent) 18%, transparent);
-  color: var(--brand-accent);
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+  color: var(--muted-foreground);
 }
 .ask-option-desc {
   flex: 1;
