@@ -77,6 +77,14 @@ watch(treeView, (v) => {
   }
 });
 
+/** 切项目/任务视角：等同直接赋值，但提供切入口用于后续重启滑动胶囊过渡。
+ *  当前 CSS 仅依赖 is-task class 切换即可触发过渡，无需额外触发器；
+ *  保留函数是为和模板里已存在的 @click="switchTreeView(...)" 对齐。 */
+function switchTreeView(v: 'project' | 'task'): void {
+  if (treeView.value === v) return;
+  treeView.value = v;
+}
+
 function onFoldAll(): void {
   if (allCollapsed.value) projectTreeRef.value?.expandAll();
   else projectTreeRef.value?.collapseAll();
@@ -642,27 +650,34 @@ onUnmounted(() => {
         <header class="workspace-header"></header>
         <div class="tree-panel">
           <div class="sidebar-top">
-            <div class="view-seg" role="tablist" aria-label="会话列表视角">
+            <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" role="tablist" aria-label="会话列表视角">
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'project' }"
-                @click="treeView = 'project'"
+                @click="switchTreeView('project')"
               >项目</button>
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'task' }"
-                @click="treeView = 'task'"
+                @click="switchTreeView('task')"
               >任务</button>
             </div>
             <div class="sidebar-top-actions">
+              <!-- ponytail: 不用 v-if/v-show——两者在 Vue 里都是 display:none，折叠按钮隐藏时
+                   仍不占布局空间，导致 sidebar-top 高度从 44px 跳到 40px，
+                   view-seg 在 center 对齐下上下跳 2px。用 visibility 保留占位。 -->
               <button
-                v-if="treeView === 'project'"
                 type="button"
                 class="fold-all-btn"
+                :style="{
+                  visibility: treeView === 'project' ? 'visible' : 'hidden',
+                  pointerEvents: treeView === 'project' ? 'auto' : 'none',
+                }"
                 :aria-label="allCollapsed ? '展开全部项目' : '收起全部项目'"
                 :data-tooltip="allCollapsed ? '展开全部项目' : '收起全部项目'"
+                :tabindex="treeView === 'project' ? 0 : -1"
                 @click="onFoldAll"
               >
                 <svg v-if="allCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -938,15 +953,45 @@ onUnmounted(() => {
 
 /* 视角分段开关（SM-S06）：项目 / 任务 */
 .view-seg {
+  position: relative;
   display: inline-flex;
   gap: 2px;
   padding: 2px;
   background: color-mix(in oklab, var(--muted) 70%, transparent);
-  border: 1px solid var(--border);
   border-radius: 999px;
 }
 
+/* 滑动指示胶囊（果冻/水滴式）：不用整体平移，而是左右两条边各自动画。
+   前进方向的那条边先行并带轻微回弹，另一条边延迟起步追随——
+   途中胶囊被拉长成水滴，落位时两头先后回弹，形成 Q 弹的果冻收束感。
+   位移方向不同 → 谁先谁后不同，故两套 transition 分别挂在两个状态上：
+   基态（回到「项目」）左边先行；is-task（滑向「任务」）右边先行 */
+.view-seg::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  right: calc(50% + 1px);
+  border-radius: 999px;
+  background: var(--surface-active);
+  pointer-events: none;
+  transition:
+    left 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+.view-seg.is-task::before {
+  left: calc(50% + 1px);
+  right: 2px;
+  transition:
+    right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
 .view-seg-btn {
+  position: relative; /* z 序抬到指示胶囊之上 */
+  z-index: 1;
   padding: 3px 10px;
   border: 0;
   border-radius: 999px;
@@ -954,11 +999,10 @@ onUnmounted(() => {
   color: var(--muted-foreground);
   font-size: 12px;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
 .view-seg-btn.active {
-  background: var(--surface-active);
   color: var(--foreground);
 }
 
@@ -1048,7 +1092,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--muted) 8%, var(--background));
   flex-shrink: 0;
 }
@@ -1058,7 +1101,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 5px 12px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 999px;
   background: var(--card);
   color: var(--foreground);

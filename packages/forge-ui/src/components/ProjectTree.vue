@@ -462,7 +462,7 @@ onUnmounted(() => {
     <!-- 任务视角（SM-S06）：平摊全部会话，行尾项目 tag，排序与项目视角同规则 -->
     <template v-if="isTaskView">
       <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">暂无会话</div>
-      <div v-else class="tree-section">
+      <div v-else class="tree-section task">
         <div
           v-for="session in visibleTaskSessions"
           :key="session.sessionId"
@@ -794,6 +794,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.tree-section.task {
+  margin: 2px 8px 0 12px;
 }
 
 .tree-node {

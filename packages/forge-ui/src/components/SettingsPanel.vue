@@ -278,14 +278,34 @@ function setTabRef(name: 'general' | 'personal' | 'about', el: unknown): void {
   tabBtns[name] = (el as HTMLElement) ?? null;
 }
 
-/** 滑动选中块：贴齐当前 Tab 的位置与宽度（分段控件动效） */
+/** 滑动选中块：贴齐当前 Tab 的位置与宽度（水滴/果冻式：前后边错时启停） */
+let thumbLeft = -1;
+let thumbInit = false;
+
 function moveThumb(): void {
   const btn = tabBtns[activeTab.value];
   const wrap = tabsEl.value;
   const thumb = thumbEl.value;
   if (!btn || !wrap || !thumb) return;
-  thumb.style.width = `${btn.offsetWidth}px`;
-  thumb.style.transform = `translateX(${btn.offsetLeft}px)`;
+  const l = btn.offsetLeft;
+  const r = wrap.clientWidth - (l + btn.offsetWidth);
+  // 方向决定两条边谁先动：向右滑右边先行、左边延迟追随；向左滑反之——
+  // 途中滑块被拉成水滴，落位时两头先后回弹（时序在 CSS transition 里定义）
+  thumb.classList.toggle('thumb-lb', l < thumbLeft);
+  thumbLeft = l;
+  if (!thumbInit) {
+    // 首次定位直接落位，不做开场滑动动画
+    thumbInit = true;
+    thumb.style.transition = 'none';
+    thumb.style.left = `${l}px`;
+    thumb.style.right = `${r}px`;
+    requestAnimationFrame(() => {
+      thumb.style.transition = '';
+    });
+    return;
+  }
+  thumb.style.left = `${l}px`;
+  thumb.style.right = `${r}px`;
 }
 
 watch(activeTab, () => { void nextTick(moveThumb); });
@@ -920,11 +940,23 @@ onUnmounted(() => {
   position: absolute;
   top: 3px;
   bottom: 3px;
+  /* 初始零宽贴左：JS 首次定位前不可见，避免满宽闪现 */
   left: 0;
+  right: 100%;
   background: var(--card);
   border-radius: 999px;
   box-shadow: var(--shadow-sm);
-  transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.3, 1), width 0.28s cubic-bezier(0.3, 0.8, 0.3, 1);
+  /* 基态（向左滑）：左边先行带轻微回弹，右边延迟追随 → 水滴拉丝 */
+  transition:
+    left 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 向右滑：右边先行、左边滞后（thumb-lb = left behind） */
+.settings-thumb.thumb-lb {
+  transition:
+    right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
 }
 
 /* 深色主题：选中块用前景色混合提亮，避免与容器贴平 */

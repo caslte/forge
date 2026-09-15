@@ -22,19 +22,70 @@ const statusLabel = computed(() => {
   return props.event.status;
 });
 
-const toolLabel = computed(() => props.event.toolName ?? '工具');
+/** 工具名 → 面向用户的中文文案（与 useStreamPhase 口径对齐）；未知工具回退原名 */
+const TOOL_LABELS: Record<string, string> = {
+  ask_user_question: '向用户提问',
+  read: '读取文件',
+  view: '读取文件',
+  write: '写入文件',
+  apply_patch: '写入文件',
+  edit: '编辑文件',
+  multi_edit: '编辑文件',
+  bash: '执行命令',
+  powershell: '执行命令',
+  shell: '执行命令',
+  grep: '搜索内容',
+  find: '查找文件',
+  glob: '查找文件',
+  ls: '列出目录',
+  websearch: '联网搜索',
+  web_search: '联网搜索',
+  webfetch: '读取网页',
+  web_fetch: '读取网页',
+  todo: '更新任务清单',
+};
+
+/** 展示用工具名：有中文映射用中文，否则回退原始工具名 */
+const displayName = computed(() => {
+  const name = props.event.toolName;
+  if (!name) return '工具';
+  return TOOL_LABELS[name.toLowerCase()] ?? name;
+});
+
+/** 问卷工具：标题摘要直接显示问题文本（比英文结果易懂） */
+const askQuestions = computed<string[]>(() => {
+  if ((props.event.toolName ?? '').toLowerCase() !== 'ask_user_question') return [];
+  const input = props.event.input as { questions?: unknown } | undefined;
+  const list = Array.isArray(input?.questions) ? input.questions : [];
+  return list
+    .map((q) => (q as { question?: unknown })?.question)
+    .filter((q): q is string => typeof q === 'string' && q.trim() !== '');
+});
 
 const toolSummaryLabel = computed(() => {
+  if (askQuestions.value.length > 0) {
+    const first = askQuestions.value[0] ?? '';
+    return askQuestions.value.length > 1
+      ? `${first}（等 ${askQuestions.value.length} 个问题）`
+      : first;
+  }
   const input = props.event.input;
   if (!input || typeof input !== 'object') return props.event.summary ?? '';
   const candidates = ['file_path', 'path', 'command', 'url', 'query', 'pattern'];
   for (const key of candidates) {
-    const value = input[key];
+    const value = (input as Record<string, unknown>)[key];
     if (typeof value === 'string' && value.trim() !== '') {
       return value.replace(/\s+/g, ' ').trim();
     }
   }
   return props.event.summary ?? '';
+});
+
+/** 展开正文的结果文本：问卷回包英文前缀换成中文，其余原样展示 */
+const displaySummary = computed(() => {
+  const s = props.event.summary;
+  if (!s) return '';
+  return s.replace(/^User has answered your questions:/, '用户已回答：');
 });
 
 /** 修改文件类工具的 diff 列表（pi edit 多 hunk 逐块一项；形状判定共享 parseFileToolInput，
@@ -58,7 +109,7 @@ const diffs = computed(() => {
         <polyline points="9 6 15 12 9 18" />
       </svg>
       <span class="tc-title">
-        {{ toolLabel }}
+        {{ displayName }}
         <span v-if="toolSummaryLabel" class="tc-summary">{{ toolSummaryLabel }}</span>
       </span>
       <span class="tc-count">
@@ -67,7 +118,7 @@ const diffs = computed(() => {
         <span v-else class="mini-badge success">{{ statusLabel }}</span>
       </span>
     </button>
-    <div v-if="(!hideDiff && diffs.length > 0) || event.summary" class="tool-item-body">
+    <div v-if="(!hideDiff && diffs.length > 0) || displaySummary" class="tool-item-body">
       <template v-if="!hideDiff">
         <DiffView
           v-for="(diff, i) in diffs"
@@ -79,7 +130,7 @@ const diffs = computed(() => {
           :new-string="diff.newString"
         />
       </template>
-      <pre v-if="event.summary" class="tool-summary">{{ event.summary }}</pre>
+      <pre v-if="displaySummary" class="tool-summary">{{ displaySummary }}</pre>
     </div>
   </div>
 </template>
