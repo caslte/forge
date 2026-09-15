@@ -325,7 +325,7 @@ const timeLabel = computed(() => {
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 16px;
-  background: #3a3a3d;
+  background: #0f0f10;
 }
 
 .msg-user .msg-content {
@@ -369,7 +369,7 @@ const timeLabel = computed(() => {
 }
 .msg-cmd-name.is-skill {
   font-weight: 700;
-  color: var(--brand-accent);
+  color: #ffffff;
 }
 .msg-cmd-name.is-prompt {
   color: var(--muted-foreground);
@@ -385,8 +385,9 @@ const timeLabel = computed(() => {
   background: var(--muted);
 }
 .msg-cmd-tag.tag-skill {
-  color: var(--brand-accent);
-  background: color-mix(in oklab, var(--brand-accent) 14%, transparent);
+  /* 纯黑气泡 + 白字技能名 + 白底深字胶囊：整组像一条 command chip，焦点明确 */
+  color: #0f0f10;
+  background: #ffffff;
 }
 /* 命令段存在时正文降为内联，紧跟命令名/标签之后（同级块间空白已被 Vue condense 移除，不产多余空隙） */
 .msg-cmd-head + .msg-content {

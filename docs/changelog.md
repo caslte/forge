@@ -1,5 +1,17 @@
 # 变更日志
 
+## v3.78.3 (样式：用户气泡整组改 command chip —— 纯黑底 + 白字技能名 + 白底深字「技能」胶囊)
+
+- **用户反馈**（两轮）：
+  1. 「改成黑底，技能就有点丑，要不也改成白字吧」——`MessageCard.vue` 用户气泡恒为 `#3a3a3d` 暗底（light/dark 双主题均不切换），技能名/标签走青瓷绿 `--brand-accent` 配暗底对比度不足。
+  2. 「整个都改，不是只改技能两个字，技能的名字 + 技能2个字 + 技能的背景标签都要改」——不只是补丁 技能 两字，整组（气泡 + 技能名 + 技能胶囊 + 胶囊背景）需要一致重构。
+- **改动**（`MessageCard.vue`，三项一起动，整组定调为 command chip）：
+  1. `.msg-user .msg-bubble` `background: #3a3a3d` → `#0f0f10`：气泡更深更纯，去掉偏暖的灰调。
+  2. `.msg-cmd-name.is-skill` `color: var(--brand-accent)` → `#ffffff`：技能名「Git Push All」加粗白字，不再走青瓷绿。
+  3. `.msg-cmd-tag.tag-skill` `color: #ffffff` + `background: color-mix(... 22%, transparent)` → `color: #0f0f10` + `background: #ffffff`：「技能」胶囊改为白底深字实色 pill，与气泡「深色反白」形成 chip 质感。
+- **影响范围**：仅用户消息气泡内「命令名 + 来源标签」美化段（`/skill:xxx` 发送后渲染态，pi 展开持久化形态同理）；技能名去青瓷绿仅限气泡内，与斜杠浮窗 `.slash-tag.tag-skill`（中性 `--brand`，浅底场景本来就清晰）解耦。
+- **验证**：forge-ui **264/264**、vue-tsc 0 错；tsc 后 dist 符号 grep 复核（`.msg-cmd-tag.tag-skill` / `.msg-cmd-name.is-skill` / `.msg-user .msg-bubble`）。
+
 ## v3.78.2 (修复：白屏真正根因 —— 主进程同步占死导致 splash 文档 4s 未提交)
 
 - **用户反馈（真机 v3.78.1 后）**：「没解决，我看到还是白屏」。逐帧实测真机（CDP `Page.startScreencast` 录制 + 主进程时间戳对齐）拿到铁证：**窗口 0.6s 就存在，index.html 的文档直到 4.7s 才提交，中间 4s 画面只有 BrowserWindow 底色**；splash 一旦提交就正常显现并一路盖到 Vue mount。
