@@ -14,7 +14,7 @@
  * - 两者皆空 → 空列表
  */
 
-import hljs from 'highlight.js';
+import { hljs } from '../markdown/hljsCore.ts';
 
 /** 单侧单元格类型 */
 export interface SideBySideCell {

@@ -66,6 +66,10 @@ const {
   todoSnapshot,
   isEmpty,
   displayItems,
+  windowedItems,
+  historyWindowTruncated,
+  expandHistoryWindow,
+  expandHistoryWindowTo,
   isMessageStreaming,
   toggleGroup,
   sessionStatus,
@@ -178,6 +182,18 @@ async function onSend(text: string): Promise<void> {
   await sendTurn(text);
 }
 
+/**
+ * 落地 hero 草稿直通（v3.77）：零项目落地页（LandingHero）输入的文本，在项目
+ * 打开、本视图挂载后由上层（App post-flush）经此回填草稿输入框，用户无感衔接。
+ * 仅草稿态（无会话）接受——带真实 sessionId 时是既有会话，回填会污染其输入框。
+ */
+function restoreDraft(text: string): void {
+  if (props.sessionId !== null) return;
+  inputRef.value?.restoreQueuedText([text]);
+}
+
+defineExpose({ restoreDraft });
+
 function onModelChange(model: string): void {
   emit('model-change', model);
   showSwitchBanner(model);
@@ -270,12 +286,15 @@ function userOrdinalOf(index: number): number {
  * 定位目标是 user 消息本身（.msg-user 按 DOM 顺序与 userOrdinal 对齐），
  * 工具组折叠不影响——user 消息永远渲染可见。
  */
-function locateMessage(index: number): void {
+async function locateMessage(index: number): Promise<void> {
   if (showResultView.value) return; // 结果视图激活期间不定位/回看（防御；Rail 本就隐藏）
   const container = scrollRef.value;
   if (!container) return;
   const ordinal = userOrdinalOf(index);
   if (ordinal < 0) return;
+  // 目标消息被历史窗口化截断在上方：先扩窗覆盖再等 patch，否则 .msg-user 的
+  // DOM 序只覆盖窗口内消息，ordinal 映射会错位（v3.74 窗口化配套）
+  if (expandHistoryWindowTo(index)) await nextTick();
   const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
   if (!el) return;
   reviewCtrl.enter(index); // browse→review；review 中重复点击仅更新目标
@@ -296,8 +315,34 @@ function onTimelineSelect(index: number): void {
   locateMessage(index);
 }
 
-/** scrollRef 滚动：回看态下停稳后仍触底 → 触底信号退出回看恢复自动滚底（恰好一次由状态机保证） */
+/** 触顶判定距离（距顶 <240px 开始向上补挂历史窗口批次） */
+const NEAR_TOP_PX = 240;
+let expandingWindow = false;
+
+/**
+ * 向上接近顶部 → 扩一批历史窗口（v3.74 窗口化）。新批次插在内容区**上方**，
+ * 若不补偿 scrollTop，视口内容会瞬间跳动（浏览器保持 scrollTop 数值不变，
+ * 内容整体下移）。锚定：记扩窗前的 scrollHeight，patch 完成后把差值补回。
+ */
+async function maybeExpandHistoryWindow(): Promise<void> {
+  const el = scrollRef.value;
+  if (el === null || !historyWindowTruncated.value || expandingWindow) return;
+  if (el.scrollTop > NEAR_TOP_PX) return;
+  expandingWindow = true;
+  try {
+    const prevHeight = el.scrollHeight;
+    if (expandHistoryWindow()) {
+      await nextTick();
+      if (scrollRef.value === el) el.scrollTop += el.scrollHeight - prevHeight;
+    }
+  } finally {
+    expandingWindow = false;
+  }
+}
+
+/** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 回看态停稳触底退出（原有信号） */
 function onMessagesScroll(): void {
+  void maybeExpandHistoryWindow();
   if (!isReviewing.value) return;
   if (nearBottomTimer !== null) clearTimeout(nearBottomTimer);
   nearBottomTimer = setTimeout(() => {
@@ -576,7 +621,7 @@ onUnmounted(() => {
                流式聚合边界变化（单条 ↔ 组）只在组件内部切换形态，避免 patch 错位 -->
           <template v-else>
             <MessageListItem
-              v-for="item in displayItems"
+              v-for="item in windowedItems"
               :key="item.key"
               :item="item"
               :streaming="item.kind === 'message' && isMessageStreaming(item.idx)"

@@ -5,9 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
     <title>forge</title>
+    <style>
+      /* 启动 splash（v3.78.1）：内联在 #app 内，HTML 一加载即渲染（毫秒级），
+         消除「窗口底色白屏数秒 → Vue mount 后欢迎页一闪而过」的空窗。
+         Vue mount 用渲染结果整体替换 #app 的 innerHTML，splash 自然消失；
+         视觉必须与 BootWelcome.vue 完全一致（底色/布局/字号/动画参数），接管无缝。 */
+      #app-boot-splash {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #f6f8fa;
+        user-select: none;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      #app-boot-splash .splash-name {
+        font-size: 22px;
+        font-weight: 700;
+        color: #1f2328;
+        letter-spacing: 0.5px;
+      }
+      #app-boot-splash .splash-spinner {
+        width: 22px;
+        height: 22px;
+        border: 3px solid #dbe3ea;
+        border-top-color: #2563eb;
+        border-radius: 50%;
+        animation: splash-spin 0.9s linear infinite;
+      }
+      #app-boot-splash .splash-phase {
+        font-size: 13px;
+        color: #57606a;
+        min-height: 1.4em;
+      }
+      @keyframes splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div id="app-boot-splash" role="status" aria-label="应用正在启动">
+        <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true">
+          <rect x="4" y="4" width="40" height="40" rx="10" fill="#2563eb" />
+          <path
+            d="M15 33V15h13M15 24h10"
+            stroke="#fff"
+            stroke-width="4"
+            stroke-linecap="round"
+            fill="none"
+          />
+        </svg>
+        <div class="splash-name">Forge</div>
+        <div class="splash-spinner"></div>
+        <div class="splash-phase">正在准备运行环境…</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

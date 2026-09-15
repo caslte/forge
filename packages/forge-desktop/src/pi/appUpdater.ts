@@ -41,6 +41,19 @@ export interface AutoUpdaterLike {
   on(event: string, listener: (info: unknown) => void): unknown;
 }
 
+/**
+ * `quitAndInstall` 启动参数策略（main.ts 的 ElectronUpdaterAdapter 使用；抽成常量是为了让
+ * 这条不可见的体验决策可被单测守住）。
+ *
+ * - `isSilent: false` —— 安装器走**非静默**分支。配合 electron-builder.yml 的
+ *   `nsis.oneClick: true`，更新时显示 SpiderBanner 进度窗口（应用图标 +「正在安装」文案 +
+ *   进度动画），全程无需点击，装完由 `nsis.runAfterFinish` 自动重新打开应用。
+ *   **不要改成 true**：静默安装期间不显示任何窗口，用户只看到应用消失、过一会儿又突然跳出来
+ *   （2026-09-14 反馈明确否定该体验，要求「一定要有进度条让用户可以看到」）。
+ * - `forceRunAfter: true` —— 安装完成后自动启动新版本。
+ */
+export const QUIT_AND_INSTALL_OPTIONS = { isSilent: false, forceRunAfter: true } as const;
+
 /** createAppUpdaterPort 可注入依赖 */
 export interface AppUpdaterPortDeps {
   /** 当前 forge 产品版本（app.getVersion()） */

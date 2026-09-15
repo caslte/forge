@@ -2,7 +2,7 @@
 
 > 模块：07 版本更新与安装包
 > 来源：PRD 07（docs/prd/07_installer_update.md）
-> 状态：已确认（推荐清单 v1=当前 10 个；v3.65 起**不含** `@juicesharp/rpiv-ask-user-question`——forge 已自建同名 `ask_user_question` 内置扩展（CV-S12），继续预装会让用户环境出现两个同名工具）
+> 状态：已确认（推荐清单 v1=当前 6 个；v3.65 起**不含** `@juicesharp/rpiv-ask-user-question`——forge 已自建同名 `ask_user_question` 内置扩展（CV-S12），继续预装会让用户环境出现两个同名工具；本次再精简至 6 —— 移除 `@vndv/pi-codegraph` / `pi-image-view` / `pi-tool-display` / `@dietrichgebert/ponytail`，由宿主 pi / 用户自装）
 > 层级映射：unit=推荐清单解析/合并/幂等；E2E=首启静默预装；manual=安装包双击/断网降级
 
 ---
@@ -34,13 +34,13 @@
 | AC-IN-006 | IN-F02 推荐组件静默预装 | 幂等 | 已执行预装后再次启动不重复安装 | P0 | U-IN-003 | - | E-IN-002 | 标志位持久化 |
 | AC-IN-007 | IN-F02 推荐组件静默预装 | 异常失败 | 预装失败不阻塞应用启动（静默降级） | P0 | U-IN-004 | - | - | manual / 断网 |
 | AC-IN-008 | IN-F03 forge 版本更新 | 正常流程 | 有新版「发现新版本」+「更新」按钮 | P0 | - | - | - | E2E/integration |
-| AC-IN-009 | IN-F03 forge 版本更新 | 状态流转 | 「重启安装」弹二次确认 → 安装重启 | P0 | - | - | - | manual |
+| AC-IN-009 | IN-F03 forge 版本更新 | 状态流转 | 「重启安装」弹二次确认 → 一键安装（进度窗口可见、零安装器点击）→ 自动重开新版 | P0 | - | - | - | manual + installerConfig 单测 |
 | AC-IN-010 | IN-F03 forge 版本更新 | 异常失败 | 包损坏不安装静默降级 | P0 | U-IN-005 | - | - | 校验失败 |
 | AC-IN-011 | IN-F03 forge 版本更新 | 异常失败 | 断网/下载失败不打断使用，下次重试 | P0 | - | - | - | manual |
 | AC-IN-012 | IN-F04 组件自动更新 | 状态流转 | forge 版本变化后台自动更新共享组件，无 UI | P0 | - | - | - | integration |
 | AC-IN-013 | IN-F04 组件自动更新 | 异常失败 | 版本未变/离线/更新器缺失静默跳过 | P0 | U-IN-006 | - | - | 各类降级 |
 | AC-IN-014 | IN-F04 组件自动更新 | 数据一致性 | 用户自定义插件不被删除/降级（只升不降、只增不删） | P0 | U-IN-007 | - | - | 有用户改动 |
-| AC-IN-015 | IN-F02 推荐清单内容 | 正常流程 | 清单 v1 为 10 项，且**不包含** `@juicesharp/rpiv-ask-user-question`（forge 已自建同名工具） | P1 | U-IN-008 | - | E-IN-003 | 包名精确匹配 + 顺序 + 排除项 |
+| AC-IN-015 | IN-F02 推荐清单内容 | 正常流程 | 清单 v1 为 6 项，且**不包含** `@juicesharp/rpiv-ask-user-question`（forge 已自建同名工具） | P1 | U-IN-008 | - | E-IN-003 | 包名精确匹配 + 顺序 + 排除项 |
 
 ---
 
@@ -50,20 +50,20 @@
 
 | ID | 覆盖 AC | 输入 | 预期 | 备注 |
 |---|---|---|---|---|
-| U-IN-001 | AC-IN-004 | 空 `~/.pi/agent` + 完整推荐清单 | 全部 10 项写入共享目录 | 推荐清单常量解析正确 |
+| U-IN-001 | AC-IN-004 | 空 `~/.pi/agent` + 完整推荐清单 | 全部 6 项写入共享目录 | 推荐清单常量解析正确 |
 | U-IN-002 | AC-IN-005 | 已有 `~/.pi/agent` 含用户自装 + 推荐清单 | 合并补缺；用户已装项不动 | 只增不删 |
 | U-IN-003 | AC-IN-006 | 预装标志已置 + 推荐清单 | 不发起任何 npm 安装 | 幂等 |
 | U-IN-004 | AC-IN-007 | 预装过程抛错（npm 退出非 0） | 标志仍置为失败/部分；app 启动不阻塞 | 静默降级 |
 | U-IN-005 | AC-IN-010 | 损坏的 forge 更新包 | 不执行安装、不重启 | 校验失败路径 |
 | U-IN-006 | AC-IN-013 | 版本未变 / 离线 / 更新器缺失 | 各路径静默跳过 | 降级覆盖 |
 | U-IN-007 | AC-IN-014 | 用户自定义插件 + 新版共享组件 | 用户项不被覆盖/删除 | 只升不降 |
-| U-IN-008 | AC-IN-015 | 推荐清单常量 | 10 项、最后一项为 `@dietrichgebert/ponytail`、**不含** `@juicesharp/rpiv-ask-user-question` | 固化清单内容 |
+| U-IN-008 | AC-IN-015 | 推荐清单常量 | 6 项、最后一项为 `@juicesharp/rpiv-todo`、**不含** `@juicesharp/rpiv-ask-user-question` | 固化清单内容 |
 
 ### E2E（E-IN-*）
 
 | ID | 覆盖 AC | 路径 | 预期 | 备注 |
 |---|---|---|---|---|
-| E-IN-001 | AC-IN-004 | 全新 agent 目录启动 forge | 共享目录出现全部 10 项；UI 无任何「预装」字样 | 全链路验证 |
+| E-IN-001 | AC-IN-004 | 全新 agent 目录启动 forge | 共享目录出现全部 6 项；UI 无任何「预装」字样 | 全链路验证 |
 | E-IN-002 | AC-IN-006 | 二次启动 forge | 无任何 npm 调用；updater-state.json 预装标志已置 | 幂等验证 |
 | E-IN-003 | AC-IN-015 | 全新 agent 目录启动 forge | 共享目录**不含** `@juicesharp/rpiv-ask-user-question`；其余项与推荐清单顺序一致 | 内容验证（排除项） |
 
@@ -75,7 +75,7 @@
 | AC-IN-002 | 覆盖安装（有历史 userData） | 数据不丢 |
 | AC-IN-003 | 未配 feed 安装包 | 离线环境 |
 | AC-IN-007 | 断网首启 | 静默降级 |
-| AC-IN-009 | 「重启安装」二次确认 | 用户决策 |
+| AC-IN-009 | 「重启安装」二次确认 → 一键安装（进度窗口、零安装器点击）→ 自动重开 | 用户决策 + 安装器行为（TD-IN-07；由 test/pi/installerConfig.test.ts 守护） |
 
 ---
 
@@ -88,6 +88,7 @@
 | 边界 | 不可校验来源不可接受 | IN-F03 / AC-IN-010 | 签名/哈希校验 |
 | 反馈 | 组件清单不展示 | IN-F02/F04 / AC-IN-005/012~014 | 明细仅日志 + components 快照 |
 | 反馈 | 重启安装弹窗确认 | IN-F03 / AC-IN-009 | 二次确认 |
+| 反馈 | 安装期进度窗口可见、安装器内零点击；不做静默无窗口安装（TD-IN-07） | IN-F03 / AC-IN-009 | nsis.oneClick=true 且 quitAndInstall 非静默（installerConfig 单测锁定） |
 
 ---
 
@@ -97,6 +98,6 @@
 |---|---|---|---|
 | TD-IN-01 | GitHub Releases 作为更新 feed | IN-F03 / AC-IN-008 | PASS |
 | TD-IN-02 | 首启后台静默预装 | IN-F02 / AC-IN-004 | PASS |
-| TD-IN-03 | 推荐清单 v1=当前 10 个 | IN-F02 / AC-IN-004/015 | PASS（v2025-11：v3.64 扩 10 → 11，v3.65 移除 rpiv-ask-user-question 回落 11 → 10） |
+| TD-IN-03 | 推荐清单 v1=当前 6 个 | IN-F02 / AC-IN-004/015 | PASS（v2025-11：v3.64 扩 10 → 11，v3.65 移除 rpiv-ask-user-question 回落 11 → 10；本次精简 10 → 6 —— 移除 `@vndv/pi-codegraph` / `pi-image-view` / `pi-tool-display` / `@dietrichgebert/ponytail`，由宿主 pi / 用户自装） |
 | TD-IN-04 | 组件自动不提示 / forge 更新包手动 | IN-F03 / IN-F04 / AC-IN-008/012 | PASS |
 | TD-IN-05 | Windows NSIS per-user 安装 | IN-F01 / AC-IN-001 | PASS |

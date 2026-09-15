@@ -22,9 +22,11 @@ import {
   IPC_CLIPBOARD_SAVE_TEXT,
   IPC_FILE_READ_IMAGE,
   IPC_FILE_LIST_PROJECT,
+  IPC_BOOT_STATE,
   type ForgeMethod,
   type ForgeEvent,
   type ForgeResult,
+  type BootState,
   type ForgeAskUserQuestion,
   type AskUserQuestionRequestPayload,
   type AskUserQuestionReplyParams,
@@ -152,6 +154,10 @@ const askUserQuestionControl: ForgeAskUserQuestion = {
 const forgeBridge = {
   invoke(method: ForgeMethod, params?: Record<string, unknown>) {
     return ipcRenderer.invoke(IPC_INVOKE, { method, params });
+  },
+  /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
+  bootState(): Promise<BootState> {
+    return ipcRenderer.invoke(IPC_BOOT_STATE) as Promise<BootState>;
   },
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
     return subscribeEvent(event, listener);

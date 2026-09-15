@@ -1108,8 +1108,13 @@ function focus(): void {
   textareaRef.value?.focus();
 }
 
+/** 只读当前输入文本（落地 hero 卸载时取未发送草稿用，v3.77） */
+function getText(): string {
+  return text.value;
+}
+
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
-defineExpose({ focus, currentLevel, restoreQueuedText });
+defineExpose({ focus, currentLevel, restoreQueuedText, getText });
 
 /** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;

@@ -79,7 +79,20 @@ export type ForgeEvent =
   | 'subagent.updated'
   | 'subagent.removed'
   | 'git.branchChanged'
-  | 'updater.stateChanged';
+  | 'updater.stateChanged'
+  // v3.76 启动门闩：forge-core 组装完成后主进程推送一次（拉通道见 getBootState）
+  | 'boot.ready';
+
+/**
+ * 启动状态（与 @forge/desktop ipc-contract.ts BootState 同构，本地声明惯例）。
+ * v3.76 欢迎页：false 期间 App 只渲染欢迎页，不发任何 forge:invoke 请求——
+ * 此时主进程 core（含 pi SDK）尚未组装完，invoke handler 还没注册。
+ */
+export interface BootState {
+  ready: boolean;
+  startedAt: number;
+  durationMs: number | null;
+}
 
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
 export interface ForgeResult<T = unknown> {
@@ -284,6 +297,8 @@ export type UpdaterStateChangedPayload = UpdaterSnapshot;
 /** preload 注入的 window.forge 桥 */
 export interface ForgeBridge {
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
+  /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
+  bootState(): Promise<BootState>;
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
   askUserQuestion: ForgeAskUserQuestion;
@@ -342,6 +357,15 @@ export async function call<T>(
     throw new Error(`${method} 失败（${res.code}）: ${res.message}`);
   }
   return res.data as T;
+}
+
+/**
+ * 查询主进程启动状态（v3.76 欢迎页门闩）。
+ * ready=false 时 App 只渲染欢迎页且不发任何 forge:invoke（handler 未注册）；
+ * ready 事件（boot.ready）与本次拉取构成推拉双通道，任一先到即放行。
+ */
+export async function getBootState(): Promise<BootState> {
+  return window.forge.bootState();
 }
 
 /** 订阅主进程事件，返回取消订阅函数 */

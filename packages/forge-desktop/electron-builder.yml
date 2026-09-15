@@ -24,11 +24,19 @@ win:
         - x64
   # v1 不做代码签名（未配置 signtoolOptions/certificateSubjectName）
 nsis:
-  # 安装向导模式（非一键）：首次安装可选安装目录、生成快捷方式。
-  # 自动更新配合 main.ts quitAndInstall(isSilent=false)：更新时弹出安装器窗口显示安装进度。
-  oneClick: false
+  # 一键安装器：安装/更新全程无向导页，用户不需要点「下一步 / 完成」。
+  # 自动更新路径（main.ts 的 ElectronUpdaterAdapter → quitAndInstall(isSilent=false)）走
+  # electron-builder 的非静默分支：安装器显示 SpiderBanner 进度窗口（应用图标 +「正在安装」
+  # 文案 + 进度动画），配合 main.ts QUIT_AND_INSTALL_OPTIONS 与下方 runAfterFinish，
+  # 装完自动重新打开应用 —— 用户全程看得见进度，且零点击。
+  # 反向约束：不要把 isSilent 改成 true，那样安装期不显示任何窗口，用户只看到应用消失、
+  # 过一会儿又突然跳出来（2026-09-14 反馈明确否定该体验）。
+  oneClick: true
   perMachine: false
-  allowToChangeInstallationDirectory: true
+  # 注意：oneClick 与 allowToChangeInstallationDirectory 互斥（同时配置 electron-builder 抛
+  # InvalidConfigurationError），默认 per-user 安装目录不再可选。
+  # 装完自动拉起应用（默认即 true，显式声明以固化「更新后自动重开」行为）
+  runAfterFinish: true
   # 快捷方式：开始菜单必建，桌面快捷方式默认创建
   createStartMenuShortcut: true
   createDesktopShortcut: true

@@ -38,6 +38,8 @@ const SESSIONS_STORAGE_KEY = 'forge-mock-sessions';
 const SUBAGENTS_STORAGE_KEY = 'forge-mock-subagents';
 /** 历史持久化键：setHistory 后 reload 保留种子 */
 const HISTORY_STORAGE_KEY = 'forge-mock-history';
+/** 项目持久化键：setProjects 后 reload 保留种子（空数组=零项目落地场景） */
+const PROJECTS_STORAGE_KEY = 'forge-mock-projects';
 
 const DB: {
   projects: Array<Record<string, unknown>>;
@@ -184,6 +186,18 @@ try {
   // ignore
 }
 
+try {
+  const persisted = localStorage.getItem(PROJECTS_STORAGE_KEY);
+  if (persisted !== null) {
+    const parsed = JSON.parse(persisted) as unknown;
+    if (Array.isArray(parsed)) {
+      DB.projects = parsed as Array<Record<string, unknown>>;
+    }
+  }
+} catch {
+  // ignore
+}
+
 function persistSubagents(): void {
   try {
     localStorage.setItem(SUBAGENTS_STORAGE_KEY, JSON.stringify(DB.subagents));
@@ -275,6 +289,8 @@ interface MockControl {
   ): void;
   /** 注入查询会话列表/历史的种子覆盖 */
   setSessions(list: unknown[]): void;
+  /** 注入项目列表种子（空数组=零项目落地场景）；reload 保留 */
+  setProjects(list: unknown[]): void;
   setHistory(sessionId: string, messages: unknown[]): void;
   /** 读取当前会话列表（E2E 拿动态新建会话的 id） */
   getSessions(): Array<Record<string, unknown>>;
@@ -365,6 +381,10 @@ function sortSubagents(list: MockSubagentSeed[]): MockSubagentSeed[] {
 }
 
 const bridge: ForgeBridge = {
+  // v3.76 启动门闩：mock 无真实 core 组装，永远就绪——欢迎页一帧即过，e2e 不受影响
+  async bootState() {
+    return { ready: true, startedAt: 0, durationMs: 0 };
+  },
   async invoke(method, params) {
     // E2E 可编程覆盖：测试注入的处理器优先
     const seeded = seedHandlers.get(method);
@@ -881,6 +901,14 @@ const mockControl: MockControl = {
     // 持久化：page.reload() 后新 JS 上下文重建 DB 时保留 E2E 种子
     try {
       localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(DB.sessions));
+    } catch {
+      // 持久化失败不影响本次运行
+    }
+  },
+  setProjects(list) {
+    DB.projects = [...list] as Array<Record<string, unknown>>;
+    try {
+      localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(DB.projects));
     } catch {
       // 持久化失败不影响本次运行
     }

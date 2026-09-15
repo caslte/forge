@@ -25,21 +25,22 @@ export function encodeCwd(cwd: string): string {
     .replace(/^-+/, '');
 }
 
+/**
+ * 单个会话的子 agent 输出目录：`{tmpdir}/pi-subagents-{uid}/{encodeCwd(cwd)}/forge-{sessionId}`。
+ * 会话删除时整目录移除（其下 `tasks/*.output` 属于该会话，一并清掉）。
+ */
+export function resolveSubagentOutputDir(projectCwd: string, forgeSessionId: string): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+  return path.join(os.tmpdir(), `pi-subagents-${uid}`, encodeCwd(projectCwd), `forge-${forgeSessionId}`);
+}
+
 /** 子 agent 执行过程输出文件路径（只读；文件由扩展创建与写入） */
 export function resolveSubagentOutputFile(
   projectCwd: string,
   forgeSessionId: string,
   agentId: string,
 ): string {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
-  return path.join(
-    os.tmpdir(),
-    `pi-subagents-${uid}`,
-    encodeCwd(projectCwd),
-    `forge-${forgeSessionId}`,
-    'tasks',
-    `${agentId}.output`,
-  );
+  return path.join(resolveSubagentOutputDir(projectCwd, forgeSessionId), 'tasks', `${agentId}.output`);
 }
 
 export interface SubagentOutputTail {

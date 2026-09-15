@@ -49,6 +49,14 @@ export async function seedSessions(page: Page, sessions: Array<Record<string, un
   }, sessions);
 }
 
+/** 通过 window.__forgeMock 设置项目种子（空数组=零项目落地场景；reload 保留） */
+export async function seedProjects(page: Page, projects: Array<Record<string, unknown>>): Promise<void> {
+  await waitForMock(page);
+  await page.evaluate((list) => {
+    window.__forgeMock!.setProjects(list);
+  }, projects);
+}
+
 /** 设置会话历史种子 */
 export async function seedHistory(
   page: Page,

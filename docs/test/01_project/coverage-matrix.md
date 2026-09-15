@@ -97,3 +97,6 @@
 | E-PM-006 | AC-PM-014/015 | 工作区分支浮窗 | git 项目（多分支） | 临时仓库预建 3+ 分支 | real-backend | 点徽标→过滤→选目标分支 | 浮窗列表当前高亮；过滤生效；切换后徽标更新且仓库分支变更 |
 | E-PM-007 | AC-PM-016 | 工作区输入框项目区 | git 项目 + 会话流式中 | 临时仓库 | mock-backend（streaming 状态） | 发送消息进入流式 | 流式期间徽标禁用态不可点、不弹浮窗、不发请求；结束后恢复可点 |
 | E-PM-008 | AC-PM-017/018 | 工作区分支浮窗 | git 项目 dirty 工作区 + 冲突目标分支 | 临时仓库：未提交更改；目标分支同文件不同内容 | real-backend | 点目标分支→确认框→取消/确认 | 取消：不执行分支不变；确认后冲突：浮窗展示 git 错误原文，分支不变；干净时切换成功 |
+| E-PM-LANDING-001 | （v3.77 增补：零项目落地 hero） | 落地首屏 | 零项目（mock setProjects([])） | - | mock-backend | 启动观察 + 点项目区 pill | forge 字标 + 居中输入框渲染可输入；项目区仅「打开项目…」入口；旧 no-session 卡片不复活；无 pageerror |
+| E-PM-LANDING-002 | （v3.77 增补：落地草稿直通） | 落地首屏→工作区 | 零项目 + 输入文本 | - | mock-backend（selectDirectory 返回目录） | 输入文本→Enter | 目录选择后项目自动注册打开；已输入文本回填项目视图草稿输入框（restoreDraft） |
+| E-PM-LANDING-003 | （v3.77 增补：取消不丢字） | 落地首屏 | 零项目 + 输入文本 | - | mock-backend（selectDirectory 返回空） | 输入文本→Enter（取消） | 仍在落地页；输入框文本保留 |

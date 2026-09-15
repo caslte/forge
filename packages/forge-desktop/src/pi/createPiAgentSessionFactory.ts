@@ -17,6 +17,7 @@ import type {
   MinimalPiSession,
   PiAgentSessionFactoryOptions,
 } from './piConversationAdapter.ts';
+import { resolvePiAgentDir, resolveProjectSessionDir, forgePiSessionId } from './piSessionPaths.ts';
 import { resolvePiModel } from './piModelResolver.ts';
 
 export interface PiSessionHandle {
@@ -134,15 +135,13 @@ export function createPiAgentSessionFactory(
   const stopRpcTimeoutMs = options.stopRpcTimeoutMs ?? DEFAULT_STOP_RPC_TIMEOUT_MS;
   const factory: PiAgentSessionRuntimeFactory = async (request) => {
     const cwd = request.cwd ?? process.cwd();
-    const agentDir = resolveAgentDir(options.agentDir);
-    const sessionDir = getDefaultSessionDir(cwd, agentDir);
-    const forgeSessionId = assertValidSessionId(
+    const agentDir = resolvePiAgentDir(options.agentDir);
+    const sessionDir = resolveProjectSessionDir(cwd, agentDir);
+    // piSessionId = forge-<forgeSessionId>（建/读/删共用 piSessionPaths 单一定义源，
+    // 非法 ID 早失败，避免建出删除时无法定位的文件）
+    const piSessionId = forgePiSessionId(
       request.sessionId ?? crypto.randomUUID().replace(/-/g, ''),
     );
-    const piSessionId = `forge-${forgeSessionId}`;
-    if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(piSessionId)) {
-      throw new Error(`非法 pi 会话 ID: ${piSessionId}`);
-    }
 
     const sessionFile = path.join(sessionDir, `${piSessionId}.jsonl`);
     const manager = fs.existsSync(sessionFile)
@@ -280,14 +279,6 @@ export function createPiAgentSessionFactory(
   return factory;
 }
 
-/** 解析 pi agent 目录（未指定时默认 ~/.pi/agent） */
-function resolveAgentDir(agentDir?: string): string {
-  return (
-    agentDir ??
-    path.join(process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(), '.pi', 'agent')
-  );
-}
-
 /**
  * 预热 pi 扩展加载缓存（首条消息卡顿修复）。
  *
@@ -309,7 +300,7 @@ export function warmPiResourceLoader(cwd: string, agentDir?: string): Promise<vo
   if (inFlight !== undefined) return inFlight;
   const run = (async () => {
     try {
-      const dir = resolveAgentDir(agentDir);
+      const dir = resolvePiAgentDir(agentDir);
       const settingsManager = SettingsManager.create(cwd, dir);
       const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: dir, settingsManager });
       await resourceLoader.reload();
@@ -322,16 +313,4 @@ export function warmPiResourceLoader(cwd: string, agentDir?: string): Promise<vo
   })();
   warmingCwds.set(cwd, run);
   return run;
-}
-
-function getDefaultSessionDir(cwd: string, agentDir?: string): string {
-  const root = resolveAgentDir(agentDir);
-  return path.join(root, 'sessions', encodeURIComponent(cwd));
-}
-
-function assertValidSessionId(sessionId?: string): string {
-  if (!sessionId || !/^[A-Za-z0-9_-]+$/.test(sessionId)) {
-    throw new Error(`非法 forge 会话 ID: ${sessionId ?? '(空)'}`);
-  }
-  return sessionId;
 }

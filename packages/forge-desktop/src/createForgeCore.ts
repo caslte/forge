@@ -41,6 +41,10 @@ import {
   type PiAgentSessionFactory,
 } from './pi/piConversationAdapter.ts';
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
+import {
+  resolvePiAgentDir,
+  tryResolveForgeSessionFile,
+} from './pi/piSessionPaths.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { createSlashCommandResources } from './pi/slashCommandResources.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
@@ -153,20 +157,26 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // // subagentService 实际初始化在 adapter 创建后（依赖 conversationAdapter stopSubagent）。
   let subagentServiceRef: SubagentService | undefined;
 
-  // session（02）：删除会话时先释放对话侧运行资源（P2-D lease dispose + stop）
-  const piSessionAdapter = new PiSessionAdapter();
+  // session（02）：删除会话时先释放对话侧运行资源（P2-D lease dispose + stop）。
+  // agentDir 提前到此处解析：会话删除要按同一 agentDir 推导 pi 转录文件路径
+  //（与 createPiAgentSessionFactory 的建文件路径必须逐字节一致，否则删不掉）。
+  const agentDir = resolvePiAgentDir(deps.piAgentDir);
+  const piSessionAdapter = new PiSessionAdapter({ agentDir });
   const sessionService = new SessionService(
     store,
     {
       createSession: (projectPath: string) => piSessionAdapter.createSession(projectPath),
       stopSession: (sessionId: string) => piSessionAdapter.stopSession(sessionId),
-      deleteSession: async (sessionId: string) => {
+      deleteSession: async (sessionId: string, projectPath: string) => {
         // wu-06：先清理子 agent 会话内存态与门控（时间坌需在 adapter removeSession 前清理，
         // // 避免迟到事件订阅退订前该 gate 被释放仍创建新状态）
         disarmMainTurnWatchdog(sessionId); // 会话删除同步撤防主轮看门狗
         subagentServiceRef?.disposeSession(sessionId);
         await conversationAdapter.removeSession(sessionId);
-        await piSessionAdapter.deleteSession(sessionId);
+        // 真删磁盘残留（pi 转录 JSONL + 子 agent 输出目录）。projectPath 由服务层
+        // 从 store 记录取出后透传 —— 仅凭 sessionId 推不出路径。
+        // 此处抛错会让 SessionService 保留会话记录（不吞异常），故"删除成功"即磁盘已清。
+        await piSessionAdapter.deleteSession(sessionId, projectPath);
       },
     },
   );
@@ -182,15 +192,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   const retryRestorePending = new Set<string>();
   const piAgentSessionFactory =
     deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir: deps.piAgentDir });
-  // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件（agentDir/sessions/<cwd>/forge-<id>.jsonl）
-  const agentDir =
-    deps.piAgentDir ??
-    path.join(process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(), '.pi', 'agent');
+  // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件
+  // （agentDir/sessions/<encodeURIComponent(cwd)>/forge-<id>.jsonl，见 piSessionPaths）
   const resolveSessionFile = (sessionId: string): string | undefined => {
     const session = store.getSession(sessionId);
     if (session === undefined) return undefined;
-    const dir = path.join(agentDir, 'sessions', encodeURIComponent(session.projectPath));
-    const file = path.join(dir, `forge-${sessionId}.jsonl`);
+    const file = tryResolveForgeSessionFile(sessionId, session.projectPath, agentDir);
+    if (file === null) return undefined; // 历史脏数据：ID 推不出路径，视为无磁盘历史
     try {
       return fs.existsSync(file) ? file : undefined;
     } catch {

@@ -1,8 +1,12 @@
 /**
  * 内置推荐组件清单（docs/prd/07_installer_update.md IN-F02 / TD-IN-03）。
  *
- * v1 = 当前 10 个（清单固化在 forge 包内，可随版本演进）；
+ * v1 = 当前 6 个（清单固化在 forge 包内，可随版本演进）；
  * 预装 = 与 ~/.pi/agent settings.packages 对比补缺（只增不删），经内置 CLI 逐项安装。
+ *
+ * 仅保留 forge 内核必备项（子代理编排 / 目标模式 / MCP 网关 / 网页访问 / 紧凑展示 / 任务列表）。
+ * 其余扩展（`@vndv/pi-codegraph` / `pi-image-view` / `pi-tool-display` / `@dietrichgebert/ponytail`）
+ * 由宿主 `pi` CLI 自带 / 用户按需安装 —— forge 不再代为预装，避免双份装载与版本漂移。
  *
  * Path 2（ask_user_question 自建内置扩展）：**已移除 `@juicesharp/rpiv-ask-user-question`**。
  * 该插件提供同名 `ask_user_question` 工具，与新自建扩展冲突（pi 的「先注册者胜」规则下
@@ -14,14 +18,10 @@
 export const RECOMMENDED_PLUGINS: string[] = [
   '@tintinweb/pi-subagents',
   '@narumitw/pi-goal',
-  '@vndv/pi-codegraph',
   'pi-mcp-adapter',
   'pi-web-access',
   'pi-compact-display',
-  'pi-image-view',
-  'pi-tool-display',
   '@juicesharp/rpiv-todo',
-  '@dietrichgebert/ponytail',
 ];
 
 /**

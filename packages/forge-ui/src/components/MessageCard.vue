@@ -108,7 +108,9 @@ function renderMarkdownNow(): void {
     // 用户/系统/工具消息保持纯文本渲染（无 markdown 语义，避免误伤）
     renderedContent.value = escapeHtml(raw);
   } else {
-    renderedContent.value = renderMarkdown(raw);
+    // 流式中间态不写渲染缓存（cacheable=false）：一次长回复有数百个中间态，
+    // 写入会把 LRU 里的稳定态历史挤掉；流式结束的终态渲染会正常入缓存
+    renderedContent.value = renderMarkdown(raw, !props.streaming);
   }
   renderedOpenFence.value = hasOpenFence(props.message.content ?? '');
 }

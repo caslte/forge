@@ -86,6 +86,25 @@ export const IPC_WINDOW_MAXIMIZE = 'forge:window:maximize';
 export const IPC_WINDOW_CLOSE = 'forge:window:close';
 export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
 
+/**
+ * 启动状态查询通道（v3.76 欢迎页门闩）。
+ *
+ * 与 forge:invoke 不同：该 handler 不依赖 forge-core 组装，窗口创建后立即可用。
+ * 渲染进程用它做「拉」通道（避免主进程推 boot.ready 时渲染侧尚未订阅而错过）；
+ * 「推」通道是 boot.ready 事件，两者配合实现拉推双保险。
+ */
+export const IPC_BOOT_STATE = 'forge:boot-state';
+
+/** 启动状态（forge:boot-state 响应与 boot.ready 事件 payload 同构） */
+export interface BootState {
+  /** forge-core（含 pi SDK）是否组装完成 */
+  ready: boolean;
+  /** 主进程启动时刻（performance.now 基准，仅观测用） */
+  startedAt: number;
+  /** core 组装耗时（毫秒）；未完成时为 null */
+  durationMs: number | null;
+}
+
 /** preload ↔ main 原生对话框通道 */
 export const IPC_DIALOG_OPEN_DIRECTORY = 'forge:dialog:openDirectory';
 export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
@@ -124,7 +143,11 @@ export type ForgeEvent =
   | 'model.providersChanged'
   | 'subagent.updated'
   | 'subagent.removed'
-  | 'updater.stateChanged';
+  | 'updater.stateChanged'
+  // v3.76 启动门闩：forge-core 组装完成后由 main 手动 send 一次。
+  // 注意：不进 FORGE_EVENTS 数组（那是 eventBus 转发注册表，core 未就绪时 eventBus
+  // 不存在、注册不了）；渲染端通过 forge:boot-state 拉取兜底防错过。
+  | 'boot.ready';
 
 /** 全部事件名运行时数组（主进程遍历注册转发，避免遗漏事件） */
 export const FORGE_EVENTS: readonly ForgeEvent[] = [

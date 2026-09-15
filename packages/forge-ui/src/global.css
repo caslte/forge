@@ -137,14 +137,17 @@ textarea:focus {
   background: var(--scrollbar-thumb-hover);
 }
 
-/* 全局 tooltip（data-tooltip 属性触发） */
+/* 全局 tooltip（data-tooltip 属性触发）。
+   定位逻辑在 src/tooltip.ts（单例元素 + 视口坐标），不能用 ::after + position:fixed：
+   滚动容器内静态位置按内容坐标系计算，fixed 不随滚动修正，会向下偏移 scrollTop。 */
 [data-tooltip] {
   position: relative;
 }
 
-[data-tooltip]:hover::after {
-  content: attr(data-tooltip);
+.global-tooltip {
   position: fixed;
+  left: 0;
+  top: 0;
   padding: 5px 10px;
   background: var(--foreground);
   color: var(--background);
@@ -154,8 +157,12 @@ textarea:focus {
   white-space: nowrap;
   pointer-events: none;
   z-index: 99999;
-  transform: translate(-50%, -100%);
-  margin-top: -8px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.global-tooltip.is-visible {
+  opacity: 1;
 }
 
 /* 通用动画 */

@@ -253,6 +253,50 @@ function dismissAskAnswered(): void {
     toolGroupCollapsed.set(key, !(cur ?? true));
   }
 
+  // ===== 历史窗口化（v3.74 首帧卡顿：点大会话 221 项全量挂载 ≈ 4.3s 冻结主线程） =====
+  //
+  // 策略：点击会话后用户第一眼在**底部**（最新消息），故首帧只挂载尾部若干展示项，
+  // 上方向上滚动时按批补挂（配合 scrollHeight 锚定，见 ConversationView.maybeExpandHistoryWindow）。
+  // 聚合结构（工具组 / 轮次 footer / 改动文件汇总）都在 displayItems 内基于**完整** msgs
+  // 计算完成，窗口只在展示层截断，不会拆散任何组。被窗口滑出再滚回的消息重挂载时，
+  // renderMarkdown 内容寻址缓存命中（≈0ms），不会二次付出解析成本。
+  // 流式新消息天然落在窗口尾（slice 取尾部），无需特殊处理。
+  const HISTORY_INITIAL_ITEMS = 24;
+  const HISTORY_STEP_ITEMS = 16;
+
+  const historyWindow = ref<number>(HISTORY_INITIAL_ITEMS);
+  /** 尾部窗口化后的展示项；窗口盖满时与 displayItems 同一引用（避免多余 patch） */
+  const windowedItems = computed<DisplayItem[]>(() => {
+    const items = displayItems.value;
+    if (items.length <= historyWindow.value) return items;
+    return items.slice(items.length - historyWindow.value);
+  });
+  /** 窗口外的起始位置（displayItems 索引）：小于它的展示项尚未挂载 */
+  const windowStartIndex = computed(() =>
+    displayItems.value.length <= historyWindow.value ? 0 : displayItems.value.length - historyWindow.value,
+  );
+  /** 仍有展示项被截断在窗口外（向上滚动扩展的依据；false 后可移除滚动监听分支） */
+  const historyWindowTruncated = computed(() => displayItems.value.length > historyWindow.value);
+
+  /** 向上触顶时扩一批；返回是否有变化（供视图决定是否做滚动锚定） */
+  function expandHistoryWindow(): boolean {
+    if (!historyWindowTruncated.value) return false;
+    historyWindow.value += HISTORY_STEP_ITEMS;
+    return true;
+  }
+
+  /**
+   * 时间轴定位目标在窗口外时，扩窗到「该消息起往后全挂载」。
+   * 目标 user 消息及其后的内容都要可见（回看模式向上翻页需要）。
+   * @returns 窗口是否发生变化（调用方据此等待 patch 后再查 DOM）
+   */
+  function expandHistoryWindowTo(index: number): boolean {
+    if (index >= windowStartIndex.value) return false;
+    const remaining = displayItems.value.length - index;
+    if (remaining > historyWindow.value) historyWindow.value = remaining + 8;
+    return true;
+  }
+
   // ===== 历史加载 / 会话切换 =====
 
   /** 加载历史消息 */
@@ -272,6 +316,8 @@ function dismissAskAnswered(): void {
         messages.value = [...(res.messages ?? [])];
         toolEventIndex.clear();
         toolGroupCollapsed.clear();
+        // 窗口重置：新加载的历史首帧只挂尾部（首帧卡顿优化）
+        historyWindow.value = HISTORY_INITIAL_ITEMS;
         // 重建工具事件索引
         messages.value.forEach((m, i) => {
           if (m.role === 'tool' && m.toolEventId) {
@@ -314,6 +360,7 @@ function dismissAskAnswered(): void {
     messages.value = [];
     toolEventIndex.clear();
     toolGroupCollapsed.clear();
+    historyWindow.value = HISTORY_INITIAL_ITEMS;
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
@@ -776,6 +823,10 @@ function dismissAskAnswered(): void {
     errorMsg,
     isEmpty,
     displayItems,
+    windowedItems,
+    historyWindowTruncated,
+    expandHistoryWindow,
+    expandHistoryWindowTo,
     isMessageStreaming,
     toggleGroup,
     sessionStatus,

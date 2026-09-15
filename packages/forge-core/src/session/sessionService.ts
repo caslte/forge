@@ -43,12 +43,15 @@ export type SessionStatus = 'idle' | 'running' | 'done' | 'error';
  * 隔离 pi 会话生命周期操作，服务层不直接 import pi。
  * @param createSession 在项目目录下创建 pi session，返回 sessionId
  * @param stopSession 停止会话执行（删除运行中会话前必须先停止）
- * @param deleteSession 删除 pi session（硬删，不可逆）
+ * @param deleteSession 删除 pi session（硬删，不可逆）。projectPath 为会话所属项目
+ *   工作目录 —— 适配器据此推导 pi 转录文件与子 agent 输出目录的磁盘路径（带项目路径
+ *   才能真删文件；仅凭 sessionId 无法定位）。删除失败（文件被占用等）时适配器抛错，
+ *   服务层不吞异常 → 会话记录保留，保证「删除成功」等价于「磁盘已清」。
  */
 export interface PiSessionAdapter {
   createSession(projectPath: string): Promise<string>;
   stopSession(sessionId: string): Promise<void>;
-  deleteSession(sessionId: string): Promise<void>;
+  deleteSession(sessionId: string, projectPath: string): Promise<void>;
 }
 
 /**
@@ -156,6 +159,10 @@ export class SessionService {
   /**
    * 删除会话（SM-S03）：硬删 pi session（不可逆，前端先二次确认）。
    * 运行中会话先 stop 再 delete；会话已不存在时幂等返回成功（code 0）。
+   *
+   * 顺序保证「磁盘先清、记录后删」：adapter.deleteSession（删 pi 转录 + 子 agent
+   * 输出）在 store.removeSession 之前执行，故 adapter 抛错时会话记录与内存态都
+   * 原样保留，用户可重试，不会出现「列表里没了、文件还在」的隐形残留。
    * @param sessionId 会话 ID
    * @returns 成功返回 null；空 ID 返回 1001；adapter 异常向上抛出（rpc 层映射 5000）
    */
@@ -172,7 +179,7 @@ export class SessionService {
       // 状态校验：运行中必须先停止执行（U-SM-001），stop 失败则错误上抛、会话保留
       await this.adapter.stopSession(sessionId);
     }
-    await this.adapter.deleteSession(sessionId);
+    await this.adapter.deleteSession(sessionId, session.projectPath);
     this.store.removeSession(sessionId);
     this.sessionRuntimeStates.delete(sessionId);
     this.windowBindings.delete(sessionId);

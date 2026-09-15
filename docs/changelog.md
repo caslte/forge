@@ -1,5 +1,121 @@
 # 变更日志
 
+## v3.78.2 (修复：白屏真正根因 —— 主进程同步占死导致 splash 文档 4s 未提交)
+
+- **用户反馈（真机 v3.78.1 后）**：「没解决，我看到还是白屏」。逐帧实测真机（CDP `Page.startScreencast` 录制 + 主进程时间戳对齐）拿到铁证：**窗口 0.6s 就存在，index.html 的文档直到 4.7s 才提交，中间 4s 画面只有 BrowserWindow 底色**；splash 一旦提交就正常显现并一路盖到 Vue mount。
+- **根因**：Electron 的 **Node 事件循环与 Chromium UI 线程是同一个线程**。`loadURL` 之后紧接着的 core 组装（pi SDK 同步求值 ~1.2s）+ 预热（jiti 同步编译 ~2.4s）把渲染进程的创建与导航提交一起卡住——splash 虽然内联在 index.html 里，但**文档提交前它根本不存在**，v3.78.1「只要写进 HTML 就能盖住」的假设在这段失效。
+- **修复**：新增 `waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS=2500)`，`registerShellIpc` 之后、core 组装之前先等 splash 提交并留出绘制窗口，之后主进程才放开手做同步重活（冻结全程被已上屏的 splash 盖住，动画在合成线程不受影响），实测门闸耗时 **837ms**。
+- **信号选型（重要教训）**：必须用**浏览器进程侧**的 `did-navigate`（导航提交），不能用任何渲染进程侧信号——此时渲染进程正忙于执行 Vite dev 的整条模块链：`dom-ready` 被 DOMContentLoaded（`<script type="module">` 是 deferred）拖到 **10.5s**，`executeJavaScript` 单次 evaluate 被拖到 **5.9s**，两者都会让门闸退化成超时等待。
+- **验证**：真机复测文档提交从 **4355ms → 941ms**、splash 上屏从 **4706ms → 1861ms**，首屏录制帧连续可见 splash（非纯底色）；forge-desktop **241/241**、forge-ui **264/264**、vue-tsc 0 错；tsc 后 dist 符号 grep 复核（`waitForSplashPainted` / `SPLASH_PAINT_GRACE_MS` / `did-navigate`）。
+
+## v3.78.1 (修复：欢迎页白屏空窗 —— index.html 内联静态 splash，毫秒级可见)
+
+- **用户反馈（真机 v3.78 后）**：「欢迎页没有文字白屏很久，然后突然一下闪出一个字，就进去了」。归因：`index.html` 的 `#app` 是空的——HTML 加载完（毫秒级）到 Vue mount 之间（dev 冷编译模块链 2~4s+）窗口里只有 BrowserWindow 底色（截图即纯灰白）；而主进程 boot.ready（core ~2.4s + 预热 ~5s ≈ 7.4s）比 Vue mount **更早**就绪，欢迎页一挂载拉 `bootState` 即 ready:true 立即放行 → 欢迎页仅闪现一瞬。两个问题同根：欢迎页（BootWelcome.vue）是 Vue 组件，**自己也要等模块链加载完才能显示**——反馈 UI 依赖被反馈的加载本身，鸡生蛋。
+- **修复**：`index.html` 的 `#app` 内内联静态 splash（logo SVG + Forge 字标 + spinner + 固定文案「正在准备运行环境…」，纯 HTML/CSS 零 JS，HTML 一加载即渲染）；视觉参数逐一照抄 `BootWelcome.vue`（底色 #f6f8fa / gap 14px / 22px 700 字标 / 22px 0.9s spinner / 13px 文案）。Vue `createApp(App).mount('#app')` 用渲染结果整体替换 `#app` innerHTML（App.vue 为 SFC 自带 render，容器内容不会被当模板），splash 自然消失、BootWelcome 无缝接管。改后时间线：t≈0.1s splash 可见 → Vue mount 接管轮换文案 → boot.ready 放行进正式界面，白屏空窗归零。
+- **验证**：bootGate e2e **3/3**（attachHealthGuards 无 pageerror，真实浏览器加载新 index.html 无错）。
+
+## v3.78 (性能：预热挪进欢迎页窗口期 —— 消除「首次点会话后切换卡 4s」的冻结暴露)
+
+- **用户反馈（真机 v3.76 后）**：「第一次点击会话就出现了 `[warmup] 开始预热 pi 扩展加载（触发：首个会话历史已下发）`，然后切换其他会话的时候就会卡」。归因：v3.75 把预热触发点挂在「首个 queryHistory 返回后」，注释假设「渲染忙渲染、主进程承接冻结，两成本重叠」——但该假设建立在窗口化**之前**（渲染 4.3s ≈ 预热 5s）；v3.75 窗口化落地后首帧只渲染 24 项仅 **0.5s**，重叠只盖住 0.5 秒，剩余 **~4.5s 冻结完全暴露**，用户看完第一眼切换会话的 `queryHistory` IPC 在主进程排队到预热结束才被处理。卡的不是渲染（缓存/窗口化都在生效），是 IPC 排队。
+- **修复（方案 A，用户拍板）**：预热挪进欢迎页窗口期——core 组装完成后立即用 **store 里最近打开的项目路径**（`readLastProjectPathSync`，轻量 JSON.parse，失败/无项目返回 null）预热，`boot.ready` 等 `Promise.race([预热, PI_WARMUP_MAX_WAIT_MS=9s])` 后发送。冻结全程被欢迎页盖住（欢迎页动画纯 CSS 不受主进程冻结影响），渲染端进入正式界面时扩展加载已暖，点会话/切会话不再撞冻结。9s 上限保证正常路径先于渲染端 10s 逃生放行（`App.vue BOOT_GATE_TIMEOUT_MS`）；`warmPiResourceLoader` 内部 catch 全部异常（正常 resolve），race 不会悬挂。
+- **fallback 保留**（幂等，`startWarmupOnce` 一次性闸门：无 cwd 时不置位）：`project.opened` 更新 warmCwd + 15s 兜底 + queryHistory 包装，覆盖「store 无项目的首次启动」场景。
+- **BootWelcome.vue 适配**：预热使欢迎页常态时长从 ~2.7s 变 4~7s——轮换文案四档、节奏 900ms→1600ms（「正在准备运行环境 → 正在加载 AI 引擎 → 正在准备会话引擎 → 马上就好，可能还需几秒」）。
+- **验证**：forge-desktop **241/241**、forge-ui **264/264**、vue-tsc 0 错；tsc 编译后 dist 符号逐个 grep 复核同步（`readLastProjectPathSync`/`PI_WARMUP_MAX_WAIT_MS`/`bootState`）；bootGate + 问卷 e2e 回归通过。
+
+## v3.77 (UI：零项目落地页改版 —— 旧「选择项目」卡片替换为与会话空态同款的「水印 + 居中输入框」hero)
+
+- 用户反馈（真机 v3.76 后）：「怎么还会有右侧对话框的这个页面，不是已经都改成水印+输入框居中的那种形式了嘛」——截图为零项目启动落地页（`App.vue` 旧 `no-session` 卡片：水印 + "选择项目或创建新项目开始" + "打开项目"按钮）。定位结论：**不是回归**——v3.6x 的 hero 改版只覆盖「项目已打开」的会话空态（ConversationView conv-hero）与多窗口空窗欢迎页，「零项目」走的是 App 顶层另一条 `v-else` 分支，从未纳入改版范围。触发条件唯一：项目列表为空（`loadProjects` 启动时自动打开第一个项目，有项目就看不到这页）。
+- **改版方案（用户选定：完整 hero 形式）**：
+  - 新增 `components/LandingHero.vue`：forge 字标（参数照抄 `.conv-wordmark`：mono 600 / -0.05em / opacity .14 / `min(26cqw,180px)` + 下缘蒙版渐隐）+ 居中 InstructionInput（`session-status="idle"`、无 sessionId 的标准草稿态，宽度同 hero-mode `min(640px,100%)`）。挂载即聚焦。
+  - **零项目项目区**：`App.projectPicker` computed 在 `projects.length===0` 时返回 `{ mode:'draft', currentPath:null, currentName:'打开项目', items:[] }`（`currentPath:null` 本就是类型既有的「未选归属」草稿语义）——输入框项目区只有「打开项目…」入口；该分支只在落地态被 LandingHero 消费，会话分支不渲染，不影响其他使用点。
+  - **草稿直通（send→先选目录）**：落地态发送 = 打开目录选择器；文本在 LandingHero 内三重保全——发送时 `sentCarry` 暂存 + `restoreQueuedText` 视觉回填（取消选目录不丢字）+ 卸载（onBeforeUnmount）时 `getText()||sentCarry` 经 `carry-text` 上抛。App 侧 `landingDraft` 暂存，`watch(currentProjectPath, {flush:'post'})` 在分支切换完成后经 **`ConversationView.restoreDraft`**（新增 defineExpose，仅草稿态接受）回填项目视图草稿输入框，随后立即清空——只对「落地→第一个项目」这一次挂载生效，设置页往返不复活旧文本。时序要点：carry 在 patch 中的卸载钩子里落账，post-flush watcher 晚于组件更新执行，故 `await nextTick()` 后 convRef 必已就位。
+  - `InstructionInput` 仅加一个只读 `getText` 暴露（3 行，零行为变化）；旧 `no-session*` 模板与样式整体删除。
+  - mock-bridge 新增 `setProjects`（localStorage 持久化，空数组=零项目场景，reload 保留）+ e2e 助手 `seedProjects`。
+- **验证**：forge-ui 单测 **264/264**、vue-tsc 0 错；新增 `e2e/landingHero.spec.ts` **3/3**（E-PM-LANDING-001 渲染/打开项目入口/旧卡片不复活；002 落地发送→选目录→开项目→文本直通草稿输入框；003 取消选目录文本保留）；相邻回归 heroWatermark/branchBadge/session/settings/inputHistory **26 过 3 失败**——3 条失败（PM-E2E-006 `.git-item` 3 vs 4、PM-E2E-008b `__conflict__` 分支缺失、SESSION-E2E-001 会话顺序）与 v3.72 记录的既有漂移逐字吻合，且全部处于「有项目」代码路径（本改动只在零项目分支生效），判定为既有问题非本次引入（真因排查仍挂账）。
+- 待办：PRD 01 尚无落地页形态的正式 AC，后续如走 dev-flow 再补（AC 建议挂 PM-S02 前置空态）。
+
+## v3.76 (性能+感知：欢迎页启动链 —— pi SDK 动态加载，窗口与欢迎页先行，core 就绪后自动进入正式界面)
+
+- 用户提议（真机 v3.75 后）：「首次打开先跳一个欢迎页面，等不卡了再跳入正式页面」——采纳，且必须配套 **pi SDK 动态加载**（欢迎页渲染在窗口里，窗口若仍等 SDK 加载完才创建，欢迎页无从显示）。
+- **主进程启动链重排**（`main.ts`）：
+  - 实测占启动卡顿大头的 `createForgeCore` 静态 import（连带 pi SDK，~2.4s）与 `warmPiResourceLoader`（`./pi/createPiAgentSessionFactory.ts` 同样拖 SDK）全部改为**动态 import**，顶层仅留 `type MethodTable` 纯类型 import（零运行时代价）。其余 `pi/*`（appUpdater/startupUpdate/piRuntime/updaterState/keychainAdapter）经核实为轻模块，保留静态。
+  - `app.whenReady` 流程改为：**createWindow + loadURL 先行**（窗口立即可见，渲染进程显示欢迎页）→ `registerShellIpc`（窗口控制/对话框/附件/文件等与 core 无关的 IPC + 新增 `forge:boot-state` 查询，立即注册）→ 动态 import 组装 core → `registerCoreIpc`（invoke 路由 + 事件转发）→ 改写 `bootState` 并向渲染进程推 `boot.ready` 事件。原 `registerIpc` 拆为这两个函数。
+  - BrowserWindow 增加 `backgroundColor: '#f6f8fa'`（与欢迎页底色一致），消除 loadURL 渲染前的白屏闪烁。
+  - 预热的 `startWarmupOnce` 改动态 import 触达 `warmPiResourceLoader`——到达时 SDK 已被 core 组装载入模块缓存，二次 import 零成本。
+- **boot 门闩协议**（`ipc-contract.ts` + `preload.ts` + 渲染端）：
+  - 新增 `IPC_BOOT_STATE`（`forge:boot-state`）与 `BootState { ready, startedAt, durationMs }`；`ForgeEvent` 联合新增 `'boot.ready'`——**不进 `FORGE_EVENTS` 数组**（那是 eventBus 转发注册表，core 未就绪时 eventBus 不存在），由 main 手动 send 一次。
+  - **推拉双通道**防错过：渲染进程 mount 时先拉 `bootState()`（热重载/事件早于订阅场景），未就绪再订阅 `boot.ready` 事件；放行动作 `startPostBootInit()` 幂等。
+- **渲染端门闩**（`App.vue` + 新增 `components/BootWelcome.vue`）：
+  - `bootReady=false` 时整个正式 UI 不挂载（template 顶层 `v-if`），只渲染欢迎页（logo + spinner + 轮换文案，纯 CSS，零重依赖）；**同时挡住了启动期全部 `forge:invoke` 请求**（loadSessions/loadProjects/loadModels 包进 `startPostBootInit`）——此时 invoke handler 尚未注册，请求会报 "No handler registered"。子组件的 onMounted 请求也因不挂载而被天然挡住。
+  - 事件订阅（session.removed 等）先于门闩挂载：订阅本身不发请求，早挂无副作用。
+  - `mock-bridge.ts` 实现 `bootState()` 恒 `ready:true`——mock/e2e 场景欢迎页一帧即过，现有 e2e 全部不受影响。
+- **验证**：forge-desktop **241/241**、tsc 0 错；forge-ui **264/264**、vue-tsc 0 错；e2e 与既有基线一致。
+- **真机事故与修复（v3.76.1）**：真机首测卡死欢迎页——根因是 `preload.ts` 的 `bootState()` 方法编辑丢失未落盘（import 在方法不在），旧 dist/preload.js 无该方法 → 渲染端 `getBootState()` 抛 TypeError → 推/拉双通道全断 → 门闩永不放行。两笔修复：
+  - **补回 `bootState()` 方法**并重编（dist 三处符号 `bootState`/`boot.ready`/`forge:boot-state` 全部核对同步）；
+  - **渲染端逃生通道**（门闩绝不能是死门）：`getBootState()` 异常 catch 直接放行（旧主进程本就 core 就绪后才开窗口，放行正确）+ **10s 超时强制放行**（`BOOT_GATE_TIMEOUT_MS`，`startPostBootInit` 幂等 + 放行时清计时器）。
+  - **新增回归锁 `e2e/bootGate.spec.ts`** 3 条：001 正常路径放行；002 逃生 1（init script 用 `Object.defineProperty` set 钩子拦截 `window.forge` **赋值瞬间**覆写 bootState 为抛错——`setTimeout(0)` 轮询会因 mock 注入在入口同步流而**假绿**，首版已踩）；003 逃生 2（恒 ready:false 无推送 → 5s 时反向断言门闩仍挡着 + 10s 超时放行，断言窗口 30s 防 vite 冷编译把计时器起点推后）。3/3 通过。
+- **预期效果**：双击图标 → **<1s 见欢迎页**（原为白屏死等 ~2.7s）→ core 就绪（约 2.4s 处）自动切正式界面。总时长不变，但等待有反馈、窗口提前出现。
+
+## v3.75 (性能：历史消息尾部优先窗口化 + 预热时机与渲染重叠 —— 首帧 4.3s → ~0.5s，启动冻结窗口消除)
+
+- 用户反馈（真机 v3.73 后）：「感觉还是卡，首次加载大概有个 3 秒钟卡」——对应 v3.73 遗留的两段：**点会话冷渲染 ~4.3s**（LRU 只救二次点击，首帧 221 项仍全量同步挂载）与**启动后 1.5s 起的预热冻结窗口**（6s 内 IPC 全停）。
+- **历史消息尾部优先窗口化**（`useSessionConversation.ts` + `ConversationView.vue`）：
+  - 点击会话后用户第一眼在**底部**：首帧只挂载尾部 **24** 个展示项（`HISTORY_INITIAL_ITEMS`），向上滚动接近顶部（<240px）每批补 **16** 个（`HISTORY_STEP_ITEMS`），直至全量。首帧 4.3s → **~0.5s**。
+  - 聚合结构（工具组 / 轮次 footer / 改动文件汇总）都在 `displayItems` 内基于**完整** msgs 计算完成，窗口只在展示层 `slice`，不会拆散任何组；流式新消息天然落在窗口尾。
+  - **滚动锚定**：新批次插在内容区上方，浏览器默认保持 scrollTop 数值不变会视觉跳动——记扩窗前 `scrollHeight`，patch 后把差值补回。
+  - **时间轴定位配套**：`locateMessage` 的 `.msg-user` DOM 序只覆盖窗口内消息，目标被截断时会 ordinal 错位——`expandHistoryWindowTo(index)` 先扩窗到「该消息起往后全挂载」再等 patch 定位。
+  - 被窗口滑出再滚回的消息重挂载时，v3.73 的渲染 LRU **命中（≈0ms）**——窗口化与缓存互补：缓存治「重复渲染」，窗口化治「首帧全量」。
+- **预热时机改造**（`main.ts`）：废弃「project.opened + 1.5s」固定延时（用户此时正在点会话/看历史，正好撞上 6s 冻结），改为**首个 `conversation/queryHistory` 响应完成后立即触发**——此刻渲染进程正忙渲染历史、主进程空闲，预热的同步阻塞与渲染**重叠而非叠加**；用户不点会话（草稿直发）由 **15s 兜底**（`PI_WARMUP_FALLBACK_MS`）保证首条发送路径总是暖的。包装方式与 createForgeCore 既有 `wrappedSendMessage` 同款（invoke 动态查表，包装生效）。
+- **验证**：forge-ui **264/264**、vue-tsc 0 错；forge-desktop **241/241**、tsc 0 错；e2e `askUserQuestion/session/queue/todoPanel` 与既有基线一致（无新增失败）。
+- **遗留**：窗口全量展开后 DOM 仍全量（未做真虚拟滚动）；pi SDK 主进程顶层静态 import ~2.4s 可改 dynamic import；预热本身 4.4~6s 的成本仍在，只是挪到了无感时刻。
+
+## v3.74 (修复：删除会话改为真删磁盘残留 —— 此前 159 个转录文件永久留存 54.8MB)
+
+- 用户反馈：「删除会话的时候我希望把会话真实删除，因为我觉得留着占空间之外没啥用」。
+- **实测取证（本机）**：`~/.pi/agent/sessions/` 下 `forge-*.jsonl` 共 **159 个 / 54.8MB**，
+  而 `forge-store.json` 只有 54 条会话记录 → **约 105 个会话删除后转录文件成为永久孤儿**；
+  另 `%TEMP%/pi-subagents-0/` 亦积累 27MB。pi CLI 原生会话（`<ts>_<uuid>.jsonl`，65MB）不归 forge 管，未计入。
+- **根因**：`forge-desktop/src/pi/piSessionAdapter.ts` 是占位桩 —— `deleteSession()` 直接
+  `return Promise.resolve()`。删除链路（SessionService：stop → adapter.delete → store.removeSession）
+  前两步都做了，**唯独磁盘文件从建项目起就没删过**；`piConversationAdapter.removeSession` 注释
+  还写着「磁盘文件删除由 PiSessionAdapter 负责」，属于有约定无实现。API 契约
+  （docs/api/02_session.md §3）本就写明「硬删 pi session（不可逆）」，此为实现缺口而非新需求。
+- **修复**：
+  - **新建 `piSessionPaths.ts`（路径单一定义源）**：`{agentDir}/sessions/{encodeURIComponent(cwd)}/forge-<id>.jsonl`
+    的拼装此前在 `createPiAgentSessionFactory` 与 `createForgeCore.resolveSessionFile` 各写一份，
+    删除要求「建/读/删」逐字节一致，收敛后三处共用；`tryResolveForgeSessionFile` 对非法 ID
+    （历史脏数据）返回 null 跳过清理而非抛错（保证脏会话仍可删），同时充当路径越界防线（字符集校验后才拼路径）。
+  - **`PiSessionAdapter.deleteSession(sessionId, projectPath)` 落地**：删转录 JSONL +
+    整删该会话子 agent 输出目录（`resolveSubagentOutputDir`），父目录空则顺带清理；
+    `fs.promises.rm` 带 `maxRetries/retryDelay` 兜 Windows 句柄延迟释放（force 忽略 ENOENT → 重复删除幂等）。
+  - **接口加 `projectPath` 参数**（forge-core `PiSessionAdapter`）：仅凭 sessionId 推不出磁盘路径，
+    由服务层从 store 记录取出透传；调用顺序保证**先清盘、后删记录** —— 适配器抛错（文件被占用等）
+    时错误上抛 → RPC 5000 → 会话保留可重试。语义上「删除成功」从此严格等价于「磁盘已清」，
+    杜绝「列表里没了、文件还在」的隐形残留。
+  - **安全护栏**：只删 `forge-` 前缀文件（同目录共存的 pi CLI 会话绝不触碰）；
+    删除运行中会话前先 stop 的既有校验不变；UI 双击二次确认不变。
+- **验证**：forge-core **376/376**、forge-desktop **241/241** 单测通过（新增 7 条：真删 JSONL +
+  子 agent 目录、兄弟 forge 会话/pi CLI 会话不误伤、空目录清理、幂等、非法 ID 跳过、
+  失败上抛传播、projectPath 透传），`tsc --noEmit` 0 错。踩坑记录：本机 `fs.promises.rm`
+  **会无视只读属性删除文件**，OS 级失败模拟不可靠 → 适配器加可注入 `remove` 端口做失败注入。
+- 文档：`docs/api/02_session.md` §3 补「删除范围与失败语义」说明。
+- **遗留（未做，待定）**：既有 ~105 个孤儿转录文件的清理未实现 —— 涉及用户家目录数据，
+  需先确认哪些 store（Roaming/@forge/desktop、Roaming/Electron、Roaming/forge 三份并存）
+  仍引用这些文件，建议做「按全部 store 记录求差集 + 二次确认」的一次性清理入口。
+
+## v3.73 (性能：markdown 渲染 LRU 缓存 + highlight.js 按需注册 —— 点会话 5.1s → 二次 11ms)
+
+- 用户反馈（真机）：TDZ 修复后会话树立即出现，但**首次进入 App 仍卡、点大会话要等一会才显示**。
+- **先量化归因（临时脚本实测，跑完即删）**，两个独立根因：
+  - **点会话卡 ≈ 5.1s（渲染进程主线程）**：`MessageCard.vue` 的 `watch(…, { immediate: true })` 使每个卡片 setup 同步跑一次 `renderMarkdown`（marked + **全量** highlight.js + sanitize-html，实测 23.3ms/条）；`ConversationView` 的 `v-for="item in displayItems"` 全量渲染、无虚拟滚动，221 条（5.86MB JSONL / 正文 2.7MB）一次性占满主线程。`resetForSession()` 清空 messages 且组件缓存随销毁丢失 → **每次点大会话都重付 5.1s**。IPC 链路无辜：主进程 `loadPiSessionHistory` 读 5.86MB 只要 51ms。
+  - **首次进 App 卡 ≈ 2.4s + 6s 冻结窗口（主进程）**：`main.ts` 顶层静态 import pi SDK 整链 2.4s；`project.opened` 后延后 1.5s 触发的扩展预热（jiti）同步占满事件循环 —— 实测预热 4959ms 期间 10ms/1ms 定时器**一次都不触发**（理想 496/4959 次），即**事件循环 100% 停摆**，窗口内所有 IPC（点会话/切项目/发消息）排队。二次实测预热仍 4.4s：jiti 磁盘缓存（`%TEMP%/jiti`，342 文件）虽在，但大头是模块加载+执行+stat 而非编译，**每次启动都要付**。
+- **本次修复（方案 1+4，用户拍板先做）**：
+  - **渲染结果 LRU 缓存**（`forge-core/src/markdown/renderMarkdown.ts`）：`renderMarkdown(source, cacheable=true)` 增加内容寻址缓存（键 = 长度 + FNV-1a 32 位哈希 + 首/尾 48 字符采样，容量 400，Map 迭代序即 LRU 序）。不用完整原文做键，避免缓存间接持有几百份 12KB 级文本。**cacheable=false（流式中间态）只读不写**——否则一次长回复数百个中间态会把稳定态历史挤出缓存（`MessageCard.vue` 流式传 false，终态渲染正常入缓存）。即使键碰撞也不构成安全边界（XSS 由 sanitize 白名单保证）。新增 `renderCacheSize()` / `clearRenderCache()` 测试辅助。
+  - **highlight.js 按需注册**：新增 `forge-core/src/markdown/hljsCore.ts`，从 `highlight.js/lib/core` 引入并只注册白名单 19 种语言；`renderMarkdown.ts` 与 `sideBySideDiff.ts`（diff 单行高亮）共享同一实例。语言别名（sh/shell→bash、yml→yaml、html→xml）在 `LANG_ALIASES` 归一，白名单外自动降级转义展示（与全量版行为一致，白名单本就刻意收窄）。
+  - **实测收益**：import 278→**117ms**（-58%）；冷渲染 221 条 5146→**4255ms**（-17%）；**二次渲染（缓存全命中）5146→11ms（约 468 倍）** —— 切走再切回同一会话、同内容重复渲染（含 `AskUserQuestionPanel` preview 模板内直接调用）均命中。
+- **遗留（已量化、未做，待排期）**：① 冷渲染首帧仍 ~4.3s，需虚拟滚动/懒渲染（只解析视口内）或 Web Worker 才能消除；② 主进程启动期 pi SDK 静态 import 2.4s 可改 dynamic import；③ 扩展预热的 6s 事件循环冻结，可考虑 utilityProcess 隔离（**前提是确认编译缓存跨进程复用，否则主进程首条消息仍要重付一次**）或推迟预热时机与渲染期重叠。
+- **验证**：forge-core **376/376** 单测（新增缓存 3 例：命中一致 / 流式不写入 / LRU 上限+淘汰后冷渲染正确）、tsc 0 错；forge-ui **264/264**、vue-tsc 0 错；e2e `askUserQuestion.spec.ts` 回归通过（AskUserQuestionPanel preview 走同一条渲染链路）。
+
 ## v3.72 (修复：问卷面板 setup 崩溃打空整块对话区 + 补齐 CV-S12 浏览器级回归锁)
 
 - 用户反馈（两条，真机试用 v3.71）：①「右侧对话框不显示了」；②「后台也报错」。
