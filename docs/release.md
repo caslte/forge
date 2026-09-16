@@ -50,6 +50,11 @@
 ## 二、日常发版流程（每次发版就这三条命令）
 
 ```bash
+# 0. 【必须先做】把 packages/forge-desktop/package.json 的 version 改成与本次标签一致
+#    electron-builder 定位 Release 用的是「v + 包版本号」，不是 git 标签本身。
+#    版本号对不上 → 产物被静默跳过上传（构建全绿但 Release 是空的）。
+#    例：发 v0.1.7 → version 改为 "0.1.7"
+
 # 1. 提交代码（日常开发随便推分支，不会触发打包）
 git add -A
 git commit -m "feat: xxx"
@@ -63,14 +68,18 @@ git push origin v0.1.7
 ```
 
 推完标签后约 1 分钟内 Actions 开始跑，全部完成约 10~15 分钟。
-产物位置：`https://github.com/caslte/forge/releases`，挂在对应标签下。
+产物位置：`https://github.com/caslte/forge/releases`，以 **draft（草稿）** 形式挂在对应标签下，检查无误后手动点 Publish 发布。
+
+> electron-builder 默认以 draft 方式发布：各平台 job 把产物传到同一个草稿 Release，
+> 你确认后手动发布它，用户才能看到。想改成直接发布，在 yml 的 publish 里加 `releaseType: release`。
 
 > 标签打错/想重打：先删本地和远程标签，再重来。
 > ```bash
 > git tag -d v0.1.7
 > git push origin :refs/tags/v0.1.7
 > ```
-> 注意：若该标签的 Release 已生成，需到 Releases 页面把那条 Release 也删掉。
+> 注意：若该标签的 Release 已生成，需到 Releases 页面把那条 Release 也删掉——
+> 已发布（非草稿）的同版本 Release 会导致新产物被跳过上传。
 
 ---
 
