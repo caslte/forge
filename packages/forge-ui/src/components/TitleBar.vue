@@ -96,7 +96,6 @@ onUnmounted(() => {
   align-items: center;
   width: 100%;
   background: var(--background);
-  border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
   user-select: none;
   flex-shrink: 0;

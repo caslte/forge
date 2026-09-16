@@ -926,6 +926,11 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* 深色主题下让左侧会话树比主区更黑，产生层次 */
+:root[data-theme='dark'] .sidebar {
+  background: oklch(0.22 0 0);
+}
+
 .workspace-header {
   display: flex;
   align-items: center;
@@ -1079,7 +1084,6 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--background);
   overflow: hidden;
-  border-left: 1px solid var(--border);
 }
 
 .content.settings-mode {

@@ -5,11 +5,68 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
     <title>forge</title>
+    <script>
+      /* 主题引导（v3.78.5）：暗色欢迎页的前提条件。
+         splash 的暗色变体靠 :root[data-theme='dark'] 生效，而全站唯一设置该属性的
+         useTheme.ts 要等 main.ts 的模块链执行——那时 splash 早已上屏（先亮一下再变暗）。
+         故用**同步脚本**（特意不写 type="module"：module 是 deferred，赶不到 splash 之前）
+         在模块链之前把主题落到 <html>。
+         取值与默认值与 useTheme.ts 严格一致：localStorage['forge:theme'] 为 'dark'/'light'
+         才生效；无存储则整个属性都不设 = light，不跟随系统（与 App 行为一致）。 */
+      (function () {
+        try {
+          var saved = localStorage.getItem('forge:theme');
+          if (saved === 'dark' || saved === 'light') {
+            document.documentElement.setAttribute('data-theme', saved);
+          }
+        } catch (e) {
+          /* localStorage 不可用（隐私模式等）按 light 走 */
+        }
+      })();
+    </script>
     <style>
       /* 启动 splash（v3.78.1）：内联在 #app 内，HTML 一加载即渲染（毫秒级），
          消除「窗口底色白屏数秒 → Vue mount 后欢迎页一闪而过」的空窗。
          Vue mount 用渲染结果整体替换 #app 的 innerHTML，splash 自然消失；
-         视觉必须与 BootWelcome.vue 完全一致（底色/布局/字号/动画参数），接管无缝。 */
+         视觉必须与 BootWelcome.vue 完全一致（底色/布局/字号/动画参数），接管无缝。
+
+         最小 reset（v3.78.4）：「HTML 一解析即渲染」的代价是**上屏时全站样式尚不存在**
+         —— Dev（npm run dev）的 global.css 由 main.ts 的 import 在模块执行期注入，
+         splash 的整个展示窗口期都跑在浏览器默认样式上。默认 body margin 8px 会把
+         100vh 的 splash 撑出 16px 溢出：右侧滚动条 + 窗口四周 8px 白边。
+         故 splash 必须自带 reset，不依赖 global.css。此处声明与 global.css 的
+         reset 同值，全局样式接管后无任何行为差异。 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--welcome-bg);
+      }
+      #app {
+        height: 100%;
+      }
+
+      /* 欢迎页配色（v3.78.5）——splash 侧镜像 BootWelcome.vue 消费的那四个设计令牌
+         （--background / --foreground / --muted-foreground / --border），写法是
+         「令牌 + 字面兜底」：splash 上屏时 design-tokens.css 还没注入，var(--background)
+         解析不出来，兜底值顶上；模块链跑完令牌生效后，解析结果与兜底值**逐位相同**，
+         故 CSS 到位前后不存在任何色变，也与 BootWelcome 由构造一致（不会漂移）。
+         暗色档必须显式列出：兜底值分主题，而令牌要等模块链才有。 */
+      :root {
+        --welcome-bg: var(--background, oklch(1 0 0));
+        --welcome-fg: var(--foreground, #333333);
+        --welcome-muted: var(--muted-foreground, oklch(0.552 0.016 285.938));
+        --welcome-ring: var(--border, oklch(0.92 0.004 286.32));
+      }
+      :root[data-theme='dark'] {
+        --welcome-bg: var(--background, oklch(0.26 0.006 286.2));
+        --welcome-fg: var(--foreground, oklch(0.88 0.002 286.3));
+        --welcome-muted: var(--muted-foreground, oklch(0.7 0.008 286.3));
+        --welcome-ring: var(--border, oklch(0.32 0.005 286.3));
+      }
+
       #app-boot-splash {
         height: 100vh;
         display: flex;
@@ -17,27 +74,27 @@
         align-items: center;
         justify-content: center;
         gap: 14px;
-        background: #f6f8fa;
+        background: var(--welcome-bg);
         user-select: none;
         font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
       }
       #app-boot-splash .splash-name {
         font-size: 22px;
         font-weight: 700;
-        color: #1f2328;
+        color: var(--welcome-fg);
         letter-spacing: 0.5px;
       }
       #app-boot-splash .splash-spinner {
         width: 22px;
         height: 22px;
-        border: 3px solid #dbe3ea;
+        border: 3px solid var(--welcome-ring);
         border-top-color: #2563eb;
         border-radius: 50%;
         animation: splash-spin 0.9s linear infinite;
       }
       #app-boot-splash .splash-phase {
         font-size: 13px;
-        color: #57606a;
+        color: var(--welcome-muted);
         min-height: 1.4em;
       }
       @keyframes splash-spin {
@@ -65,6 +122,32 @@
         <div class="splash-phase">正在准备运行环境…</div>
       </div>
     </div>
+    <script>
+      /* splash 上屏回执（v3.78.7）：主进程用 show:false 建窗，靠这条消息决定何时把窗口显示
+         出来。双 rAF：第一次回调说明本帧的样式与布局已就绪，第二次说明它已被提交——只有走满
+         两帧才代表「splash 真的画到了窗口表面」，单次 rAF 只保证「即将绘制」。
+         位置必须在 splash 的 DOM 之后（此处），否则量到的是空文档。
+         纯浏览器环境（e2e / 直接开 vite）没有 preload 桥，故用存在性判断兜底。 */
+      (function () {
+        var notify = function () {
+          try {
+            if (window.forge && typeof window.forge.splashReady === 'function') {
+              window.forge.splashReady();
+            }
+          } catch (e) {
+            /* 回执失败只影响「窗口何时显示」，由主进程超时兜底 */
+          }
+        };
+        var raf = window.requestAnimationFrame;
+        if (typeof raf === 'function') {
+          raf(function () {
+            raf(notify);
+          });
+        } else {
+          setTimeout(notify, 0);
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

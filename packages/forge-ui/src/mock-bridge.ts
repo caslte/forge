@@ -385,6 +385,10 @@ const bridge: ForgeBridge = {
   async bootState() {
     return { ready: true, startedAt: 0, durationMs: 0 };
   },
+  // v3.78.7 splash 上屏回执：纯浏览器环境没有真实窗口可显示，空实现即可
+  splashReady() {
+    /* noop */
+  },
   async invoke(method, params) {
     // E2E 可编程覆盖：测试注入的处理器优先
     const seeded = seedHandlers.get(method);
@@ -791,6 +795,10 @@ const bridge: ForgeBridge = {
   },
   shell: {
     openPath: async () => true,
+  },
+  theme: {
+    // 浏览器 dev/e2e 无主进程：回写只对 Electron 窗口底色有意义，这里空实现
+    set: () => {},
   },
   file: {
     // 浏览器 dev 下无 Electron webUtils，拿不到盘上路径

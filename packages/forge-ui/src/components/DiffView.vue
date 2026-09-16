@@ -75,7 +75,6 @@ const highlightedRows = computed(() =>
 
 <style scoped>
 .diff-view {
-  border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -86,7 +85,6 @@ const highlightedRows = computed(() =>
   font-size: 11px;
   color: var(--muted-foreground);
   background: var(--muted);
-  border-bottom: 1px solid var(--border);
 }
 
 .diff-table {

@@ -1,5 +1,104 @@
 # 变更日志
 
+## v3.78.8 (修复：欢迎页被白板阻塞 —— 显示后必须等到「splash 那一帧真的呈到屏幕上」才做重活)
+
+- **用户反馈**：「你这次改完出现了新的问题，欢迎页被阻塞了，一开始没有字，只有白板」——即 v3.78.7 修出的新症状，比它要修的问题更重。
+- **根因（v3.78.7 的顺序错误）**：v3.78.7 把「让合成落地」的手段放在 **`show()` 之前**（等 300ms 再 `show()`），而那段宽限给的是**一个还没显示的窗口**。`show()` 只让窗口「可见」，屏幕上真正出现内容由 **`show()` 之后的下一次合成**决定；v3.78.7 在 `show()` 后立刻开始同步重活（pi SDK 求值 + jiti 预热，与 Chromium 合成同一个线程），那次合成就地卡住 ⇒ 窗口停在自己缓冲区里那一帧上。
+  - 缓冲区里那一帧是什么？是 **Chromium 的「尚未解析出 HTML 的空文档」= 纯白**（与主题取值无关，v3.78.7 已证过这一点）。暗色主题下唯一的白只能来自这里，而用户报的正是白板 ⇒ **隐藏窗口期间合成的帧并没有进入窗口自己的缓冲区**：「隐藏期已经画好了」不等于「show 出来就有」。
+  - 这也解释了为什么这次比 v3.78.6 更糟：v3.78.6 的白只有 `ready-to-show` 前的 ~1s（那段窗口主进程还空闲，合成做得完），而 v3.78.7 的白 = **整个重活时长**（一次合成都没做完）。
+- **修复（顺序 + 信号 + 判据三处）**：
+  1. **`bootFrame.ts`（新增，纯函数、零 Electron 依赖）**：把 `NativeImage.toBitmap()` 的位图统计成「内容占比 / 标志块占比 / 底色」—— 白屏这类问题「我这边不白」无法自证，本模块把「窗口上有没有内容」变成可量化事实，且可直接单测。
+  2. **信号升级为 presentation 事件**：`webContents.beginFrameSubscription` 的回调即浏览器进程侧「这一帧已从合成器呈出」。信号强度阶梯现为 `did-navigate < ready-to-show < 渲染进程 rAF 回执 < presentation 事件`——只有最后一个是「屏幕上有了」。
+  3. **顺序改对**：`waitForSplashPainted` 现在是「等 rAF 回执 → **隐藏期取一帧合成帧（证明表面已是 splash，而不是空文档）** → `show()` → **等显示后的一帧合成帧** → 300ms 落屏余量 → 才放开主进程做重活」。只认**有内容**的帧（纯底色帧不算数，继续等下一帧）。
+  4. **新增一行可 grep 诊断**：`[boot] 显示前/显示后合成帧 at …ms WxH 内容占比=…% 标志块=…% 底色=#…`，纯底色帧会带 `⚠ 纯底色帧（白板）` 标注——下次再白，日志直接给出「哪一帧白的」。
+  5. **新增 opt-in 现场转储 `FORGE_BOOT_FRAME_DUMP=<目录>`**：把启动首帧写成 PNG，用于事后核对画面本身（像素统计只能给「有没有内容」，给不出「内容对不对」）。默认不生效，普通启动零开销。
+- **验证（真机三次启动 + 读图，非推断）**：
+  - 复用用户正在跑的 vite（51731），`FORGE_BOOT_FRAME_DUMP` 打开，逐次核对：
+    - `[boot] 建窗底色 theme=dark bg=#242427`
+    - `[boot] 显示前合成帧 at 389ms 2240x1437 内容占比=0.35% 标志块=0.19% 底色=#242427`
+    - `[boot] 显示后合成帧 at 54ms 2240x1437 内容占比=0.33% 底色=#242427` ← show 后 54ms 就有一帧带内容的合成帧被呈出，**此时重活尚未开始**
+    - `[boot] 窗口已显示（splash 就绪 1486ms）` → `[boot] forge-core 就绪`
+  - **转储 PNG 逐张读过**：2240×1437 全幅、暗底 `#242427`、蓝色 F 标志块 + `Forge` + spinner + 「正在准备运行环境…」字样齐全 —— 显示前/显示后两帧都是完整 splash，不是白板。
+  - **BGRA 通道序被实测确认**：`标志块=0.19%`（若按 RGBA 解读，该比例会恒为 0）。
+  - 新增 `test/bootFrame.test.ts` **6 条**：纯底色判「无内容」（= 白板判据）、splash 几何量级判「有内容」、透明像素算底色、异常输入（null/空/尺寸 0/长度不足）不抛错、`step` 非法回退、左上角取底色语义。→ forge-desktop 单测 **246 → 252，252/252 通过**。
+  - e2e 新增 **BOOT-SPLASH-004 @P0**（冻结模块链后 `Forge` 字标 / 阶段文案 / 标志块必须可见、非零尺寸、完整落在视口内——把「只有白板没有字」从 DOM 侧锁住）；`bootSplash` + `bootGate` + `landingHero` **10/10 通过**。`tsc` 0 错。
+- **遗留**：真机视觉的最终确认仍需看屏幕（本机屏幕采样不可用，见 MEMORY.md 记录）；像素证据只能证明「帧上有 splash 内容」，不能替代人眼。若仍白，按 `FORGE_BOOT_FRAME_DUMP` 导出现场即可定位是「没等到帧」还是「帧本身不对」。
+- **未改**：用户手改在途的 `App.vue` / `BootWelcome.vue` / `TitleBar.vue` / `DiffView.vue` / `ExitConfirmDialog.vue` / `global.css` 一律未触碰；本轮只改 `main.ts` / 新增 `bootFrame.ts` / 新增单测 / 新增 e2e 用例。
+
+## v3.78.7 (修复：暗色主题下启动仍白一瞬 —— 窗口延迟到 splash 真正上屏后才显示)
+
+- **用户反馈**：「黑色外观的时候还有启动的时候有一秒是白色 没解决」——v3.78.6 修掉「建窗底色」后，启动链上仍有一段白。
+- **排查（真机实测逐项证伪）**：
+  - 先复现：把主题镜像 `forge-theme.json` 改成 `light`、localStorage 仍是 `dark`，启动后日志 `[boot] 建窗底色 theme=light bg=#FFFFFF` —— 证实「镜像缺失/不一致时建窗底色必为白」，但这只是其中一种情况。
+  - 再读渲染进程计时（CDP 取 `performance.getEntriesByType('paint')`）：`first-contentful-paint` **5024～6872ms**；而主进程 `[boot] 窗口已显示` 在 **277～1507ms**。两者差约 5s，且与 `forge-core 就绪` 的耗时重合 —— 窗口已可见、页面却还没画出任何东西。
+- **根因（三层，逐层剥掉）**：
+  1. `backgroundColor` 只能盖住「窗口创建 → 渲染进程首次合成」这一小段；之后 Chromium 改用**尚未解析出 HTML 的空文档**绘制，而空文档的默认底色是**纯白**——**这与主题取值是否正确无关**。所以 v3.78.6 的「底色跟随主题」只能修镜像不一致那一种，修不掉这一层。
+  2. Electron 的 `ready-to-show` **不等于「已提交到窗口表面」**：实测 1206ms 触发，而首帧提交要到 6872ms。原因是主进程紧接着的同步重活（pi SDK 同步求值 ~1.2s + jiti 预热 ~2.4s）与 Chromium 的合成**是同一个线程**，把「已渲染」到「已提交」拖出 5.6s。拿它（或 `did-navigate`，仅 ~77ms）当「已上屏」信号，都会放出一个内容空白的可见窗口。
+  3. 单纯在 show 前加延时也不行（试过 300ms 宽限，仍差 5.3s）——阻塞随后就到。
+- **修复（四处，缺一不可）**：
+  1. `createWindow` 改 `show: false`（`main.ts`）：窗口建立后**先不显示**，`show` 由启动链决定时机。
+  2. **新增 splash 上屏回执通道** `IPC_BOOT_SPLASH_READY`（`ipc-contract.ts` + `preload.ts` 暴露 `window.forge.splashReady()` + `main.ts` 注册 `ipcMain.on`）：由**渲染进程自己**在 `index.html` 内联脚本里走**双 rAF** 后回执——第一次 rAF 表示本帧样式/布局就绪，第二次表示已被提交，只有走满两帧才代表「真的画到窗口表面」。这是唯一不受主进程阻塞扭曲的信号。
+  3. `waitForSplashPainted` 改为等该回执（`ready-to-show` 仅作退路），再留 300ms **不阻塞**宽限后 `win.show()`；超时（2500ms）照常 show，绝不让窗口永不出现。
+  4. `webPreferences.backgroundThrottling: false`：隐藏窗口默认会节流定时器与 rAF，而回执正是在 rAF 里发出，不关掉会让回执迟迟不来。
+- **验证（真机逐版对照，非推断）**：
+
+  | 版本 | 窗口显示时刻 | 结果 |
+  | --- | --- | --- |
+  | v3.78.6（仅底色跟随主题） | ~800ms（默认 show） | 空文档白帧可见 |
+  | 初版：`show:false` + `did-navigate` + 200ms | 277ms | 提交 ≠ 绘制，仍白 |
+  | 二版：只等 `ready-to-show` | 1206ms | 实测仍早于首帧提交 |
+  | 三版：额外 300ms 宽限 | 1507ms | 与首帧仍差 5.3s |
+  | **终版：渲染进程双 rAF 回执** | **回执 474ms → show 774ms** | **渲染进程自证已绘制两帧并提交** |
+
+  终版 `forge-core 就绪 5956ms` —— 窗口在重活开始前就已带着 splash 显示出来。回执时刻由渲染进程自己数帧得出，不受主进程阻塞对 `performance` 计时的影响，这也是终版**不再**拿 `first-contentful-paint` 当判据的原因。
+- **排查中确立的两条可复用事实**（已写入 `MEMORY.md`）：
+  1. **`npm run dev`（`scripts/dev.js`）的 userData 是 `%APPDATA%/Electron`，而直接 `electron.exe <目录>` 的是 `%APPDATA%/@forge/desktop`**——两者 localStorage 与镜像都不共享。启动链真机实验必须用 `--user-data-dir` 明确指定，否则测的不是用户场景。
+  2. **屏幕像素采样在本机不可靠**：`Add-Type` 被安全策略拦截、PowerShell 进程未声明 DPI aware（本机 DPR 1.75，`Screen.Bounds` 报 1463×915 而 `CopyFromScreen` 走物理像素），且 WorkBuddy 自身窗口会遮住采样点。改用「主进程日志 + CDP 读渲染进程计时」这条纯数据路径。
+- **回归**：forge-desktop 单测 **246/246**、`tsc` 0 错、forge-ui `vue-tsc` 0 错；e2e `bootSplash` + `bootGate` + `landingHero` **9/9**（新增回执脚本在纯浏览器环境走 `mock-bridge` 空实现，不产生 console error）。
+- **未改**：`BootWelcome.vue` 顶部那行过期注释（该文件是用户手改在途）。
+
+## v3.78.6 (修复：暗色主题下冷启动第一帧仍是白 —— 主进程建窗底色跟随主题 + 去掉 .content 左分隔线)
+
+- **用户反馈**：「第二点需要，不然一开始还是白色」——即 v3.78.5 列出的遗留项（`createWindow` 的 `backgroundColor` 固定亮色）纳入本次；另「`.content` 得左 border 去掉」。
+- **根因（与 v3.78.4 / v3.78.5 同源，第三次发作）**：`BrowserWindow.backgroundColor` 只能在**建窗时刻**给，而那一刻渲染进程一行代码都还没执行（v3.76「窗口先行」之后，这段底色就是用户看到的第一帧）。主题的唯一事实来源却是渲染进程的 `localStorage['forge:theme']` —— 主进程在 `app.whenReady()` 里读不到，于是暗色主题下第一帧恒为亮色。
+- **修复（主进程侧主题链路，新增 4 处）**：
+  1. **`packages/forge-desktop/src/theme.ts`（新增）**：userData 下的镜像文件 `forge-theme.json`（`{ "mode": "light"|"dark" }`），`readThemeSync` / `writeTheme`（**tmp + rename 原子写**，同 forge-store / piModelsFileAdapter）/ `isThemeMode` 取值守卫 / `THEME_BACKGROUND` 底色表。模块刻意**不 import electron**（纯 fs/path），可在 `node --test` 下直测。命名空间独立于 `forge-store.json`：主题是壳层窗口属性，不该被 store 的 schema 与迁移牵连（同 `updater-debug.json` 口径）。
+  2. **新 IPC `forge:theme:set`**（`ipc-contract.ts` + `preload.ts` 的 `window.forge.theme.set`）：单向 fire-and-forget。主进程收到后落盘（供下次冷启动建窗取用）**并就地 `setBackgroundColor` 刷新当前窗口**，使「窗口底色 == 当前主题」在运行期也恒成立（改完不重启不留旧底色）。载荷经 `isThemeMode` 校验，非 light/dark 一律忽略。
+  3. **`main.ts`**：`whenReady` 里 `readThemeSync(app.getPath('userData'))` → `createWindow(isDev, theme)` → `backgroundColor: backgroundFor(theme)`；新增一行可 grep 的启动诊断 `[boot] 建窗底色 theme=… bg=…`，`bg` 取 `win.getBackgroundColor()` **回读**值（避免「传了但没生效」无人察觉）。
+  4. **`useTheme.ts` 的 `apply()`** 追加回写主进程。**localStorage 仍是唯一事实来源**，主进程那份只是缓存 —— 所以 `load()` 也会回写一次，镜像被清/损坏时下一次启动即自愈。浏览器 dev/e2e 走 mock-bridge 空实现，通路全部静默容错。
+- **底色取值与设计令牌同源**：`--background` 由 `oklch` 换算为 sRGB —— light `oklch(1 0 0)` = `#ffffff`、dark `oklch(0.26 0.006 286.2)` = `#242427`。**顺带改掉原 `#f6f8fa`**：v3.78.5 起 splash / BootWelcome 走 `var(--background)`，浅色档已是纯白，主进程若仍用 `#f6f8fa`，「窗口底色 → splash」交接口会有一道色阶；三处同源后这一帧序列完全无色变。
+- **`.content` 去掉 `border-left: 1px solid var(--border)`**（`App.vue`）：侧栏与内容区之间不再有分隔线。
+- **验证（真机，非推断）**：
+  - **真机 Electron 两次启动实测**（`--user-data-dir` 指向临时目录，prod 链路加载 `dist/index.html`）：首启无镜像 → `[boot] 建窗底色 theme=light bg=#FFFFFF`；随后**经 CDP 在真实渲染进程调用 `window.forge.theme.set('dark')`** → 镜像文件落盘 `{ "mode": "dark" }` → 再启动 → `[boot] 建窗底色 theme=dark bg=#242427`。即「渲染进程 → IPC → 落盘 → 下次建窗底色」整条链路在真机上闭环。
+  - **新增 `test/theme.test.ts`（5 条，forge-desktop 单测 241 → 246）**：读写往返 / 缺文件 / 半截 JSON / 取值非法 / mode 类型错一律回 light；写入不留 `.tmp`；`isThemeMode` 守卫；IPC 通道名唯一。
+  - **反漂移断言**：直接从 `forge-ui/src/design-tokens.css` 解析 light/dark 两档 `--background` 的 `oklch` 值、自行换算 sRGB 与 `THEME_BACKGROUND` 逐通道比对 —— 改令牌不改 hex（或反之）立刻红。**反证实测**：故意把 dark 改成 `#24242a` → 用例红并打印 `theme.ts=#24242a vs design-tokens.css→sRGB=#242427`，随后已还原。
+  - 回归：forge-desktop **246/246**、forge-ui 单测 **264/264**、forge-desktop `tsc` 0 错、forge-ui `vue-tsc` 0 错；`vite build` 后复核产物（镜像调用已在 `dist/assets/index-*.js` 中，`.content` 规则已无 `border-left`，全仓 CSS `border-left` 计数 0）。
+  - **e2e 全量：103 passed / 13 failed，13 条全部与本改动无关（已用 A/B 对照排除）**。13 条 = 既有基线 4 条（branchBadge PM-E2E-006 / PM-E2E-008b、session SESSION-E2E-001、smoke）+ 树上已在的 9 条：`__repro-subagent-bar`（读 `__forgeMock.setSessions` 为 undefined）、`conversationHistoryLocate` E-CV-009、`mw-restore` ×2（贴边矩形 `{0,0,475,570}` vs 期望 `{4,4,471,562}`）、`queue` QC-001/QC-003、`todoPanel` TSC-E2E-009b（头部与输入框重叠）、`updater` E-IN-001/002（期望 `0.2.0` 实得 `v0.2.0` —— 版本号前缀的显示变更）。**排除手法**：把 `.content` 的 `border-left` 临时加回去、只跑这 6 个 spec，**9 条照旧全红** ⇒ 与本改动无关（重新加回前后均红，随后已还原为无边框）。这些多与工作区在途改动（`TitleBar.vue` / `global.css` / `App.vue` / 设置页版本号格式）相关，留给对应改动收口。
+- **关闭** v3.78.5 的遗留项（主进程底色不再固定亮色）。**未改**：`BootWelcome.vue` 顶部注释仍写「样式与 App 底色 #f6f8fa 对齐」（该注释已过期，但文件是用户手改在途，未触碰）。
+
+## v3.78.5 (修复：深色主题下欢迎页仍是亮色 —— index.html 同步引导 data-theme + 欢迎页调色板走令牌)
+
+- **用户反馈**：「主题是黑色的时候欢迎页也要是暗色」。
+- **根因**：与 v3.78.4 同一个根——splash 抢在模块链之前上屏，而**全站唯一设置 `data-theme` 的 `useTheme.ts` 要等 `main.ts` 的模块链才执行**（grep 复核：全仓 `setAttribute('data-theme')` 仅此一处）。于是 splash 的整个展示窗口期 `data-theme` 为空 → 暗色主题下欢迎页跑亮色档，`useTheme.ts` 一执行立刻变暗（先亮一下再变暗）。`BootWelcome.vue` 上一轮已改为消费令牌（`--background` / `--foreground` / `--border` / `--muted-foreground`），只有 splash 还硬编码亮色。
+- **修复（两处）**：
+  1. `index.html` `<head>` 增加**同步**引导脚本（特意不写 `type="module"`：module 是 deferred，赶不到 splash 之前；且它排在 head 的 `<link rel="stylesheet">` 之前，不会被待加载样式表阻塞），读 `localStorage['forge:theme']` 落到 `<html data-theme>`；取值与默认值与 `useTheme.ts` 严格一致，无存储则**不设属性** = light（不跟随系统）。注意这是 `<head>` 内联脚本，非 CSP 受限场景（全仓无 CSP 配置）。
+  2. splash 配色改为镜像 `BootWelcome.vue` 消费的那四个令牌，写「**令牌 + 字面兜底**」：`--welcome-bg: var(--background, oklch(1 0 0))`，暗色档在 `:root[data-theme='dark']` 给对应字面兜底。兜底值与令牌值逐位相同 → **CSS 到位前后无任何色变**，且与 BootWelcome 由构造一致、不会漂移。
+- **顺带消除的亮色不一致**：`BootWelcome.vue` 走 `--background` 后浅色档是纯白，而 splash 仍是 `#f6f8fa` → 接管瞬间有一道色阶。现两处同为 `var(--background)`，浅色档 splash 由 `#f6f8fa` 变纯白（这是设计令牌的定义，非另行选色）。
+- **验证（红→绿，非推断）**：`e2e/bootSplash.spec.ts` 扩到 3 条。
+  - BOOT-SPLASH-002：模块链冻结时断言 `data-theme === 'dark'`（证明是同步脚本生效、不是模块链补的）且暗底亮字；**反证实测**：把同一份 index.html 的引导脚本剥掉后由 route 顶替（localStorage 仍为 dark）→ `data-theme=null`、底色 luma 0.9999（纯白），与用户报的现象一致。
+  - BOOT-SPLASH-003：冻结门闩把 `BootWelcome` 留在屏上，断言同为暗色（splash → BootWelcome 不闪亮）。
+  - BOOT-SPLASH-001：补亮色档断言（luma>0.85 + 深字）+ 原 v3.78.4 几何断言。
+  - **测试自身抓出的空转**（首轮红）：原先读容器元素的 `color` 断言前景色——容器没声明 `color`，读到的是继承值（恒 `rgb(0,0,0)`），亮色档因此假绿。改为读标题元素（`.splash-name` / `.boot-name`）。另：颜色一律经 canvas 归一化为 sRGB（`getComputedStyle` 对 `oklch()` 的序列化形式不稳定），且必须查 alpha 不透明（变量解析失败是透明，只看亮度会把「无色」误判成「暗色」）。
+  - 回归：bootSplash **3/3**、bootGate **3/3**、landingHero **3/3**、tooltip **2/2**、单测 **264/264**、vue-tsc 0 错；`vite build` 后 grep 复核 `dist/index.html` 保留引导脚本与两组令牌变量。
+- **遗留（未改，需确认）**：主进程 `createWindow` 的 `backgroundColor: '#f6f8fa'` 是固定的亮色——它在「窗口存在 → 文档提交」这不到 1s 的窗口里显示，暗色主题下仍是一瞬亮闪。要彻底消除得让主进程也拿到主题（`useTheme` 落盘到 `userData/forge-store.json`，按 `readLastProjectPathSync` / `readUpdateDebugEnabled` 的既有模式同步读取），涉及新 IPC 与存储字段，未纳入本次改动。
+
+## v3.78.4 (修复：欢迎页右侧滚动条 + 四周 8px 白边 —— splash 自带最小 reset)
+
+- **用户反馈**：「欢迎页右侧有滚动条」（截图：灰色 splash 外圈 8px 白边 + 右侧滚动条）。
+- **根因**：这是 v3.78.1「splash 内联进 `index.html`」的代价——**它上屏的那一刻全站样式还不存在**。用户跑的是 `npm run dev`（实测：51731 端口 vite 被 `electron.exe` 的 NetworkService 子进程连接，主进程走 `loadURL(FORGE_DEV_SERVER_URL)`），Dev 下 `global.css` 由 `main.ts` 的 import 在**模块执行期**注入，而 splash 的整个展示窗口期（冷编译数秒）跑的是浏览器默认样式：`body` 默认 `margin: 8px` → `height: 100vh` 的 splash 把文档撑高 16px → 垂直滚动条 + 四周白边。（Prod 链路无此窗口：`dist/index.html` 的 CSS 是 head 里的 render-blocking `<link>`。故此为 Dev 现象，但修复对两条链路都成立。）
+- **修复**：`index.html` 的 splash `<style>` 块前置最小 reset（`html, body { margin:0; padding:0; height:100%; overflow:hidden }` + `#app { height:100% }`），与 `global.css` 的 reset 同值——全局样式接管后零行为差异，splash 不再依赖它。
+- **验证（红→绿，非推断）**：新增 `e2e/bootSplash.spec.ts` BOOT-SPLASH-001，用 `page.route` 把 `/src/main.ts` 换成等价空模块（200 正常响应、不产生 console error）**冻结在「splash 已上屏、全站 CSS 未注入」状态**——即 Dev 冷编译窗口期的真实状态。修复前实测失败于 `body margin-top=8px`；修复后通过（body margin / 文档溢出 / splash 矩形在一次 evaluate 内原子取）。回归：bootGate **3/3**、landingHero **3/3**、forge-ui 单测 **264/264**、vue-tsc 0 错；`vite build` 后产物 `dist/index.html` grep 复核内联 reset 完整保留（未被构建流程吞掉）。
+
 ## v3.78.3 (样式：用户气泡整组改 command chip —— 纯黑底 + 白字技能名 + 白底深字「技能」胶囊)
 
 - **用户反馈**（两轮）：

@@ -17,11 +17,13 @@ import {
   IPC_DIALOG_OPEN_DIRECTORY,
   IPC_DIALOG_OPEN_FILE,
   IPC_SHELL_OPEN_PATH,
+  IPC_THEME_SET,
   IPC_ATTACHMENT_SCAN,
   IPC_CLIPBOARD_SAVE_IMAGE,
   IPC_CLIPBOARD_SAVE_TEXT,
   IPC_FILE_READ_IMAGE,
   IPC_FILE_LIST_PROJECT,
+  IPC_BOOT_SPLASH_READY,
   IPC_BOOT_STATE,
   type ForgeMethod,
   type ForgeEvent,
@@ -88,6 +90,17 @@ const fileControl = {
 const shellControl = {
   async openPath(path: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_PATH, path) as Promise<boolean>;
+  },
+};
+
+/**
+ * window.forge.theme 主题回写（v3.78.6）：把当前主题告知主进程。
+ * 单向 fire-and-forget——主进程落盘供下次冷启动建窗取用（建窗时刻读不到 localStorage），
+ * 并就地刷新窗口底色。无返回值：回写失败只影响下次启动的底色，渲染进程无需感知。
+ */
+const themeControl = {
+  set(mode: 'light' | 'dark'): void {
+    ipcRenderer.send(IPC_THEME_SET, mode);
   },
 };
 
@@ -159,6 +172,11 @@ const forgeBridge = {
   bootState(): Promise<BootState> {
     return ipcRenderer.invoke(IPC_BOOT_STATE) as Promise<BootState>;
   },
+  /** splash 上屏回执（v3.78.7）：由 index.html 内联脚本在双 rAF 后调用，供主进程决定何时
+   *  把窗口显示出来。单向无返回；即便丢失也不影响功能（主进程有超时兜底）。 */
+  splashReady(): void {
+    ipcRenderer.send(IPC_BOOT_SPLASH_READY);
+  },
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
     return subscribeEvent(event, listener);
   },
@@ -166,6 +184,7 @@ const forgeBridge = {
   window: windowControl,
   dialog: dialogControl,
   shell: shellControl,
+  theme: themeControl,
   file: fileControl,
 };
 

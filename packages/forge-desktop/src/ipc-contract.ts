@@ -95,6 +95,18 @@ export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
  */
 export const IPC_BOOT_STATE = 'forge:boot-state';
 
+/**
+ * splash 上屏回执通道（v3.78.7，渲染进程 → 主进程，单向）。
+ *
+ * 主进程用 `show:false` 建窗，需要知道「splash 真的画到窗口表面了」才显示窗口——这样用户
+ * 看到的第一帧就是 splash，而不会是「页面尚未绘制的空文档白帧」。为什么不用 Electron 自带的
+ * `ready-to-show`：v3.78.7 实测它在 1206ms 触发，而页面的 first-contentful-paint 到 6872ms
+ * 才出现——原因是主进程紧接着的同步重活（pi SDK 求值 + jiti 预热）会把浏览器进程的合成一起
+ * 卡住，于是「已渲染」与「已提交到窗口表面」差了 5.6s。渲染进程自己数满两帧再回执，是唯一
+ * 能代表「提交完成」的信号。
+ */
+export const IPC_BOOT_SPLASH_READY = 'forge:boot-splash-ready';
+
 /** 启动状态（forge:boot-state 响应与 boot.ready 事件 payload 同构） */
 export interface BootState {
   /** forge-core（含 pi SDK）是否组装完成 */
@@ -111,6 +123,18 @@ export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 
 /** preload ↔ main shell 通道：系统文件管理器打开路径 */
 export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
+
+/**
+ * preload ↔ main 主题通道（v3.78.6）：渲染进程把当前主题同步给主进程。
+ *
+ * 为什么需要：`BrowserWindow.backgroundColor` 只在建窗时刻可给，而那一刻主进程读不到
+ * 渲染进程的 localStorage（唯一事实来源在 forge-ui 的 useTheme.ts）。故渲染进程每次
+ * 解析/切换主题都回写一次，主进程落盘（userData/forge-theme.json）供下次冷启动建窗取用，
+ * 并就地刷新当前窗口底色。单向、无返回值——回写失败只影响下次启动的底色。
+ *
+ * 详见 packages/forge-desktop/src/theme.ts 顶部说明。
+ */
+export const IPC_THEME_SET = 'forge:theme:set';
 
 /** preload ↔ main 附件通道（统一给路径：嗅探 + 截图落盘 + 缩略图读取） */
 export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';

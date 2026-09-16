@@ -12,6 +12,11 @@ body,
   width: 100%;
 }
 
+html,
+body {
+  overflow: hidden;
+}
+
 body {
   background:
     radial-gradient(circle at top, color-mix(in oklab, var(--brand) 5%, transparent) 0, transparent 30%),

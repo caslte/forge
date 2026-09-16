@@ -299,6 +299,8 @@ export interface ForgeBridge {
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
   /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
   bootState(): Promise<BootState>;
+  /** splash 上屏回执（v3.78.7）：主进程据此决定何时显示窗口；纯浏览器环境为空实现 */
+  splashReady(): void;
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
   askUserQuestion: ForgeAskUserQuestion;
@@ -315,6 +317,15 @@ export interface ForgeBridge {
   shell: {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
     openPath(path: string): Promise<boolean>;
+  };
+  theme: {
+    /**
+     * 主题回写主进程（v3.78.6）。主进程把它落到 userData/forge-theme.json，供下次冷启动
+     * 建窗时当 BrowserWindow.backgroundColor（建窗时刻读不到 localStorage），并就地刷新
+     * 当前窗口底色。单向 fire-and-forget，无返回值、无失败反馈——回写失败只影响下次
+     * 启动的第一帧底色。取值同 types.ts 的 ThemeMode。
+     */
+    set(mode: 'light' | 'dark'): void;
   };
   file: {
     /** 拖拽/粘贴 File 对象 → 磁盘绝对路径；无盘文件（剪贴板截图）返回空串 */

@@ -56,12 +56,13 @@ onUnmounted(() => {
 <style scoped>
 .boot-welcome {
   height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 14px;
-  background: #f6f8fa;
+  background: var(--background);
   user-select: none;
 }
 .boot-logo {
@@ -70,20 +71,20 @@ onUnmounted(() => {
 .boot-name {
   font-size: 22px;
   font-weight: 700;
-  color: #1f2328;
+  color: var(--foreground);
   letter-spacing: 0.5px;
 }
 .boot-spinner {
   width: 22px;
   height: 22px;
-  border: 3px solid #dbe3ea;
+  border: 3px solid var(--border);
   border-top-color: #2563eb;
   border-radius: 50%;
   animation: boot-spin 0.9s linear infinite;
 }
 .boot-phase {
   font-size: 13px;
-  color: #57606a;
+  color: var(--muted-foreground);
   min-height: 1.4em; /* 文案轮换时高度稳定，不跳动 */
 }
 @keyframes boot-spin {

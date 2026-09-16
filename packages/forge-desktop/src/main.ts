@@ -29,8 +29,10 @@ import { defaultPiAgentDir } from './pi/piRuntime.ts';
 import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 import { defaultUpdaterStatePath } from './pi/updaterState.ts';
 import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles } from './attachments.ts';
+import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode } from './theme.ts';
+import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_BOOT_STATE, type BootState } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_THEME_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -95,61 +97,237 @@ function readLastProjectPathSync(storePath: string): string | null {
 }
 
 /**
- * 等 splash 文档提交 + 上屏的最长等待（毫秒）。超时照常继续，绝不让启动卡死。
- * dev 冷启动实测 loadURL → 文档提交 <1s，2.5s 足够宽裕。
+ * 等 splash 真正上屏的最长等待（毫秒）。超时照常继续并显示窗口，绝不让启动卡死。
+ * 正常路径由 ready-to-show（Chromium 首次非空绘制）驱动，实测数百毫秒即到；这个上限
+ * 只兜「页面始终画不出东西」的极端情况。
  */
 const SPLASH_PAINT_MAX_WAIT_MS = 2500;
 
-/** 导航提交后留给 splash 解析 + 布局 + 上屏的宽限期（毫秒）。splash 是内联样式的
- *  几十行 HTML，实测提交后约百毫秒即出现在画面上，200ms 足够且不拖慢启动。 */
-const SPLASH_PAINT_GRACE_MS = 200;
+/**
+ * 等一次「合成帧呈出」（presentation）事件的最长等待（毫秒）。超时一律照常继续——
+ * 这是纯优化信号，绝不拿它当启动前置条件（宁可少等，不可卡住）。
+ */
+const FRAME_PRESENT_MAX_WAIT_MS = 700;
+
+/** 显示前已拿到合成帧时，显示后只需等很短的一拍（多数路径下一帧就到）。
+ *  取 400ms：足够覆盖「show() 触发一次新合成」的往返，又不至于在最坏路径上白等。 */
+const FRAME_PRESENT_AFTER_SHOW_MAX_MS = 400;
+
+/** 显示之后再留的一拍（毫秒，不阻塞）。presentation 事件代表帧已呈出到窗口表面，
+ *  但「出现在屏幕上」还要系统合成器走完 swap；紧接着的同步重活会把它压住，故留余量。 */
+const SPLASH_PAINT_SETTLE_MS = 300;
 
 /**
- * 等渲染进程把静态 splash 真正画上屏，再让主进程去做同步重活（v3.78.2）。
+ * 等渲染进程把静态 splash 真正画上屏，再显示窗口、让主进程去做同步重活（v3.78.2）。
  *
  * 背景：Electron 的 Node 事件循环与 Chromium UI 线程**是同一个线程**。loadURL 之后
- * 紧跟着的 core 组装（pi SDK 同步求值 ~1.2s）+ 预热（jiti 同步编译 ~2.4s）会把
- * 渲染进程的创建与导航提交一起卡住——实测窗口从 0.6s 就存在、splash 却到 4.7s 才
- * 提交，中间 4s 窗口里只有 BrowserWindow 底色（用户看到的「白屏」）。根因是：
- * v3.78.1 内联在 index.html 的 splash 在「文档提交」前根本不存在，光写 HTML
- * 盖不住这段——必须先给主线程留出把渲染进程拉起来、把 HTML 提交并合成一帧的窗口。
+ * 紧跟着的 core 组装（pi SDK 同步求值 ~1.2s）+ 预热（jiti 同步编译 ~2.4s）会把渲染进程
+ * 的绘制一起卡住。v3.78.7 实测：HTML 提交（did-navigate）仅 ~77ms，但主进程一占住事件
+ * 循环，渲染进程的 first-contentful-paint 就被推到 **5024ms**——此刻窗口若已可见，用户
+ * 看到的就是近 5 秒空白（即用户报的「启动闪一秒白」）。所以顺序必须是
+ * 「**splash 上屏 → 显示窗口 → 才做重活**」。
  *
- * 信号只用**浏览器进程侧**的导航提交事件（did-navigate）：渲染进程此刻正忙于执行
+ * 信号只用**浏览器进程侧**的 ready-to-show（= 首次非空绘制）：渲染进程此刻正忙于执行
  * Vite dev 的整条模块链，任何渲染进程侧信号都不可用——实测 dom-ready 被
  * DOMContentLoaded 拖到 10.5s，executeJavaScript 的一次 evaluate 被拖到 5.9s。
- * 提交后再留 SPLASH_PAINT_GRACE_MS 的绘制窗口（splash 体积极小、样式内联，
- * 提交后约百毫秒即上屏）。超时照常继续，绝不让启动卡死。
+ * 刻意**不**用 did-navigate 兜底：提交 ≠ 绘制（两者实测差约 5 秒，见上）。
+ *
+ * v3.78.7 起本函数还承担第二件事：**显示窗口**（createWindow 用 show:false 建窗）。
+ * 窗口从建立到 splash 上屏之间必须不可见，否则 Chromium 会用「尚未解析出 HTML 的
+ * 空文档」绘制，而空文档的默认底色是纯白——与建窗底色是否取对无关。超时照常 show，
+ * 绝不让窗口永不出现。
+ *
+ * v3.78.8 起再加一层**实测校验**：显示前后各取一次合成帧，用像素统计判断这一帧上有无内容
+ * （见 bootFrame.ts）。这层校验同时纠正了 v3.78.7 把宽限放在 show() 之前的顺序错误——详见
+ * 函数尾部的说明。
  */
 async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
-  const wc = win.webContents;
   const yieldFor = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-  const committed = new Promise<boolean>((resolve) => {
+  const painted = new Promise<boolean>((resolve) => {
     let settled = false;
     const done = (ok: boolean): void => {
       if (settled) return;
       settled = true;
       resolve(ok);
     };
-    wc.once('did-navigate', () => done(true));
-    // 防御：监听前已完成提交（loadURL 是异步的，理论上不会）
-    if (!wc.isLoading() && wc.getURL() !== '') done(true);
+    // 首选信号：渲染进程的双 rAF 回执（index.html 内联脚本 → IPC_BOOT_SPLASH_READY）。
+    // 它代表「渲染进程已绘制两帧」，是**渲染进程侧**最强的信号（比 ready-to-show 准）。
+    // 注意它的上限：rAF 只能说「画了」，说不了「呈到窗口表面了」——后者由函数尾部的
+    // 合成帧订阅（presentation 事件）负责，两者互补。
+    //
+    // 为什么不用 Electron 自带的 ready-to-show / did-navigate：v3.78.7 实测 ready-to-show
+    // 在 1206ms 就触发，而页面的 first-contentful-paint 到 6872ms 才出现——主进程紧接着的
+    // 同步重活（pi SDK 求值 + jiti 预热）与 Chromium 的合成是同一个线程，把「已渲染」到
+    // 「已提交」拖出了 5.6s。拿那两个信号当「已上屏」，都会放出一个内容空白的可见窗口。
+    void splashReady.then(() => done(true));
+    // 退路：万一渲染进程的脚本没执行（被拦截等），仍以 Chromium 的首个可见绘制兜底
+    win.once('ready-to-show', () => done(true));
   });
-  const ok = await Promise.race([committed, yieldFor(timeoutMs).then(() => false)]);
+  const ok = await Promise.race([painted, yieldFor(timeoutMs).then(() => false)]);
   if (!ok) {
-    console.log(`[boot] splash 导航未在 ${timeoutMs}ms 内提交，放弃等待（照常继续启动）`);
-    return;
+    console.log(`[boot] splash 未在 ${timeoutMs}ms 内就绪，放弃等待（照常显示窗口）`);
   }
-  await yieldFor(SPLASH_PAINT_GRACE_MS);
+  // v3.78.7 关键一步：ready-to-show 只表示「页面已渲染出内容」，而「渲染」到「帧真正提交到
+  // 窗口表面」还需要浏览器进程参与一次合成——若紧接着就做同步重活，这步会被一起卡住。
+  // 实测证据：窗口在 1206ms 显示，但页面的 first-contentful-paint 直到 5716ms 才出现，
+  // 中间窗口内容是空白的。
+  //
+  // v3.78.8：把「窗口上到底有没有内容」从推断改成实测，并纠正 v3.78.7 的顺序错误。
+  // v3.78.7 是在 show() **之前**空等 300ms —— 那段宽限给了尚未显示的窗口，而真正需要落地的
+  // 那次合成发生在 show() **之后**：show() 只让窗口可见，「屏幕上出现 splash」由其后的下一次
+  // 合成决定。若 show() 之后立刻做同步重活，这次合成就地卡住，窗口停在一块空底色上
+  // （用户报「一开始没有字，只有白板」）。现改为：
+  //   隐藏期确认已有合成帧 → show → 等显示后的合成帧 → 再留一拍 → 才做重活。
+  // 只认「有内容」的帧：纯底色帧（白板）不算数，继续等下一帧（超时才带着最后一帧放行）
+  const preFrame = await waitForPresentedFrame(win, FRAME_PRESENT_MAX_WAIT_MS, hasContent);
+  logPresentedFrame('显示前', preFrame);
+  win.show();
+  const postFrame = await waitForPresentedFrame(
+    win,
+    preFrame === null ? FRAME_PRESENT_MAX_WAIT_MS : FRAME_PRESENT_AFTER_SHOW_MAX_MS,
+    hasContent,
+  );
+  logPresentedFrame('显示后', postFrame);
+  await yieldFor(SPLASH_PAINT_SETTLE_MS);
+  const shownAt = Date.now();
   console.log(
-    `[boot] splash 已提交并留出绘制窗口（${Date.now() - startedAt}ms），主进程开始同步重活`,
+    `[boot] 窗口已显示（splash 就绪 ${shownAt - startedAt}ms, at ${shownAt}），主进程开始同步重活`,
   );
 }
+
+/**
+ * 等一帧「合成帧呈出」（presentation）事件（v3.78.8）。
+ *
+ * 信号强度阶梯（v3.78.2 → v3.78.7 → v3.78.8 一路试出来的）：
+ *   did-navigate  <  ready-to-show  <  渲染进程 rAF 回执  <  **presentation 事件**
+ * 前三个是「已提交 / 已渲染 / 渲染进程画了」，只有 presentation 是浏览器进程侧
+ * 「这一帧已经从合成器呈出到窗口表面」——也就是唯一能回答「窗口上是 splash 还是白板」的信号。
+ *
+ * accept 谓词决定「哪一帧算数」：默认任何一帧都算；启动路径传入「必须有内容」的谓词
+ * （纯底色帧即白板，不算数，继续等下一帧）。
+ *
+ * 超时返回**最后见到的那一帧**（没有则 null），绝不抛错：调用方一律照常继续
+ * （宁可少等，不可让窗口不出现）。订阅在拿到合格帧或超时后立即退订——它每帧都拷一张
+ * 位图，常开会白白吃掉合成带宽。
+ */
+function waitForPresentedFrame(
+  win: BrowserWindow,
+  timeoutMs: number,
+  accept: (stats: FrameStats | null) => boolean = () => true,
+): Promise<{ ms: number; stats: FrameStats | null } | null> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let settled = false;
+    let last: { ms: number; stats: FrameStats | null } | null = null;
+    const finish = (value: { ms: number; stats: FrameStats | null } | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        win.webContents.endFrameSubscription();
+      } catch {
+        /* 订阅未建立或已退订，无需处理 */
+      }
+      resolve(value);
+    };
+    // 超时把「最后见到的那一帧」交出去：日志里能看出等不到合格帧时窗口上到底是什么
+    const timer = setTimeout(() => finish(last), timeoutMs);
+    const onFrame = (image: Electron.NativeImage): void => {
+      let stats: FrameStats | null = null;
+      try {
+        const size = image.getSize();
+        // toBitmap()（getBitmap 是它的废弃别名，类型为 void）：原始像素，Windows 上为 BGRA
+        stats = statsFromBitmap(image.toBitmap(), size.width, size.height);
+      } catch {
+        /* 位图读不出时只报时序，不影响启动 */
+      }
+      last = { ms: Date.now() - startedAt, stats };
+      if (stats !== null) dumpBootFrame(image, stats);
+      if (accept(stats)) finish(last);
+    };
+    try {
+      win.webContents.beginFrameSubscription(false, onFrame);
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/** 「这一帧上有内容」的谓词：位图读不出时不敢下结论，一律放行（宁可少等）。 */
+function hasContent(stats: FrameStats | null): boolean {
+  return stats === null || stats.contentRatio >= FRAME_CONTENT_RATIO_MIN;
+}
+
+/** 帧转储文件序号（一次进程内自增，避免同毫秒覆盖） */
+let bootFrameSeq = 0;
+
+/** 单次启动最多转储的帧数：正常路径 1~2 张，上限只防「一直等不到合格帧」时刷爆磁盘 */
+const FRAME_DUMP_MAX = 6;
+
+/**
+ * 帧转储（维护者诊断，opt-in）：`FORGE_BOOT_FRAME_DUMP=<目录>` 时把启动首帧写成 PNG。
+ *
+ * 存在理由：白屏这类问题「我这边不白」无法自证，而像素统计只能给出「有没有内容」，
+ * 给不出「内容对不对」。转储把现场留成图片，是唯一能事后核对画面本身的证据。
+ * 默认不生效（普通用户与环境变量无关），故不构成启动期开销。
+ */
+function dumpBootFrame(image: Electron.NativeImage, stats: FrameStats): void {
+  const dir = process.env.FORGE_BOOT_FRAME_DUMP;
+  if (dir === undefined || dir === '' || bootFrameSeq >= FRAME_DUMP_MAX) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    bootFrameSeq += 1;
+    const name = `${bootFrameSeq}-${Date.now()}.png`;
+    const png = image.toPNG();
+    fs.writeFileSync(path.join(dir, name), png);
+    console.log(
+      `[boot] 首帧转储 ${name}（${png.length}B 内容占比=${(stats.contentRatio * 100).toFixed(2)}%）`,
+    );
+  } catch (err) {
+    console.log(`[boot] 首帧转储失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * 一行可 grep 的首帧诊断：窗口上那一刻那一帧，到底是 splash 还是白板。
+ * contentRatio 为 0 即「纯底色帧」——正是用户报的「没有字，只有白板」。
+ */
+function logPresentedFrame(
+  stage: string,
+  frame: { ms: number; stats: FrameStats | null } | null,
+): void {
+  if (frame === null) {
+    console.log(`[boot] ${stage}合成帧：等待窗口内未呈出（不影响启动）`);
+    return;
+  }
+  const s = frame.stats;
+  if (s === null) {
+    console.log(`[boot] ${stage}合成帧 at ${frame.ms}ms（位图不可读，仅时序）`);
+    return;
+  }
+  const empty = s.contentRatio < FRAME_CONTENT_RATIO_MIN ? ' ⚠ 纯底色帧（白板）' : '';
+  console.log(
+    `[boot] ${stage}合成帧 at ${frame.ms}ms ${s.width}x${s.height} ` +
+      `内容占比=${(s.contentRatio * 100).toFixed(2)}% 标志块=${(s.brandRatio * 100).toFixed(2)}% ` +
+      `底色=${s.background}${empty}`,
+  );
+}
+
+/**
+ * splash 上屏回执的兑现器（v3.78.7）。渲染进程经 IPC_BOOT_SPLASH_READY 触发；模块级单次
+ * promise（一次进程只建一个主窗口）。监听在 registerShellIpc 里注册——它发生在 loadURL
+ * 之后、页面脚本执行之前，所以回执不会早于监听而丢失。
+ */
+let notifySplashReady: (() => void) | null = null;
+const splashReady = new Promise<void>((resolve) => {
+  notifySplashReady = resolve;
+});
 
 let mainWindow: BrowserWindow | null = null;
 
 /** 创建主窗口（无边框，自定义标题栏）；dev 模式自动挂 DevTools + F12/Ctrl+Shift+I 快捷键 */
-function createWindow(isDev: boolean): BrowserWindow {
+function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -158,16 +336,34 @@ function createWindow(isDev: boolean): BrowserWindow {
     frame: false,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 12, y: 12 },
-    // 与欢迎页底色一致：v3.76 窗口先行后，loadURL 渲染完成前显示底色而非白屏
-    backgroundColor: '#f6f8fa',
+    // show:false（v3.78.7）：窗口建立后**先不显示**，等 splash 真正上屏再 show（见
+    // waitForSplashPainted）。backgroundColor 只能盖住「窗口创建 → 渲染进程首次合成」
+    // 这一小段；之后 Chromium 会改用「尚未解析出 HTML 的空文档」绘制，而空文档的默认
+    // 底色是**纯白**——暗色主题下这就是用户看到的「启动闪一秒白」，且它与主题取值是否
+    // 正确无关（镜像缺失、dev 与 prod 的 userData/localStorage 不同源时同样会白）。
+    // 隐藏窗口到 splash 上屏，是唯一不依赖「底色恰好取对」的消除方式。
+    // 隐藏期间渲染不受影响：Electron 的 paintWhenInitiallyHidden 默认为 true。
+    show: false,
+    // 建窗底色（v3.78.6）：窗口建立到首次合成之间唯一的画面，必须与 splash 底色
+    // （= 设计令牌 --background，分主题）逐位一致，否则交接口有色阶跳变。主题从
+    // userData/forge-theme.json 同步读回（渲染进程每次解析/切换都回写，见 theme.ts 顶部），
+    // 读不到时回 light。
+    backgroundColor: backgroundFor(theme),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // 隐藏窗口（show:false 到 splash 上屏之间）默认会被 Chromium 节流定时器与 rAF，
+      // 而 splash 的上屏回执正是在 rAF 里发出的（见 index.html 内联脚本）——节流会让
+      // 回执迟迟不来，窗口就只能等超时兜底才显示。
+      backgroundThrottling: false,
     },
   });
   mainWindow = win;
+  // 底色与主题是否一致曾被重复投诉（暗色主题下先闪一帧亮底），故留一行可 grep 的启动诊断；
+  // getBackgroundColor 回读的是 Electron 实际接受的值，避免「传了但没生效」无人察觉。
+  console.log(`[boot] 建窗底色 theme=${theme} bg=${win.getBackgroundColor()}`);
   win.on('closed', () => {
     mainWindow = null;
   });
@@ -203,6 +399,9 @@ function registerShellIpc(bootState: BootState): void {
   // 启动状态查询（欢迎页门闩「拉」通道）：handler 引用 bootState 对象本身，
   // core 组装完成后原地改写字段即可，无需重注册 handler
   ipcMain.handle(IPC_BOOT_STATE, () => bootState);
+  // splash 上屏回执（v3.78.7）：渲染进程报「已绘制并提交两帧」，主进程据此显示窗口。
+  // 监听在这里注册（loadURL 之后、页面脚本执行之前），回执不会早于监听而丢失。
+  ipcMain.on(IPC_BOOT_SPLASH_READY, () => notifySplashReady?.());
   // 窗口控制
   ipcMain.on(IPC_WINDOW_MINIMIZE, () => mainWindow?.minimize());
   ipcMain.on(IPC_WINDOW_MAXIMIZE, () => {
@@ -249,6 +448,16 @@ function registerShellIpc(bootState: BootState): void {
   ipcMain.handle(IPC_SHELL_OPEN_PATH, (_e, p: unknown) => {
     if (typeof p !== 'string' || p === '') return false;
     return shell.openPath(p).then((err) => err === '');
+  });
+  // 主题回写（v3.78.6）：渲染进程解析/切换主题时告知主进程——落盘供下次冷启动建窗
+  // 取用（消除暗色主题下先闪一帧亮底色的现象），并就地刷新当前窗口底色，使
+  // 「窗口底色 == 当前主题」在运行期也恒成立（改完不重启也不会有残留旧底色）。
+  ipcMain.on(IPC_THEME_SET, (_e, mode: unknown) => {
+    if (!isThemeMode(mode)) return; // IPC 载荷来自渲染进程，非 'light'/'dark' 一律忽略
+    if (!writeTheme(app.getPath('userData'), mode)) {
+      console.log(`[theme] 主题镜像落盘失败（${mode}），下次冷启动底色回默认`);
+    }
+    mainWindow?.setBackgroundColor(backgroundFor(mode));
   });
   // 附件密钥嗅探：文本文件命中凭据特征 → flagged（发送前 UI 弹确认，出域防线）
   ipcMain.handle(IPC_ATTACHMENT_SCAN, (_e, paths: unknown) => {
@@ -360,6 +569,9 @@ function readUpdateDebugEnabled(userDataPath: string): boolean {
 
 app.whenReady().then(async () => {
   const storePath = path.join(app.getPath('userData'), 'forge-store.json');
+  // 建窗底色主题（v3.78.6）：必须在 createWindow 之前同步读回——窗口底色只能在建窗时刻给，
+  // 而那一刻渲染进程尚未执行（拿不到 localStorage）。缺省 light（同 useTheme.ts）。
+  const themeMode = readThemeSync(app.getPath('userData'));
   // QA-G1/G4：updater-state.json（手动更新 components 快照 + lastUpdateCheckAt 持久化路径）
   const updaterStatePath = defaultUpdaterStatePath(app.getPath('userData'));
   // P3-D：Windows 下优先用 safeStorage（DPAPI）持久化密钥；不可用时回退环境变量适配器
@@ -397,7 +609,7 @@ app.whenReady().then(async () => {
   //    mount 时会主动拉一次 bootState 兜底，不依赖单一方向。
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
   const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null };
-  const win = createWindow(!!process.env.FORGE_DEV_SERVER_URL);
+  const win = createWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
   const devUrl = process.env.FORGE_DEV_SERVER_URL;
   if (devUrl) {
     const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;
