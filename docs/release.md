@@ -101,8 +101,9 @@ git push origin v0.1.7-rc.1
 **全绿** → Releases 页面检查产物即可。
 
 **win-arm64 / linux-arm64 报「runner 不可用」**
-这两个 arm runner 对私有仓库免费版可能不放行，属预期内。处理：删掉
-`release.yml` 矩阵里对应两项（`win-arm64` / `linux-arm64`），提交推送，其余 4 个平台照常。
+私有仓库免费版不一定放行 arm runner，属预期内（2026-09-16 起工作流已改为
+win/mac 单 job 双架构，现在矩阵里只剩 linux-arm64 一项可能遇到）。处理：删掉
+`release.yml` 矩阵里 `linux-arm64` 那一项，提交推送，其余平台照常。
 
 **linux-arm64 报 fpm/ruby「Exec format error」**
 electron-builder 内置的 fpm 只有 x86 版，arm64 机器无法执行。workflow 已内置解法：
@@ -116,6 +117,16 @@ Workflow permissions 没设置成 Read and write，回第一节第 1 步。
 **构建中途失败（npm ci 或 electron-builder 阶段）**
 点进失败的 job，复制日志最后一段报错来排查。已知风险点：
 npm workspaces 依赖扫描（本机历史上遇到过）、平台原生依赖缺失。
+
+**用户应用内自动更新装到了错误架构（严重，2026-09-16 事故）**
+症状：x64 机器被推送 arm64 安装包，NSIS 半安装后应用损坏（安装目录只剩
+卸载器，桌面快捷方式失效）。根因：同一平台的双架构若拆成两个 job 并行构建，
+各自上传的 `latest.yml` 同名互相覆盖，updater 拉到的 feed 只含最后完成那个
+架构。**已于 2026-09-16 修复：win / mac 均为单 job 双架构构建，latest.yml
+天然含全部架构条目**。注意两条铁律：
+1. 不要再把同平台双架构拆回多个 job；
+2. linux 仍是两个 job（x64 无法交叉构建 arm64 AppImage），其 latest-linux.yml
+   只保证「最后完成的架构」正确 —— linux 对外发布前需加 finalize 合并 job。
 
 **作废一次发布**
 到 Releases 页面删除该 Release 和标签即可，不影响其他版本。
