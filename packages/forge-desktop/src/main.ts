@@ -391,6 +391,31 @@ function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
 }
 
 /**
+ * 建窗并载入 UI（dev 走 Vite dev server，prod 走打包产物）。
+ * 首次启动（app.whenReady）与 macOS「点 Dock 图标重开窗口」（app.activate）共用同一条
+ * 路径，保证两者的 UI 来源与 dev origin 校验完全一致。
+ *
+ * 刻意不含两件事：registerShellIpc（ipcMain.handle 对同一 channel 二次注册会抛错，全进程
+ * 只注册一次）与 waitForSplashPainted（首次启动需等 splash 上屏，由调用方决定是否等待）。
+ */
+function createAndLoadWindow(isDev: boolean, themeMode: ThemeMode): BrowserWindow {
+  const win = createWindow(isDev, themeMode);
+  const devUrl = process.env.FORGE_DEV_SERVER_URL;
+  if (devUrl) {
+    const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;
+    const loadedUrl = new URL(devUrl);
+    if (!expectedOrigin || loadedUrl.origin !== expectedOrigin) {
+      throw new Error(`FORGE_DEV_SERVER_URL origin mismatch: ${loadedUrl.origin}`);
+    }
+    win.loadURL(devUrl);
+  } else {
+    // prod：UI 在 @forge/ui/dist，从本包 dist 回退两级再进 forge-ui/dist
+    win.loadFile(path.join(__dirname, '../../forge-ui/dist/index.html'));
+  }
+  return win;
+}
+
+/**
  * 注册与 forge-core 无关的 IPC：启动状态查询 + 窗口控制 / 对话框 / 附件 / 文件。
  * v3.76 欢迎页启动链：窗口创建后立即注册（core 组装是异步的，这批 handler 不等它），
  * 保证欢迎页期间窗口最小化/关闭/文件选择等都可用。
@@ -609,19 +634,7 @@ app.whenReady().then(async () => {
   //    mount 时会主动拉一次 bootState 兜底，不依赖单一方向。
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
   const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null };
-  const win = createWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
-  const devUrl = process.env.FORGE_DEV_SERVER_URL;
-  if (devUrl) {
-    const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;
-    const loadedUrl = new URL(devUrl);
-    if (!expectedOrigin || loadedUrl.origin !== expectedOrigin) {
-      throw new Error(`FORGE_DEV_SERVER_URL origin mismatch: ${loadedUrl.origin}`);
-    }
-    win.loadURL(devUrl);
-  } else {
-    // prod：UI 在 @forge/ui/dist，从本包 dist 回退两级再进 forge-ui/dist
-    win.loadFile(path.join(__dirname, '../../forge-ui/dist/index.html'));
-  }
+  const win = createAndLoadWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
   registerShellIpc(bootState);
 
   // ===== v3.78.2：先让静态 splash 上屏，再放开主进程做同步重活 =====
@@ -739,4 +752,31 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+/**
+ * macOS：关掉最后一个窗口后进程按平台惯例继续驻留（见上方 window-all-closed），此时点
+ * Dock 图标须重建窗口。缺此监听时应用会停在「进程活着但没有窗口」的僵尸态——点 Dock 图标
+ * 没有任何反应，用户只能 Cmd+Q 退出再重开。
+ *
+ * 重建复用首次启动同一条路径（createAndLoadWindow）与同一套上屏时序
+ * （waitForSplashPainted 内部负责 show()，故此处不再手动 show）：
+ * - splashReady 是一次性 promise，届时已 resolved，该函数会跳过等待、直接走合成帧校验；
+ * - registerShellIpc 不重复调用（ipcMain.handle 二次注册同一 channel 会抛错）；
+ * - bootState 仍是原对象且 ready 通常已为 true，渲染进程加载后直接进主界面。
+ * 仅 darwin 需要：其余平台的 window-all-closed 已经退出进程。
+ */
+app.on('activate', () => {
+  if (process.platform !== 'darwin') return;
+  if (mainWindow !== null) {
+    // 窗口已存在（含被最小化的情况）：恢复可见并聚焦，不重建
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  const win = createAndLoadWindow(
+    !!process.env.FORGE_DEV_SERVER_URL,
+    readThemeSync(app.getPath('userData')),
+  );
+  void waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS);
 });
