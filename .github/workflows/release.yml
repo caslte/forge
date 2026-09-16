@@ -81,6 +81,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libopenjp2-tools
 
+      # arm64 Linux 的 deb 打包必须用系统 fpm：electron-builder 内置 fpm 是硬编码的 x86 版 Ruby
+      # （fpm-*-linux-x86，无 arm64 版），在 arm64 runner 上 Exec format error（electron-builder#6115）。
+      # 解法是社区/官方 issue 区公认的唯一出路：装系统 ruby + fpm，构建时 USE_SYSTEM_FPM=true。
+      - name: 安装系统 fpm（仅 arm64 Linux）
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          sudo apt-get install -y --no-install-recommends ruby ruby-dev build-essential
+          sudo gem install fpm --no-document
+
       - name: 安装依赖
         run: npm ci
 
@@ -91,6 +100,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 无 Apple Developer 证书 → 跳过签名身份自动发现，避免 mac 构建报错中断
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # 仅 arm64 Linux 用系统 fpm 打 deb（内置 fpm 只有 x86 版）；x64 上内置 fpm 正常工作，保持不动
+          USE_SYSTEM_FPM: ${{ runner.os == 'Linux' && runner.arch == 'ARM64' && 'true' || 'false' }}
 
       # 仅在失败时留档，供排查用。
       # 不要改成 if: always()：成功构建的产物已经进 Release，再存一份到 Actions 制品会

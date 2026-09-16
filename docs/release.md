@@ -104,6 +104,12 @@ git push origin v0.1.7-rc.1
 这两个 arm runner 对私有仓库免费版可能不放行，属预期内。处理：删掉
 `release.yml` 矩阵里对应两项（`win-arm64` / `linux-arm64`），提交推送，其余 4 个平台照常。
 
+**linux-arm64 报 fpm/ruby「Exec format error」**
+electron-builder 内置的 fpm 只有 x86 版，arm64 机器无法执行。workflow 已内置解法：
+arm64 Linux runner 会自动安装系统 ruby + fpm 并设 `USE_SYSTEM_FPM=true`。
+若要手动在 arm64 机器上打 deb，先执行
+`sudo apt install ruby ruby-dev build-essential && sudo gem install fpm`。
+
 **所有 job 上传 Release 时 403**
 Workflow permissions 没设置成 Read and write，回第一节第 1 步。
 
