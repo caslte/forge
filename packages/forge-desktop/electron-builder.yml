@@ -78,6 +78,12 @@ publish:
   provider: github
   owner: caslte
   repo: forge
+  # 直接以正式 Release 上传（默认 draft 曾出事故：mac/linux job 先完成建好草稿，
+  # 用户在全部 job 完成前手动点了 Publish → Release 变为正式状态 → 最后完成的
+  # win job 以 draft 类型上传时类型不兼容，全部资产静默跳过，job 却照样绿）。
+  # releaseType: release 使各 job 类型一致，手动 Publish 的时机不再影响结果。
+  # 副作用：产物直接公开、不再有草稿检查环节 —— 私有仓库阶段无实际风险。
+  releaseType: release
   # 当前默认私有仓库：此开关让 electron-updater 运行时读取 GH_TOKEN 走
   # PrivateGitHubProvider（GitHub API 带认证）。仓库公开后删除 private 字段，
   # 即自动回退公开 feed（无 token 时同样兼容，见 main.ts resolveUpdaterFeed 注释）。

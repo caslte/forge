@@ -68,10 +68,14 @@ git push origin v0.1.7
 ```
 
 推完标签后约 1 分钟内 Actions 开始跑，全部完成约 10~15 分钟。
-产物位置：`https://github.com/caslte/forge/releases`，以 **draft（草稿）** 形式挂在对应标签下，检查无误后手动点 Publish 发布。
+产物直接以**正式 Release** 挂在 `https://github.com/caslte/forge/releases` 对应标签下——
+**不需要、也不要手动点 Publish**（配置已是 `releaseType: release`，见下方事故说明）。
 
-> electron-builder 默认以 draft 方式发布：各平台 job 把产物传到同一个草稿 Release，
-> 你确认后手动发布它，用户才能看到。想改成直接发布，在 yml 的 publish 里加 `releaseType: release`。
+> ⚠ 为什么不要在中途手动点 Publish（2026-09-16 事故）：
+> 各平台 job 完成有先后（win 双架构最慢）。若在部分 job 完成后把草稿 Publish 成正式
+> Release，最后完成的 job 以 draft 类型上传时会发生「existing type not compatible
+> with publishing type」→ 该 job 的全部产物被**静默跳过**（构建依然全绿，极难察觉）。
+> `releaseType: release` 让所有 job 类型一致，Publish 时机不再影响结果。
 
 > 标签打错/想重打：先删本地和远程标签，再重来。
 > ```bash
@@ -127,6 +131,13 @@ npm workspaces 依赖扫描（本机历史上遇到过）、平台原生依赖�
 1. 不要再把同平台双架构拆回多个 job；
 2. linux 仍是两个 job（x64 无法交叉构建 arm64 AppImage），其 latest-linux.yml
    只保证「最后完成的架构」正确 —— linux 对外发布前需加 finalize 合并 job。
+
+**job 全绿但 Release 里缺少某个平台的产物（2026-09-16 事故）**
+日志特征：`skipped publishing … existing type not compatible with publishing type
+… existingType=release publishingType=draft`。原因：部分 job 完成后 Release 被
+手动 Publish 成正式状态，后完成的 job 以 draft 类型上传被全部静默跳过。
+已修复：`electron-builder.yml` 设 `releaseType: release`，各 job 类型一致。
+**发版后不要在 Actions 跑完之前碰 Release 页面的 Publish 按钮**（现在也无需点）。
 
 **作废一次发布**
 到 Releases 页面删除该 Release 和标签即可，不影响其他版本。
