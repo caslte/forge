@@ -10,6 +10,7 @@
   2. `.msg-cmd-name.is-skill` `color: var(--brand-accent)` → `#ffffff`：技能名「Git Push All」加粗白字，不再走青瓷绿。
   3. `.msg-cmd-tag.tag-skill` `color: #ffffff` + `background: color-mix(... 22%, transparent)` → `color: #0f0f10` + `background: #ffffff`：「技能」胶囊改为白底深字实色 pill，与气泡「深色反白」形成 chip 质感。
 - **影响范围**：仅用户消息气泡内「命令名 + 来源标签」美化段（`/skill:xxx` 发送后渲染态，pi 展开持久化形态同理）；技能名去青瓷绿仅限气泡内，与斜杠浮窗 `.slash-tag.tag-skill`（中性 `--brand`，浅底场景本来就清晰）解耦。
+- **后续微调**（用户反馈「比参考图还黑」）：气泡背景 `#0f0f10` → `#3a3a3d`（与参考气泡同色），技能名/胶囊的 chip 改版不变。
 - **验证**：forge-ui **264/264**、vue-tsc 0 错；tsc 后 dist 符号 grep 复核（`.msg-cmd-tag.tag-skill` / `.msg-cmd-name.is-skill` / `.msg-user .msg-bubble`）。
 
 ## v3.78.2 (修复：白屏真正根因 —— 主进程同步占死导致 splash 文档 4s 未提交)

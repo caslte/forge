@@ -325,7 +325,7 @@ const timeLabel = computed(() => {
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 16px;
-  background: #0f0f10;
+  background: #3a3a3d;
 }
 
 .msg-user .msg-content {
