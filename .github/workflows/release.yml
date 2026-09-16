@@ -1,0 +1,112 @@
+# 多平台发布：三平台 × 多架构并行构建，全部产物挂到同一个 GitHub Release。
+#
+# 为什么必须用 CI 矩阵，而不是一条 `electron-builder -mwl` 命令：
+#   electron-builder 官方明确「不要指望在一个平台上构建所有平台」——
+#   1) macOS 代码签名/公证只能在 macOS 上做（Apple 工具链限制，无法绕过）；
+#   2) 带 native 依赖（.node）的项目，只能装到宿主平台对应架构的那一份，
+#      Windows 机器上 npm ci 只会装到 win32 的预编译件。
+#   因此「一平台一 runner」不是可选项，是前提。
+#
+# 触发：打 tag（v0.1.7 等）或手动 workflow_dispatch。
+# 产物：每个 job 各自生成自己的安装包，并写 latest.yml / latest-mac.yml / latest-linux.yml，
+#       electron-updater 运行时按 platform 自动挑对应那一个（这就是别人 release 里「一堆版本」的由来）。
+#
+# 计费（私有仓库才计费；仓库转公开后标准 runner 免费且不限量）：
+#   免费额度按「Linux 分钟 × 1、Windows × 2、macOS × 10」折算消耗。
+#   一次全量发布约 6 个 job，按 macOS 4 分钟 + Windows 4 分钟 + Linux 4 分钟估，
+#   折算约 40~60 分钟额度 —— 免费版 2000 分钟/月足够，但别把它当事后账：macOS 最贵。
+#   想要省钱：日常只在 tag 上跑，别在 push 上全量跑。
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # electron-builder --publish always 需要写 Release
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 一个架构失败不影响其余架构出包
+      matrix:
+        include:
+          # 每个 job 都跑在「目标平台 + 目标架构」的原生 runner 上。
+          # 这样 npm ci 装到的可选原生依赖天然就是正确那一份，不存在跨架构缺件问题。
+          # GitHub 官方 runner 标签齐全（windows-11-arm / ubuntu-24.04-arm / macos-15-intel
+          # 均有 arm64 或 Intel 的独立标签），没必要在一个 runner 里交叉构建多架构。
+          - name: win-x64
+            os: windows-latest
+            args: --win --x64
+          # windows-11-arm 是原生 arm64 Windows runner。
+          # 若你的套餐上不可用，退回 os: windows-latest + args: --win --arm64（跨架构构建，
+          # 产物里 @mariozechner/clipboard 的 arm64 件会缺失 —— 属可选依赖，功能降级不报错）。
+          - name: win-arm64
+            os: windows-11-arm
+            args: --win --arm64
+          - name: mac-arm64
+            os: macos-14
+            args: --mac --arm64
+          # macos-15-intel 是 Intel runner（macos-13 已退役，Intel 只剩 *-intel 标签）。
+          # 单独跑 x64 而不是在 arm64 runner 上 --x64 交叉构建，原因同 Windows arm64。
+          - name: mac-x64
+            os: macos-15-intel
+            args: --mac --x64
+          - name: linux-x64
+            os: ubuntu-latest
+            args: --linux --x64
+          # 若该标签在你的套餐上不可用，删掉本项；普通 x64 机器无法直接产出 arm64 AppImage，
+          # 需改用 Docker + QEMU 交叉构建（见 electron-builder 文档 Architecture 一节）。
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            args: --linux --arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Linux 打包所需的系统工具（AppImage 依赖 libopenjp2）
+      - name: 安装 Linux 打包系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopenjp2-tools
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建并发布
+        # dist:ci 与 dist 的区别：不带 --publish never，由下面追加的 --publish always 接管
+        run: npm run dist:ci -w @forge/desktop -- ${{ matrix.args }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 无 Apple Developer 证书 → 跳过签名身份自动发现，避免 mac 构建报错中断
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      # 仅在失败时留档，供排查用。
+      # 不要改成 if: always()：成功构建的产物已经进 Release，再存一份到 Actions 制品会
+      # 计入制品存储配额（免费版仅 500 MB，六个平台的安装包合计远超），Release 资产则不计费。
+      - name: 失败时归档产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: warn
+          retention-days: 3
+          path: |
+            packages/forge-desktop/release/*.exe
+            packages/forge-desktop/release/*.dmg
+            packages/forge-desktop/release/*.zip
+            packages/forge-desktop/release/*.AppImage
+            packages/forge-desktop/release/*.deb
+            packages/forge-desktop/release/*.blockmap
+            packages/forge-desktop/release/latest*.yml

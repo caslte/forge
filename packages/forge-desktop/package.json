@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-strip-types --test",
     "dist:dir": "npm run build -w @forge/ui && npm run build && electron-builder --dir --config electron-builder.yml --publish never",
-    "dist": "npm run build -w @forge/ui && npm run build && electron-builder --config electron-builder.yml --publish never"
+    "dist": "npm run build -w @forge/ui && npm run build && electron-builder --config electron-builder.yml --publish never",
+    "dist:ci": "npm run build -w @forge/ui && npm run build && electron-builder --config electron-builder.yml"
   },
   "engines": {
     "node": ">=22"

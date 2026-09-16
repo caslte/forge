@@ -7,6 +7,10 @@ productName: forge
 directories:
   # 默认输出目录是 dist，会与 tsc 产物 dist/ 冲突，改为 release/
   output: release
+  # 构建资源目录（默认值即 build，显式声明便于定位）：
+  # 放 build/icon.png（≥1024×1024）后，electron-builder 自动派生 .ico / .icns / Linux 图标集。
+  # 当前仓库没有图标 → 三平台都会退回 Electron 默认图标（可构建，但不适合对外分发）。
+  buildResources: build
 files:
   - dist/**/*
   - package.json
@@ -18,10 +22,10 @@ extraResources:
   - from: ../forge-ui/dist
     to: forge-ui/dist
 win:
+  # 不在此声明 arch：交给 CLI 的 --x64 / --arm64。
+  # 本地 `npm run dist` 默认当前架构（行为与改动前一致）；CI 按矩阵逐架构构建。
   target:
     - target: nsis
-      arch:
-        - x64
   # v1 不做代码签名（未配置 signtoolOptions/certificateSubjectName）
 nsis:
   # 一键安装器：安装/更新全程无向导页，用户不需要点「下一步 / 完成」。
@@ -42,6 +46,34 @@ nsis:
   createDesktopShortcut: true
   shortcutName: forge
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+# ===== macOS =====
+# 注意：dmg 给用户手动安装；zip 是 electron-updater 在 macOS 上的自动更新载体，
+#       两者都要出，缺 zip 则 mac 端无法走应用内更新。
+# identity: null 显式关闭签名（v1 无 Apple Developer 账号）。后果：
+#   1) 用户首次打开需「右键 → 打开」或 `xattr -cr /Applications/forge.app`；
+#   2) Squirrel.Mac 要求已签名，未签名时 mac 端自动更新不可用（只能手动装 dmg）。
+#   拿到 Developer ID 证书后删掉 identity，并补 notarize 配置即可解锁两者。
+mac:
+  category: public.app-category.developer-tools
+  identity: null
+  target:
+    - dmg
+    - zip
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# ===== Linux =====
+# AppImage：免安装单文件，且是 electron-updater 支持最完整的 Linux 载体（AppImageUpdater）。
+# deb：给 Debian/Ubuntu 用户，不带应用内自动更新。
+# maintainer 为 deb 必需字段（package.json 里没有 author，必须在这里给）。
+linux:
+  category: Utility
+  maintainer: caslte <caslte@users.noreply.github.com>
+  target:
+    - AppImage
+    - deb
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
 publish:
   provider: github
   owner: caslte
