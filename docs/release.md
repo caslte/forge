@@ -52,8 +52,12 @@
 ```bash
 # 0. 【必须先做】把 packages/forge-desktop/package.json 的 version 改成与本次标签一致
 #    electron-builder 定位 Release 用的是「v + 包版本号」，不是 git 标签本身。
-#    版本号对不上 → 产物被静默跳过上传（构建全绿但 Release 是空的）。
-#    例：发 v0.1.7 → version 改为 "0.1.7"
+#    版本号对不上有两种后果（都真实发生过）：
+#    a) 同名旧 Release 已存在（releaseType: release 下类型兼容）→ 产物被上传进
+#       旧 Release：构建显示成功，但新版本的 Release 根本不会创建，旧 Release
+#       被新文件名的资产污染；需到旧 Release 编辑页删掉混入的资产再重发。
+#    b) 类型不兼容时 → 产物被静默跳过上传（构建全绿但 Release 里没有新资产）。
+#    例：发 v0.1.8 → version 改为 "0.1.8"
 
 # 1. 提交代码（日常开发随便推分支，不会触发打包）
 git add -A
