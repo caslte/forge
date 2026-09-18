@@ -63,6 +63,22 @@ export function applyTodoCompletion(
   return { tasks, nextId };
 }
 
+/**
+ * 会话终态兑底（done / canceled / error / idle）：把快照里残留的 in_progress
+ * 任务标为 completed。避免 TodoPanel 永远挂着呼吸点。代理若忘了调用 todo 工具收尾，
+ * 这里走兑底。与 isAllCompleted 叠加后走 TodoPanel 的“全部完成 → 折叠 → 隐藏”路径。
+ * 快照为空或不含 in_progress 时返回原引用（引用稳定，方便 Vue 跳过无效更新）。
+ */
+export function applyTerminalCleanup(prev: TodoSnapshot | null): TodoSnapshot | null {
+  if (!prev || !Array.isArray(prev.tasks) || !prev.tasks.some((t) => t?.status === 'in_progress')) {
+    return prev;
+  }
+  return {
+    ...prev,
+    tasks: prev.tasks.map((t) => (t?.status === 'in_progress' ? { ...t, status: 'completed' } : t)),
+  };
+}
+
 // ===== selectors =====
 
 /**

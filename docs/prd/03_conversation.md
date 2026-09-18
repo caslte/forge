@@ -436,7 +436,7 @@
 - **业务数据**：`todoSnapshot: { tasks: Array<{ id, subject, status, activeForm?, blockedBy? }>, nextId: number } | null`，纯组件内存。
 - **交互与反馈**：默认展开；折叠态仅渲染标题行 + chevron（不展开任务列表）；折叠/展开时任务列表高度 + 透明度过渡动画（≤200ms）；面板为 opencode 风格浮窗卡片（上/左/右边框 + 顶部圆角与输入框同款，下边沿无 border、底部塞进输入框背后形成延伸一体感）；任务列表可视区固定 3 行高度，超出内部滚动（4px 细滚动条）；任务行过长按码点截断 + 省略号（中文按 CJK 宽度 2 计，与对话气泡同款）。**长任务列表可见性保证**（AC-CV-042）：有 in_progress 时保证其落在 3 行可视窗口内（不强求顶部），用户不用手动滚动就能看到当前在做什么；无 in_progress（全部完成）时滚到最后一行让用户看到最终状态。触发时机：初次挂载 / 折叠→展开 / 布局变化；函数内部检查目标行已可视则 no-op，不抢用户手动滚动位置。空快照 / 卸载时不显示过渡动画（避免视觉噪声）。
 - **权限边界**：面板只读，不向 pi 发送任何写请求；折叠状态仅本地 UI 状态，不跨进程、不持久化。
-- **合法/非法状态流转**：折叠 ↔ 展开（点击头部切换，合法）；可见 task 数从 N>0 → 0（自动卸载，合法）；可见 task 数从 0 → N>0（自动挂载，默认展开）；会话切换（旧快照保留在内存 Map → 切回时还原，按 sessionId 隔离，合法）。
+- **合法/非法状态流转**：折叠 ↔ 展开（点击头部切换，合法）；可见 task 数从 N>0 → 0（自动卸载，合法）；可见 task 数从 0 → N>0（自动挂载，默认展开）；会话切换（旧快照保留在内存 Map → 切回时还原，按 sessionId 隔离，合法）；**会话进入终态（status ∈ {done, idle, canceled, error}）→ 对当前会话快照里的 in_progress 任务兑底标为 completed**（agent 忘了调 todo 工具收尾时免面板永远挂呼吸点；兑底后走“全部完成 → 折叠 → 隐藏”路径；快照无 in_progress 时原引用返回）。
 - **异常与边界**：`details` 缺失或结构非法（不是 `{ tasks: [] }`）→ 静默忽略当次完成事件，不污染当前快照；subject 为空 → 渲染占位「（无标题）」避免空行；activeForm 为空 → 不渲染括号；任务数超大（>50）→ 仅渲染前 50 行 + 「+N more」收口（避免长面板撑爆布局，与 rpiv-todo 同款降级）；in_progress 任务被 `clear` 动作清空后视为空快照卸载。
 - **数据一致性与幂等**：快照 = 最近一次成功 `tool.completed(todo)` 的 `details` 全量复制；多次重复同快照原地替换结果一致；流式过程中 partial 状态不消费（仅 `status === 'completed'` 的 `tool.completed` 事件参与更新）。
 - **跨模块影响**：消费模块 04 扩展的 `tool.completed.result.details` 字段（TE-S05）；不修改消息流、不影响模块 02 会话切换语义、不影响模块 04 工具卡片渲染（todo 工具自身的工具卡仍按通用规则展示）；与 rpiv-todo TUI 面板共享同一数据源，状态天然一致。
@@ -451,6 +451,7 @@
 | AC-CV-040 | 可见 task 数 = 0（仅墓碑 / 初始空 / clear 后）→ 面板从 DOM 卸载，不留占位；visible task 数 > 50 → 渲染前 50 行 + 「+N more」收口 | unit + E2E | 边界 | 状态渲染 | 异常结构、空快照、超量 |
 | AC-CV-041 | 切换会话 → 旧会话的 todoSnapshot 保留在内存 Map 中，切回时还原上次的 todo 视图；details 缺失/结构非法的完成事件静默忽略，不污染对应会话快照 | unit + E2E | 边界 | 数据一致性 | details 缺失 / 非对象 / tasks 非数组；多会话同时有 todo 互不串 |
 | AC-CV-042 | 有 in_progress 时保证其在 3 行可视窗口内（不强求顶部，第 1/2/3 行都可，用户不需手动滚动即可看到）；无 in_progress（全部完成）时滚到最后一行让用户看到最终状态；不抢用户手动滚动位置（已可视则 no-op）；触发时机：初次挂载 / 折叠→展开 / 布局变化（in_progress 出现/消失/换 id、任务总数变化） | unit + E2E | 正常流程 | 展示与交互 | in_progress 已在窗口内不滚；仅一个任务时无滚动作；无可视行（hidden 状态）不滚 |
+| AC-CV-051 | 会话进入终态（status ∈ {done, idle, canceled, error}）→ 当前会话快照里残留的 in_progress 任务自动标为 completed；其他状态（pending / completed / deleted）不动；快照为空或不含 in_progress 时不写回（引用稳定）；兑底后走 TodoPanel 的“全部完成 → 折叠 → 隐藏”路径 | unit + E2E | 边界 | 数据一致性 | agent 忘调 todo 工具收尾 / canceled 提前丢中途 / 快照空 / 已全 completed 不重复处理 |
 
 #### 功能点：CV-S12 ask_user_question 内嵌问卷（扩展，v3.65）
 
@@ -627,11 +628,12 @@
 | 边界：枚举失败降级（扩展 CV-S08） | 不阻塞输入          | CV-S08 异常与边界                 | AC-CV-033         | PASS | 空清单 + 输入发送不受影响                       |
 | 性能量化（扩展 CV-S08） | 拉取<500ms/过渡≤150ms/100 条流畅 | 3.5 性能                      | N/A               | PASS | 已量化                                   |
 | 证据唯一性（扩展 CV-S08） | 无 API/DB 技术细节          | CV-S08 全节                    | N/A               | PASS | 事件总线/枚举接口属技术决策描述；无路径/方法/错误码           |
-| CV-S11（扩展）       | todo 面板 + 折叠 + 空隐藏 + 按会话隔离 + 长列表保证进行中可视 | CV-S11 功能点                   | AC-CV-037/038/039/040/041/042 | PASS | 单数据源 = pi todo 工具 details；模块 04 IPC 透传承接；按 sessionId Map 隔离；in_progress 在可视窗口内 / 无 in_progress 滚到最后一行 |
+| CV-S11（扩展）       | todo 面板 + 折叠 + 空隐藏 + 按会话隔离 + 长列表保证进行中可视 + 终态兑底 | CV-S11 功能点                   | AC-CV-037/038/039/040/041/042/051 | PASS | 单数据源 = pi todo 工具 details；模块 04 IPC 透传承接；按 sessionId Map 隔离；in_progress 在可视窗口内 / 无 in_progress 滚到最后一行；会话终态兑底 in_progress→completed 防面板永久挂着呼吸点 |
 | CV-S11（扩展）明确不做 | 不做手动增删改/拖拽/快捷键/依赖图编辑/跨进程持久化 | CV-S11 业务规则                  | N/A               | PASS | 未生成对应功能与入口；面板只读；仅内存存在                  |
 | TD-CV-10（扩展）     | 单数据源 = pi todo details（IPC 透传） | CV-S11 业务规则·数据源             | AC-CV-037         | PASS | TE-S05 承载 IPC 透传；前端零持久化               |
 | TD-CV-11（扩展）     | 按 sessionId 内存隔离，切走再切回还原     | CV-S11 业务规则·可见性门            | AC-CV-041         | PASS | Map<sessionId, TodoSnapshot>； APP 退出随进程消失   |
 | 边界：details 非法（扩展 CV-S11） | 静默忽略不污染         | CV-S11 异常与边界                | AC-CV-041         | PASS | 缺失/非对象/tasks 非数组都不抛               |
+| 边界：会话终态兑底（扩展 CV-S11） | 残留 in_progress 收为 completed | CV-S11 异常与边界            | AC-CV-051         | PASS | applyTerminalCleanup 兑底；无 in_progress 不写回走引用稳定路径 |
 | 性能量化（扩展 CV-S11） | commit <50ms/渲染 <16ms/折叠 ≤200ms | 3.5 性能                      | N/A               | PASS | 已量化                                     |
 | 证据唯一性（扩展 CV-S11） | 无 API/DB 技术细节          | CV-S11 全节                    | N/A               | PASS | 只引用模块 04 IPC 事件，不写路径/方法/错误码         |
 

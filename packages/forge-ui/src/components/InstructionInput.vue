@@ -12,6 +12,8 @@ import {
 import { baseName, isImagePath } from '../attachmentText';
 import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
 import { shouldConvertPasteToFile } from '../utils/pasteText';
+import { computeSessionInputReset } from '../utils/sessionInputReset';
+import { prependQueuedText } from '../utils/prependQueuedText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
@@ -1092,11 +1094,7 @@ function onDocClick(e: MouseEvent): void {
  * 队列文本按空行段落拼接，置于当前输入内容之前（对齐 TUI [queued, current] 顺序）。
  */
 function restoreQueuedText(items: string[]): void {
-  const valid = items.filter((s) => typeof s === 'string' && s.trim() !== '');
-  if (valid.length === 0) return;
-  const queued = valid.join('\n\n');
-  const current = text.value.trim();
-  text.value = current ? `${queued}\n\n${current}` : queued;
+  text.value = prependQueuedText(text.value, items);
   queuePanelOpen.value = false;
   nextTick(() => {
     autoGrow();
@@ -1179,15 +1177,20 @@ watch(
   },
 );
 
-// 切换会话：重载输入历史（不同会话的历史独立存储）
+// 切换会话：重载输入历史（不同会话的历史独立存储）；已激活会话切走前清空输入框（防跨会话串味），草稿态保留。
 watch(
   () => props.sessionId,
   (sid) => {
-    // 如果之前在历史模式（残留的 input 文本是上一会话的某条历史），切会话后应清空
-    // 草稿态则保留 input 不动（草稿不被会话清空）
-    if (historyCursor.value >= 0) {
-      text.value = '';
-      pendingDraft = '';
+    const next = computeSessionInputReset({
+      currentText: text.value,
+      pendingDraft,
+      historyCursor: historyCursor.value,
+      isDraft: sid === undefined,
+    });
+    if (next.text !== text.value || next.pendingDraft !== pendingDraft || next.historyCursor !== historyCursor.value) {
+      text.value = next.text;
+      pendingDraft = next.pendingDraft;
+      historyCursor.value = next.historyCursor;
       nextTick(autoGrow); // 空文本 → 重置回默认高度
     }
     loadHistory(sid);
@@ -1245,8 +1248,7 @@ watch(
       @pointermove="onResizeMove"
       @pointerup="onResizeUp"
     ></div>
-    <!-- 进行中蚂蚁线边框：SVG overlay 沿圆角画流动虚线；聚焦/拖拽时隐藏，让位 brand 实线 -->
-    <svg v-if="isStreaming" class="cb-ants" aria-hidden="true"><rect /></svg>
+    <!-- 进行中：实线边框 + 呼吸效果（CSS 动画） -->
     <!-- max 思考级别动画（仅 "M A X" 底部浮现 → 停留 → 淡出；纯视觉层 pointer-events:none 不阻塞输入） -->
     <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
       <span class="max-text">M A X</span>
@@ -1605,48 +1607,32 @@ watch(
   /* 仅保留外圈边框；去掉内圈 3px 光环 */
 }
 
-/* 进行中：蚂蚁线（流动虚线）画在 SVG overlay 上，实体边框让位为透明；
-   聚焦时整条让位会导致无框，故显式回 brand 实线（权重高于 :focus-within/.streaming 单条） */
+/* 进行中：实线边框 + 呼吸效果 */
 .compose-box.streaming {
-  border-color: transparent;
+  border-color: var(--foreground);
+  animation: stream-breathe 2s ease-in-out infinite;
+}
+
+@keyframes stream-breathe {
+  0%, 100% {
+    border-color: color-mix(in oklab, var(--foreground) 35%, transparent);
+  }
+  50% {
+    border-color: color-mix(in oklab, var(--foreground) 85%, transparent);
+  }
 }
 
 .compose-box.streaming:focus-within {
   border-color: var(--brand);
+  animation: stream-breathe-focus 2s ease-in-out infinite;
 }
 
-.cb-ants {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  overflow: visible;
-}
-
-.cb-ants rect {
-  x: 0.5px;
-  y: 0.5px;
-  width: calc(100% - 1px);
-  height: calc(100% - 1px);
-  rx: 15.5px;
-  ry: 15.5px;
-  fill: none;
-  stroke: var(--foreground);
-  stroke-width: 1;
-  stroke-dasharray: 6 6;
-  animation: cb-ants-march 0.9s linear infinite;
-}
-
-/* 聚焦（排队打字）/拖拽附件时隐藏蚂蚁线，露出 brand 实线 */
-.compose-box:focus-within .cb-ants,
-.compose-box.dragover .cb-ants {
-  display: none;
-}
-
-@keyframes cb-ants-march {
-  to {
-    stroke-dashoffset: -12;
+@keyframes stream-breathe-focus {
+  0%, 100% {
+    border-color: color-mix(in oklab, var(--brand) 50%, transparent);
+  }
+  50% {
+    border-color: var(--brand);
   }
 }
 

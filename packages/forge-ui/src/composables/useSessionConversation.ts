@@ -13,7 +13,7 @@ import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
 import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
-import { applyTodoCompletion, type TodoSnapshot } from '../utils/todoPanel.ts';
+import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
 import { createAskQuestionStore } from './askQuestionStore.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
@@ -488,6 +488,11 @@ function dismissAskAnswered(): void {
       // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
       // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
       if (p.status !== 'error') errorMsg.value = null;
+      // CV-S11 兜底：会话终态时把残留的 in_progress 标为 completed，避免 TodoPanel
+      // 永远挂着呼吸点。快照按 sessionId 隔离，只动当前会话。无可恢复快照时 noop。
+      const prevSnap = todoSnapshots.get(p.sessionId) ?? null;
+      const nextSnap = applyTerminalCleanup(prevSnap);
+      if (nextSnap !== prevSnap) todoSnapshots.set(p.sessionId, nextSnap);
     }
   }
 

@@ -1438,3 +1438,119 @@ test('Path 2：lease 无事件总线（扩展未激活）时静默降级，不�
   assert.deepEqual(seen, []);
   assert.equal(adapter.replyAskUserQuestion('s1', 'req-1', { answers: [], cancelled: true }), false);
 });
+
+// ===== 回归：一轮多条 assistant 消息（MiniMax-M3 混流）不重发上一条正文 =====
+//
+// 真机事故（edu-community 会话）：一轮内 pi 依次产生多条 assistant 消息，每条正文
+// 都是 <think>…</think> 混流形态。此前 partialContent 为轮次级累积：带正文的消息
+// message_end 后正文残留在 partialContent，后续纯思考消息 message_end 把
+// forwardedClean 置空 → 再下一条纯思考消息流式时 strip 结果=旧正文 ≠ prev('')
+// → 整段旧正文被当新增量重发，前端在工具卡片之后 push 出重复文本卡
+//（「AI 回复重复发同样的话，切会话再切回才恢复」——磁盘历史本就正确）。
+
+/** 静默 fake：prompt 不自发事件，由测试自行驱动完整消息序列 */
+function makeSilentFake(): {
+  session: {
+    subscribe(listener: (event: MinimalEvent) => void): () => void;
+    prompt(text: string): Promise<void>;
+    abort(): Promise<void>;
+    dispose(): void;
+    setThinkingLevel(level: string): Promise<void>;
+  };
+  listeners: Set<(event: MinimalEvent) => void>;
+} {
+  const listeners = new Set<(event: MinimalEvent) => void>();
+  return {
+    session: {
+      subscribe(listener: (event: MinimalEvent) => void): () => void {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async prompt(): Promise<void> {},
+      async abort(): Promise<void> {},
+      dispose(): void {},
+      async setThinkingLevel(): Promise<void> {},
+    },
+    listeners,
+  };
+}
+
+test('一轮多条 assistant 消息时上一条正文不重发（真机重复话术回归）', async () => {
+  const { session, listeners } = makeSilentFake();
+  const adapter = new PiConversationAdapter(async () => ({ session, dispose: () => undefined }));
+
+  const deltas: string[] = [];
+  const assistantMessages: string[] = [];
+  adapter.onDelta('session-dup', (t) => deltas.push(t));
+  adapter.onMessage('session-dup', (m) => {
+    if (m.role === 'assistant') assistantMessages.push(m.content);
+  });
+
+  await adapter.sendMessage('session-dup', '你不要改全局的'); // 建立订阅 + 重置轮次状态
+
+  const emitDelta = (text: string): void => {
+    for (const listener of listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+    }
+  };
+  const endAssistant = (text: string): void => {
+    for (const listener of listeners) {
+      listener({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      });
+    }
+  };
+
+  // 消息1：<think>思考</think> + 正文（edit 前的确认话术）——正常转发
+  emitDelta('<think>revert the change in controller');
+  emitDelta('</think>明白了，回退上次的改动。');
+  endAssistant('<think>revert the change in controller</think>明白了，回退上次的改动。');
+
+  // 消息2：纯思考（无正文，对应后续 edit 工具调用）
+  emitDelta('<think>checking the edit result</think>');
+  endAssistant('<think>checking the edit result</think>');
+
+  // 消息3：又是纯思考（对应 read 工具调用）——修复前这里会把消息1正文整段重发
+  emitDelta('<think>reading the file back</think>');
+  endAssistant('<think>reading the file back</think>');
+
+  // 修复后：增量恰好等于消息1正文，一次性转发，无重复
+  assert.deepEqual(deltas, ['明白了，回退上次的改动。']);
+  assert.equal((deltas.join('').match(/明白了/g) ?? []).length, 1, '正文不得在流式增量中重复');
+  // 终态 assistant 消息只有消息1一条（消息2/3 清洗后为空，不产生气泡）
+  assert.deepEqual(assistantMessages, ['明白了，回退上次的改动。']);
+});
+
+test('正文消息后跟正文消息：第二条只转发自己的增量（消息级收敛不误伤）', async () => {
+  const { session, listeners } = makeSilentFake();
+  const adapter = new PiConversationAdapter(async () => ({ session, dispose: () => undefined }));
+
+  const deltas: string[] = [];
+  adapter.onDelta('session-two-text', (t) => deltas.push(t));
+
+  await adapter.sendMessage('session-two-text', '继续');
+
+  const emitDelta = (text: string): void => {
+    for (const listener of listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+    }
+  };
+  const endAssistant = (text: string): void => {
+    for (const listener of listeners) {
+      listener({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      });
+    }
+  };
+
+  // 消息1：正文 A
+  emitDelta('第一段正文。');
+  endAssistant('第一段正文。');
+  // 消息2：另一段正文 B（工具调用之间的正常输出）
+  emitDelta('<think>brief</think>第二段正文。');
+  endAssistant('<think>brief</think>第二段正文。');
+
+  assert.deepEqual(deltas, ['第一段正文。', '第二段正文。']);
+});

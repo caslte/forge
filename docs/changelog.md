@@ -1,5 +1,16 @@
 # 变更日志
 
+## v3.78.9 (修复：AI 回复中同一句话在工具卡片之间重复出现——切会话再切回才恢复)
+
+- **用户反馈**：AI 回复时同一段文本（如"明白了，回退上次的改动…"）在工具卡片之间反复出现（同一轮内 2~3 次），切换会话再切回后显示恢复正常。此前已改过一次（前端 `onMessage` 以"覆盖最后一条 assistant"避免 delta 累积 + 完整消息成双），未盖住本场景。
+- **取证（真机会话 JSONL 直接解析，非推断）**：edu-community 会话（`forge-91e2fc68…jsonl`）磁盘上目标正文**只有一条**（一条 assistant 的 text 为 `<think>…</think>明白了…`，其余多条 assistant 清洗后为空）——磁盘历史正确 ⇒ 重复只发生在实时链路，切回后 `loadHistory` 重载即恢复。
+- **根因（`piConversationAdapter.handleEvent` 的流式差分状态是轮次级，语义上应为消息级）**：MiniMax-M3 一轮内每步工具调用都是**独立一条** assistant 消息、正文混流 `<think>` 包裹。事件链为：带正文的消息 `message_end` 后**正文残留在 `partialContent`**；后续**纯思考**消息（清洗后 content 为空）的 `message_end` 把 `forwardedClean` 无条件置空但**不动 `partialContent`**；再下一条纯思考消息流式时 `stripThinkingContent(partialContent 残留 + 思考 delta) = 旧正文 ≠ prev('')` → 整段旧正文被当成新增量重发 → 前端此时 last 是工具消息 → push 出重复文本卡。"正文→纯思考→纯思考"序列恰好复现"文本 → edit×2 → 文本 → read → 文本 → read"的截屏模式。
+- **修复（`piConversationAdapter.ts` message_end 分支，一行核心改动）**：`partialContent` 与 `forwardedClean` 一样，在每条 assistant 消息 `message_end` 时**无条件**以本条清洗结果整体覆盖（原代码只在 content 非空时覆盖）。流式差分基线从轮次级收敛为消息级，上一条正文不再漏进下一条消息的增量求差。错误路径（`message_end(stopReason=error)` 保留现场）不变。
+- **回归测试（`test/pi/piConversationAdapter.test.ts` 新增 2 例，先 RED 后 GREEN）**：
+  - 「一轮多条 assistant 消息时上一条正文不重发」：正文消息 + 两条纯思考消息的完整事件序列，断言增量恰为一次正文——回退修复确认 #50 fail（bug 复现），恢复后 pass；
+  - 「正文消息后跟正文消息」：第二条只转发自己的增量（消息级收敛不误伤正常多段正文）。
+- **验证**：forge-desktop 单测 **254/254** 全过（含新增 2 例）、tsc 0 错。前端 `useSessionConversation` 无需改动（重发源头消除后，"last 非 assistant 则 push"恢复其正常语义：轮次内第二段正文本来就该开新卡片）。
+
 ## v3.78.8 (修复：欢迎页被白板阻塞 —— 显示后必须等到「splash 那一帧真的呈到屏幕上」才做重活)
 
 - **用户反馈**：「你这次改完出现了新的问题，欢迎页被阻塞了，一开始没有字，只有白板」——即 v3.78.7 修出的新症状，比它要修的问题更重。

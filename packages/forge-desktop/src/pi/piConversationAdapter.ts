@@ -1089,8 +1089,17 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       this.forwardedClean.set(sessionId, content);
       // 消息已终态落盘：清掉进行中快照，避免 loadHistory 与文件内容重复
       this.livePartial.delete(sessionId);
+      // 流式累计按【消息级】收敛：无论本条清洗后是否有正文，都以本条结果整体覆盖
+      // partialContent。此前只在 content!=='' 时覆盖，一轮多条 assistant 消息
+      // （MiniMax-M3 每步工具调用都是独立一条消息、正文混流 <think> 包裹）场景下：
+      // 上一条正文（如"明白了…"）残留在 partialContent，本条纯思考消息的
+      // message_end 又把 forwardedClean 置空 → 下一条纯思考消息流式时
+      // strip(partialContent 残留 + 思考 delta) = 旧正文 ≠ prev('') → 整段旧正文
+      // 被当成新增量重发，前端在工具卡片之后 push 出重复文本卡
+      //（真机表现：「AI 回复时重复发同样的话，切会话再切回才恢复」——磁盘历史
+      // 本就正确，重发只发生在实时链路）。
+      this.partialContent.set(sessionId, content);
       if (content !== '') {
-        this.partialContent.set(sessionId, content);
         const message: ConversationMessage = {
           role: 'assistant',
           content,
