@@ -12,6 +12,15 @@ const emit = defineEmits<{
 
 const isMaximized = ref(false);
 
+/**
+ * macOS：窗口三键由系统 traffic lights 提供（主进程 titleBarStyle:'hidden' +
+ * trafficLightPosition），自定义最小化/最大化/关闭按钮隐藏；标题栏左端为灯让位，
+ * 避免 LOGO 折叠按钮压在灯下。红键=关窗（进程驻留 Dock，activate 重建窗口，见
+ * forge-desktop main.ts），Cmd+Q 退出——遵循 macOS 惯例，不走 Windows 的退出确认框。
+ * preload 未注入（纯浏览器无 mock）时按非 mac 处理。
+ */
+const isMac = window.forge?.platform === 'darwin';
+
 async function refreshMaximized(): Promise<void> {
   try {
     isMaximized.value = await window.forge.window.isMaximized();
@@ -39,7 +48,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <header class="titlebar">
+  <header class="titlebar" :class="{ 'titlebar-mac': isMac }">
     <button
       class="titlebar-toggle"
       :aria-label="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
@@ -68,7 +77,7 @@ onUnmounted(() => {
 
     <div class="titlebar-spacer"></div>
 
-    <div class="titlebar-controls">
+    <div v-if="!isMac" class="titlebar-controls">
       <button class="titlebar-btn minimize" aria-label="最小化" @click="onMinimize">
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5h6" stroke="currentColor" stroke-width="1" stroke-linecap="square"/></svg>
       </button>
@@ -102,6 +111,12 @@ onUnmounted(() => {
   position: relative;
   z-index: 200;
   padding-left: 8px;
+}
+
+/* macOS：traffic lights 画在 (12, 12)、三灯总宽约 52px（至 x≈64），左端内容整体让位到
+   78px，LOGO 折叠按钮落在灯右侧，拖拽区与交互不变（见主进程 trafficLightPosition） */
+.titlebar-mac {
+  padding-left: 78px;
 }
 
 .titlebar-toggle,

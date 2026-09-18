@@ -296,6 +296,11 @@ export type UpdaterStateChangedPayload = UpdaterSnapshot;
 
 /** preload 注入的 window.forge 桥 */
 export interface ForgeBridge {
+  /**
+   * 运行平台 = 主进程 process.platform（'darwin' | 'win32' | 'linux' | …）；浏览器 mock 为 'browser'。
+   * UI 据此区分 macOS：隐藏自定义窗口三键（用系统 traffic lights）、标题栏左端为灯让位。
+   */
+  platform: string;
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
   /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
   bootState(): Promise<BootState>;

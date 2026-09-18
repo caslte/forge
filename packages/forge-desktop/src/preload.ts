@@ -165,6 +165,12 @@ const askUserQuestionControl: ForgeAskUserQuestion = {
 
 /** window.forge 桥实现 */
 const forgeBridge = {
+  /**
+   * 运行平台（主进程 process.platform）。渲染层无法直接读 Node 环境，且 contextIsolation
+   * 下 navigator.platform 在 mac/Windows 上都不够可靠判定，故由 preload 静态注入一标量。
+   * TitleBar 据此在 macOS 隐藏自定义窗口三键并为 traffic lights 让位。
+   */
+  platform: process.platform,
   invoke(method: ForgeMethod, params?: Record<string, unknown>) {
     return ipcRenderer.invoke(IPC_INVOKE, { method, params });
   },
