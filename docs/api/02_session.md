@@ -77,6 +77,12 @@
 
 **说明**：硬删 pi session（不可逆，前端先二次确认）（SM-S03）。删除运行中会话时先停止其执行。
 
+**删除范围（v3.73 起）**：除 forge 元数据记录外，同步删除磁盘残留 ——
+pi 会话转录 `{agentDir}/sessions/{encodeURIComponent(cwd)}/forge-<sessionId>.jsonl`
+与该会话的子 agent 执行过程输出目录（`%TEMP%/pi-subagents-*/…/forge-<sessionId>/`）。
+顺序为「先清盘、后删记录」：磁盘删除失败时整个删除失败（错误 5000、会话保留可重试），
+保证「删除成功」等价于「磁盘已清」。同目录下其它 forge 会话与 pi CLI 原生会话文件不受影响。
+
 请求参数：
 
 | 参数名 | 类型 | 必填 | 说明 |

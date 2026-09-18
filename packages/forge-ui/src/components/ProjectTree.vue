@@ -133,6 +133,9 @@ watch(allCollapsed, (v) => emit('fold-state', v), { immediate: true });
 
 function collapseAll(): void {
   collapsedPaths.value = new Set(props.projects.map((p) => p.path));
+  // 顺手把每个项目里已"展开显示 N 个"的会话列表也恢复到默认截断（VISIBLE_SESSION_LIMIT 条），
+  // 否则用户收起全部后再单独展开某个项目，会话会保持之前的全量展开态——与"收起"语义不符。
+  expandedSessionLists.value = new Set();
 }
 
 function expandAll(): void {
@@ -459,7 +462,7 @@ onUnmounted(() => {
     <!-- 任务视角（SM-S06）：平摊全部会话，行尾项目 tag，排序与项目视角同规则 -->
     <template v-if="isTaskView">
       <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">暂无会话</div>
-      <div v-else class="tree-section">
+      <div v-else class="tree-section task">
         <div
           v-for="session in visibleTaskSessions"
           :key="session.sessionId"
@@ -601,7 +604,7 @@ onUnmounted(() => {
               v-else
               class="tree-node-title"
               :title="project.path"
-              @dblclick.stop="startRenameProject(project)"
+              @click.stop="toggleExpand(project.path)"
             >{{ projectDisplayName(project) }}</div>
           </div>
 
@@ -791,6 +794,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.tree-section.task {
+  margin: 2px 8px 0 12px;
 }
 
 .tree-node {

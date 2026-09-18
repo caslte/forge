@@ -23,7 +23,7 @@ const emit = defineEmits<{
 
       <footer class="dialog-footer">
         <button @click="emit('cancel')">取消</button>
-        <button class="danger" @click="emit('confirm')">退出</button>
+        <button class="confirm-btn" @click="emit('confirm')">退出</button>
       </footer>
     </div>
   </div>
@@ -96,5 +96,17 @@ const emit = defineEmits<{
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.confirm-btn {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
+.confirm-btn:hover {
+  background: #1f1f1f;
+  color: #fff;
+  border-color: #1f1f1f;
 }
 </style>

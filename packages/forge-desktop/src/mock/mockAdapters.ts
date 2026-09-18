@@ -31,6 +31,8 @@ export class MockPiSessionAdapter implements PiSessionAdapter {
   createCalls: string[] = [];
   stopCalls: string[] = [];
   deleteCalls: string[] = [];
+  /** deleteSession 收到的项目路径（服务层必须从 store 记录透传，真删磁盘需要） */
+  deleteProjectPaths: string[] = [];
   private counter = 0;
 
   async createSession(projectPath: string): Promise<string> {
@@ -43,8 +45,9 @@ export class MockPiSessionAdapter implements PiSessionAdapter {
     this.stopCalls.push(sessionId);
   }
 
-  async deleteSession(sessionId: string): Promise<void> {
+  async deleteSession(sessionId: string, projectPath: string): Promise<void> {
     this.deleteCalls.push(sessionId);
+    this.deleteProjectPaths.push(projectPath);
   }
 }
 

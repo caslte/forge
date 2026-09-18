@@ -6,6 +6,7 @@
  * 1. scanAttachments：附件加入待发区前的密钥嗅探（文本文件命中凭据特征 → flagged，
  *   发送前由 UI 弹确认——这是附件内容出域前的唯一防线，不能删）。
  * 2. savePasteImage：剪贴板截图落盘（截图本来不在盘上，给路径前必须先落成临时文件）。
+ * 3. savePastedText：超长粘贴文本落盘（大文本不进输入框，给路径前先落成临时 txt）。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -75,6 +76,18 @@ export function savePasteImage(base64Data: string, ext = 'png'): { path: string;
   const name = `forge-paste-${hh}${mm}${ss}.${safeExt}`;
   const filePath = path.join(os.tmpdir(), name);
   fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+  return { path: filePath, name };
+}
+
+/** 超长粘贴文本落盘：纯文本 → 系统临时目录 txt，返回真实路径（forge-paste-text-HHmmss.txt） */
+export function savePastedText(text: string): { path: string; name: string } {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  const name = `forge-paste-text-${hh}${mm}${ss}.txt`;
+  const filePath = path.join(os.tmpdir(), name);
+  fs.writeFileSync(filePath, text, 'utf8');
   return { path: filePath, name };
 }
 

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { scanAttachments, savePasteImage, readImageDataUrl, listProjectFiles, SECRET_PATTERNS } from '../src/attachments.ts';
+import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles, SECRET_PATTERNS } from '../src/attachments.ts';
 
 // ===== 附件安全扫描：文本文件命中密钥特征 → flagged=true（给路径机制下唯一的出域防线） =====
 
@@ -57,6 +57,21 @@ test('savePasteImage：写入临时 png 并返回真实路径与文件名', () =
     assert.ok(fs.existsSync(res.path), '落盘文件应存在');
     const head = fs.readFileSync(res.path).subarray(0, 4);
     assert.deepEqual([...head], [0x89, 0x50, 0x4e, 0x47], '内容应为 PNG');
+    assert.equal(res.name, path.basename(res.path));
+  } finally {
+    fs.rmSync(res.path, { force: true });
+  }
+});
+
+// ===== 超长粘贴文本落盘：长文本 → 系统临时目录 txt（输入框粘贴转附件用） =====
+
+test('savePastedText：长文本落盘为临时 txt 并原样返回内容', () => {
+  const text = `粘贴的长文本\n第二行 content 123\n${'x'.repeat(3000)}`;
+  const res = savePastedText(text);
+  try {
+    assert.ok(res.path.endsWith('.txt'), '落盘文件应为 txt');
+    assert.ok(fs.existsSync(res.path), '落盘文件应存在');
+    assert.equal(fs.readFileSync(res.path, 'utf8'), text, '中文与换行应原样 round-trip');
     assert.equal(res.name, path.basename(res.path));
   } finally {
     fs.rmSync(res.path, { force: true });

@@ -24,6 +24,18 @@ export interface SessionItem {
   doneReadAt?: string | null;
 }
 
+/** git/getBranchInfo 响应 data（PM-S05，docs/api/01_project.md §10） */
+export interface GitBranchInfo {
+  isGitRepo: boolean;
+  /** 当前分支名；detached 时为短 SHA；空仓库（unborn）为分支名 */
+  branch: string;
+  /** 本地分支列表（git 默认字典序）；不含远程分支 */
+  branches: string[];
+  /** 是否有未提交更改（git status 非空） */
+  dirty: boolean;
+  detached: boolean;
+}
+
 /** 输入框项目选择器描述（SM-S01 v3.21）：单视图传入，多窗口 compact 不传则不渲染 */
 export interface ProjectPickerDescriptor {
   /** draft=新建会话可选归属；session=会话中只读信息（归属不可换） */

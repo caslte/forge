@@ -1,7 +1,8 @@
 # 工具执行展示 PRD
 
-> 状态：PRD 已确认
+> 状态：PRD 已确认（含扩展 TE-S05 tool.completed 透传 details，为模块 03 CV-S11 Todo 面板提供 IPC 支撑）
 > 模块编号：04
+> 扩展说明：TE-S05 由模块 03 CV-S11 Todo 面板发起（2026-09-10）。原 IPC `tool.completed.result` 只含 `{ text, image }` 两字段，丢弃了 pi 工具结构化详情（如 rpiv-todo 工具的 `{ action, tasks, nextId }`），导致 CV-S11 面板无法获取 todo 状态。本扩展在 `result` 上增加可选 `details` 字段透传完整结构化快照，仅补充不重写，不破坏现有使用方。
 
 ## 1. 场景意图
 
@@ -17,11 +18,12 @@ AI 在对话中调用 pi 的工具系统（read / write / edit / bash / grep 等
 | TE-S02 | 工具结果展示 | 展示工具执行结果 | 结果内容渲染（文本/代码） | 不截断关键结果；不渲染危险 HTML |
 | TE-S03 | 文件 Diff 展示 | 展示文件编辑差异 | edit 工具的变更前后对比可视化 | 不丢失变更上下文 |
 | TE-S04 | 工具状态流转 | 实时显示执行状态 | 运行中 -> 完成/出错，实时更新 | 不卡顿 |
+| TE-S05 | tool.completed 透传 details（扩展，v1.2） | 为 CV-S11 Todo 面板等结构化消费场景提供 IPC 支撑 | `tool.completed.result` 增加可选 `details` 字段透传完整结构化快照（pi 工具原始 `details` 透传）；补充不重写、旧字段保留不破坏现有使用方 | 不在 IPC 层解析/校验 details 结构（保持透传）；不发新事件、不增 schema 版本；未携带 details 的工具照旧无该字段 |
 
 ### 1.3 边界与权限
 
-- **不可接受方案**：隐藏工具执行过程；Diff 不可读；结果丢失；渲染任意 HTML（XSS）。
-- **必须满足条件**：工具卡片在对话流穿插；结果内容安全渲染（复用模块 03 白名单）；Diff 可视化；状态实时。
+- **不可接受方案**：隐藏工具执行过程；Diff 不可读；结果丢失；渲染任意 HTML（XSS）。（扩展 TE-S05）透传 details 后引入 schema 变化导致现有工具卡渲染崩溃；details 过大阻塞 IPC 事件循环；旧使用方因 result 结构变化而崩。
+- **必须满足条件**：工具卡片在对话流穿插；结果内容安全渲染（复用模块 03 白名单）；Diff 可视化；状态实时。（扩展 TE-S05）`tool.completed.result.details` 为可选字段（仅 pi 携带才转发），原 `{ text, image }` 双字段与序列化/反序列化契约完全不变；模块 03 CV-S11 面板只读消费 details，未携带时不消费。
 - **角色与权限边界**：单用户；工具执行由 pi 控制，forge 仅展示；无 per-tool 审批（跟 pi 一致）。
 
 ### 1.4 已确认业务决策
@@ -30,6 +32,7 @@ AI 在对话中调用 pi 的工具系统（read / write / edit / bash / grep 等
 - Diff 可视化（文件编辑前后对比）。
 - 工具消息在对话流穿插展示（模块 03 对话区承载）。
 - 工具结果内容渲染复用模块 03 的 Markdown 安全渲染（防 XSS）。
+- （扩展 TE-S05）`details` 字段语义保持原义：pi 工具返回的完整结构化详情（key-value 可枚举），forge 不解释、不校验、各使用方按需读取；toString 与序列化走 IPC 默认通道，不需在契约层额外包装。
 
 ## 2. 关键技术决策
 
@@ -38,8 +41,10 @@ AI 在对话中调用 pi 的工具系统（read / write / edit / bash / grep 等
 | TD-TE-01 | TE-S03 | Diff 展示方式影响可读性与前端实现 | A: 并排对比（旧/新两栏）；B: 行内 unified（+/- 标记）；C: 可切换 | A（并排，直观，v1 简单；切换留后续） | 已确认 |
 | TD-TE-02 | TE-S02 | 长结果展示策略影响可读性与性能 | A: 长结果折叠（默认折叠，点击展开）；B: 全展开 | A（折叠 + 展开，避免刷屏） | 已确认 |
 | TD-TE-03 | TE-S01 | 工具卡片位置影响 UI 架构与上下文关联 | A: 对话流穿插（inline，紧贴触发消息）；B: 独立工具面板 | A（对话流穿插，贴合上下文） | 已确认 |
+| TD-TE-04 | TE-S05 | IPC details 透传策略决定前后端复杂度与向后兼容面 | A: 在 `result` 上增加可选 `details` 字段（透传语义，forge 不解析）；B: 新增独立 `tool.detail` 事件（与 completed 并行发，破坏一事件一卡片语义）；C: details 序列化后塞进 `text`（破坏结构化消费） | A（最小侵入；可选字段；旧 IPC 使用方零变更；CV-S11 面板与未来其他结构化工具都可受益） | 已确认 |
+| TD-TE-05 | TE-S05 | details 缺失场景下的兼容策略决定 IPC 鲁棒性 | A: 仅 pi 工具携带 details 时透传，未携带/字段不存在时 result 中不出现该 key；B: 统一 `details: undefined` 占位（与 A 等价但序列化显式占位） | A（最小序列化体积；JSON omit 与 undefined 一致语义，旧使用方安全） | 已确认 |
 
-> **已采用的常规默认项**：工具状态实时流转（运行中/完成/出错），运行中显示 spinner；卡片可折叠（头常驻，内容可收起）；Diff 高亮增删行；出错标红 + 错误信息。
+> **已采用的常规默认项**：工具状态实时流转（运行中/完成/出错），运行中显示 spinner；卡片可折叠（头常驻，内容可收起）；Diff 高亮增删行；出错标红 + 错误信息。（扩展 TE-S05）`details` 字段不参与卡片折叠状态、loading spinner、Diff 渲染等任何工具卡内置 UI；卡片渲染仅消费 `text`/`image`；结构化消费由各使用方（如 CV-S11 面板）独立订阅 details，存在则消费、不存在则忽略。
 
 > **开发期风险（已计入 overview）**：pi 工具事件 -> `CanonicalEvent` 工具部分映射完整性（含 edit 的 oldText/newText 用于 Diff）；Diff 超大文件性能。
 
@@ -151,6 +156,32 @@ AI 调工具 -> 工具卡片出现(运行中) -> 执行 -> 结果返回 -> 卡�
 | AC-TE-009 | 工具状态实时流转（运行中 -> 完成/出错） | E2E | 正常流程 | 状态 | - |
 | AC-TE-010 | 工具出错时卡片标红并显示错误信息 | E2E | 异常 | 边界 | 工具失败 |
 
+#### 功能点：TE-S05 tool.completed 透传 details（扩展，v1.2）
+
+- **目标**：在 IPC `tool.completed.result` 上增加可选 `details` 字段透传 pi 工具的结构化详情，为模块 03 CV-S11 Todo 面板等结构化消费场景提供 IPC 支撑。
+- **前置条件**：pi 工具携带 `details` 字段返回（rpiv-todo 等自定义工具默认携带）；forge-desktop 的 pi 事件映射器已升级支持透传（`piConversationAdapter` 与 forge-core `tool/toolService`）。
+- **业务规则**：
+  - **契约扩展**（TD-TE-04）：`ToolCompletedEvent.result` 由 `{ text, image }` 扩为 `{ text, image, details? }`；`details` 类型为 `unknown`（pi 工具各自定义结构，forge 不解析）；字段缺失时序列化不出现该 key（TD-TE-05），与 JSON omit 语义一致；序列化/反序列化契约与原 100% 兼容。
+  - **透传语义**：forge-core 接收 pi 工具事件时，把 pi 工具返回的 `details` 原值透传到 `result.details`；不解析、不校验、不裁剪、不增删字段。
+  - **使用方契约**：现有 `tool.started/completed/error` 使用方（`useSessionConversation`、`toolEvents`、ToolCallCard 等）零变更——它们只引用 `text`/`image`，不感知 `details` 存在。新使用方（CV-S11 面板等）按需读取 `details`，类型断言自行处理。
+  - **前端订阅**：`useSessionConversation` 在 `onToolCompleted` 中判断 `event.tool.name === 'todo'` 且 `result.details` 存在时，把 `result.details` 视为 `{ tasks: Task[], nextId: number }` 写入 `todoSnapshot`；其余工具完成与未携带 details 的 todo 完成均不改动快照。
+  - **错误事件**：`tool.error` 不携带 `details`（pi 错误路径无结构化详情需求），不修改 error 事件契约。
+- **业务数据**：`result.details: unknown`（IPC 层透传），业务侧 `todoSnapshot: { tasks: Task[], nextId: number } | null`（模块 03 CV-S11 维护）。
+- **交互与反馈**：无 UI 变化（透明透传）；CV-S11 面板的可见反馈落在模块 03 的 CV-S11 功能点（标题 / 任务行 / 折叠 / 空卸载）。
+- **权限边界**：透传不引入新权限；forge 不解释 details 内容，各使用方按既有权限边界处理。
+- **合法/非法状态流转**：pi 工具携带 details → 透传（合法）；pi 工具未携带 details → result 中不出现 details 字段（合法，向后兼容）；pi 工具 details 非对象（string/number）→ 透传不抛错（透传语义；消费方自行判空）。
+- **异常与边界**：details 序列化失败（如循环引用、超大对象）→ 走 IPC 现有错误通道（与 text/image 一致），不特殊处理；details 体积过大 → 走 IPC 默认通道无压缩（透传语义，由 IPC 层既有保护兜底）。
+- **数据一致性与幂等**：details 与 text/image 同事件同生命周期（一次透传、同一 toolEventId 关联）；重复同一 completed 事件详情幂等。
+- **跨模块影响**：模块 03 CV-S11 面板是首个消费方；模块 04 工具卡渲染零变更；模块 02 会话切换逻辑不变（CV-S11 在会话切换时清空快照由模块 03 处理）。
+
+验收标准：
+
+| AC ID | 验收事实 | 验证层级 | 场景 | 风险维度 | 边界条件 |
+|---|---|---|---|---|---|
+| AC-TE-011 | pi 工具（如 `todo`）携带 details 时，`tool.completed` IPC 事件 `result.details` 透传原始结构（按 todo 工具：含 `tasks[]` / `nextId`），前端 `useSessionConversation` 收到可读取 | unit + E2E | 正常流程 | 跨模块协作 | rpiv-todo 已安装；details 字段存在 |
+| AC-TE-012 | pi 工具未携带 details（如 read/grep 等）时，`tool.completed` IPC 事件 `result` 中不出现 `details` 字段；序列化结果与扩展前一致；旧使用方零变更 | unit + E2E | 正常流程 | 向后兼容 | read/write/grep/bash 等普通工具；mock 事件不含 details |
+| AC-TE-013 | 透传细节保留类型（如 `tasks` 为数组、`nextId` 为数字），不解析、不裁剪、不丢失字段；非对象 details（string）原样透传 | unit | 字段边界 | 数据一致性 | string / number / null / 对象 / 嵌套对象 fixture |
+
 ### 3.4 页面承载
 
 - **页面路径与访问权限**：对话区内（工具卡片穿插，会话打开后可见）。
@@ -174,11 +205,11 @@ AI 调工具 -> 工具卡片出现(运行中) -> 执行 -> 结果返回 -> 卡�
 
 ### 3.5 非功能要求
 
-- **性能与容量**：工具卡片渲染 < 50ms；小变更 Diff 渲染 < 100ms；大文件 Diff 虚拟滚动 60fps。
-- **安全与审计**：结果白名单渲染防 XSS；无 per-tool 审批。
-- **可用性与降级**：工具出错不崩溃对话；大 Diff 降级（虚拟滚动/限制行数）；Diff 数据缺失降级显示 newText。
+- **性能与容量**：工具卡片渲染 < 50ms；小变更 Diff 渲染 < 100ms；大文件 Diff 虚拟滚动 60fps。（扩展 TE-S05）details 透传不增加额外序列化开销（JSON omit 仅在 details 存在时占用字节），卡片渲染零额外成本（仅消费 text/image）。
+- **安全与审计**：结果白名单渲染防 XSS；无 per-tool 审批。（扩展 TE-S05）details 透传不需额外审计（forge 不解析）；消费方对 details 的渲染/校验责任自负（CV-S11 面板对 subject/activeForm 走文本插值默认转义）。
+- **可用性与降级**：工具出错不崩溃对话；大 Diff 降级（虚拟滚动/限制行数）；Diff 数据缺失降级显示 newText。（扩展 TE-S05）details 缺失 = result 字段不出现（旧使用方零感）；details 异常 = 透传不抛错、消费方判空。
 - **可观测性**：工具执行事件（工具名、状态、耗时）记日志。
-- **兼容性**：复用 ai-coding tool 卡片 + Diff 组件。
+- **兼容性**：复用 ai-coding tool 卡片 + Diff 组件。（扩展 TE-S05）IPC 事件序列化兼容（JSON omit 语义）；JSON Schema 描述同步添加 `details?` 可选字段，API 文档同步更新。
 
 ## 4. 自检报告
 
@@ -198,5 +229,12 @@ AI 调工具 -> 工具卡片出现(运行中) -> 执行 -> 结果返回 -> 卡�
 | TD-TE-03 | 对话流穿插 | TE-S01 业务规则 | AC-TE-001 | PASS | 承接，非独立面板 |
 | 性能量化 | 卡片<50ms/Diff<100ms | 3.5 性能 | N/A | PASS | 已量化 |
 | 证据唯一性 | 无 API/DB 技术细节 | 全文 | N/A | PASS | 仅业务字段；CanonicalEvent 属技术决策描述 |
+| TE-S05（扩展）       | tool.completed.result 增加可选 details 透传 | TE-S05 功能点                   | AC-TE-011/012/013 | PASS | 补充不重写；向后兼容；旧使用方零变更 |
+| TE-S05（扩展）明确不做 | 不解析 details / 不发新事件 / 不增 schema 版本 | TE-S05 业务规则                  | N/A               | PASS | 透传语义，零契约膨胀                          |
+| TD-TE-04（扩展）     | 可选字段透传（最小侵入）                | TE-S05 业务规则·契约扩展            | AC-TE-011/012     | PASS | 不新增独立事件，event 语义不变                   |
+| TD-TE-05（扩展）     | 缺失 = omit（非 undefined 占位）          | TE-S05 业务规则·缺失场景            | AC-TE-012         | PASS | 序列化体积与原一致                              |
+| 边界：非对象 details（扩展 TE-S05） | 原样透传不解析 | TE-S05 异常与边界               | AC-TE-013         | PASS | string/number/null 透传与原 IPC 一致             |
+| 向后兼容（扩展 TE-S05） | 旧使用方零变更             | TE-S05 业务规则·使用方契约            | AC-TE-012         | PASS | 只引用 text/image 不感知 details              |
+| 跨模块（扩展 TE-S05） | 首个消费方 CV-S11 面板 | TE-S05 跨模块影响 + 模块 03 CV-S11 | AC-CV-037         | PASS | IPC 透传 + 模块 03 只读消费，单数据源原则                |
 
-> 自检结论：14 项 PASS，0 WARN，0 FAIL。第 1、2 节场景、边界、决策均逐项承接。开发期风险为 pi 工具事件映射完整性（含 edit oldText/newText）与 Diff 超大文件性能，已计入 `docs/overview.md`，不阻塞 PRD 确认。
+> 自检结论：基础部分 14 项 PASS；扩展 TE-S05 共 5 项 PASS（AC-TE-011\~013 + 边界/向后兼容/跨模块各 1），0 WARN，0 FAIL。第 1、2 节场景、边界、决策均逐项承接。开发期风险为 pi 工具事件映射完整性（含 edit oldText/newText）与 Diff 超大文件性能，已计入 `docs/overview.md`，不阻塞 PRD 确认。TE-S05 与模块 03 CV-S11 互锁（前者供 IPC 透传、后者消费），共同验收。

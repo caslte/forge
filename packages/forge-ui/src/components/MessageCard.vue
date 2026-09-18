@@ -108,7 +108,9 @@ function renderMarkdownNow(): void {
     // 用户/系统/工具消息保持纯文本渲染（无 markdown 语义，避免误伤）
     renderedContent.value = escapeHtml(raw);
   } else {
-    renderedContent.value = renderMarkdown(raw);
+    // 流式中间态不写渲染缓存（cacheable=false）：一次长回复有数百个中间态，
+    // 写入会把 LRU 里的稳定态历史挤掉；流式结束的终态渲染会正常入缓存
+    renderedContent.value = renderMarkdown(raw, !props.streaming);
   }
   renderedOpenFence.value = hasOpenFence(props.message.content ?? '');
 }
@@ -200,6 +202,32 @@ const timeLabel = computed(() => {
 
 <template>
   <div :class="['msg', `msg-${message.role}`, { streaming }]">
+    <!-- 附件图片缩略图（统一给路径：图片不显示路径，点击放大）：渲染在气泡上方 -->
+    <div
+      v-if="userParsed.images.some((img) => userThumbs[img])"
+      class="msg-images"
+    >
+      <template v-for="img in userParsed.images" :key="img">
+        <img
+          v-if="userThumbs[img]"
+          :src="userThumbs[img]"
+          class="msg-image"
+          alt=""
+          @click="lightboxSrc = userThumbs[img] ?? null"
+        />
+      </template>
+    </div>
+    <!-- 消息附带图片（旧会话历史遗留）：固定正方形缩略图，点击弹窗看原图 -->
+    <div v-if="imageSrcs.length > 0" class="msg-images">
+      <img
+        v-for="(src, i) in imageSrcs"
+        :key="i"
+        :src="src"
+        class="msg-image"
+        alt=""
+        @click="lightboxSrc = src"
+      />
+    </div>
     <div class="msg-bubble">
       <!-- CV-S08 命令美化段（与浮窗同款）：命令名 + 来源标签，后接剩余正文 -->
       <div v-if="userParsed.command" class="msg-cmd-head">
@@ -223,21 +251,6 @@ const timeLabel = computed(() => {
             class="msg-cmd-tag tag-skill"
           >技能</span></template></template></div>
       <div v-else class="msg-content" v-html="bodyHtml"></div>
-      <!-- 附件图片缩略图（统一给路径：图片不显示路径，点击放大） -->
-      <div
-        v-if="userParsed.images.some((img) => userThumbs[img])"
-        class="msg-images"
-      >
-        <template v-for="img in userParsed.images" :key="img">
-          <img
-            v-if="userThumbs[img]"
-            :src="userThumbs[img]"
-            class="msg-image"
-            alt=""
-            @click="lightboxSrc = userThumbs[img] ?? null"
-          />
-        </template>
-      </div>
       <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->
       <div v-if="userParsed.files.length > 0" class="msg-att-files">
         <span
@@ -259,17 +272,6 @@ const timeLabel = computed(() => {
           </span>
           <span class="msg-att-name">{{ baseName(f) }}</span>
         </span>
-      </div>
-      <!-- 消息附带图片（旧会话历史遗留）：固定正方形缩略图，点击弹窗看原图 -->
-      <div v-if="imageSrcs.length > 0" class="msg-images">
-        <img
-          v-for="(src, i) in imageSrcs"
-          :key="i"
-          :src="src"
-          class="msg-image"
-          alt=""
-          @click="lightboxSrc = src"
-        />
       </div>
       <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
       <!-- Mermaid 图表（完整格式化后提取的占位，逐个渲染） -->
@@ -323,7 +325,11 @@ const timeLabel = computed(() => {
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 16px;
-  background: color-mix(in oklab, var(--muted) 55%, var(--background));
+  background: #3a3a3d;
+}
+
+.msg-user .msg-content {
+  color: #ffffff;
 }
 
 .msg-assistant {
@@ -363,7 +369,7 @@ const timeLabel = computed(() => {
 }
 .msg-cmd-name.is-skill {
   font-weight: 700;
-  color: var(--brand-accent);
+  color: #ffffff;
 }
 .msg-cmd-name.is-prompt {
   color: var(--muted-foreground);
@@ -379,20 +385,22 @@ const timeLabel = computed(() => {
   background: var(--muted);
 }
 .msg-cmd-tag.tag-skill {
-  color: var(--brand-accent);
-  background: color-mix(in oklab, var(--brand-accent) 14%, transparent);
+  /* 纯黑气泡 + 白字技能名 + 白底深字胶囊：整组像一条 command chip，焦点明确 */
+  color: #0f0f10;
+  background: #ffffff;
 }
 /* 命令段存在时正文降为内联，紧跟命令名/标签之后（同级块间空白已被 Vue condense 移除，不产多余空隙） */
 .msg-cmd-head + .msg-content {
   display: inline;
 }
 
-/* 消息附带图片（P3-B）：缩略图网格，点击放大 */
+/* 消息附带图片（P3-B）：缩略图网格，渲染在气泡上方、靠右排列，点击放大 */
 .msg-images {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 8px;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .msg-images:empty {

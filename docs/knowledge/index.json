@@ -4,7 +4,13 @@
     {
       "id": "kb-2026-09-04-flex-scroll-shrink",
       "title": "flex column 滚动容器会压缩 overflow:hidden 子项而不是滚动",
-      "tags": ["css", "flexbox", "滚动容器", "多窗口", "布局消失"],
+      "tags": [
+        "css",
+        "flexbox",
+        "滚动容器",
+        "多窗口",
+        "布局消失"
+      ],
       "source": "v3.42 多窗口工具条不显示 + v3.41 子agent头部条变形",
       "file": "flex-scroll-shrink.md",
       "createdAt": "2026-09-04"
@@ -12,7 +18,15 @@
     {
       "id": "kb-2026-09-07-pi-extension-cold-load",
       "title": "pi 扩展冷加载会占满 Electron 主进程，首条消息卡顿要预热而不是重试发送",
-      "tags": ["electron", "pi", "jiti", "主进程阻塞", "性能", "会话工厂", "预热"],
+      "tags": [
+        "electron",
+        "pi",
+        "jiti",
+        "主进程阻塞",
+        "性能",
+        "会话工厂",
+        "预热"
+      ],
       "source": "v3.46 发送首条消息全 app 卡顿 + 会话树延迟",
       "file": "pi-extension-cold-load.md",
       "createdAt": "2026-09-07"
@@ -20,7 +34,15 @@
     {
       "id": "kb-2026-09-09-pi-preflight-isstreaming-race",
       "title": "pi prompt 置位 isStreaming 前有 preflight 窗口：忙时分流需直发提交门，不能只看 isStreaming",
-      "tags": ["pi", "AgentSession", "isStreaming", "竞态", "消息队列", "followUp", "preflightResult"],
+      "tags": [
+        "pi",
+        "AgentSession",
+        "isStreaming",
+        "竞态",
+        "消息队列",
+        "followUp",
+        "preflightResult"
+      ],
       "source": "v3.47 消息队列不稳定（入队徽标不出现/切会话后丢失）",
       "file": "pi-preflight-isstreaming-race.md",
       "createdAt": "2026-09-09"
@@ -28,10 +50,32 @@
     {
       "id": "kb-2026-09-10-mock-shared-live-array",
       "title": "mock-bridge 返回共享活数组会静默破坏 Vue 响应式：computed 缓存不过期且无报错",
-      "tags": ["mock-bridge", "e2e", "vue", "响应式", "结构化克隆", "computed 缓存"],
+      "tags": [
+        "mock-bridge",
+        "e2e",
+        "vue",
+        "响应式",
+        "结构化克隆",
+        "computed 缓存"
+      ],
       "source": "v3.48 新建项目未自动选中（e2e 排查）",
       "file": "mock-shared-live-array.md",
       "createdAt": "2026-09-10"
+    },
+    {
+      "id": "kb-2026-09-09-ipc-events-whitelist",
+      "title": "新增 forge-core 事件必须同步 ipc-contract FORGE_EVENTS 转发白名单",
+      "tags": [
+        "electron",
+        "ipc",
+        "事件转发",
+        "白名单",
+        "mock盲区",
+        "主进程"
+      ],
+      "source": "v3.49 消息队列浮窗真实端不出现（conversation.queueUpdated 漏登白名单）",
+      "file": "ipc-events-whitelist.md",
+      "createdAt": "2026-09-09"
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 > 模块：01 项目管理
 > 来源：PRD 01（docs/prd/01_project_management.md）
-> 状态：已确认
+> 状态：已确认（含扩展 PM-S05 git 分支查看与切换）
 > 层级映射：unit=forge-core 纯逻辑；API=IPC 方法契约 + forge-store 持久化；E2E=Electron 桌面 UI
 
 ---
@@ -40,6 +40,17 @@
 | AC-PM-010 | PM-S04 项目信任 | 安全/可用性 | 异常：拒绝信任 | P0 | U-PM-003 | A-PM-007 | E-PM-004 | 资源不加载；基础会话仍可用；trustState=rejected | |
 | AC-PM-011 | PM-S04 项目信任 | 幂等 | 正常流程：已信任再次打开 | P1 | U-PM-003 | - | E-PM-004 | 不重复弹窗；trustState 已确定 | 幂等断言 |
 | AC-PM-012 | PM-S01 项目拖拽排序 | 数据一致性 | 正常流程：拖拽排优先级 | P0 | U-PM-004/005 | A-PM-008 | - | 新顺序写 priority=0..n-1 持久化；未钉扎按最近打开倒序 | 全量重排一次落盘 |
+| AC-PM-013 | PM-S05 分支查看与切换 | 可用性 | 正常：git 项目徽标展示；边界：非 git/git 不可用隐藏 | P0 | U-PM-009 | A-PM-009 | E-PM-005 | git 项目显示当前分支；非 git 返回 isGitRepo:false 且徽标隐藏无报错 | 实时读，不落 store |
+| AC-PM-014 | PM-S05 分支查看与切换 | 前端反馈 | 正常：浮窗打开+过滤+当前高亮 | P1 | - | - | E-PM-006 | 点击徽标弹浮窗；分支列表字典序；当前高亮；过滤本地生效 | 分支 >20 场景 |
+| AC-PM-015 | PM-S05 分支查看与切换 | 数据一致性 | 正常：切换成功 | P0 | U-PM-008 | A-PM-010 | E-PM-006 | 徽标更新；仓库实际分支变更；广播 git.branchChanged | 干净工作区 |
+| AC-PM-016 | PM-S05 分支查看与切换 | 安全/一致性 | 异常：流式中入口禁用 | P0 | - | - | E-PM-007 | 该项目任一会话 streaming 时徽标禁用态不可点，不发请求 | 判定粒度=项目（多窗口同项目同禁） |
+| AC-PM-017 | PM-S05 分支查看与切换 | 前端反馈/数据安全 | 异常：dirty 先确认 | P0 | - | - | E-PM-008 | dirty 时弹确认框；取消不执行分支不变；确认才执行 | dirty 来自 getBranchInfo |
+| AC-PM-018 | PM-S05 分支查看与切换 | 异常失败/数据安全 | 异常：切换失败透传 | P0 | - | A-PM-010 | E-PM-008 | 冲突时返回 6001 + data.stderr 原文展示；分支不变 | git 自身保护为准 |
+| AC-PM-019 | PM-S05 分支查看与切换 | 跨模块影响 | 正常：事件广播多窗口同步 | P0 | U-PM-006 | A-PM-010 | - | 切换成功广播 git.branchChanged（含 path+branch）；同项目所有窗口刷新 | 事件白名单契约回归 |
+| AC-PM-020 | PM-S05 分支查看与切换 | 字段边界 | 边界：detached HEAD | P1 | U-PM-007 | A-PM-009 | - | detached 返回 branch=短 SHA + detached:true；可正常切回 | |
+| AC-PM-021 | PM-S05 分支查看与切换 | 字段边界 | 边界：空仓库 unborn | P2 | U-PM-007 | A-PM-009 | - | 空仓库显示分支名；branches 为空；浮窗空提示 | git init 后未提交 |
+| AC-PM-022 | PM-S05 分支查看与切换 | 正常流程 | 正常：远程同名分支建跟踪 | P1 | U-PM-008 | A-PM-010 | - | 仅远程存在时 switch 自动建本地跟踪分支 | git switch 默认语义 |
+| AC-PM-023 | PM-S05 分支查看与切换 | 数据一致性 | 正常：聚焦/打开重查收敛 | P1 | U-PM-009 | - | - | 查询实时执行；外部切换下次查询/聚焦时徽标收敛 | 不缓存不监听（TD-PM-07/09） |
 
 ---
 
@@ -54,6 +65,10 @@
 | U-PM-003 | AC-PM-009/010/011 | trustService 状态机 | 权限/状态流转/幂等 | 项目含 .pi 资源 | decision=trust/reject/trustOnce；重复 openProject | setTrust 后校验状态 | trust→trusted 资源加载；reject→rejected 不加载；已确定状态不再询问 | 状态不跳转（untrusted 不可直接 trusted） |
 | U-PM-004 | AC-PM-012 | store.reorderProjects 排序/持久化 | 数据一致性 | 3 个项目 | 全量重排 paths | 重排 + 重载 | 新顺序写 priority=0..n-1，listProjects 按钉扎升序，重载保持 | 含未注册路径 → 1003 不写盘 |
 | U-PM-005 | AC-PM-012 | projectService.reorderProjects 校验/透传 | 字段边界 | - | 非数组/空/含非字符串；含未注册路径 | 重排 | 非法 1001；未注册 1002；合法 0 且持久化 | 不写盘 |
+| U-PM-006 | AC-PM-019 | gitService 切换成功事件广播 | 跨模块影响 | 临时 git 仓库（两分支） | path+目标分支 | switchBranch 成功 | 广播 git.branchChanged {path, branch:新分支}；重复切同分支不重复广播 | 事件通道已登记转发白名单（契约回归） |
+| U-PM-007 | AC-PM-020/021 | gitService 状态解析（detached/空仓库） | 字段边界 | 临时仓库：detach 一个；init 空仓库一个 | getBranchInfo | 解析 | detach → branch=短 SHA+detached:true；空仓库 → branch=unborn 分支名+branches=[] | 非 git → isGitRepo:false 不抛错 |
+| U-PM-008 | AC-PM-015/022 | gitService switch 语义 | 正常流程/数据一致性 | 临时仓库+bare remote（仅远程分支） | 仅远程存在的分支名 | switchBranch | 本地自动建跟踪分支；仓库实际分支变更 | 仓库分支与返回值一致 |
+| U-PM-009 | AC-PM-013/023 | gitService 实时读/不可用降级/幂等 | 可用性/数据一致性 | 非 git 目录；git 不可执行注入；已切目标分支 | 查询/切换 | getBranchInfo/switchBranch | 非 git→isGitRepo:false；git 不可用→isGitRepo:false 不弹错；重复切换成功无事件 | 不写 forge-store；查询只读 |
 
 ### api（IPC 契约 + 持久化）
 
@@ -67,6 +82,8 @@
 | A-PM-006 | AC-PM-008/009 | project/openProject + setTrust | 项目含 .pi 资源 | { path } → { decision: trust } | 0；1005 先触发询问 | trustState 更新 | trustRequested 事件 → setTrust 回传 |
 | A-PM-007 | AC-PM-010 | project/setTrust | 询问中 | { decision: reject } | 0 | trustState=rejected | 资源不加载；会话基础能力可用 |
 | A-PM-008 | AC-PM-012 | project/reorderProjects | 3 个项目已注册 | { paths: 重排后的全量顺序 } | 0 | 列表顺序变更且持久化 | paths 非法（非数组/空/含非字符串）→ 1001；含未注册路径 → 1002 不写盘 |
+| A-PM-009 | AC-PM-013/020/021 | git/getBranchInfo | git 项目/非 git/detached/空仓库/未注册路径 | { path } | 0 + 五态字段；1001/1002 | 无写入 | isGitRepo/branch/branches/dirty/detached 字段完整；非 git 与 git 不可用均 isGitRepo:false；1001 path 缺失；1002 未注册 |
+| A-PM-010 | AC-PM-015/018/019/022 | git/switchBranch | 临时 git 仓库：干净/冲突/仅远程分支三种 | { path, branch } | 0 + {branch}；6001+stderr；1001/1002 | 仓库分支变更（成功时） | 成功：分支变更+广播；冲突：6001+data.stderr 原文+分支不变；branch 非法 1001；未注册 1002；幂等重切无事件 |
 
 ### e2e
 
@@ -76,3 +93,10 @@
 | E-PM-002 | AC-PM-003/005 | 项目列表页 | 应用启动 | 失效目录 | real-backend | 添加失效路径→打开失效项目 | 添加失败提示；打开不崩溃并提示修复出口 |
 | E-PM-003 | AC-PM-006/007 | 项目列表页 | 项目含会话 | 临时目录 + 会话 | real-backend | 右键移除→确认弹窗→确认 | 弹窗文案；列表移除；源文件与 pi 会话仍存在 |
 | E-PM-004 | AC-PM-008/009/010/011 | 项目工作区 | 项目含 .pi 资源 | 临时目录 + .pi 扩展 | mock-backend（pi 信任 mock） | 首次打开→弹窗→信任/拒绝→再次打开 | 弹窗出现；信任后资源加载；拒绝后不加载；再次打开不弹 |
+| E-PM-005 | AC-PM-013 | 工作区输入框项目区 | 应用启动 | git 临时仓库项目 + 非 git 目录项目 | real-backend | 打开两项目查看徽标 | git 项目显示当前分支；非 git 项目徽标隐藏无报错 |
+| E-PM-006 | AC-PM-014/015 | 工作区分支浮窗 | git 项目（多分支） | 临时仓库预建 3+ 分支 | real-backend | 点徽标→过滤→选目标分支 | 浮窗列表当前高亮；过滤生效；切换后徽标更新且仓库分支变更 |
+| E-PM-007 | AC-PM-016 | 工作区输入框项目区 | git 项目 + 会话流式中 | 临时仓库 | mock-backend（streaming 状态） | 发送消息进入流式 | 流式期间徽标禁用态不可点、不弹浮窗、不发请求；结束后恢复可点 |
+| E-PM-008 | AC-PM-017/018 | 工作区分支浮窗 | git 项目 dirty 工作区 + 冲突目标分支 | 临时仓库：未提交更改；目标分支同文件不同内容 | real-backend | 点目标分支→确认框→取消/确认 | 取消：不执行分支不变；确认后冲突：浮窗展示 git 错误原文，分支不变；干净时切换成功 |
+| E-PM-LANDING-001 | （v3.77 增补：零项目落地 hero） | 落地首屏 | 零项目（mock setProjects([])） | - | mock-backend | 启动观察 + 点项目区 pill | forge 字标 + 居中输入框渲染可输入；项目区仅「打开项目…」入口；旧 no-session 卡片不复活；无 pageerror |
+| E-PM-LANDING-002 | （v3.77 增补：落地草稿直通） | 落地首屏→工作区 | 零项目 + 输入文本 | - | mock-backend（selectDirectory 返回目录） | 输入文本→Enter | 目录选择后项目自动注册打开；已输入文本回填项目视图草稿输入框（restoreDraft） |
+| E-PM-LANDING-003 | （v3.77 增补：取消不丢字） | 落地首屏 | 零项目 + 输入文本 | - | mock-backend（selectDirectory 返回空） | 输入文本→Enter（取消） | 仍在落地页；输入框文本保留 |

@@ -38,11 +38,15 @@ const SESSIONS_STORAGE_KEY = 'forge-mock-sessions';
 const SUBAGENTS_STORAGE_KEY = 'forge-mock-subagents';
 /** 历史持久化键：setHistory 后 reload 保留种子 */
 const HISTORY_STORAGE_KEY = 'forge-mock-history';
+/** 项目持久化键：setProjects 后 reload 保留种子（空数组=零项目落地场景） */
+const PROJECTS_STORAGE_KEY = 'forge-mock-projects';
 
 const DB: {
   projects: Array<Record<string, unknown>>;
   sessions: MockSessionSeed[];
   subagents: Record<string, MockSubagentSeed[]>;
+  /** mock git 状态（PM-S05）：不在表内 = 非 git 项目（isGitRepo:false 全空值） */
+  git: Record<string, { branch: string; branches: string[]; dirty: boolean }>;
 } = {
   projects: [
     { path: 'D:/work/aiwork/forge', alias: null, lastOpenedAt: new Date().toISOString(), trust: 'trusted' },
@@ -84,6 +88,13 @@ const DB: {
     },
   ],
   subagents: {},
+  git: {
+    'D:/work/aiwork/forge': {
+      branch: 'dev-v0.1.0',
+      branches: ['dev-v0.1.0', 'main', 'feat/login'],
+      dirty: true,
+    },
+  },
 };
 
 const HISTORY: Record<string, unknown[]> = {
@@ -175,6 +186,18 @@ try {
   // ignore
 }
 
+try {
+  const persisted = localStorage.getItem(PROJECTS_STORAGE_KEY);
+  if (persisted !== null) {
+    const parsed = JSON.parse(persisted) as unknown;
+    if (Array.isArray(parsed)) {
+      DB.projects = parsed as Array<Record<string, unknown>>;
+    }
+  }
+} catch {
+  // ignore
+}
+
 function persistSubagents(): void {
   try {
     localStorage.setItem(SUBAGENTS_STORAGE_KEY, JSON.stringify(DB.subagents));
@@ -259,11 +282,15 @@ interface MockControl {
       | 'conversation.statusChanged'
       | 'conversation.compacting'
       | 'conversation.compacted'
-      | 'conversation.slashCommandsUpdated',
+      | 'conversation.slashCommandsUpdated'
+      | 'conversation.askUserQuestionRequested'
+      | 'updater.stateChanged',
     payload: Record<string, unknown>,
   ): void;
   /** 注入查询会话列表/历史的种子覆盖 */
   setSessions(list: unknown[]): void;
+  /** 注入项目列表种子（空数组=零项目落地场景）；reload 保留 */
+  setProjects(list: unknown[]): void;
   setHistory(sessionId: string, messages: unknown[]): void;
   /** 读取当前会话列表（E2E 拿动态新建会话的 id） */
   getSessions(): Array<Record<string, unknown>>;
@@ -275,6 +302,8 @@ interface MockControl {
   getSubagents(sessionId: string): Array<Record<string, unknown>>;
   /** 配置 cancelStream 行为（级联/单点） */
   setCancelStream(opts: MockCancelOpts): void;
+  /** 读取最近一次问卷回填载荷（Path 2；null = 尚无回填） */
+  getLastAskUserReply(): Record<string, unknown> | null;
 }
 
 declare global {
@@ -301,6 +330,9 @@ const sendQueues = new Map<string, string[]>();
 
 /** mock cancelStream 行为配置（默认级联，与真实后端语义一致） */
 let cancelOpts: MockCancelOpts = { cascadeSubagents: true };
+
+/** 最近一次问卷回填载荷（Path 2；浏览器 dev/e2e 断言用，真实端交给扩展侧 Promise） */
+let lastAskUserReply: Record<string, unknown> | null = null;
 
 /** 子 agent 是否处于活跃态（排队中/运行中） */
 function isActive(status: Subagent['status']): boolean {
@@ -349,6 +381,16 @@ function sortSubagents(list: MockSubagentSeed[]): MockSubagentSeed[] {
 }
 
 const bridge: ForgeBridge = {
+  // 纯浏览器预览：非 Electron 环境，UI 按「无系统窗口控件」处理（不影响 mock 布局核对）
+  platform: 'browser',
+  // v3.76 启动门闩：mock 无真实 core 组装，永远就绪——欢迎页一帧即过，e2e 不受影响
+  async bootState() {
+    return { ready: true, startedAt: 0, durationMs: 0 };
+  },
+  // v3.78.7 splash 上屏回执：纯浏览器环境没有真实窗口可显示，空实现即可
+  splashReady() {
+    /* noop */
+  },
   async invoke(method, params) {
     // E2E 可编程覆盖：测试注入的处理器优先
     const seeded = seedHandlers.get(method);
@@ -649,10 +691,77 @@ const bridge: ForgeBridge = {
           data: { exists: true, size: chunk.length, chunk },
         };
       }
+      case 'git/getBranchInfo': {
+        // PM-S05：路径命中 mock git 表返回固定分支信息；未命中 = 非 git 项目全空值
+        const gp = (params as { path?: string }).path ?? '';
+        const g = DB.git[gp];
+        if (!g) return { code: 0, message: 'ok', data: { isGitRepo: false, branch: '', branches: [], dirty: false, detached: false } };
+        return {
+          code: 0,
+          message: 'ok',
+          data: { isGitRepo: true, branch: g.branch, branches: [...g.branches], dirty: g.dirty, detached: false },
+        };
+      }
+      case 'git/switchBranch': {
+        // PM-S05：__conflict__ 模拟 dirty 冲突（6001 + git 原始 stderr 样例，浮窗不关）
+        const sp = (params as { path?: string }).path ?? '';
+        const sb = (params as { branch?: string }).branch ?? '';
+        const g = DB.git[sp];
+        if (!g) return { code: 1002, message: '项目未注册: ' + sp, data: null };
+        if (sb === '__conflict__') {
+          return {
+            code: 6001,
+            message: 'git 切换失败',
+            data: {
+              stderr:
+                'error: Your local changes to the following files would be overwritten by checkout:\n\tpackage.json\nPlease commit your changes or stash them before you switch branches.\nAborting',
+            },
+          };
+        }
+        g.branch = sb;
+        emit('git.branchChanged', { path: sp, branch: sb });
+        return { code: 0, message: 'ok', data: { branch: sb } };
+      }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };
       case 'model/getSessionModel':
         return { code: 0, message: 'ok', data: { model: modelList[0], effective: modelList[0] } };
+      case 'pi/getInfo':
+        // 设置页「关于」Tab（组件明细不回传 UI；测试可 seed 覆盖）
+        return { code: 0, message: 'ok', data: { forgeVersion: '0.1.0' } };
+      case 'pi/updatePlugins':
+        return { code: 0, message: 'ok', data: { output: 'all extensions are up to date' } };
+      case 'app/getUpdateDebug':
+        // 调试控制台开关（默认关闭=普通用户不可见；测试可 seed 覆盖）
+        return { code: 0, message: 'ok', data: { enabled: false } };
+      case 'updater/getState':
+        // 设置页「版本更新」状态快照（mock 固定 idle；测试可 seed 覆盖）
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
+        };
+      case 'updater/checkForUpdates':
+        // mock 无新版：回到 idle、latestVersion=null（不发提示）
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
+        };
+      case 'updater/downloadUpdate':
+        // mock 下载起步：downloading 0%（进度经 updater.stateChanged 事件推送，可 emit 模拟）
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'downloading', currentVersion: '0.1.0', latestVersion: null, downloadProgress: 0, error: null },
+        };
+      case 'updater/quitAndInstall':
+        // mock 不真正退出重启：返回 idle 快照
+        return {
+          code: 0,
+          message: 'ok',
+          data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
+        };
       default:
         return { code: 0, message: 'ok', data: null };
     }
@@ -662,6 +771,18 @@ const bridge: ForgeBridge = {
     return () => {
       listeners[event] = (listeners[event] ?? []).filter((fn) => fn !== listener);
     };
+  },
+  askUserQuestion: {
+    // 与真实 preload 同构：复用同一事件多路复用（订阅 conversation.askUserQuestionRequested）
+    onRequest: (listener) =>
+      bridge.on('conversation.askUserQuestionRequested', (payload) =>
+        listener(payload as never),
+      ),
+    reply: async (params) => {
+      // 浏览器 dev/e2e：记录最近一次回填供断言（真实端交给扩展侧 Promise）
+      lastAskUserReply = params as unknown as Record<string, unknown>;
+      return { code: 0, message: 'ok', data: { delivered: true } };
+    },
   },
   window: {
     minimize: () => {},
@@ -677,12 +798,17 @@ const bridge: ForgeBridge = {
   shell: {
     openPath: async () => true,
   },
+  theme: {
+    // 浏览器 dev/e2e 无主进程：回写只对 Electron 窗口底色有意义，这里空实现
+    set: () => {},
+  },
   file: {
     // 浏览器 dev 下无 Electron webUtils，拿不到盘上路径
     getPathForFile: () => '',
     scanAttachments: async (paths) =>
       paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() ?? p, flagged: false })),
     savePasteImage: async () => null,
+    savePastedText: async () => null,
     readImage: async () => null,
     // 浏览器 dev/e2e 无真实盘：固定小清单，@ 补全链路可走通（本地过滤逻辑在渲染层）
     listProjectFiles: async () => [
@@ -789,6 +915,14 @@ const mockControl: MockControl = {
       // 持久化失败不影响本次运行
     }
   },
+  setProjects(list) {
+    DB.projects = [...list] as Array<Record<string, unknown>>;
+    try {
+      localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(DB.projects));
+    } catch {
+      // 持久化失败不影响本次运行
+    }
+  },
   setHistory(sessionId, messages) {
     HISTORY[sessionId] = [...messages] as unknown[];
     persistHistory();
@@ -808,6 +942,9 @@ const mockControl: MockControl = {
   },
   setCancelStream(opts) {
     cancelOpts = { ...opts };
+  },
+  getLastAskUserReply() {
+    return lastAskUserReply === null ? null : { ...lastAskUserReply };
   },
 };
 

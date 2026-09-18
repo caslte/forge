@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { ToolEvent } from '../types';
+import { parseFileToolInput } from '../composables/useChangedFiles';
 import DiffView from './DiffView.vue';
 
 const props = defineProps<{
@@ -21,14 +22,58 @@ const statusLabel = computed(() => {
   return props.event.status;
 });
 
-const toolLabel = computed(() => props.event.toolName ?? '工具');
+/** 工具名 → 面向用户的中文文案（与 useStreamPhase 口径对齐）；未知工具回退原名 */
+const TOOL_LABELS: Record<string, string> = {
+  ask_user_question: '向用户提问',
+  read: '读取文件',
+  view: '读取文件',
+  write: '写入文件',
+  apply_patch: '写入文件',
+  edit: '编辑文件',
+  multi_edit: '编辑文件',
+  bash: '执行命令',
+  powershell: '执行命令',
+  shell: '执行命令',
+  grep: '搜索内容',
+  find: '查找文件',
+  glob: '查找文件',
+  ls: '列出目录',
+  websearch: '联网搜索',
+  web_search: '联网搜索',
+  webfetch: '读取网页',
+  web_fetch: '读取网页',
+  todo: '更新任务清单',
+};
+
+/** 展示用工具名：有中文映射用中文，否则回退原始工具名 */
+const displayName = computed(() => {
+  const name = props.event.toolName;
+  if (!name) return '工具';
+  return TOOL_LABELS[name.toLowerCase()] ?? name;
+});
+
+/** 问卷工具：标题摘要直接显示问题文本（比英文结果易懂） */
+const askQuestions = computed<string[]>(() => {
+  if ((props.event.toolName ?? '').toLowerCase() !== 'ask_user_question') return [];
+  const input = props.event.input as { questions?: unknown } | undefined;
+  const list = Array.isArray(input?.questions) ? input.questions : [];
+  return list
+    .map((q) => (q as { question?: unknown })?.question)
+    .filter((q): q is string => typeof q === 'string' && q.trim() !== '');
+});
 
 const toolSummaryLabel = computed(() => {
+  if (askQuestions.value.length > 0) {
+    const first = askQuestions.value[0] ?? '';
+    return askQuestions.value.length > 1
+      ? `${first}（等 ${askQuestions.value.length} 个问题）`
+      : first;
+  }
   const input = props.event.input;
   if (!input || typeof input !== 'object') return props.event.summary ?? '';
   const candidates = ['file_path', 'path', 'command', 'url', 'query', 'pattern'];
   for (const key of candidates) {
-    const value = input[key];
+    const value = (input as Record<string, unknown>)[key];
     if (typeof value === 'string' && value.trim() !== '') {
       return value.replace(/\s+/g, ' ').trim();
     }
@@ -36,30 +81,35 @@ const toolSummaryLabel = computed(() => {
   return props.event.summary ?? '';
 });
 
-/** edit 类工具：提取 file_path/old_string/new_string 三元组供并排 diff */
-const diffTriple = computed<{ filePath: string | null; oldString: string | null; newString: string | null } | null>(() => {
-  const input = props.event.input;
-  if (!input || typeof input !== 'object') return null;
-  const hasOld = 'old_string' in input;
-  const hasNew = 'new_string' in input;
-  if (!hasOld && !hasNew) return null;
-  const asText = (v: unknown): string | null => (typeof v === 'string' ? v : null);
-  return {
-    filePath: asText(input.file_path),
-    oldString: asText(input.old_string),
-    newString: asText(input.new_string),
-  };
+/** 展开正文的结果文本：问卷回包英文前缀换成中文，其余原样展示 */
+const displaySummary = computed(() => {
+  const s = props.event.summary;
+  if (!s) return '';
+  return s.replace(/^User has answered your questions:/, '用户已回答：');
+});
+
+/** 修改文件类工具的 diff 列表（pi edit 多 hunk 逐块一项；形状判定共享 parseFileToolInput，
+ *  同时兼容 pi 真实 {path,edits}/{path,content} 与旧形状 {file_path,old_string,new_string}） */
+const diffs = computed(() => {
+  const parsed = parseFileToolInput(props.event.input);
+  if (!parsed) return [];
+  return parsed.parts.map((part, i) => ({
+    filePath: parsed.path,
+    oldString: part.oldText,
+    newString: part.newText,
+    showPath: i === 0,
+  }));
 });
 </script>
 
 <template>
-  <div :class="['tool-calls', `tool-${event.status}`, { open }]">
+  <div :class="['tool-calls', `tool-${event.status}`, { open, 'has-diff': !hideDiff && diffs.length > 0 }]">
     <button class="tool-calls-head" @click="open = !open">
       <svg class="tc-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="9 6 15 12 9 18" />
       </svg>
       <span class="tc-title">
-        {{ toolLabel }}
+        {{ displayName }}
         <span v-if="toolSummaryLabel" class="tc-summary">{{ toolSummaryLabel }}</span>
       </span>
       <span class="tc-count">
@@ -68,14 +118,19 @@ const diffTriple = computed<{ filePath: string | null; oldString: string | null;
         <span v-else class="mini-badge success">{{ statusLabel }}</span>
       </span>
     </button>
-    <div v-if="(!hideDiff && diffTriple) || event.summary" class="tool-item-body">
-      <DiffView
-        v-if="!hideDiff && diffTriple"
-        :file-path="diffTriple.filePath"
-        :old-string="diffTriple.oldString"
-        :new-string="diffTriple.newString"
-      />
-      <pre v-if="event.summary" class="tool-summary">{{ event.summary }}</pre>
+    <div v-if="(!hideDiff && diffs.length > 0) || displaySummary" class="tool-item-body">
+      <template v-if="!hideDiff">
+        <DiffView
+          v-for="(diff, i) in diffs"
+          :key="i"
+          class="tc-diff"
+          :file-path="diff.showPath ? diff.filePath : null"
+          :highlight-path="diff.filePath"
+          :old-string="diff.oldString"
+          :new-string="diff.newString"
+        />
+      </template>
+      <pre v-if="displaySummary" class="tool-summary">{{ displaySummary }}</pre>
     </div>
   </div>
 </template>
@@ -89,6 +144,12 @@ const diffTriple = computed<{ filePath: string | null; oldString: string | null;
   align-self: flex-start;
   max-width: 94%;
   min-width: 0;
+}
+
+/* 含 diff 时顶满整行（diff 并排双栏需要宽度；纯文本卡片保持收窄） */
+.tool-calls.has-diff {
+  width: 100%;
+  max-width: 100%;
 }
 
 .tool-calls-head {
@@ -183,6 +244,11 @@ const diffTriple = computed<{ filePath: string | null; oldString: string | null;
   padding: 0 12px 12px 32px;
   font-size: 12px;
   color: var(--muted-foreground);
+}
+
+/* 多 hunk 时多个 DiffView 的纵向间距 */
+.tc-diff + .tc-diff {
+  margin-top: 8px;
 }
 
 .tool-calls.open .tool-item-body {

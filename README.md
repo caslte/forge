@@ -1,22 +1,16 @@
 # forge
 
-forge 桌面项目工作台（npm workspaces）。
+**English** | [简体中文](README.zh-CN.md)
 
-## 开发
+A desktop workbench for AI-assisted coding — project management, multi-session agent conversations, and full visibility into every tool call. Built on the `pi` coding-agent engine.
 
-```bash
-npm run dev        # 启动开发环境
-npm run build      # 构建所有 workspaces
-npm run typecheck  # 类型检查
-npm run test       # 运行测试
-```
+![forge welcome screen — dark theme](docs/assets/hero.png)
 
-## 打包
+## Features
 
-```bash
-node scripts/package.mjs
-```
-
-免安装目录版打包：构建 core/desktop/ui 后，手动组装 `release/` 目录（forge.exe + resources/app），双击 `release/forge.exe` 即可运行。
-
-> 说明：不使用 electron-builder（在 npm workspaces + pi 生态的大 node_modules 上依赖扫描会卡死），打包逻辑见 `scripts/package.mjs`。
+- **Project management** — Register local folders as projects, trust handling, open/remove, branch view and switching
+- **Multi-session conversations** — Parallel sessions per project, multi-window across projects side by side
+- **Streaming chat UI** — Live Markdown, syntax-highlighted code, and Mermaid diagram rendering
+- **Tool execution visualization** — Tool call/result cards, status transitions, side-by-side diffs
+- **Sub-agent monitoring** — Background sub-agents with tab bar and result views; stop one or cascade-stop all
+- **Model & provider configuration** — Visual editor for pi `models.json`, secure key storage, thinking-level selection, 1M-token context

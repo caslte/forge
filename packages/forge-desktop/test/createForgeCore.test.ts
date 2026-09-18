@@ -10,6 +10,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -723,6 +725,59 @@ test('MP-QA-G01 回归：运行中全局默认切到 high 后新建会话发送�
     // MP-QA-G01 修复前：启动快照会以初始 off 盖掉实时全局 high，新会话实际发送 off；
     // 修复后应每次实时读取全局，新会话应用 high（而非初始 off）。
     assert.deepEqual(appliedLevels, ['off', 'high'], '新会话应继承实时全局默认 high，而非启动快照 off');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ===== wu-02：git RPC 接线 =====
+
+const execFileAsync = promisify(execFile);
+
+/** 在临时项目目录初始化真实 git 仓库（-c 隔离全局 user config），含一次空提交与 dev 分支 */
+async function initGitRepo(dir: string): Promise<void> {
+  const run = (args: string[]) =>
+    execFileAsync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+      windowsHide: true,
+    });
+  await run(['init']);
+  await run(['commit', '--allow-empty', '-m', 'init']);
+  await run(['branch', 'dev']);
+}
+
+test('git 方法经 methodTable 可调：getBranchInfo 查询、switchBranch 切换并广播 git.branchChanged', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    await initGitRepo(projectDir);
+    const { methodTable, eventBus } = createForgeCore(storeFile, mockDeps());
+
+    const branchEvents: Array<{ path: string; branch: string }> = [];
+    eventBus.on('git.branchChanged', (p: unknown) => {
+      branchEvents.push(p as { path: string; branch: string });
+    });
+
+    const addRes = await invoke(methodTable, 'project/addProject', { path: projectDir });
+    assert.equal(addRes.code, 0, `addProject 应成功，message: ${addRes.message}`);
+
+    // git/getBranchInfo：真实仓库查询
+    const infoRes = await invoke(methodTable, 'git/getBranchInfo', { path: projectDir });
+    assert.equal(infoRes.code, 0, `getBranchInfo 应成功，message: ${infoRes.message}`);
+    const info = infoRes.data as { isGitRepo: boolean; branch: string | null; branches: string[] };
+    assert.equal(info.isGitRepo, true);
+    assert.ok(info.branch !== null && info.branch.length > 0);
+    assert.ok(info.branches.includes('dev'), `分支列表应含 dev，实际: ${JSON.stringify(info.branches)}`);
+
+    // git/switchBranch：切到 dev，changed=true，事件广播
+    const swRes = await invoke(methodTable, 'git/switchBranch', { path: projectDir, branch: 'dev' });
+    assert.equal(swRes.code, 0, `switchBranch 应成功，message: ${swRes.message}`);
+    assert.equal((swRes.data as { branch: string }).branch, 'dev');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(branchEvents.length, 1, '应恰好广播一次 git.branchChanged');
+    assert.deepEqual(branchEvents[0], { path: projectDir, branch: 'dev' });
+
+    // 未注册路径：1002（不进服务层）
+    const unregRes = await invoke(methodTable, 'git/getBranchInfo', { path: path.join(root, 'nope') });
+    assert.equal(unregRes.code, 1002);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

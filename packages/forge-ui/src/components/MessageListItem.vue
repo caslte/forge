@@ -10,10 +10,13 @@
  * 改为：父级只渲染一个组件列表（稳定唯一 key），形态分支隔离在本组件实例内，
  * 同一 key 的组件始终唯一，patch 不再跨列表位置错位。
  */
+import { computed } from 'vue';
 import type { ConversationMessage, SessionStatus, ToolEvent } from '../types';
+import type { ChangedFileSummary } from '../composables/useChangedFiles';
 import MessageCard from './MessageCard.vue';
 import DiffView from './DiffView.vue';
 import ToolCallCard from './ToolCallCard.vue';
+import ChangedFilesCard from './ChangedFilesCard.vue';
 
 /** 工具调用 diff（Edit 类工具入参渲染用） */
 export type ToolDiff = {
@@ -43,6 +46,11 @@ export type DisplayItem =
       totalCount: number;
       diffs: ToolDiff[];
       collapsed: boolean;
+    }
+  | {
+      key: string;
+      kind: 'files-summary';
+      summary: ChangedFileSummary;
     };
 
 const props = defineProps<{
@@ -51,7 +59,13 @@ const props = defineProps<{
   streaming: boolean;
   /** 工具事件归属会话（ToolCallCard event.sessionId） */
   sessionId: string;
+  /** 会话项目根路径（改动文件汇总卡片的相对路径归一；空串按原路径展示） */
+  projectPath?: string;
+  /** 是否展示 diff（个性化偏好；关闭后工具 diff 与改动汇总卡片均不渲染） */
+  showDiff?: boolean;
 }>();
+
+const showDiffEff = computed(() => props.showDiff !== false);
 
 const emit = defineEmits<{
   (e: 'toggle-group', key: string): void;
@@ -76,13 +90,21 @@ function isToolMessage(m: ConversationMessage): boolean {
 
 <template>
   <template v-if="item.kind === 'message'">
-    <ToolCallCard v-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" />
+    <ToolCallCard v-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" :hide-diff="!showDiffEff" />
     <MessageCard
       v-else
       :message="item.msg"
       :streaming="streaming"
       :show-footer="item.showFooter"
       :copy-text="item.copyText"
+    />
+  </template>
+
+  <template v-else-if="item.kind === 'files-summary'">
+    <ChangedFilesCard
+      v-if="showDiffEff"
+      :summary="item.summary"
+      :project-path="projectPath"
     />
   </template>
 
@@ -101,7 +123,7 @@ function isToolMessage(m: ConversationMessage): boolean {
         <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" hide-diff />
       </div>
     </div>
-    <div v-if="item.diffs.length > 0" class="tool-group-diffs">
+    <div v-if="showDiffEff && item.diffs.length > 0" class="tool-group-diffs">
       <DiffView
         v-for="diff in item.diffs"
         :key="diff.id"
@@ -155,7 +177,7 @@ function isToolMessage(m: ConversationMessage): boolean {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 94%;
+  max-width: 100%;
 }
 .tool-group-diff {
   background: var(--card);

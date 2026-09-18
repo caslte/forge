@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionItem } from '../types';
 import MultiWindowConversation from './MultiWindowConversation.vue';
+import { isProjectBusy } from '../utils/branchBadge';
 import {
   detectSnapZone,
   snapRectFor,
@@ -513,6 +514,7 @@ onUnmounted(() => {
             :session-id="w.sessionId"
             :session="sessionOf(w.sessionId) ?? null"
             :models="models"
+            :git-busy="isProjectBusy(props.sessions, sessionOf(w.sessionId)?.projectPath ?? '')"
           />
         </div>
       </div>

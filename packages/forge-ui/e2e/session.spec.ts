@@ -282,4 +282,67 @@ test('SESSION-E2E-007 @P0 @mock-backend E-SM-007 回归：新建项目置顶并�
   health.assertHealthy();
 });
 
+// ===== E-SM-008（回归 v3.66）：冷启动会话树不等待 openProject =====
+/** 人为拖慢 openProject 的时长：须远大于 TREE_TIMEOUT_MS，保证 RED/GREEN 可分 */
+const SLOW_OPEN_MS = 6_000;
+/** 会话树必须在此超时内出现（修复前需等满 SLOW_OPEN_MS） */
+const TREE_TIMEOUT_MS = 2_000;
+/** mock 默认项目路径（DB.projects[0]），会话种子须归属同一项目才会渲染进树 */
+const PROJECT_PATH = 'D:/work/aiwork/forge';
+
+test('SESSION-E2E-008 @P0 @mock-backend E-SM-008 回归：openProject 被拖慢时会话树仍并行渲染', async ({ page }) => {
+  const health = attachHealthGuards(page);
+
+  // seed() 与 setSessions 的持久化语义不同：setSessions 落 localStorage（跨 reload 存活），
+  // 而 seed() 只活在当前 JS 上下文。mock 句柄由 mock-bridge 在模块初始化时挂到 window，
+  // 故用 init script 抢在赋值瞬间注入「慢 openProject + 会话种子」，保证 App.mounted 前就位。
+  await page.addInitScript(
+    ([slowMs, projectPath]: [number, string]) => {
+      const sessions = [
+        {
+          sessionId: 'sess-startup',
+          projectPath,
+          alias: '启动即有',
+          status: 'idle',
+          lastActiveAt: new Date().toISOString(),
+        },
+      ];
+      let real: unknown;
+      Object.defineProperty(window, '__forgeMock', {
+        configurable: true,
+        get: () => real,
+        set: (v: {
+          seed: (method: string, handler: () => unknown) => void;
+          setSessions: (list: unknown[]) => void;
+        }) => {
+          real = v;
+          v.setSessions(sessions);
+          // 复刻真实端：openProject 触发 pi 扩展冷编译（jiti 3~9s）占满主进程事件循环时，
+          // 该请求自身的 IPC 响应也回不来（修复前前端 loadSessions 就串在它之后）。
+          v.seed('project/openProject', () =>
+            new Promise((resolve) =>
+              setTimeout(
+                () => resolve({ code: 0, message: 'ok', data: { path: projectPath } }),
+                slowMs,
+              ),
+            ),
+          );
+        },
+      });
+    },
+    [SLOW_OPEN_MS, PROJECT_PATH] as [number, string],
+  );
+
+  await page.goto('/');
+  await expect(page.locator('.tree-panel')).toBeVisible();
+  // 项目行先到（queryProjectList 未被拖慢）——复刻用户看到的「项目显示了」
+  await expect(page.locator('.tree-project')).toHaveCount(1);
+
+  // 关键断言：会话树必须已随并行查询到位。修复前 loadSessions 串在 openProject 之后，
+  // 此处需等满 SLOW_OPEN_MS 才命中 → 用例在 TREE_TIMEOUT_MS 内失败。
+  await expect(page.locator('.tree-session')).toHaveCount(1, { timeout: TREE_TIMEOUT_MS });
+
+  health.assertHealthy();
+});
+
 void waitForMock;

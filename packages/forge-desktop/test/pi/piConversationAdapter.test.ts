@@ -34,7 +34,7 @@ interface MinimalEvent {
 /** 工具事件捕获器（P1-A 映射验证） */
 interface ToolCapture {
   started: Array<{ toolEventId: string; name: string; input: unknown }>;
-  completed: Array<{ toolEventId: string; text: string | null }>;
+  completed: Array<{ toolEventId: string; text: string | null; details: unknown }>;
   errors: Array<{ toolEventId: string; message: string }>;
 }
 
@@ -42,7 +42,7 @@ function captureToolHandlers(adapter: PiConversationAdapter): ToolCapture {
   const cap: ToolCapture = { started: [], completed: [], errors: [] };
   adapter.setEventHandlers({
     onToolStarted: (_sid, e) => cap.started.push({ toolEventId: e.toolEventId, name: e.tool.name, input: e.tool.input }),
-    onToolCompleted: (_sid, e) => cap.completed.push({ toolEventId: e.toolEventId, text: e.result.text }),
+    onToolCompleted: (_sid, e) => cap.completed.push({ toolEventId: e.toolEventId, text: e.result.text, details: e.result.details }),
     onToolError: (_sid, e) => cap.errors.push({ toolEventId: e.toolEventId, message: e.error.message }),
   });
   return cap;
@@ -449,7 +449,7 @@ test('工具开始与成功结束映射为 started/completed 回调', async () =
   assert.deepEqual(cap.started, [
     { toolEventId: 'call-1', name: 'read', input: { path: 'a.ts' } },
   ]);
-  assert.deepEqual(cap.completed, [{ toolEventId: 'call-1', text: '文件内容' }]);
+  assert.deepEqual(cap.completed, [{ toolEventId: 'call-1', text: '文件内容', details: undefined }]);
   assert.equal(cap.errors.length, 0);
 });
 
@@ -487,6 +487,93 @@ test('同一会话两次发送复用同一 pi 会话实例', async () => {
 
   assert.equal(factoryCalls, 1, '工厂只应被调用一次');
   assert.deepEqual(fake.promptCalls, ['第一轮', '第二轮'], '两次 prompt 都落在同一会话实例');
+});
+
+// ===== TE-S05: tool_execution_end result.details 透传 =====
+
+test('TE-S05: pi 工具 result.details 透传到 onToolCompleted.result.details（todo 工具场景）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const cap = captureToolHandlers(adapter);
+
+  await adapter.sendMessage('session-todo', '列todo', {});
+  fake.emit({ type: 'tool_execution_start', toolCallId: 'call-todo', toolName: 'todo', args: { action: 'list' } });
+  fake.emit({
+    type: 'tool_execution_end',
+    toolCallId: 'call-todo',
+    toolName: 'todo',
+    result: {
+      content: [{ type: 'text', text: '[ ] #1: 修复\n[x] #2: 完成' }],
+      details: {
+        action: 'list',
+        tasks: [
+          { id: 1, subject: '修复', status: 'pending' },
+          { id: 2, subject: '完成', status: 'completed' },
+        ],
+        nextId: 3,
+      },
+    },
+    isError: false,
+  });
+
+  assert.equal(cap.completed.length, 1);
+  const completed = cap.completed[0];
+  assert.equal(completed?.toolEventId, 'call-todo');
+  assert.equal(completed?.text, '[ ] #1: 修复\n[x] #2: 完成');
+  assert.deepEqual(completed?.details, {
+    action: 'list',
+    tasks: [
+      { id: 1, subject: '修复', status: 'pending' },
+      { id: 2, subject: '完成', status: 'completed' },
+    ],
+    nextId: 3,
+  });
+});
+
+test('TE-S05: pi 工具 result 无 details → onToolCompleted.result.details 为 undefined（序列化后字段不出现）', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const cap = captureToolHandlers(adapter);
+
+  await adapter.sendMessage('session-read', '读一下', {});
+  fake.emit({ type: 'tool_execution_start', toolCallId: 'call-read', toolName: 'read', args: { path: 'a.ts' } });
+  fake.emit({
+    type: 'tool_execution_end',
+    toolCallId: 'call-read',
+    toolName: 'read',
+    result: { content: [{ type: 'text', text: 'file contents' }] },
+    isError: false,
+  });
+
+  const completed = cap.completed[0];
+  assert.equal(completed?.toolEventId, 'call-read');
+  assert.equal(completed?.text, 'file contents');
+  // 序列化后 details 字段不应出现
+  const serialized = JSON.parse(JSON.stringify(completed));
+  assert.equal('details' in serialized, false, 'details 未提供时序列化结果不出现该字段');
+});
+
+test('TE-S05: pi 工具 result.details 为非对象（string/number）原样透传不抛错', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const cap = captureToolHandlers(adapter);
+
+  for (const badDetails of ['plain string', 42, null, [1, 2], { any: 'object' }]) {
+    await adapter.sendMessage(`session-bad-${Math.random()}`, 'x', {});
+    const id = `call-bad-${Math.random()}`;
+    fake.emit({ type: 'tool_execution_start', toolCallId: id, toolName: 'weird', args: {} });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: id,
+      toolName: 'weird',
+      result: { content: [{ type: 'text', text: 'ok' }], details: badDetails },
+      isError: false,
+    });
+  }
+
+  // 最后一个 completed 事件应原值透传 details
+  const last = cap.completed[cap.completed.length - 1];
+  assert.deepEqual(last?.details, { any: 'object' });
 });
 
 test('不同会话各自持有独立 pi 会话实例', async () => {
@@ -1177,4 +1264,293 @@ test('CV-S09 竞态回归：上一条直发 factory 失败时释放等待者，�
 
   await assert.rejects(first, /factory 失败/);
   await assert.rejects(second, /factory 失败/, '等待中的消息必须被释放并收到同一错误，不得悬挂');
+});
+
+// ===== Path 2：ask_user_question 双向往返（契约 §4.2.1 ① ④ / §4.4）=====
+
+import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel } from '@forge/extensions';
+
+/** 一份最小合法问卷载荷（扩展侧 emit 的形状） */
+function askRequestPayload(): Record<string, unknown> {
+  return {
+    requestId: 'req-1',
+    questions: [
+      {
+        question: '用哪个缓存实现？',
+        header: 'Cache',
+        options: [
+          { label: '内存缓存', description: '快但进程内' },
+          { label: 'Redis', description: '跨进程' },
+        ],
+      },
+    ],
+    timeoutMs: 60_000,
+  };
+}
+
+test('Path 2：按会话订阅 ask-user:request，补齐**必需** sessionId 后上抛 onAskUserQuestionRequested', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => fake.dispose(),
+    events: bus,
+  }));
+  const seen: Array<{ sessionId: string; payload: Record<string, unknown> }> = [];
+  adapter.setEventHandlers({
+    onAskUserQuestionRequested: (sessionId, payload) =>
+      seen.push({ sessionId, payload: payload as unknown as Record<string, unknown> }),
+  });
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, askRequestPayload());
+
+  assert.equal(seen.length, 1, '请求应被上抛一次');
+  assert.equal(seen[0]!.sessionId, 's1');
+  assert.equal(seen[0]!.payload.requestId, 'req-1');
+  assert.equal(seen[0]!.payload.sessionId, 's1', '载荷必须带 sessionId（多窗格据此认领）');
+  assert.equal(seen[0]!.payload.timeoutMs, 60_000, 'timeoutMs 原样透传供面板驱动倒计时');
+  assert.equal(Array.isArray(seen[0]!.payload.questions), true);
+});
+
+test('Path 2：畸形请求载荷一律静默忽略（宁可不弹，也不弹残缺面板）', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => fake.dispose(),
+    events: bus,
+  }));
+  const seen: unknown[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (_sid, payload) => seen.push(payload) });
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, null);
+  bus.emit(ASK_USER_REQUEST_CHANNEL, 'text');
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { questions: [], timeoutMs: 1000 }); // 缺 requestId
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: [], timeoutMs: 1000 }); // 空问卷
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: {}, timeoutMs: 1000 }); // questions 非数组
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: [{}], timeoutMs: 0 }); // timeoutMs 非正
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: 'r', questions: [{}], timeoutMs: Number.NaN });
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { requestId: '', questions: [{}], timeoutMs: 1000 }); // requestId 空
+
+  assert.equal(seen.length, 0, '八种畸形载荷都不得上抛');
+});
+
+test('Path 2：replyAskUserQuestion 经**该会话**总线投递回填；无 lease 返回 false 不投递', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => fake.dispose(),
+    events: bus,
+  }));
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  const replies: Array<Record<string, unknown>> = [];
+  bus.on(askUserReplyChannel('req-1'), (data) => replies.push(data as Record<string, unknown>));
+
+  const answers = [{ questionIndex: 0, question: 'q', kind: 'option', answer: '内存缓存' }];
+  const ok = adapter.replyAskUserQuestion('s1', 'req-1', { answers, cancelled: false, globalNote: '备注' });
+  assert.equal(ok, true);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0]!.requestId, 'req-1');
+  assert.deepEqual(replies[0]!.answers, answers);
+  assert.equal(replies[0]!.cancelled, false);
+  assert.equal(replies[0]!.globalNote, '备注');
+
+  // 取消态：globalNote 缺省时字段不出现在载荷里（与扩展侧 isAskUserReplyPayload 宽松校验一致）
+  adapter.replyAskUserQuestion('s1', 'req-1', { answers: [], cancelled: true });
+  assert.equal(replies.length, 2);
+  assert.equal(replies[1]!.cancelled, true);
+  assert.equal('globalNote' in replies[1]!, false);
+
+  // 错窗格 / 会话已删 → 无 lease → 不投递（作答被丢弃，模型收到 DECLINE）
+  assert.equal(adapter.replyAskUserQuestion('other', 'req-1', { answers: [], cancelled: false }), false);
+  assert.equal(replies.length, 2, '无 lease 的会话不得产生任何回填');
+});
+
+test('Path 2：会话隔离——每会话各自订阅，sessionId 取自订阅闭包，A 的请求不会投到 B', async () => {
+  const busA = new SubagentTestBus();
+  const busB = new SubagentTestBus();
+  const adapter = new PiConversationAdapter(async (options) => {
+    const fake = new FakePiSession();
+    return { session: fake, dispose: () => fake.dispose(), events: options.sessionId === 'A' ? busA : busB };
+  });
+  const seen: string[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (sessionId) => seen.push(sessionId) });
+  adapter.onMessage('A', () => undefined);
+  adapter.onMessage('B', () => undefined);
+  // 生产路径由 resolveSendOptions(sessionId) 注入 sessionId；测试按同形状传入
+  await adapter.sendMessage('A', 'a 的任务', { sessionId: 'A' });
+  await adapter.sendMessage('B', 'b 的任务', { sessionId: 'B' });
+
+  busA.emit(ASK_USER_REQUEST_CHANNEL, askRequestPayload());
+
+  assert.deepEqual(seen, ['A'], 'A 的总线事件只能认领为 A（总线私有，无需从 ctx 反查）');
+
+  // B 的回填只落在 B 的总线上
+  const repliesA: unknown[] = [];
+  const repliesB: unknown[] = [];
+  busA.on(askUserReplyChannel('req-1'), (d) => repliesA.push(d));
+  busB.on(askUserReplyChannel('req-1'), (d) => repliesB.push(d));
+  adapter.replyAskUserQuestion('B', 'req-1', { answers: [], cancelled: true });
+  assert.equal(repliesA.length, 0, 'A 的总线不得收到 B 会话的回填');
+  assert.equal(repliesB.length, 1);
+});
+
+test('Path 2：removeSession 退订问卷 channel，迟到请求不再上抛（幂等）', async () => {
+  const bus = new SubagentTestBus();
+  const fake = new FakePiSession();
+  let disposed = false;
+  const adapter = new PiConversationAdapter(async () => ({
+    session: fake,
+    dispose: () => (disposed = true),
+    events: bus,
+  }));
+  const seen: unknown[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (_sid, payload) => seen.push(payload) });
+  adapter.onMessage('s-del', () => undefined);
+  await adapter.sendMessage('s-del', '任务');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, askRequestPayload());
+  assert.equal(seen.length, 1);
+
+  await adapter.removeSession('s-del');
+  assert.ok(disposed, 'lease 应被 dispose');
+
+  bus.emit(ASK_USER_REQUEST_CHANNEL, { ...askRequestPayload(), requestId: 'req-2' });
+  assert.equal(seen.length, 1, '退订后迟到请求不得再上抛（否则会弹出无主问卷）');
+  await adapter.removeSession('s-del'); // 幂等
+});
+
+test('Path 2：lease 无事件总线（扩展未激活）时静默降级，不抛错也不上抛', async () => {
+  const fake = new FakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => fake.dispose() }));
+  const seen: unknown[] = [];
+  adapter.setEventHandlers({ onAskUserQuestionRequested: (_sid, payload) => seen.push(payload) });
+  adapter.onMessage('s1', () => undefined);
+  await adapter.sendMessage('s1', '任务');
+
+  assert.deepEqual(seen, []);
+  assert.equal(adapter.replyAskUserQuestion('s1', 'req-1', { answers: [], cancelled: true }), false);
+});
+
+// ===== 回归：一轮多条 assistant 消息（MiniMax-M3 混流）不重发上一条正文 =====
+//
+// 真机事故（edu-community 会话）：一轮内 pi 依次产生多条 assistant 消息，每条正文
+// 都是 <think>…</think> 混流形态。此前 partialContent 为轮次级累积：带正文的消息
+// message_end 后正文残留在 partialContent，后续纯思考消息 message_end 把
+// forwardedClean 置空 → 再下一条纯思考消息流式时 strip 结果=旧正文 ≠ prev('')
+// → 整段旧正文被当新增量重发，前端在工具卡片之后 push 出重复文本卡
+//（「AI 回复重复发同样的话，切会话再切回才恢复」——磁盘历史本就正确）。
+
+/** 静默 fake：prompt 不自发事件，由测试自行驱动完整消息序列 */
+function makeSilentFake(): {
+  session: {
+    subscribe(listener: (event: MinimalEvent) => void): () => void;
+    prompt(text: string): Promise<void>;
+    abort(): Promise<void>;
+    dispose(): void;
+    setThinkingLevel(level: string): Promise<void>;
+  };
+  listeners: Set<(event: MinimalEvent) => void>;
+} {
+  const listeners = new Set<(event: MinimalEvent) => void>();
+  return {
+    session: {
+      subscribe(listener: (event: MinimalEvent) => void): () => void {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async prompt(): Promise<void> {},
+      async abort(): Promise<void> {},
+      dispose(): void {},
+      async setThinkingLevel(): Promise<void> {},
+    },
+    listeners,
+  };
+}
+
+test('一轮多条 assistant 消息时上一条正文不重发（真机重复话术回归）', async () => {
+  const { session, listeners } = makeSilentFake();
+  const adapter = new PiConversationAdapter(async () => ({ session, dispose: () => undefined }));
+
+  const deltas: string[] = [];
+  const assistantMessages: string[] = [];
+  adapter.onDelta('session-dup', (t) => deltas.push(t));
+  adapter.onMessage('session-dup', (m) => {
+    if (m.role === 'assistant') assistantMessages.push(m.content);
+  });
+
+  await adapter.sendMessage('session-dup', '你不要改全局的'); // 建立订阅 + 重置轮次状态
+
+  const emitDelta = (text: string): void => {
+    for (const listener of listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+    }
+  };
+  const endAssistant = (text: string): void => {
+    for (const listener of listeners) {
+      listener({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      });
+    }
+  };
+
+  // 消息1：<think>思考</think> + 正文（edit 前的确认话术）——正常转发
+  emitDelta('<think>revert the change in controller');
+  emitDelta('</think>明白了，回退上次的改动。');
+  endAssistant('<think>revert the change in controller</think>明白了，回退上次的改动。');
+
+  // 消息2：纯思考（无正文，对应后续 edit 工具调用）
+  emitDelta('<think>checking the edit result</think>');
+  endAssistant('<think>checking the edit result</think>');
+
+  // 消息3：又是纯思考（对应 read 工具调用）——修复前这里会把消息1正文整段重发
+  emitDelta('<think>reading the file back</think>');
+  endAssistant('<think>reading the file back</think>');
+
+  // 修复后：增量恰好等于消息1正文，一次性转发，无重复
+  assert.deepEqual(deltas, ['明白了，回退上次的改动。']);
+  assert.equal((deltas.join('').match(/明白了/g) ?? []).length, 1, '正文不得在流式增量中重复');
+  // 终态 assistant 消息只有消息1一条（消息2/3 清洗后为空，不产生气泡）
+  assert.deepEqual(assistantMessages, ['明白了，回退上次的改动。']);
+});
+
+test('正文消息后跟正文消息：第二条只转发自己的增量（消息级收敛不误伤）', async () => {
+  const { session, listeners } = makeSilentFake();
+  const adapter = new PiConversationAdapter(async () => ({ session, dispose: () => undefined }));
+
+  const deltas: string[] = [];
+  adapter.onDelta('session-two-text', (t) => deltas.push(t));
+
+  await adapter.sendMessage('session-two-text', '继续');
+
+  const emitDelta = (text: string): void => {
+    for (const listener of listeners) {
+      listener({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+    }
+  };
+  const endAssistant = (text: string): void => {
+    for (const listener of listeners) {
+      listener({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      });
+    }
+  };
+
+  // 消息1：正文 A
+  emitDelta('第一段正文。');
+  endAssistant('第一段正文。');
+  // 消息2：另一段正文 B（工具调用之间的正常输出）
+  emitDelta('<think>brief</think>第二段正文。');
+  endAssistant('<think>brief</think>第二段正文。');
+
+  assert.deepEqual(deltas, ['第一段正文。', '第二段正文。']);
 });

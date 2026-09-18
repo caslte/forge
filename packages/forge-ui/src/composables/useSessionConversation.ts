@@ -1,9 +1,20 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { call, subscribe, type ConversationCompactedPayload } from '../bridge.ts';
+import {
+  call,
+  onAskUserQuestionRequest,
+  replyAskUserQuestion,
+  subscribe,
+  type AskUserQuestionAnswer,
+  type AskUserQuestionRequestPayload,
+  type ConversationCompactedPayload,
+} from '../bridge.ts';
 import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
 import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
+import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
+import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
+import { createAskQuestionStore } from './askQuestionStore.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
@@ -87,6 +98,45 @@ export function useSessionConversation(options: {
   /** 待二次确认的停止请求（结果视图头部"终止"） */
   const pendingStopAgentId = ref<string | null>(null);
 
+  // ===== Todo 面板快照（CV-S11；按 sessionId 内存隔离，切走再切回不丢，关闭 APP 随进程消失） =====
+  // Map 替代单 ref：切会话不清空，切换回历史会话时还原上次的 todo 视图。
+  // "会话自己清理" 不需要主动 GC —— 自然清空（所有 task 被删）时 shouldRenderPanel=false 面板自动卸载。
+const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
+/** 当前会话 todo 快照（模板 v-bind 自动解包，外部消费接口不变） */
+const todoSnapshot = computed<TodoSnapshot | null>(() => {
+  const sid = options.getSessionId();
+  return sid === null ? null : (todoSnapshots.get(sid) ?? null);
+});
+
+// ===== ask_user_question 面板（Path 2；按 sessionId 内存隔离，与 todo 同策略）=====
+// 契约 docs/plan/ask-user-question-contract.md §4.4：面板必须挂在**会话作用域**内
+// （本 composable 每个窗格一份实例），载荷强制带 sessionId，各窗格按它认领 ——
+// 避免单 webContents 广播导致「N 个窗格同时弹出 N 份问卷」与错窗格回填。
+// 四个会话级表 + 三个 computed 由 `askQuestionStore` 持有：那组状态里有一个**静默失败**
+// 的响应式坑（倒计时表写成普通 Map → deadline computed 缓存首屏空值 → 读秒恒为 0，
+// 真机出现过），抽成不依赖组件上下文与 IPC 运行时的单元后可用 node:test 直接上锁。
+// 注意 getSessionId 必须读响应式源，否则切换会话时三个 computed 不会跟随刷新。
+const askStore = createAskQuestionStore(() => options.getSessionId());
+const { request: askRequest, deadline: askDeadline, answered: askAnswered } = askStore;
+
+/**
+ * 用户在本会话发了新消息 → 清掉「已答摘要」（对话已推进，记录已沉淀进消息流的工具卡片）。
+ * **不动**进行中的请求：那会孤儿化扩展侧仍在等待的 Promise（只能等满超时拿 DECLINE）。
+ */
+function clearAskAnswered(sid: string): void {
+  askStore.clearAnswered(sid);
+}
+
+/**
+ * 已答摘要自动收起（面板折叠关闭）—— `AskUserQuestionPanel` 在摘要亮完后
+ * `emit('dismiss')` 请求执行。收起后该轮摘要不会再显示（含迟到的 `tool.completed`）。
+ */
+function dismissAskAnswered(): void {
+  const sid = options.getSessionId();
+  if (sid === null) return;
+  askStore.dismissAnswered(sid);
+}
+
   const isEmpty = computed(() => messages.value.length === 0 && !isStreaming.value && !loadingHistory.value);
 
   const activeAssistantIndex = computed(() => messages.value.map((m) => m.role).lastIndexOf('assistant'));
@@ -108,25 +158,22 @@ export function useSessionConversation(options: {
 
   // ===== 展示项组装（消息 / 连续 ≥2 工具聚组） =====
 
-  /** 从 ConversationMessage（role=tool）构造 ToolDiff（Edit 类含 file_path/old_string/new_string） */
-  function toToolDiff(message: ConversationMessage): ToolDiff | null {
-    const input = message.input;
-    if (!input || typeof input !== 'object') return null;
-    if (!('old_string' in input) && !('new_string' in input)) return null;
-    const text = (value: unknown): string | null => (typeof value === 'string' ? value : null);
-    return {
-      id: message.toolEventId ?? `${message.ts}-${input.file_path ?? ''}`,
-      filePath: text(input.file_path),
-      oldString: text(input.old_string),
-      newString: text(input.new_string),
-    };
+  /** 从 ConversationMessage（role=tool）构造 ToolDiff 列表（edit 多 hunk 逐块一项；
+   *  入参形状判定共享 parseFileToolInput：pi 真实 {path,edits}/{path,content} 与旧形状全兼容） */
+  function toToolDiffs(message: ConversationMessage): ToolDiff[] {
+    const parsed = parseFileToolInput(message.input);
+    if (!parsed) return [];
+    const idBase = message.toolEventId ?? message.ts;
+    return parsed.parts.map((part, i) => ({
+      id: `${idBase}-${i}`,
+      filePath: parsed.path,
+      oldString: part.oldText,
+      newString: part.newText,
+    }));
   }
 
   function groupDiffs(tools: ConversationMessage[]): ToolDiff[] {
-    return tools.flatMap((tool) => {
-      const diff = toToolDiff(tool);
-      return diff ? [diff] : [];
-    });
+    return tools.flatMap(toToolDiffs);
   }
 
   /**
@@ -143,10 +190,18 @@ export function useSessionConversation(options: {
     const msgs = messages.value;
     // 轮次 footer：一次回复被工具调用拆成多张 assistant 卡片时，仅末卡显示复制+时间
     const footers = computeTurnFooters(msgs);
+    // 改动文件汇总：按轮收集成功的 edit/write 工具（键位 = 轮末位置，见 collectTurnChangedFiles）
+    const turnFiles = collectTurnChangedFiles(msgs);
+    const pushFilesSummary = (pos: number): void => {
+      const summary = turnFiles.get(pos);
+      if (summary) out.push({ key: summary.key, kind: 'files-summary', summary });
+    };
     let i = 0;
     while (i < msgs.length) {
       const cur = msgs[i]!;
       if (cur.role !== 'tool') {
+        // 轮末插入点：上一轮的汇总卡片排在下一条 user 消息之前
+        if (cur.role === 'user') pushFilesSummary(i);
         const footer = footers.get(i);
         out.push({
           key: itemKey(cur),
@@ -188,12 +243,58 @@ export function useSessionConversation(options: {
         }
       }
     }
+    // 轮末插入点（末轮）：流式中轮未结束时汇总卡片始终位于消息流末尾
+    pushFilesSummary(msgs.length);
     return out;
   });
 
   function toggleGroup(key: string): void {
     const cur = toolGroupCollapsed.get(key);
     toolGroupCollapsed.set(key, !(cur ?? true));
+  }
+
+  // ===== 历史窗口化（v3.74 首帧卡顿：点大会话 221 项全量挂载 ≈ 4.3s 冻结主线程） =====
+  //
+  // 策略：点击会话后用户第一眼在**底部**（最新消息），故首帧只挂载尾部若干展示项，
+  // 上方向上滚动时按批补挂（配合 scrollHeight 锚定，见 ConversationView.maybeExpandHistoryWindow）。
+  // 聚合结构（工具组 / 轮次 footer / 改动文件汇总）都在 displayItems 内基于**完整** msgs
+  // 计算完成，窗口只在展示层截断，不会拆散任何组。被窗口滑出再滚回的消息重挂载时，
+  // renderMarkdown 内容寻址缓存命中（≈0ms），不会二次付出解析成本。
+  // 流式新消息天然落在窗口尾（slice 取尾部），无需特殊处理。
+  const HISTORY_INITIAL_ITEMS = 24;
+  const HISTORY_STEP_ITEMS = 16;
+
+  const historyWindow = ref<number>(HISTORY_INITIAL_ITEMS);
+  /** 尾部窗口化后的展示项；窗口盖满时与 displayItems 同一引用（避免多余 patch） */
+  const windowedItems = computed<DisplayItem[]>(() => {
+    const items = displayItems.value;
+    if (items.length <= historyWindow.value) return items;
+    return items.slice(items.length - historyWindow.value);
+  });
+  /** 窗口外的起始位置（displayItems 索引）：小于它的展示项尚未挂载 */
+  const windowStartIndex = computed(() =>
+    displayItems.value.length <= historyWindow.value ? 0 : displayItems.value.length - historyWindow.value,
+  );
+  /** 仍有展示项被截断在窗口外（向上滚动扩展的依据；false 后可移除滚动监听分支） */
+  const historyWindowTruncated = computed(() => displayItems.value.length > historyWindow.value);
+
+  /** 向上触顶时扩一批；返回是否有变化（供视图决定是否做滚动锚定） */
+  function expandHistoryWindow(): boolean {
+    if (!historyWindowTruncated.value) return false;
+    historyWindow.value += HISTORY_STEP_ITEMS;
+    return true;
+  }
+
+  /**
+   * 时间轴定位目标在窗口外时，扩窗到「该消息起往后全挂载」。
+   * 目标 user 消息及其后的内容都要可见（回看模式向上翻页需要）。
+   * @returns 窗口是否发生变化（调用方据此等待 patch 后再查 DOM）
+   */
+  function expandHistoryWindowTo(index: number): boolean {
+    if (index >= windowStartIndex.value) return false;
+    const remaining = displayItems.value.length - index;
+    if (remaining > historyWindow.value) historyWindow.value = remaining + 8;
+    return true;
   }
 
   // ===== 历史加载 / 会话切换 =====
@@ -215,6 +316,8 @@ export function useSessionConversation(options: {
         messages.value = [...(res.messages ?? [])];
         toolEventIndex.clear();
         toolGroupCollapsed.clear();
+        // 窗口重置：新加载的历史首帧只挂尾部（首帧卡顿优化）
+        historyWindow.value = HISTORY_INITIAL_ITEMS;
         // 重建工具事件索引
         messages.value.forEach((m, i) => {
           if (m.role === 'tool' && m.toolEventId) {
@@ -251,11 +354,13 @@ export function useSessionConversation(options: {
   }
 
   /** 会话切换：重置状态（视图侧的回看模式/高亮等由视图自理）；
-   * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09） */
+   * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09）；
+   * todoSnapshots 不清：按 sessionId 隔离，切回历史会话还原上次的 todo 视图（CV-S11 修正） */
   function resetForSession(): void {
     messages.value = [];
     toolEventIndex.clear();
     toolGroupCollapsed.clear();
+    historyWindow.value = HISTORY_INITIAL_ITEMS;
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
@@ -281,6 +386,7 @@ export function useSessionConversation(options: {
     }
     errorMsg.value = null;
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
+    clearAskAnswered(sid);
     isStreaming.value = true;
     startElapsed(sid);
     resetStreamPhase();
@@ -333,6 +439,7 @@ export function useSessionConversation(options: {
     // 否则会把 user 文本写进在途 assistant 占位）
     if (p.message.role === 'user') {
       messages.value.push(p.message);
+      clearAskAnswered(p.sessionId);
       scheduleScroll();
       return;
     }
@@ -381,6 +488,11 @@ export function useSessionConversation(options: {
       // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
       // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
       if (p.status !== 'error') errorMsg.value = null;
+      // CV-S11 兜底：会话终态时把残留的 in_progress 标为 completed，避免 TodoPanel
+      // 永远挂着呼吸点。快照按 sessionId 隔离，只动当前会话。无可恢复快照时 noop。
+      const prevSnap = todoSnapshots.get(p.sessionId) ?? null;
+      const nextSnap = applyTerminalCleanup(prevSnap);
+      if (nextSnap !== prevSnap) todoSnapshots.set(p.sessionId, nextSnap);
     }
   }
 
@@ -401,6 +513,75 @@ export function useSessionConversation(options: {
     const p = payload as ConversationCompactedPayload;
     if (p.sessionId !== options.getSessionId()) return;
     void loadHistory();
+  }
+
+  // ===== 问卷（Path 2 ask_user_question）=====
+
+  /**
+   * 问卷请求到达（`conversation.askUserQuestionRequested`，契约 §4.4）。
+   *
+   * 会话隔离（三条硬约束之一）：**载荷必须带 `sessionId`**，且只有与本窗格会话一致
+   * 才认领 —— 缺 sessionId 一律忽略，**不做**「无 sessionId 归当前会话」的兜底
+   * （tool 事件的兜底在这里会变成「多窗格各弹一份问卷」）。
+   *
+   * 倒计时记**绝对截止时刻**而非让面板自己起算：面板随会话切换会重新挂载，若每次
+   * 重新起算，切走再切回会把倒计时拉长到超过扩展侧 `timeoutMs + graceMs` 真超时，
+   * 归零回填时 extension 早已收敛（作答被丢弃）。绝对时刻下剩余秒数连续。
+   */
+  function onAskUserQuestionRequested(payload: unknown): void {
+    const p = payload as AskUserQuestionRequestPayload;
+    if (typeof p?.sessionId !== 'string' || p.sessionId === '') return;
+    if (typeof p.requestId !== 'string' || p.requestId === '') return;
+    if (!Array.isArray(p.questions) || p.questions.length === 0) return;
+    if (typeof p.timeoutMs !== 'number' || !Number.isFinite(p.timeoutMs) || p.timeoutMs <= 0) return;
+    if (p.sessionId !== options.getSessionId()) return;
+    askStore.accept(p);
+  }
+
+  /**
+   * 面板提交（用户点提交 / 取消 / 倒计时归零自查）：回填 extension 侧等待中的 Promise。
+   *
+   * 回填带 `sessionId + requestId`，main 侧以二者匹配该会话的 lease（契约 §4.4 ③）。
+   * `delivered=false`（会话已删 / 无 lease / 请求已超时收敛）表示作答被丢弃、模型将收到
+   * `DECLINE` —— 此时摘要**据实标「已取消」**，不显示一个并不存在的成功。
+   *
+   * 收尾是**乐观**的：先本地折成已答摘要（面板立刻从交互态切走），`tool.completed`
+   * 到达后再用权威 `details` 覆盖。
+   */
+  async function submitAskUserAnswers(payload: {
+    answers: AskUserQuestionAnswer[];
+    cancelled: boolean;
+    globalNote?: string;
+  }): Promise<void> {
+    const sid = options.getSessionId();
+    if (sid === null) return;
+    const current = askStore.requestOf(sid);
+    if (current === undefined) return; // 已被 tool.completed 收尾 / 非本会话
+    const questions = askStore.questionsOf(sid) ?? current.questions;
+    let delivered = false;
+    try {
+      const res = await replyAskUserQuestion({
+        sessionId: sid,
+        requestId: current.requestId,
+        answers: payload.answers,
+        cancelled: payload.cancelled,
+        ...(payload.globalNote !== undefined ? { globalNote: payload.globalNote } : {}),
+      });
+      delivered = res.delivered;
+    } catch (e) {
+      console.warn('[ask_user_question] 回填失败', e);
+    }
+    // 「用户点了提交、答案却没送到」才算失败。用户自己点取消、或倒计时归零（那条路径
+    // 也会主动回填已答部分）都属于交互正常结束，不能混为一谈 —— 后者若被判成失败，
+    // 面板会留下永不自动收起的过期卡片。
+    const deliveryFailed = !payload.cancelled && !delivered;
+    askStore.settle(sid, {
+      answers: payload.answers,
+      cancelled: payload.cancelled || !delivered,
+      deliveryFailed,
+      questions,
+      ...(payload.globalNote !== undefined ? { globalNote: payload.globalNote } : {}),
+    });
   }
 
   function onToolStarted(payload: unknown): void {
@@ -433,10 +614,33 @@ export function useSessionConversation(options: {
     const p = payload as {
       toolEventId: string;
       sessionId?: string;
-      result?: { text: string | null };
+      tool?: { name?: string };
+      result?: { text: string | null; details?: unknown };
       summary?: string;
     };
     if (p.sessionId !== undefined && p.sessionId !== options.getSessionId()) return;
+    // CV-S11：仅识别 tool.name === 'todo' 才消费 details（TE-S05 透传）；
+    // 非法 details 由 reducer 静默忽略；不依赖 toolEventIndex —— todo 工具可能只发 completed 无 started
+    // 按当前 sessionId 读写：切到其他会话不影响本会话 todo，本会话 todo 也不会串到其他会话
+    if (p.tool?.name === 'todo') {
+      const sid = options.getSessionId();
+      if (sid !== null) {
+        const prev = todoSnapshots.get(sid) ?? null;
+        const next = applyTodoCompletion(prev, {
+          toolName: 'todo',
+          details: p.result?.details,
+        });
+        if (next !== prev) todoSnapshots.set(sid, next);
+      }
+    }
+    // Path 2 ask_user_question：工具返回的 details（{answers,cancelled,globalNote?,error?}）
+    // 是「已答摘要」的权威来源。收口三件事：①用 details 覆盖乐观摘要；②清掉进行中
+    // 请求（工具已返回 —— 覆盖「面板未挂载/窗口挂载晚」等未走 submit 的路径，避免面板
+    // 永久停在交互态）；③释放倒计时。
+    if (p.tool?.name === 'ask_user_question') {
+      const sid = options.getSessionId();
+      if (sid !== null) askStore.applyCompletion(sid, p.result?.details);
+    }
     const idx = toolEventIndex.get(p.toolEventId);
     if (idx === undefined) return;
     markToolEnd(p.toolEventId);
@@ -598,6 +802,8 @@ export function useSessionConversation(options: {
       subscribe('tool.error', onToolError),
       subscribe('subagent.updated', onSubagentUpdated),
       subscribe('subagent.removed', onSubagentRemoved),
+      // Path 2：问卷请求（载荷带必需 sessionId，本窗格按它认领）
+      onAskUserQuestionRequest(onAskUserQuestionRequested),
     ];
   });
 
@@ -608,6 +814,13 @@ export function useSessionConversation(options: {
   });
 
   return {
+    todoSnapshot,
+    // 问卷（Path 2）
+    askRequest,
+    askDeadline,
+    askAnswered,
+    submitAskUserAnswers,
+    dismissAskAnswered,
     // 状态
     messages,
     isStreaming,
@@ -615,6 +828,10 @@ export function useSessionConversation(options: {
     errorMsg,
     isEmpty,
     displayItems,
+    windowedItems,
+    historyWindowTruncated,
+    expandHistoryWindow,
+    expandHistoryWindowTo,
     isMessageStreaming,
     toggleGroup,
     sessionStatus,

@@ -1,17 +1,17 @@
 {
-  "run_id": "forge-v1-01",
-  "stage": "setup",
-  "runtime": {
-    "node": "v24.12.0",
-    "npm": "11.6.2"
+  "version": 1,
+  "source": "local_fallback",
+  "services": {
+    "database": { "enabled": false },
+    "backend": { "enabled": false },
+    "frontend": { "enabled": false, "base_url": "http://localhost:51731", "start_command": null },
+    "browser": { "enabled": true }
   },
-  "workspaces": [
-    "packages/forge-core",
-    "packages/forge-desktop",
-    "packages/forge-ui",
-    "packages/forge-extensions"
-  ],
-  "typescript": "^5.8.0",
-  "test_runner": "node:test（Node 24 原生 TS 类型剥离，无需 tsx）",
-  "notes": "骨架配置，无任何密钥/令牌。forge-core 纯 Node，不引入 Electron/Vue/pi 依赖。"
+  "missing_services": [],
+  "notes": [
+    "Electron 桌面应用：无数据库/后端服务；forge-core 纯 Node + IPC。",
+    "E2E 走 mock-bridge（FORGE_DEV_SERVER_ORIGIN + vite dev 51731），由 playwright webServer 自行拉起。",
+    "模块 07 存储 = 本地 JSON（updater-state.json / ~/.pi/agent），无需数据库。",
+    "构建链：pnpm + tsc/vue-tsc；单测 node --experimental-strip-types --test。"
+  ]
 }

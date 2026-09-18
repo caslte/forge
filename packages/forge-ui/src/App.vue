@@ -1,18 +1,31 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import { call, subscribe } from './bridge';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { call, subscribe, getBootState } from './bridge';
 import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
 import { projectTagOf } from './utils/sessionView';
+import { isProjectBusy } from './utils/branchBadge';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
 import TitleBar from './components/TitleBar.vue';
 import ProjectTree from './components/ProjectTree.vue';
 import ConversationView from './components/ConversationView.vue';
+import LandingHero from './components/LandingHero.vue';
 import MultiWindowCanvas from './components/MultiWindowCanvas.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
+import BootWelcome from './components/BootWelcome.vue';
+
+/**
+ * 启动门闩（v3.76）：false 期间整个正式 UI 不挂载，只显示 BootWelcome。
+ *
+ * 主进程在窗口出现后才动态组装 forge-core（含 pi SDK ~2.4s），期间 forge:invoke
+ * handler 尚未注册——门闩同时挡住了所有启动期请求（loadSessions/loadProjects/
+ * loadModels），避免它们打在未注册的 channel 上报 "No handler registered"。
+ * 放行信号：boot.ready 事件（推）或 getBootState().ready（拉），任一先到即可。
+ */
+const bootReady = ref(false);
 
 // 项目/会话
 const projects = ref<ProjectItem[]>([]);
@@ -63,6 +76,14 @@ watch(treeView, (v) => {
     // 存储失败忽略（不影响运行）
   }
 });
+
+/** 切项目/任务视角：等同直接赋值，但提供切入口用于后续重启滑动胶囊过渡。
+ *  当前 CSS 仅依赖 is-task class 切换即可触发过渡，无需额外触发器；
+ *  保留函数是为和模板里已存在的 @click="switchTreeView(...)" 对齐。 */
+function switchTreeView(v: 'project' | 'task'): void {
+  if (treeView.value === v) return;
+  treeView.value = v;
+}
 
 function onFoldAll(): void {
   if (allCollapsed.value) projectTreeRef.value?.expandAll();
@@ -117,7 +138,12 @@ const orderedProjects = computed<ProjectItem[]>(() => {
 });
 
 const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
-  if (projects.value.length === 0) return null;
+  if (projects.value.length === 0) {
+    // 零项目（落地 hero，v3.77）：没有可归属项目，项目区只提供「打开项目…」入口。
+    // currentPath:null 是类型既有的「未选归属」草稿语义；此时会话分支不渲染，
+    // 该描述只被 LandingHero 消费，不影响其他使用点。
+    return { mode: 'draft', currentPath: null, currentName: '打开项目', items: [] };
+  }
   const s = currentSession.value;
   const inSession = s !== null && !draftMode.value;
   const path = inSession ? s.projectPath : (currentProject.value?.path ?? null);
@@ -147,6 +173,36 @@ const currentProject = computed(() =>
 const currentSession = computed(() =>
   sessions.value.find((s) => s.sessionId === currentSessionId.value) ?? null,
 );
+
+/**
+ * 落地 hero 草稿直通（v3.77）：零项目落地页输入的文本，项目打开（LandingHero
+ * 卸载）时经 carry-text 暂存于此；分支切换完成后的 post-flush 经
+ * ConversationView.restoreDraft 回填项目视图的草稿输入框，随后立即清空——
+ * 保证只对「落地 → 第一个项目」这一次挂载生效，设置页往返等重挂载不会复活旧文本。
+ */
+const landingDraft = ref<string | null>(null);
+const convRef = ref<InstanceType<typeof ConversationView> | null>(null);
+
+function onLandingCarryText(text: string): void {
+  if (text.trim() !== '') landingDraft.value = text;
+}
+
+watch(
+  currentProjectPath,
+  async (path) => {
+    const carry = landingDraft.value;
+    landingDraft.value = null;
+    if (path === null || carry === null) return;
+    // post-flush 时点卸载钩子已跑完（carry 已落），但等下一 tick 确保新分支的
+    // ConversationView 完成挂载、convRef 就位后再回填
+    await nextTick();
+    convRef.value?.restoreDraft(carry);
+  },
+  { flush: 'post' },
+);
+
+/** 项目忙（PM-S05 AC-PM-016）：当前项目任一会话 streaming 时分支徽标禁用 */
+const projectBusy = computed(() => isProjectBusy(sessions.value, currentProjectPath.value ?? ''));
 
 const sessionError = ref<string | null>(null);
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -497,9 +553,35 @@ watch([sessions, currentSessionId], () => {
   }
 });
 
-onMounted(() => {
+/** boot.ready 事件订阅句柄：放行后立即退订（推/拉双通道，只需一次） */
+let bootUnsubscribe: (() => void) | null = null;
+/** 门闩逃生计时器：放行时清除（见 onMounted 门闩段注释） */
+let bootEscapeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 门闩放行：进入正式界面并执行启动期拉取（幂等，推/拉/逃生任一先到都只跑一次） */
+function startPostBootInit(): void {
+  if (bootReady.value) return;
+  bootReady.value = true;
+  if (bootUnsubscribe !== null) {
+    bootUnsubscribe();
+    bootUnsubscribe = null;
+  }
+  if (bootEscapeTimer !== null) {
+    clearTimeout(bootEscapeTimer);
+    bootEscapeTimer = null;
+  }
+  // 会话列表与项目列表并行拉取（而非串在 openProject 之后）：querySessionList 不传
+  // projectPath 时返回全部会话，与「打开项目」本身无依赖。若保持串行，openProject
+  // 触发的 pi 扩展预热（主进程 jiti 冷编译 3~9s 占满事件循环）会把会话查询一起堵住，
+  // 表现为「项目已显示、会话树空白数秒」。并行后会话请求先于预热落地。
+  void loadSessions();
   void loadProjects();
   void loadModels();
+}
+
+onMounted(() => {
+  // 事件订阅先挂：订阅本身不发请求，core 未就绪期间主进程也不会推业务事件，
+  // 挂早了无副作用（放行后 loadSessions 等才真正出发）
   unsubSessionRemoved = subscribe('session.removed', (payload) => {
     const p = payload as { sessionId: string };
     if (p.sessionId === currentSessionId.value) currentSessionId.value = null;
@@ -521,6 +603,26 @@ onMounted(() => {
     void loadModels();
     if (currentSessionId.value !== null) void loadSessionModel(currentSessionId.value);
   });
+
+  // 启动门闩（v3.76）：先拉 bootState 兜底（热重载/事件早于订阅的场景），
+  // 未就绪再等 boot.ready 推送。ready=true 的拉取直接放行，欢迎页一帧即过。
+  //
+  // 逃生通道（v3.76 真机教训：门闩绝不能是死门）：
+  // 1. 拉取异常（旧 preload 无 bootState 方法 / 任意 IPC 异常）→ 直接放行——
+  //    旧主进程本就是「core 组装完才建窗口」，窗口可见即 core 已就绪，放行正确；
+  // 2. 10s 超时强制放行——万一双通道都因未知原因断链，宁可进入正式界面让请求
+  //    报错（有错误提示），也绝不永远卡在欢迎页。
+  const BOOT_GATE_TIMEOUT_MS = 10_000;
+  bootEscapeTimer = setTimeout(() => startPostBootInit(), BOOT_GATE_TIMEOUT_MS);
+  void getBootState()
+    .then((state) => {
+      if (state.ready) {
+        startPostBootInit();
+      } else {
+        bootUnsubscribe = subscribe('boot.ready', () => startPostBootInit());
+      }
+    })
+    .catch(() => startPostBootInit());
 });
 
 onUnmounted(() => {
@@ -534,7 +636,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+  <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit -->
+  <BootWelcome v-if="!bootReady" />
+  <div v-else class="app-container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <TitleBar
       :sidebar-collapsed="sidebarCollapsed"
       @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed"
@@ -546,27 +650,34 @@ onUnmounted(() => {
         <header class="workspace-header"></header>
         <div class="tree-panel">
           <div class="sidebar-top">
-            <div class="view-seg" role="tablist" aria-label="会话列表视角">
+            <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" role="tablist" aria-label="会话列表视角">
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'project' }"
-                @click="treeView = 'project'"
+                @click="switchTreeView('project')"
               >项目</button>
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'task' }"
-                @click="treeView = 'task'"
+                @click="switchTreeView('task')"
               >任务</button>
             </div>
             <div class="sidebar-top-actions">
+              <!-- ponytail: 不用 v-if/v-show——两者在 Vue 里都是 display:none，折叠按钮隐藏时
+                   仍不占布局空间，导致 sidebar-top 高度从 44px 跳到 40px，
+                   view-seg 在 center 对齐下上下跳 2px。用 visibility 保留占位。 -->
               <button
-                v-if="treeView === 'project'"
                 type="button"
                 class="fold-all-btn"
+                :style="{
+                  visibility: treeView === 'project' ? 'visible' : 'hidden',
+                  pointerEvents: treeView === 'project' ? 'auto' : 'none',
+                }"
                 :aria-label="allCollapsed ? '展开全部项目' : '收起全部项目'"
                 :data-tooltip="allCollapsed ? '展开全部项目' : '收起全部项目'"
+                :tabindex="treeView === 'project' ? 0 : -1"
                 @click="onFoldAll"
               >
                 <svg v-if="allCollapsed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -694,6 +805,7 @@ onUnmounted(() => {
                 :models="models"
                 :current-model="currentSessionModel"
                 :project-picker="projectPicker ?? undefined"
+                :git-busy="projectBusy"
                 @model-change="onModelChange"
                 @pick-project="onPickProject"
                 @open-project-picker="openFolderPicker"
@@ -701,14 +813,16 @@ onUnmounted(() => {
               />
             </div>
           </div>
-          <div v-else-if="currentProject && (currentSession || draftMode)" class="session-stage">
+          <div v-else-if="currentProject" class="session-stage">
             <ConversationView
+              ref="convRef"
               :session-id="currentSessionId"
               :project="currentProject"
               :session="currentSession"
               :models="models"
               :current-model="currentSessionModel"
               :project-picker="projectPicker ?? undefined"
+              :git-busy="projectBusy"
               @model-change="onModelChange"
               @session-created="onSessionCreated"
               @pick-project="onPickProject"
@@ -716,28 +830,18 @@ onUnmounted(() => {
               @remove-project="onRemoveProject"
             />
           </div>
-          <div v-else-if="currentProject" class="no-session">
-            <div class="no-session-card">
-              <div class="no-session-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
-              <p class="no-session-title">{{ currentProject.alias ?? basename(currentProject.path) }}</p>
-              <p class="hint">点击左侧 + 新建会话开始对话</p>
-            </div>
-          </div>
-          <div v-else class="no-session">
-            <div class="no-session-card">
-              <div class="no-session-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
-              <p class="no-session-title">选择项目或创建新项目开始</p>
-              <button class="primary" @click="openFolderPicker">打开项目</button>
-            </div>
-          </div>
+          <!-- 零项目落地 hero（v3.77）：水印 + 居中输入框，项目区仅「打开项目…」入口 -->
+          <LandingHero
+            v-else
+            :models="models"
+            :current-model="currentSessionModel"
+            :project-picker="projectPicker ?? undefined"
+            @model-change="onModelChange"
+            @pick-project="onPickProject"
+            @open-project-picker="openFolderPicker"
+            @remove-project="onRemoveProject"
+            @carry-text="onLandingCarryText"
+          />
         </template>
       </main>
     </section>
@@ -822,6 +926,11 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* 深色主题下让左侧会话树比主区更黑，产生层次 */
+:root[data-theme='dark'] .sidebar {
+  background: oklch(0.22 0 0);
+}
+
 .workspace-header {
   display: flex;
   align-items: center;
@@ -849,15 +958,45 @@ onUnmounted(() => {
 
 /* 视角分段开关（SM-S06）：项目 / 任务 */
 .view-seg {
+  position: relative;
   display: inline-flex;
   gap: 2px;
   padding: 2px;
   background: color-mix(in oklab, var(--muted) 70%, transparent);
-  border: 1px solid var(--border);
   border-radius: 999px;
 }
 
+/* 滑动指示胶囊（果冻/水滴式）：不用整体平移，而是左右两条边各自动画。
+   前进方向的那条边先行并带轻微回弹，另一条边延迟起步追随——
+   途中胶囊被拉长成水滴，落位时两头先后回弹，形成 Q 弹的果冻收束感。
+   位移方向不同 → 谁先谁后不同，故两套 transition 分别挂在两个状态上：
+   基态（回到「项目」）左边先行；is-task（滑向「任务」）右边先行 */
+.view-seg::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  right: calc(50% + 1px);
+  border-radius: 999px;
+  background: var(--surface-active);
+  pointer-events: none;
+  transition:
+    left 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+.view-seg.is-task::before {
+  left: calc(50% + 1px);
+  right: 2px;
+  transition:
+    right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
 .view-seg-btn {
+  position: relative; /* z 序抬到指示胶囊之上 */
+  z-index: 1;
   padding: 3px 10px;
   border: 0;
   border-radius: 999px;
@@ -865,11 +1004,10 @@ onUnmounted(() => {
   color: var(--muted-foreground);
   font-size: 12px;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
 .view-seg-btn.active {
-  background: var(--surface-active);
   color: var(--foreground);
 }
 
@@ -946,7 +1084,6 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--background);
   overflow: hidden;
-  border-left: 1px solid var(--border);
 }
 
 .content.settings-mode {
@@ -959,7 +1096,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--muted) 8%, var(--background));
   flex-shrink: 0;
 }
@@ -969,7 +1105,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 5px 12px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 999px;
   background: var(--card);
   color: var(--foreground);
@@ -1069,49 +1205,6 @@ onUnmounted(() => {
   border-radius: 999px;
   padding: 1px 6px;
   background: color-mix(in oklab, var(--muted) 30%, transparent);
-}
-
-.no-session {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.no-session-card {
-  text-align: center;
-  padding: 28px 32px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-3xl);
-  background: color-mix(in oklab, var(--muted) 45%, var(--background));
-  max-width: 360px;
-  box-shadow: var(--shadow-md);
-}
-
-.no-session-icon {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto 12px;
-  color: var(--muted-foreground);
-  opacity: 0.6;
-}
-
-.no-session-icon svg {
-  width: 100%;
-  height: 100%;
-}
-
-.no-session-title {
-  color: var(--foreground);
-  font-size: 15px;
-  font-weight: 500;
-  margin-bottom: 6px;
-}
-
-.no-session-card .hint {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  margin-bottom: 12px;
 }
 
 .settings-stage {

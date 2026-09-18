@@ -25,8 +25,12 @@ class MockPiAdapter implements PiSessionAdapter {
   createCalls: string[] = [];
   stopCalls: string[] = [];
   deleteCalls: string[] = [];
+  /** deleteSession 收到的项目路径（服务层必须从 store 记录透传，真删磁盘需要） */
+  deleteProjectPaths: string[] = [];
   /** 置为非 null 时 stopSession 抛出该错误（模拟 pi 停止失败） */
   stopError: Error | null = null;
+  /** 置为非 null 时 deleteSession 抛出该错误（模拟磁盘文件删除失败） */
+  deleteError: Error | null = null;
   private counter = 0;
 
   async createSession(projectPath: string): Promise<string> {
@@ -42,8 +46,12 @@ class MockPiAdapter implements PiSessionAdapter {
     }
   }
 
-  async deleteSession(sessionId: string): Promise<void> {
+  async deleteSession(sessionId: string, projectPath: string): Promise<void> {
     this.deleteCalls.push(sessionId);
+    this.deleteProjectPaths.push(projectPath);
+    if (this.deleteError !== null) {
+      throw this.deleteError;
+    }
   }
 }
 
@@ -264,6 +272,40 @@ test('deleteSession：重复删除同一会话幂等成功', async () => {
       assert.equal(second.data, null);
     }
     assert.deepEqual(adapter.deleteCalls, [id]); // 第二次不重复删除
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('deleteSession：所属项目路径透传给 adapter（真删磁盘需要）', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store, adapter } = makeService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const id = await createSessionUnder(service, key);
+    const result = await service.deleteSession(id);
+    assert.ok(result.ok);
+    // 适配器凭 projectPath 推导 pi 转录文件与子 agent 输出目录，缺了就删不掉
+    assert.deepEqual(adapter.deleteProjectPaths, [key]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('deleteSession：磁盘删除抛错时错误上抛、会话记录保留（先清盘、后删记录）', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store, adapter } = makeService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const id = await createSessionUnder(service, key);
+    adapter.deleteError = new Error('delete failed: EPERM');
+    await assert.rejects(() => service.deleteSession(id));
+    // 会话保留：store 记录与运行时状态原样，用户可重试；不会出现
+    // 「列表里没了、磁盘文件还在」的隐形残留（本缺陷曾积累 159 个孤儿 jsonl）
+    assert.notEqual(store.getSession(id), undefined);
+    assert.deepEqual(adapter.deleteProjectPaths, [key]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

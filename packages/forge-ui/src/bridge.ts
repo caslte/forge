@@ -43,7 +43,18 @@ export type ForgeMethod =
   | 'subagent/queryList'
   | 'subagent/stop'
   | 'subagent/clearFinished'
-  | 'subagent/queryOutput';
+  | 'subagent/queryOutput'
+  | 'git/getBranchInfo'
+  | 'git/switchBranch'
+  | 'pi/getInfo'
+  | 'pi/updatePlugins'
+  | 'app/getUpdateDebug'
+  | 'updater/getState'
+  | 'updater/checkForUpdates'
+  | 'updater/downloadUpdate'
+  | 'updater/quitAndInstall'
+  // ask_user_question（Path 2）：问卷回填（renderer → main 的唯一上行入口）
+  | 'askUserQuestion/reply';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -60,12 +71,28 @@ export type ForgeEvent =
   | 'conversation.compacting'
   | 'conversation.compacted'
   | 'conversation.slashCommandsUpdated'
+  | 'conversation.askUserQuestionRequested'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
   | 'model.providersChanged'
   | 'subagent.updated'
-  | 'subagent.removed';
+  | 'subagent.removed'
+  | 'git.branchChanged'
+  | 'updater.stateChanged'
+  // v3.76 启动门闩：forge-core 组装完成后主进程推送一次（拉通道见 getBootState）
+  | 'boot.ready';
+
+/**
+ * 启动状态（与 @forge/desktop ipc-contract.ts BootState 同构，本地声明惯例）。
+ * v3.76 欢迎页：false 期间 App 只渲染欢迎页，不发任何 forge:invoke 请求——
+ * 此时主进程 core（含 pi SDK）尚未组装完，invoke handler 还没注册。
+ */
+export interface BootState {
+  ready: boolean;
+  startedAt: number;
+  durationMs: number | null;
+}
 
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
 export interface ForgeResult<T = unknown> {
@@ -151,10 +178,137 @@ export interface SlashCommandsUpdatedPayload {
   sessionId: string;
 }
 
+/*
+ * ===== ask_user_question（Path 2 自建内置扩展）=====
+ *
+ * 真相来源：`docs/plan/ask-user-question-contract.md` §1/§2/§4。
+ * 按本文件既有惯例**本地声明**（不 import @forge/core 根入口——其 RPC 层含
+ * node:events，浏览器打包会炸）；字段与扩展侧 schema.ts / channels.ts 同构。
+ */
+
+/** 问卷选项 */
+export interface AskUserQuestionOption {
+  /** 选项短标签（≤60 字符） */
+  label: string;
+  /** 该选项含义/权衡说明 */
+  description: string;
+  /** 可选 markdown（mockup / 代码 / 配置示例）；任一选项有 preview 时切左右分栏 */
+  preview?: string;
+  /** ★ forge 扩展字段：推荐项（渲染「推荐」标记） */
+  recommended?: boolean;
+}
+
+/** 单道问题 */
+export interface AskUserQuestionItem {
+  /** 完整问题 */
+  question: string;
+  /** ≤16 字符短标签（tab 标题） */
+  header: string;
+  /** 2–4 个选项 */
+  options: AskUserQuestionOption[];
+  /** 默认 false；true 时多选（选项行渲染 checkbox） */
+  multiSelect?: boolean;
+}
+
+/** conversation.askUserQuestionRequested 事件 payload（sessionId 必需，多窗格据此认领） */
+export interface AskUserQuestionRequestPayload {
+  sessionId: string;
+  requestId: string;
+  questions: AskUserQuestionItem[];
+  /** 面板倒计时时长（毫秒，由扩展下发；**勿硬编码**） */
+  timeoutMs: number;
+}
+
+/** 单题作答（回填用；cancelled=true 时仍应带已答部分） */
+export interface AskUserQuestionAnswer {
+  questionIndex: number;
+  question: string;
+  kind: 'option' | 'custom' | 'multi';
+  answer: string | null;
+  selected?: string[];
+  notes?: string;
+  preview?: string;
+}
+
+/** askUserQuestion/reply 请求参数 */
+export interface AskUserQuestionReplyParams {
+  sessionId: string;
+  requestId: string;
+  answers: AskUserQuestionAnswer[];
+  cancelled: boolean;
+  /** 全局备注（可选，空/空白不传） */
+  globalNote?: string;
+}
+
+/** askUserQuestion/reply 响应 data */
+export interface AskUserQuestionReplyResult {
+  /** 是否已投递到扩展侧等待中的 Promise（false = 会话无活跃 lease，作答被丢弃） */
+  delivered: boolean;
+}
+
+/** window.forge.askUserQuestion：问卷双向通道 */
+export interface ForgeAskUserQuestion {
+  /** 订阅问卷请求（收窄 payload 类型）；多窗格各自订阅并**按 sessionId 认领** */
+  onRequest(listener: (payload: AskUserQuestionRequestPayload) => void): () => void;
+  /** 回填作答（必须带 sessionId + requestId） */
+  reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<AskUserQuestionReplyResult>>;
+}
+
+/** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json）。与 @forge/desktop ipc-contract 同步 */
+export interface PiGetInfoResult {
+  forgeVersion: string;
+}
+
+/** pi/updatePlugins 响应 data（更新器输出尾部；失败时 UI 展示排查信息） */
+export interface PiUpdatePluginsResult {
+  output: string;
+}
+
+/** app/getUpdateDebug 响应 data（本地配置文件开启后返回 true——调试控制台仅对开发/维护者可见） */
+export interface GetUpdateDebugResult {
+  enabled: boolean;
+}
+
+/** 自更新状态机（07 IN-S03）：idle → checking → found → downloading → downloaded → installing；失败回 idle。与 @forge/desktop ipc-contract 同步 */
+export type UpdaterStatus =
+  | 'idle'
+  | 'checking'
+  | 'found'
+  | 'downloading'
+  | 'downloaded'
+  | 'installing';
+
+/** updater/getState 响应 data（自更新状态快照，docs/api/07_pi.md §3.1）。与 @forge/desktop ipc-contract 同步 */
+export interface UpdaterSnapshot {
+  status: UpdaterStatus;
+  /** 当前 forge 版本 */
+  currentVersion: string;
+  /** 检测到的新版本号（found 之后有值） */
+  latestVersion: string | null;
+  /** 下载进度 0-100（downloading 时有值） */
+  downloadProgress: number | null;
+  /** 最近一次失败原因（静默展示用，不主动弹错） */
+  error: string | null;
+}
+
+/** updater.stateChanged 事件 payload：与 getState.data 同构（全局单例状态，无 sessionId）；任意跃迁都发（含下载进度步进） */
+export type UpdaterStateChangedPayload = UpdaterSnapshot;
+
 /** preload 注入的 window.forge 桥 */
 export interface ForgeBridge {
+  /**
+   * 运行平台 = 主进程 process.platform（'darwin' | 'win32' | 'linux' | …）；浏览器 mock 为 'browser'。
+   * UI 据此区分 macOS：隐藏自定义窗口三键（用系统 traffic lights）、标题栏左端为灯让位。
+   */
+  platform: string;
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
+  /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
+  bootState(): Promise<BootState>;
+  /** splash 上屏回执（v3.78.7）：主进程据此决定何时显示窗口；纯浏览器环境为空实现 */
+  splashReady(): void;
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
+  /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
+  askUserQuestion: ForgeAskUserQuestion;
   window: {
     minimize(): void;
     toggleMaximize(): void;
@@ -169,6 +323,15 @@ export interface ForgeBridge {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
     openPath(path: string): Promise<boolean>;
   };
+  theme: {
+    /**
+     * 主题回写主进程（v3.78.6）。主进程把它落到 userData/forge-theme.json，供下次冷启动
+     * 建窗时当 BrowserWindow.backgroundColor（建窗时刻读不到 localStorage），并就地刷新
+     * 当前窗口底色。单向 fire-and-forget，无返回值、无失败反馈——回写失败只影响下次
+     * 启动的第一帧底色。取值同 types.ts 的 ThemeMode。
+     */
+    set(mode: 'light' | 'dark'): void;
+  };
   file: {
     /** 拖拽/粘贴 File 对象 → 磁盘绝对路径；无盘文件（剪贴板截图）返回空串 */
     getPathForFile(file: File): string;
@@ -176,6 +339,8 @@ export interface ForgeBridge {
     scanAttachments(paths: string[]): Promise<Array<{ path: string; name: string; flagged: boolean }>>;
     /** 粘贴截图落盘到系统临时目录，返回真实路径；失败返回 null */
     savePasteImage(base64Data: string, ext?: string): Promise<{ path: string; name: string } | null>;
+    /** 超长粘贴文本落盘为临时 txt，返回真实路径；失败返回 null */
+    savePastedText(text: string): Promise<{ path: string; name: string } | null>;
     /** 磁盘图片读为 data URL（仅缩略图/预览用）；缺失/超大/非图片返回 null */
     readImage(path: string): Promise<string | null>;
     /** @ 补全候选：项目内白名单文件绝对路径（BFS 浅层优先，上限 2000）；项目缺失/不可读返回 [] */
@@ -210,10 +375,43 @@ export async function call<T>(
   return res.data as T;
 }
 
+/**
+ * 查询主进程启动状态（v3.76 欢迎页门闩）。
+ * ready=false 时 App 只渲染欢迎页且不发任何 forge:invoke（handler 未注册）；
+ * ready 事件（boot.ready）与本次拉取构成推拉双通道，任一先到即放行。
+ */
+export async function getBootState(): Promise<BootState> {
+  return window.forge.bootState();
+}
+
 /** 订阅主进程事件，返回取消订阅函数 */
 export function subscribe(
   event: ForgeEvent,
   listener: (payload: unknown) => void,
 ): () => void {
   return window.forge.on(event, listener);
+}
+
+/**
+ * 订阅问卷请求（Path 2）：等价 `subscribe('conversation.askUserQuestionRequested')`，
+ * 仅收窄 payload 类型。多窗格场景下每个窗格各自订阅并**按 sessionId 认领**。
+ */
+export function onAskUserQuestionRequest(
+  listener: (payload: AskUserQuestionRequestPayload) => void,
+): () => void {
+  return window.forge.askUserQuestion.onRequest(listener);
+}
+
+/**
+ * 回填问卷作答（Path 2）。成功返回 `{ delivered }`；失败（code≠0）抛错。
+ * 必须携带 `sessionId + requestId`；`cancelled=true` 时 `answers` 仍应带已答部分。
+ */
+export async function replyAskUserQuestion(
+  params: AskUserQuestionReplyParams,
+): Promise<AskUserQuestionReplyResult> {
+  const res = await window.forge.askUserQuestion.reply(params);
+  if (res.code !== 0) {
+    throw new Error(`askUserQuestion/reply 失败（${res.code}）: ${res.message}`);
+  }
+  return res.data as AskUserQuestionReplyResult;
 }

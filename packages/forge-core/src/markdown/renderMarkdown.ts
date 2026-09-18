@@ -15,7 +15,7 @@
  */
 
 import { Marked } from 'marked';
-import hljs from 'highlight.js';
+import { hljs } from './hljsCore.ts';
 import sanitizeHtml from 'sanitize-html';
 
 /** marked 实例：gfm + 换行即 <br>（对齐消息正文既有行为） */
@@ -40,12 +40,37 @@ const ALLOWED_ATTRIBUTES = {
   td: ['align'],
 };
 
-/** 高亮语言白名单 + 兜底自动识别（仅常见语言，避免耗时误判） */
-const HIGHLIGHT_LANGUAGES = [
-  'js', 'javascript', 'ts', 'typescript', 'json', 'html', 'xml', 'css',
-  'bash', 'sh', 'shell', 'powershell', 'python', 'java', 'go', 'rust',
-  'c', 'cpp', 'csharp', 'sql', 'yaml', 'yml', 'markdown', 'diff', 'dockerfile',
-];
+/**
+ * 用户书写语言标识 → hljs 注册名（与 hljsCore.ts 的注册集一一对应）。
+ * sh/shell、yml、html 等别名在此归一，白名单外的语言走转义展示（与全量版行为一致）。
+ */
+const LANG_ALIASES: Record<string, string> = {
+  js: 'javascript',
+  javascript: 'javascript',
+  ts: 'typescript',
+  typescript: 'typescript',
+  json: 'json',
+  html: 'xml',
+  xml: 'xml',
+  css: 'css',
+  bash: 'bash',
+  sh: 'bash',
+  shell: 'bash',
+  powershell: 'powershell',
+  python: 'python',
+  java: 'java',
+  go: 'go',
+  rust: 'rust',
+  c: 'c',
+  cpp: 'cpp',
+  csharp: 'csharp',
+  sql: 'sql',
+  yaml: 'yaml',
+  yml: 'yaml',
+  markdown: 'markdown',
+  diff: 'diff',
+  dockerfile: 'dockerfile',
+};
 
 /**
  * marked renderer：代码块经 hljs 高亮；mermaid 块输出占位 div（base64 编码源码）。
@@ -64,10 +89,9 @@ function codeRenderer(lang: string | undefined, text: string): string {
   }
 
   let highlighted: string;
-  if (language !== undefined && HIGHLIGHT_LANGUAGES.includes(language)) {
-    highlighted = hljs.getLanguage(language)
-      ? hljs.highlight(trimmed, { language }).value
-      : htmlEscape(trimmed);
+  const hlLang = language !== undefined ? LANG_ALIASES[language] : undefined;
+  if (hlLang !== undefined && hljs.getLanguage(hlLang)) {
+    highlighted = hljs.highlight(trimmed, { language: hlLang }).value;
   } else {
     highlighted = htmlEscape(trimmed);
   }
@@ -123,10 +147,46 @@ marked.use({
   },
 });
 
-/** 通用渲染：完整格式化（消息结束/历史回放） */
-export function renderMarkdown(source: string): string {
+/**
+ * 渲染结果 LRU 缓存（v3.73 性能：点击大会话 221 条全量重渲染 5.1s → 命中即回）。
+ *
+ * 键 = 长度 + FNV-1a 32 位哈希 + 首/尾 48 字符采样：不用完整原文做键是为了避免
+ * LRU 间接持有几百份 12KB 级消息文本。四元组同时碰撞的概率在会话场景可忽略；
+ * 且即使碰撞，markdown 渲染差异也不是安全边界（XSS 已由 sanitize 白名单保证）。
+ *
+ * cacheable=false（流式中间态）只读不写：一次长回复的中间态多达数百个，写入会把
+ * 稳定态历史挤出 LRU。
+ */
+const RENDER_CACHE_LIMIT = 400;
+const renderCache = new Map<string, string>();
+
+function fnv1a32(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function cacheKey(source: string): string {
+  const head = source.slice(0, 48);
+  const tail = source.length > 96 ? source.slice(-48) : '';
+  return `${source.length}:${fnv1a32(source)}:${head}:${tail}`;
+}
+
+/** 通用渲染：完整格式化（消息结束/历史回放）。cacheable=false 用于流式中间态。 */
+export function renderMarkdown(source: string, cacheable = true): string {
+  const key = cacheKey(source ?? '');
+  const cached = renderCache.get(key);
+  if (cached !== undefined) {
+    // Map 迭代序即 LRU 序：命中后重插，保持「最近使用」在尾
+    renderCache.delete(key);
+    renderCache.set(key, cached);
+    return cached;
+  }
   const html = marked.parse(source ?? '', { async: false }) as string;
-  return sanitizeHtml(html, {
+  const sanitized = sanitizeHtml(html, {
     allowedTags: ALLOWED_TAGS,
     allowedAttributes: ALLOWED_ATTRIBUTES,
     allowedSchemes: ['http', 'https', 'mailto'],
@@ -145,6 +205,24 @@ export function renderMarkdown(source: string): string {
       },
     },
   });
+  if (cacheable) {
+    if (renderCache.size >= RENDER_CACHE_LIMIT) {
+      const oldest = renderCache.keys().next().value;
+      if (oldest !== undefined) renderCache.delete(oldest);
+    }
+    renderCache.set(key, sanitized);
+  }
+  return sanitized;
+}
+
+/** 测试观测：当前渲染缓存条数 */
+export function renderCacheSize(): number {
+  return renderCache.size;
+}
+
+/** 测试与调试辅助：清空渲染缓存 */
+export function clearRenderCache(): void {
+  renderCache.clear();
 }
 
 /** 仅保留 hljs-* / md-* 前缀且字符安全的 class */

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderMarkdown, looksLikeMermaid, hasOpenFence } from '../../src/markdown/renderMarkdown.ts';
+import { renderMarkdown, looksLikeMermaid, hasOpenFence, renderCacheSize, clearRenderCache } from '../../src/markdown/renderMarkdown.ts';
 
 test('常见 Markdown 结构正确渲染', () => {
   const html = renderMarkdown('# 标题\n\n**加粗** *斜体* `行内码`\n\n- 列表项\n- 第二项\n\n> 引用');
@@ -120,4 +120,31 @@ test('XSS：非 hljs/md 前缀的 class 被剥离', () => {
   assert.match(html, /class="hljs-keyword"/);
   assert.doesNotMatch(html, /evil/);
   assert.doesNotMatch(html, /style=/);
+});
+
+test('缓存：同内容二次渲染命中（不新增条目，输出一致）', () => {
+  clearRenderCache();
+  const src = '# 缓存命中\n\n```js\nconst x = 1;\n```';
+  const first = renderMarkdown(src);
+  assert.equal(renderCacheSize(), 1);
+  const second = renderMarkdown(src);
+  assert.equal(renderCacheSize(), 1);
+  assert.equal(second, first);
+});
+
+test('缓存：cacheable=false（流式中间态）只读不写', () => {
+  clearRenderCache();
+  const before = renderCacheSize();
+  const html = renderMarkdown('# 流式中间态\n\n```js\nconst y =', false);
+  assert.ok(html.length > 0);
+  assert.equal(renderCacheSize(), before);
+});
+
+test('缓存：LRU 上限 400，超限淘汰最旧且冷渲染输出仍正确', () => {
+  clearRenderCache();
+  for (let i = 0; i < 402; i += 1) {
+    renderMarkdown(`# 条目 ${i}\n\n内容 ${i}`);
+  }
+  assert.equal(renderCacheSize(), 400);
+  assert.match(renderMarkdown('# 条目 0\n\n内容 0'), /内容 0/);
 });

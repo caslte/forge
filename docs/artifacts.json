@@ -29,6 +29,22 @@
         "api": { "path": "docs/api/03_conversation.md", "status": "approved" },
         "test-e2e": { "path": "docs/test/03_conversation/e2e.md", "status": "approved" },
         "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
+      },
+      "extensions": {
+        "CV-S11_todo_panel": {
+          "status": "approved",
+          "added": "2026-09-10",
+          "amended": "2026-10",
+          "ac_ids": ["AC-CV-037", "AC-CV-038", "AC-CV-039", "AC-CV-040", "AC-CV-041", "AC-CV-042"],
+          "depends_on": ["TE-S05_ipc_details"]
+        },
+        "CV-S12_ask_user_question": {
+          "status": "approved",
+          "added": "2026-11",
+          "ac_ids": ["AC-CV-043", "AC-CV-044", "AC-CV-045", "AC-CV-046", "AC-CV-047", "AC-CV-048", "AC-CV-049", "AC-CV-050"],
+          "depends_on": ["TE-S05_ipc_details"],
+          "notes": "Path 2 自建内置扩展（@forge/extensions 的 ask_user_question），非 rpiv npm 插件。双向契约：下行 conversation.askUserQuestionRequested 事件 + 上行 askUserQuestion/reply RPC 方法；sessionId 必需（多窗格隔离）。两处有意偏离 rpiv：preview 不回流给模型、新增 options[].recommended 扩展字段。"
+        }
       }
     },
     "04_tool": {
@@ -39,6 +55,14 @@
         "api": { "path": "docs/api/04_tool.md", "status": "approved" },
         "test-e2e": { "path": "docs/test/04_tool/e2e.md", "status": "approved" },
         "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
+      },
+      "extensions": {
+        "TE-S05_ipc_details": {
+          "status": "approved",
+          "added": "2026-09-10",
+          "ac_ids": ["AC-TE-011", "AC-TE-012", "AC-TE-013"],
+          "depends_on": []
+        }
       }
     },
     "05_model": {
@@ -59,6 +83,17 @@
         "api": { "path": "docs/api/06_subagent.md", "status": "approved" },
         "test-e2e": { "path": "docs/test/06_subagent/e2e.md", "status": "approved" },
         "integration": { "path": "docs/test/integration/pi-core.md", "status": "approved" }
+      }
+    },
+    "07_installer": {
+      "status": "approved",
+      "artifacts": {
+        "prd": { "path": "docs/prd/07_installer_update.md", "status": "approved" },
+        "verification": { "path": "docs/test/07_pi/coverage-matrix.md", "status": "approved" },
+        "api": { "path": "docs/api/07_pi.md", "status": "approved" },
+        "db": { "path": "docs/db/07_installer/schema.md", "status": "approved" },
+        "test-e2e": { "path": "docs/test/07_pi/e2e.md", "status": "approved" },
+        "test-api": { "path": "docs/test/07_pi/api.md", "status": "approved" }
       }
     }
   }

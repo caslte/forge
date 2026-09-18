@@ -11,12 +11,13 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
-import { slashCommandReporterExtension } from '@forge/extensions';
+import { askUserQuestionExtension, slashCommandReporterExtension } from '@forge/extensions';
 
 import type {
   MinimalPiSession,
   PiAgentSessionFactoryOptions,
 } from './piConversationAdapter.ts';
+import { resolvePiAgentDir, resolveProjectSessionDir, forgePiSessionId } from './piSessionPaths.ts';
 import { resolvePiModel } from './piModelResolver.ts';
 
 export interface PiSessionHandle {
@@ -134,15 +135,13 @@ export function createPiAgentSessionFactory(
   const stopRpcTimeoutMs = options.stopRpcTimeoutMs ?? DEFAULT_STOP_RPC_TIMEOUT_MS;
   const factory: PiAgentSessionRuntimeFactory = async (request) => {
     const cwd = request.cwd ?? process.cwd();
-    const agentDir = resolveAgentDir(options.agentDir);
-    const sessionDir = getDefaultSessionDir(cwd, agentDir);
-    const forgeSessionId = assertValidSessionId(
+    const agentDir = resolvePiAgentDir(options.agentDir);
+    const sessionDir = resolveProjectSessionDir(cwd, agentDir);
+    // piSessionId = forge-<forgeSessionId>（建/读/删共用 piSessionPaths 单一定义源，
+    // 非法 ID 早失败，避免建出删除时无法定位的文件）
+    const piSessionId = forgePiSessionId(
       request.sessionId ?? crypto.randomUUID().replace(/-/g, ''),
     );
-    const piSessionId = `forge-${forgeSessionId}`;
-    if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(piSessionId)) {
-      throw new Error(`非法 pi 会话 ID: ${piSessionId}`);
-    }
 
     const sessionFile = path.join(sessionDir, `${piSessionId}.jsonl`);
     const manager = fs.existsSync(sessionFile)
@@ -202,7 +201,24 @@ export function createPiAgentSessionFactory(
       agentDir,
       settingsManager,
       eventBus: subagentEventBus,
-      extensionFactories: [slashCommandReporterExtension],
+      // CV-S08：命令上报扩展（slash-commands:reported）。
+      // Path 2（ask_user_question 自建内置扩展，契约见 docs/plan/ask-user-question-contract.md）：
+      // 与 rpiv 插件工具同名，靠下方 extensionsOverride 屏蔽插件本体，二者不共存。
+      extensionFactories: [slashCommandReporterExtension, askUserQuestionExtension],
+      // 冲突处置（契约 §5 / 计划 §3.5）：用户环境 ~/.pi/agent/settings.json 的 packages
+      // 含 @juicesharp/rpiv-ask-user-question，DefaultResourceLoader.reload() 会经
+      // packageManager.resolve() 把它也加载进来并注册同名 ask_user_question。
+      // pi 的统一工具命名优先级的规则是「先注册者胜」但加载顺序无保证（runner.js:280），
+      // 会出现「有时自建生效、有时插件生效」的薛定谔状态。
+      // 这里在内存里直接过滤掉该扩展——纯代码，不写用户 settings.json；
+      // 只屏蔽这一个包，pi-subagents / rpiv-todo 不受影响（TodoPanel 不回归）；
+      // 系统 pi CLI 是另一个宿主，照常加载插件，左右分栏不受影响。
+      extensionsOverride: (base) => ({
+        ...base,
+        extensions: base.extensions.filter(
+          (ext) => !ext.path.includes('rpiv-ask-user-question'),
+        ),
+      }),
     });
     await resourceLoader.reload();
     createOptions.resourceLoader = resourceLoader;
@@ -263,14 +279,6 @@ export function createPiAgentSessionFactory(
   return factory;
 }
 
-/** 解析 pi agent 目录（未指定时默认 ~/.pi/agent） */
-function resolveAgentDir(agentDir?: string): string {
-  return (
-    agentDir ??
-    path.join(process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(), '.pi', 'agent')
-  );
-}
-
 /**
  * 预热 pi 扩展加载缓存（首条消息卡顿修复）。
  *
@@ -292,7 +300,7 @@ export function warmPiResourceLoader(cwd: string, agentDir?: string): Promise<vo
   if (inFlight !== undefined) return inFlight;
   const run = (async () => {
     try {
-      const dir = resolveAgentDir(agentDir);
+      const dir = resolvePiAgentDir(agentDir);
       const settingsManager = SettingsManager.create(cwd, dir);
       const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: dir, settingsManager });
       await resourceLoader.reload();
@@ -305,16 +313,4 @@ export function warmPiResourceLoader(cwd: string, agentDir?: string): Promise<vo
   })();
   warmingCwds.set(cwd, run);
   return run;
-}
-
-function getDefaultSessionDir(cwd: string, agentDir?: string): string {
-  const root = resolveAgentDir(agentDir);
-  return path.join(root, 'sessions', encodeURIComponent(cwd));
-}
-
-function assertValidSessionId(sessionId?: string): string {
-  if (!sessionId || !/^[A-Za-z0-9_-]+$/.test(sessionId)) {
-    throw new Error(`非法 forge 会话 ID: ${sessionId ?? '(空)'}`);
-  }
-  return sessionId;
 }

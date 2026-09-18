@@ -10,7 +10,13 @@ import type {
   ConversationMessage,
   ConversationCompactResult,
   ConversationCompactedPayload,
+  AskUserQuestionRequestPayload,
+  AskUserQuestionReplyData,
+  AskUserQuestionItem,
 } from '@forge/core';
+// L3 传输契约的通道名以 forge-extensions 为唯一事实来源（extension ↔ bridge 同在
+// main 进程内），此处不复制字面量，避免两侧漂移（契约 §4.2）。
+import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel } from '@forge/extensions';
 import { stripThinkingContent } from './thinkingFilter.ts';
 import type { SubagentEventBus } from './createPiAgentSessionFactory.ts';
 
@@ -174,7 +180,12 @@ export interface PiToolStartedPayload {
 /** 工具完成事件载荷（映射 pi tool_execution_end 且 isError=false） */
 export interface PiToolCompletedPayload {
   toolEventId: string;
-  result: { text: string | null; image: string | null };
+  /**
+   * TE-S05：result 增加可选 details 字段透传 pi 工具结构化详情（如 rpiv-todo
+   * 工具的 `{ action, tasks, nextId }`）。仅补充不重写，原 text/image 字段语义
+   * 不变；pi 工具未携带 details 时 result 中不出现该字段。
+   */
+  result: { text: string | null; image: string | null; details?: unknown };
 }
 
 /** 工具错误事件载荷（映射 pi tool_execution_end 且 isError=true） */
@@ -220,6 +231,13 @@ export interface PiConversationEventHandlers {
    * 上报缺失/迟到前不回调（上层降级为轻量资源查询）。
    */
   onSlashCommandsReported?: (sessionId: string, commands: PiReportedSlashCommand[]) => void;
+  /**
+   * 问卷请求到达（Path 2 ask_user_question，契约 §4.2.1 ①）：模型调用
+   * `ask_user_question` 后，扩展经**该会话的**事件总线投递问卷；bridge 按会话
+   * 订阅时天然持有 sessionId，此处按会话上抛（载荷已补齐必需 sessionId）。
+   * 上层据此转发 `conversation.askUserQuestionRequested` 到渲染进程。
+   */
+  onAskUserQuestionRequested?: (sessionId: string, payload: AskUserQuestionRequestPayload) => void;
 }
 
 type TurnCompletionHandler = (sessionId: string) => void;
@@ -283,6 +301,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly subagentUnsubs = new Map<string, () => void>();
   /** 每会话在命令上报 channel 上的订阅取消函数（removeSession 时释放） */
   private readonly slashCommandUnsubs = new Map<string, () => void>();
+  /** 每会话在问卷请求 channel 上的订阅取消函数（removeSession 时释放） */
+  private readonly askUserUnsubs = new Map<string, () => void>();
   private eventHandlers: PiConversationEventHandlers = {};
   /** 队列镜像（CV-S09）：sessionId -> pi 当前 followUp 队列文本（FIFO 序），来自 queue_update 事件 */
   private readonly queueMirror = new Map<string, string[]>();
@@ -458,6 +478,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.bindSubagentBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     // CV-S08：订阅命令上报 channel（slash-commands:reported）→ onSlashCommandsReported
     this.bindSlashCommandBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
+    // Path 2：订阅问卷请求 channel（ask-user:request）→ onAskUserQuestionRequested
+    this.bindAskUserBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     try {
       // 附件统一给路径：路径行已随 content 发送，模型自行 read；
       // 非视觉模型遇图片时 pi-ai 传输层自动降级占位，adapter 恒单参调用。
@@ -722,6 +744,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
    * 删除会话时释放运行资源（P2-D）：停止执行、dispose lease、清理内存态。
    * 幂等：未知会话无操作。磁盘文件删除由 PiSessionAdapter 负责。
    * wu-06：同时退订该会话在子 agent 扩展事件总线上的订阅，避免迟到事件误处理。
+   * Path 2：同样退订问卷请求 channel（见下方注释）。
    */
   async removeSession(sessionId: string): Promise<void> {
     this.pendingSubmit.delete(sessionId); // CV-S09：会话删除时清理提交门（等待者由 release 兑底）
@@ -746,6 +769,16 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         slashCommandUnsub();
       } catch {}
       this.slashCommandUnsubs.delete(sessionId);
+    }
+    // Path 2：退订问卷请求 channel。**必须退订**——否则会话删除后扩展若仍 emit
+    // 迟到请求（例如 dispose 竞态），会在已无窗格承载的情况下上抛，渲染进程收到一个
+    // 谁都不认领的 requestId（回填必然 delivered:false），表现为弹出一个无主问卷。
+    const askUserUnsub = this.askUserUnsubs.get(sessionId);
+    if (askUserUnsub !== undefined) {
+      try {
+        askUserUnsub();
+      } catch {}
+      this.askUserUnsubs.delete(sessionId);
     }
     // wu-06：退订后清空子 agent 会话内存态（会话删除是子 agent 注销的最终时机）
     this.subagentService?.disposeSession(sessionId);
@@ -855,6 +888,77 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       this.eventHandlers.onSlashCommandsReported?.(sessionId, commands);
     });
     this.slashCommandUnsubs.set(sessionId, off);
+  }
+
+  /**
+   * Path 2：按 lease 的扩展事件总线订阅**问卷请求** channel
+   * （`ask-user:request`，与 bindSlashCommandBus / bindSubagentBus 同构：先退订旧订阅
+   * 再重绑防重复，removeSession 时统一退订）。
+   *
+   * 会话隔离（契约 §4.4）：总线是**该会话私有**的，所以订阅闭包里天然有 sessionId，
+   * 无需（也不应）从 `ctx.sessionManager` 反查——载荷强制带上 sessionId 后上抛，
+   * 渲染进程各窗格按它认领，避免「N 个窗格同时弹出 N 份问卷」。
+   * 总线缺失（扩展未激活）/ 载荷非法时静默跳过，不崩不投递。
+   */
+  private bindAskUserBus(
+    sessionId: string,
+    lease: PiAgentSessionLease<MinimalPiSession>,
+  ): void {
+    const bus = lease.events;
+    if (bus === undefined) {
+      return;
+    }
+    const prev = this.askUserUnsubs.get(sessionId);
+    if (prev !== undefined) {
+      try { prev(); } catch {}
+      this.askUserUnsubs.delete(sessionId);
+    }
+    const off = bus.on(ASK_USER_REQUEST_CHANNEL, (raw) => {
+      const request = extractAskUserRequest(raw);
+      if (request === null) {
+        return;
+      }
+      const payload: AskUserQuestionRequestPayload = {
+        sessionId,
+        requestId: request.requestId,
+        questions: request.questions,
+        timeoutMs: request.timeoutMs,
+      };
+      this.eventHandlers.onAskUserQuestionRequested?.(sessionId, payload);
+    });
+    this.askUserUnsubs.set(sessionId, off);
+  }
+
+  /**
+   * 问卷回填（Path 2，契约 §4.2.1 ④ / §4.4 ③）：把 renderer 的作答经**该会话的**
+   * 事件总线投回扩展侧等待中的 Promise。
+   *
+   * 为什么必须有这个方法：适配器此前只有 `bus.on(...)`（订阅），**没有任何对外
+   * `bus.emit` 面**；不补则回填无通道，100% 走满超时兜底、用户作答被丢弃。
+   * 注意不要照搬 `createStopSubagent`：那条通道的 bus 是 session factory 内部闭包、
+   * 经 `handle` 暴露，路径不同。
+   *
+   * 会话隔离：以 `sessionId` 定位 lease（无 lease = 错窗格 / 会话已删 → 不投递）；
+   * 再以 `requestId` 定位监听者（该请求已超时收敛则 emit 落空）。两道匹配共同保证
+   * 「错窗格回填」不会污染别的会话。
+   * @returns 是否已投递（false = 该会话无 lease 或无事件总线，作答被丢弃）
+   */
+  replyAskUserQuestion(
+    sessionId: string,
+    requestId: string,
+    payload: AskUserQuestionReplyData,
+  ): boolean {
+    const bus = this.leases.get(sessionId)?.events;
+    if (bus === undefined) {
+      return false;
+    }
+    bus.emit(askUserReplyChannel(requestId), {
+      requestId,
+      answers: payload.answers,
+      cancelled: payload.cancelled,
+      ...(payload.globalNote !== undefined ? { globalNote: payload.globalNote } : {}),
+    });
+    return true;
   }
 
   /**
@@ -985,8 +1089,17 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       this.forwardedClean.set(sessionId, content);
       // 消息已终态落盘：清掉进行中快照，避免 loadHistory 与文件内容重复
       this.livePartial.delete(sessionId);
+      // 流式累计按【消息级】收敛：无论本条清洗后是否有正文，都以本条结果整体覆盖
+      // partialContent。此前只在 content!=='' 时覆盖，一轮多条 assistant 消息
+      // （MiniMax-M3 每步工具调用都是独立一条消息、正文混流 <think> 包裹）场景下：
+      // 上一条正文（如"明白了…"）残留在 partialContent，本条纯思考消息的
+      // message_end 又把 forwardedClean 置空 → 下一条纯思考消息流式时
+      // strip(partialContent 残留 + 思考 delta) = 旧正文 ≠ prev('') → 整段旧正文
+      // 被当成新增量重发，前端在工具卡片之后 push 出重复文本卡
+      //（真机表现：「AI 回复时重复发同样的话，切会话再切回才恢复」——磁盘历史
+      // 本就正确，重发只发生在实时链路）。
+      this.partialContent.set(sessionId, content);
       if (content !== '') {
-        this.partialContent.set(sessionId, content);
         const message: ConversationMessage = {
           role: 'assistant',
           content,
@@ -1123,9 +1236,16 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           error: { message: text ?? '工具执行失败' },
         });
       } else {
+        // TE-S05: 从 pi 工具结果透传 details（仅当 details 是合法值时携带，undefined/null 跳过）
+        const details = extractToolResultDetails(event.result);
+        const resultPayload: { text: string | null; image: null; details?: unknown } = {
+          text,
+          image: null,
+        };
+        if (details !== undefined) resultPayload.details = details;
         this.eventHandlers.onToolCompleted?.(sessionId, {
           toolEventId: event.toolCallId,
-          result: { text, image: null },
+          result: resultPayload,
         });
       }
     }
@@ -1205,6 +1325,19 @@ function extractToolResultText(result: unknown): string | null {
 }
 
 /**
+ * TE-S05：从 pi 工具结果提取 details 字段透传（保留原值，不解析）。
+ * 仅当 details 是有效值（非 undefined / 非 null）时返回；其余情况返回 undefined
+ * 让上层判定省略字段（JSON omit 语义，向后兼容）。
+ */
+function extractToolResultDetails(result: unknown): unknown {
+  if (!isRecord(result)) return undefined;
+  if (!('details' in result)) return undefined;
+  const details = (result as Record<string, unknown>).details;
+  if (details === undefined || details === null) return undefined;
+  return details;
+}
+
+/**
  * 归一化命令上报扩展的载荷（CV-S08）：{ commands: [...] } → 纯数据数组。
  * 载荷非法（非对象/commands 非数组）返回 null（静默忽略，上层维持降级清单）；
  * 条目缺 name 或 source 非字符串时跳过该条；description 非 string 归一为 null。
@@ -1224,6 +1357,31 @@ function extractReportedSlashCommands(raw: unknown): PiReportedSlashCommand[] | 
     });
   }
   return commands;
+}
+
+/**
+ * 归一化问卷请求载荷（Path 2 ask_user_question）：扩展侧
+ * `{ requestId, questions, timeoutMs }` → 结构校验后的纯数据。
+ *
+ * 载荷非法（非对象 / requestId 空 / questions 非非空数组 / timeoutMs 非正数）
+ * 返回 null —— 静默忽略，不投递半成品问卷（宁可不弹，也不弹一个残缺面板）。
+ * questions 内部结构不再深校验：schema 已在扩展侧（TypeBox）与工具层兜过，
+ * 且面板自身对未知字段按可选项渲染。
+ */
+function extractAskUserRequest(
+  raw: unknown,
+): { requestId: string; questions: AskUserQuestionItem[]; timeoutMs: number } | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.requestId !== 'string' || raw.requestId === '') return null;
+  if (!Array.isArray(raw.questions) || raw.questions.length === 0) return null;
+  if (typeof raw.timeoutMs !== 'number' || !Number.isFinite(raw.timeoutMs) || raw.timeoutMs <= 0) {
+    return null;
+  }
+  return {
+    requestId: raw.requestId,
+    questions: raw.questions as AskUserQuestionItem[],
+    timeoutMs: raw.timeoutMs,
+  };
 }
 
 /**

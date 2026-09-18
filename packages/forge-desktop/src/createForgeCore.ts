@@ -15,6 +15,8 @@ import {
   ForgeStore,
   ProjectService,
   createProjectApi,
+  createGitApi,
+  GitService,
   SessionService,
   createSessionApi,
   ConversationService,
@@ -39,6 +41,10 @@ import {
   type PiAgentSessionFactory,
 } from './pi/piConversationAdapter.ts';
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
+import {
+  resolvePiAgentDir,
+  tryResolveForgeSessionFile,
+} from './pi/piSessionPaths.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { createSlashCommandResources } from './pi/slashCommandResources.ts';
 import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
@@ -50,6 +56,16 @@ import {
 import { getPiSupportedThinkingLevels, resolvePiModel } from './pi/piModelResolver.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 import { PiTrustStoreAdapter } from './pi/piTrustStoreAdapter.ts';
+import {
+  updatePiExtensions,
+  type PiUpdateResult,
+} from './pi/piRuntime.ts';
+import {
+  createAppUpdaterPort,
+  createUpdaterMethods,
+  type AppUpdaterPort,
+} from './pi/appUpdater.ts';
+import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
 export type MethodTable = Record<string, (params: unknown) => RpcResult | Promise<RpcResult>>;
@@ -76,11 +92,24 @@ export interface ForgeCoreDeps {
   piAgentSessionFactory?: PiAgentSessionFactory<MinimalPiSession>;
   /** wu-06：done 门控超时窗口（默认 30 分钟）。测试用小窗口验证兜底释放。 */
   subagentDoneTimeoutMs?: number;
-  /**
-   * wu-06：主轮看门狗窗口（默认 30 分钟）。主轮结束信号整体丢失（适配器 prompt
+  /** wu-06：主轮看门狗窗口（默认 30 分钟）。主轮结束信号整体丢失（适配器 prompt
    * 永不返回）且窗口内无任何会话事件活动时，强制放行 done。测试用小窗口验证。
    */
   subagentMainTurnTimeoutMs?: number;
+  /** forge 产品版本（设置页「版本更新」展示）；main.ts 传 app.getVersion()，缺省 0.0.0-dev */
+  forgeVersion?: string;
+  /** 更新共享扩展的可注入端口（测试 mock）；缺省跑内置引擎 CLI 的 pi update --extensions */
+  piUpdateExtensions?: () => Promise<PiUpdateResult>;
+  /** wu-07 IN-S03：应用自更新端口（main.ts 组装真实 electron-updater 注入）；
+   * 缺省 feed=null 的降级端口（updater/* 检查一律 6003，不触碰网络） */
+  appUpdater?: AppUpdaterPort;
+  /** QA-G1/G4：updater-state.json 路径（userData 目录下，main.ts 注入）。缺省 null=
+   * 手动更新成功后跳过 components 快照持久化、lastUpdateCheckAt 不回写，仅输出结构化日志
+   * （既有单测未注入该路径，行为保持兼容） */
+  updaterStatePath?: string;
+  /** 更新调试开关（main.ts 读 userData/updater-debug.json，enabled=true 时前端显示调试控制台）。
+   * 缺省 false=普通用户不可见 */
+  getUpdateDebugEnabled?: () => boolean;
 }
 
 /**
@@ -104,22 +133,23 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       }
     },
   };
-  const projectApi = createProjectApi(
-    new ProjectService(
-      store,
-      deps.trustStore ??
-        new PiTrustStoreAdapter(
-          deps.piAgentDir ??
-            path.join(
-              process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
-              '.pi',
-              'agent',
-            ),
-        ),
-      projectSessionsPort,
-    ),
-    eventBus,
+  const projectService = new ProjectService(
+    store,
+    deps.trustStore ??
+      new PiTrustStoreAdapter(
+        deps.piAgentDir ??
+          path.join(
+            process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
+            '.pi',
+            'agent',
+          ),
+      ),
+    projectSessionsPort,
   );
+  const projectApi = createProjectApi(projectService, eventBus);
+
+  // git（wu-02）：与 project 共享同一事件汇，switchBranch 分支变化经 eventBus 转发渲染进程
+  const gitApi = createGitApi({ gitService: new GitService(), projectService, events: eventBus });
 
   // conversation adapter 先行声明（sessionService 删除钩子闭包引用；实际初始化在下方）
   let conversationAdapter: PiConversationAdapter;
@@ -127,20 +157,26 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // // subagentService 实际初始化在 adapter 创建后（依赖 conversationAdapter stopSubagent）。
   let subagentServiceRef: SubagentService | undefined;
 
-  // session（02）：删除会话时先释放对话侧运行资源（P2-D lease dispose + stop）
-  const piSessionAdapter = new PiSessionAdapter();
+  // session（02）：删除会话时先释放对话侧运行资源（P2-D lease dispose + stop）。
+  // agentDir 提前到此处解析：会话删除要按同一 agentDir 推导 pi 转录文件路径
+  //（与 createPiAgentSessionFactory 的建文件路径必须逐字节一致，否则删不掉）。
+  const agentDir = resolvePiAgentDir(deps.piAgentDir);
+  const piSessionAdapter = new PiSessionAdapter({ agentDir });
   const sessionService = new SessionService(
     store,
     {
       createSession: (projectPath: string) => piSessionAdapter.createSession(projectPath),
       stopSession: (sessionId: string) => piSessionAdapter.stopSession(sessionId),
-      deleteSession: async (sessionId: string) => {
+      deleteSession: async (sessionId: string, projectPath: string) => {
         // wu-06：先清理子 agent 会话内存态与门控（时间坌需在 adapter removeSession 前清理，
         // // 避免迟到事件订阅退订前该 gate 被释放仍创建新状态）
         disarmMainTurnWatchdog(sessionId); // 会话删除同步撤防主轮看门狗
         subagentServiceRef?.disposeSession(sessionId);
         await conversationAdapter.removeSession(sessionId);
-        await piSessionAdapter.deleteSession(sessionId);
+        // 真删磁盘残留（pi 转录 JSONL + 子 agent 输出目录）。projectPath 由服务层
+        // 从 store 记录取出后透传 —— 仅凭 sessionId 推不出路径。
+        // 此处抛错会让 SessionService 保留会话记录（不吞异常），故"删除成功"即磁盘已清。
+        await piSessionAdapter.deleteSession(sessionId, projectPath);
       },
     },
   );
@@ -156,15 +192,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   const retryRestorePending = new Set<string>();
   const piAgentSessionFactory =
     deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir: deps.piAgentDir });
-  // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件（agentDir/sessions/<cwd>/forge-<id>.jsonl）
-  const agentDir =
-    deps.piAgentDir ??
-    path.join(process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(), '.pi', 'agent');
+  // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件
+  // （agentDir/sessions/<encodeURIComponent(cwd)>/forge-<id>.jsonl，见 piSessionPaths）
   const resolveSessionFile = (sessionId: string): string | undefined => {
     const session = store.getSession(sessionId);
     if (session === undefined) return undefined;
-    const dir = path.join(agentDir, 'sessions', encodeURIComponent(session.projectPath));
-    const file = path.join(dir, `forge-${sessionId}.jsonl`);
+    const file = tryResolveForgeSessionFile(sessionId, session.projectPath, agentDir);
+    if (file === null) return undefined; // 历史脏数据：ID 推不出路径，视为无磁盘历史
     try {
       return fs.existsSync(file) ? file : undefined;
     } catch {
@@ -441,6 +475,15 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       conversationService.ingestReportedCommands(sessionId, commands as SlashCommand[]);
       conversationApi.emitSlashCommandsUpdated(sessionId);
     },
+    // Path 2 ask_user_question：模型调用工具后扩展经会话总线投递问卷，适配器按会话
+    // 订阅并补齐 sessionId 后上抛；此处转发 conversation.askUserQuestionRequested
+    // （已登记 FORGE_EVENTS 白名单，main.ts 才转发到渲染进程）。
+    // 载荷带必需 sessionId，多窗格各窗格按它认领，只在发起会话的窗格弹面板（契约 §4.4）。
+    // 问卷请求也是会话活动，刷新主轮看门狗避免长等待被误判定死。
+    onAskUserQuestionRequested: (_sessionId, payload) => {
+      pokeMainTurnActivity(payload.sessionId);
+      conversationApi.emitAskUserQuestionRequested(payload);
+    },
   });
 
   // setCompletionHandler 不再调用：done 由 subagentService.notifyMainTurnEnd 门控
@@ -525,6 +568,47 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
   };
 
+  // pi（07）：设置页「关于」Tab——forge 版本 + 更新组件。
+  // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照。
+  // readPiExtensionList 保留在 piRuntime，供 IN-F02/F04 预装与联动更新使用。
+  const piMethods: MethodTable = {
+    'pi/getInfo': async () => ({
+      code: 0,
+      message: 'success',
+      data: { forgeVersion: deps.forgeVersion ?? '0.0.0-dev' },
+    }),
+    'pi/updatePlugins': async () => {
+      const result = await (deps.piUpdateExtensions ?? updatePiExtensions)();
+      if (!result.ok) {
+        return { code: 6002, message: '组件更新失败', data: { output: result.output } };
+      }
+      // QA-G1（AC-PI-005）：手动更新成功 → 读快照比对输出「来源=手动」结构化日志，
+      // 并以 readPiExtensionList 最新实体版本整体刷新 updater-state components 快照
+      //（recordManualComponentUpdate 绝不抛出；updaterStatePath 缺省 null=跳过持久化仅输出日志）
+      recordManualComponentUpdate({
+        statePath: deps.updaterStatePath ?? null,
+        agentDir,
+        logger: (line) => console.log('[startup-update]', line),
+      });
+      return { code: 0, message: 'success', data: { output: result.output } };
+    },
+  };
+
+  // updater（07 IN-S03）：应用自更新 RPC（updater/getState | checkForUpdates | downloadUpdate |
+  // quitAndInstall，错误码 6003/6004/6005）。端口可注入（main.ts 组装真实 electron-updater 端口，
+  // feed 取 FORGE_GH_OWNER/FORGE_GH_REPO）；缺省（不注入 autoUpdaterLike）降级端口——
+  // 检查一律 6003，不触碰网络（dev 无 feed 场景）。状态跃迁（含下载进度步进）经共享
+  // eventBus 发 updater.stateChanged（FORGE_EVENTS 白名单已登记，主进程转发渲染进程）。
+  const updaterMethods: MethodTable = createUpdaterMethods(
+    deps.appUpdater ??
+      createAppUpdaterPort({
+        getCurrentVersion: () => deps.forgeVersion ?? '0.0.0-dev',
+        emit: (event, payload) => eventBus.emit(event, payload),
+        // QA-G4：检查成功完成回写 lastUpdateCheckAt（观测字段）；statePath 未注入则跳过
+        onCheckComplete: () => touchLastUpdateCheckAt(deps.updaterStatePath ?? null),
+      }),
+  );
+
   // wu-06：conversation/sendMessage 看门狗布防——发送期间监视主轮结束信号；
   // prompt 返回（完成/中止/抛错）即信号已到，finally 撤防。prompt 永不返回时
   // 由 interval 检测无活动窗口后强制放行（见 armMainTurnWatchdog）。
@@ -563,11 +647,20 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
 
   const methodTable: MethodTable = {
     ...projectApi.methods,
+    ...gitApi.methods,
     ...sessionApi.methods,
     ...conversationApi.methods,
     ...toolApi.methods,
     ...modelApi.methods,
     ...subagentMethods,
+    ...piMethods,
+    ...updaterMethods,
+    // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）
+    'app/getUpdateDebug': async () => ({
+      code: 0,
+      message: 'success',
+      data: { enabled: deps.getUpdateDebugEnabled?.() ?? false },
+    }),
     // 重写 cancelStream 为级联终止版本；sendMessage 加主轮看门狗布防
     'conversation/cancelStream': wrappedCancelStream,
     'conversation/sendMessage': wrappedSendMessage,

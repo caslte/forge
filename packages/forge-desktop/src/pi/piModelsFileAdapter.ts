@@ -73,8 +73,8 @@ export function defaultPiModelsPath(): string {
   return path.join(os.homedir(), '.pi', 'agent', 'models.json');
 }
 
-/** 剥离 JSONC 行注释（// 到行尾，引号内保留），供 pi models.json 解析 */
-function stripJsonComments(src: string): string {
+/** 剥离 JSONC 行注释（// 到行尾，引号内保留）；pi models.json / settings.json 共用 */
+export function stripJsonComments(src: string): string {
   let out = '';
   let inString = false;
   let i = 0;

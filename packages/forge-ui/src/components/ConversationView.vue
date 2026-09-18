@@ -3,12 +3,15 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call } from '../bridge';
 import type { ProjectItem, SessionItem, ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
+import TodoPanel from './TodoPanel.vue';
+import AskUserQuestionPanel from './AskUserQuestionPanel.vue';
 import MessageListItem from './MessageListItem.vue';
 import ConversationTimelineRail from './ConversationTimelineRail.vue';
 import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { useCompactBanner } from '../composables/useCompactBanner';
+import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
@@ -31,6 +34,8 @@ const props = defineProps<{
   currentModel: string | null;
   /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
   projectPicker?: ProjectPickerDescriptor;
+  /** 项目忙（任一会话 streaming，PM-S05 AC-PM-016）：透传给分支徽标禁用 */
+  gitBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -58,8 +63,13 @@ const {
   isStreaming,
   loadingHistory,
   errorMsg,
+  todoSnapshot,
   isEmpty,
   displayItems,
+  windowedItems,
+  historyWindowTruncated,
+  expandHistoryWindow,
+  expandHistoryWindowTo,
   isMessageStreaming,
   toggleGroup,
   sessionStatus,
@@ -83,6 +93,11 @@ const {
   onSubagentStopRequest,
   confirmSubagentStop,
   cancelSubagentStop,
+  askRequest,
+  askDeadline,
+  askAnswered,
+  submitAskUserAnswers,
+  dismissAskAnswered,
 } = useSessionConversation({
   getSessionId: () => props.sessionId ?? createdSessionId,
   getStatusHint: () => props.session?.status,
@@ -95,6 +110,8 @@ const {
  * 状态由 InstructionInput 的事件订阅 / 压缩点击统一维护，视图只读渲染。
  */
 const { getBanner: getCompactBanner } = useCompactBanner();
+/** 个性化：对话框 diff 展示开关（设置页个性化 Tab，localStorage 持久） */
+const { showDiff } = usePreferences();
 const compactBanner = computed(() => getCompactBanner(props.sessionId));
 const scrollRef = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
@@ -164,6 +181,18 @@ async function onSend(text: string): Promise<void> {
   }
   await sendTurn(text);
 }
+
+/**
+ * 落地 hero 草稿直通（v3.77）：零项目落地页（LandingHero）输入的文本，在项目
+ * 打开、本视图挂载后由上层（App post-flush）经此回填草稿输入框，用户无感衔接。
+ * 仅草稿态（无会话）接受——带真实 sessionId 时是既有会话，回填会污染其输入框。
+ */
+function restoreDraft(text: string): void {
+  if (props.sessionId !== null) return;
+  inputRef.value?.restoreQueuedText([text]);
+}
+
+defineExpose({ restoreDraft });
 
 function onModelChange(model: string): void {
   emit('model-change', model);
@@ -257,12 +286,15 @@ function userOrdinalOf(index: number): number {
  * 定位目标是 user 消息本身（.msg-user 按 DOM 顺序与 userOrdinal 对齐），
  * 工具组折叠不影响——user 消息永远渲染可见。
  */
-function locateMessage(index: number): void {
+async function locateMessage(index: number): Promise<void> {
   if (showResultView.value) return; // 结果视图激活期间不定位/回看（防御；Rail 本就隐藏）
   const container = scrollRef.value;
   if (!container) return;
   const ordinal = userOrdinalOf(index);
   if (ordinal < 0) return;
+  // 目标消息被历史窗口化截断在上方：先扩窗覆盖再等 patch，否则 .msg-user 的
+  // DOM 序只覆盖窗口内消息，ordinal 映射会错位（v3.74 窗口化配套）
+  if (expandHistoryWindowTo(index)) await nextTick();
   const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
   if (!el) return;
   reviewCtrl.enter(index); // browse→review；review 中重复点击仅更新目标
@@ -283,8 +315,34 @@ function onTimelineSelect(index: number): void {
   locateMessage(index);
 }
 
-/** scrollRef 滚动：回看态下停稳后仍触底 → 触底信号退出回看恢复自动滚底（恰好一次由状态机保证） */
+/** 触顶判定距离（距顶 <240px 开始向上补挂历史窗口批次） */
+const NEAR_TOP_PX = 240;
+let expandingWindow = false;
+
+/**
+ * 向上接近顶部 → 扩一批历史窗口（v3.74 窗口化）。新批次插在内容区**上方**，
+ * 若不补偿 scrollTop，视口内容会瞬间跳动（浏览器保持 scrollTop 数值不变，
+ * 内容整体下移）。锚定：记扩窗前的 scrollHeight，patch 完成后把差值补回。
+ */
+async function maybeExpandHistoryWindow(): Promise<void> {
+  const el = scrollRef.value;
+  if (el === null || !historyWindowTruncated.value || expandingWindow) return;
+  if (el.scrollTop > NEAR_TOP_PX) return;
+  expandingWindow = true;
+  try {
+    const prevHeight = el.scrollHeight;
+    if (expandHistoryWindow()) {
+      await nextTick();
+      if (scrollRef.value === el) el.scrollTop += el.scrollHeight - prevHeight;
+    }
+  } finally {
+    expandingWindow = false;
+  }
+}
+
+/** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 回看态停稳触底退出（原有信号） */
 function onMessagesScroll(): void {
+  void maybeExpandHistoryWindow();
   if (!isReviewing.value) return;
   if (nearBottomTimer !== null) clearTimeout(nearBottomTimer);
   nearBottomTimer = setTimeout(() => {
@@ -432,10 +490,111 @@ watch(
     void loadSubagents();
   },
 );
+
+/**
+ * ===== 空会话首屏：hero 居中 ↔ 输入框下沉置底 =====
+ *
+ * 交互：无消息时 hero（巨型 forge 字标 + 标题）与输入框整体垂直居中；首条消息发出后
+ * 整体下沉到底部 dock，走 decelerate 缓动，不回弹。
+ *
+ * 实现约束（改动前务必先理解，否则容易改坏）：
+ * 1. InstructionInput 必须始终挂在 .conv-input-wrap 内同一位置，既不迁移也不卸载。
+ *    一旦用 <Transition> 在两个容器之间切换 Layout，textarea 焦点、草稿、
+ *    InstructionInput 内部的 @ 提及浮窗状态会全部丢失。
+ * 2. 位移只由 .conv-input-wrap 的 transform: translateY() 承担。hero 用 absolute
+ *    脱离布局，所以 isEmpty 切换不会改变 wrap 自身高度 —— 位移过程因此不会叠加
+ *    布局抖动，输入框在 t=0 时刻视觉位置连续。
+ */
+const viewRef = ref<HTMLElement | null>(null);
+const inputWrapRef = ref<HTMLElement | null>(null);
+const heroRef = ref<HTMLElement | null>(null);
+
+/** 空态上抬位移（px，负值向上） */
+const heroLift = ref(0);
+/** false 时禁用一步过渡：首帧不要从底部「滑」到中间 */
+const heroLiftReady = ref(false);
+
+/**
+ * 求让「hero + 输入框」整体垂直居中所需的位移。
+ * hero 是 wrap 的 absolute 子元素，会随 wrap 一起被 transform 带走，
+ * 所以要把当前已生效的位移减回去，才是未位移的原始几何。
+ *
+ * 注意：必须在 hero 已挂载且父级 flex 布局完成（首帧绘制后）再测。
+ * 否则会测到 hero 未就位 / 父级高度为 0，算出超大负位移把输入框顶到顶部
+ * （连续切换多窗口导致 ConversationView 反复挂载时最易触发，表现为“输入框被提到上面”）。
+ * 测不到有效几何时返回 false，由 scheduleMeasure 下一帧重试。
+ */
+function measureHeroLift(): boolean {
+  const view = viewRef.value;
+  const wrap = inputWrapRef.value;
+  if (!view || !wrap) return false;
+  // hero 尚未挂载（Transition 首帧可能延迟）或父级尚未布局时，先不测
+  if (isEmpty.value && !heroRef.value) return false;
+  const vr = view.getBoundingClientRect();
+  if (vr.height === 0) return false;
+  const wr = wrap.getBoundingClientRect();
+  const hr = heroRef.value?.getBoundingClientRect();
+  const rawTop = hr ? Math.min(hr.top, wr.top) : wr.top;
+  const rawBottom = hr ? Math.max(hr.bottom, wr.bottom) : wr.bottom;
+  const groupCenter = (rawTop + rawBottom) / 2 - heroLift.value;
+  heroLift.value = Math.round(vr.top + vr.height / 2 - groupCenter);
+  return true;
+}
+
+/** 等首帧绘制（layout 就绪）后测量，必要时逐帧重试，直到 hero 就位。 */
+function scheduleMeasure(): void {
+  if (!isEmpty.value) return;
+  let tries = 0;
+  const step = () => {
+    if (measureHeroLift()) {
+      // 位移已落位，下一帧再放开过渡，避免「从底部滑到中间」
+      if (!heroLiftReady.value) {
+        requestAnimationFrame(() => {
+          heroLiftReady.value = true;
+        });
+      }
+      return;
+    }
+    if (tries++ < 10) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+watch(isEmpty, async (empty) => {
+  if (!empty) {
+    heroLift.value = 0;
+    return;
+  }
+  await nextTick();
+  scheduleMeasure();
+});
+
+let liftResizeObs: ResizeObserver | null = null;
+
+onMounted(() => {
+  if (!isEmpty.value) {
+    heroLiftReady.value = true;
+    return;
+  }
+  // 首帧先在无过渡态落位，待测量成功后再放开过渡
+  heroLiftReady.value = false;
+  scheduleMeasure();
+  if (typeof ResizeObserver !== 'undefined' && viewRef.value) {
+    liftResizeObs = new ResizeObserver(() => {
+      if (isEmpty.value) measureHeroLift();
+    });
+    liftResizeObs.observe(viewRef.value);
+  }
+});
+
+onUnmounted(() => {
+  liftResizeObs?.disconnect();
+  liftResizeObs = null;
+});
 </script>
 
 <template>
-  <div class="conv-view">
+  <div ref="viewRef" class="conv-view">
     <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。整行与结果视图 v-show 互斥
          （结果视图激活时隐藏整行，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
     <div class="conv-main-row" v-show="!showResultView">
@@ -458,26 +617,17 @@ watch(
             <span class="loading-dot"></span>
             <span class="loading-text">加载历史消息</span>
           </div>
-
-          <!-- 空会话欢迎页 -->
-          <div v-else-if="isEmpty" class="conv-welcome">
-            <div class="welcome-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-            </div>
-            <h3 class="welcome-title">开始新的对话</h3>
-          </div>
-
           <!-- 消息流：连续 ≥2 的 tool 聚为可折叠组。每个展示项独立组件 + 稳定 key，
                流式聚合边界变化（单条 ↔ 组）只在组件内部切换形态，避免 patch 错位 -->
           <template v-else>
             <MessageListItem
-              v-for="item in displayItems"
+              v-for="item in windowedItems"
               :key="item.key"
               :item="item"
               :streaming="item.kind === 'message' && isMessageStreaming(item.idx)"
               :session-id="props.sessionId ?? createdSessionId ?? ''"
+              :project-path="props.session?.projectPath ?? ''"
+              :show-diff="showDiff"
               @toggle-group="toggleGroup"
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
@@ -556,7 +706,42 @@ watch(
       @clear-finished="onClearFinished"
     />
 
-    <div class="conv-input-wrap">
+    <div
+      ref="inputWrapRef"
+      class="conv-input-wrap"
+      :class="{ 'hero-mode': isEmpty, 'hero-priming': !heroLiftReady || loadingHistory }"
+      :style="{ '--conv-hero-lift': heroLift + 'px' }"
+    >
+      <!-- CV-S11 Todo 面板：放在 wrap 内、hero 占位之前。
+           放在 wrap 内是为了与 hero 占位（absolute; bottom:100%）保持同一布局上下文，
+           不被 hero 占位向上延伸的区域盖住；放在 hero 之前是为了让面板永远在输入框正上方。
+           仅主会话承载（子 agent 结果视图不渲染） -->
+      <TodoPanel :session-id="props.sessionId ?? createdSessionId" :todo-snapshot="todoSnapshot" />
+
+      <!-- Path 2 ask_user_question 面板：同样放在 wrap 内、输入框正上方（与 TodoPanel
+           同款「从输入框延伸出去」的浮窗）。挂在会话作用域（每个 ConversationView
+           实例一份）而非 App 级 —— 契约 §4.4 硬约束 2，多窗格并排时各自只渲染自己
+           会话的问卷。子 agent 结果视图不渲染（与 TodoPanel 一致）。 -->
+      <AskUserQuestionPanel
+        v-if="!showResultView"
+        :session-id="props.sessionId ?? createdSessionId"
+        :request="askRequest"
+        :deadline="askDeadline"
+        :answered="askAnswered"
+        @submit="submitAskUserAnswers"
+        @dismiss="dismissAskAnswered"
+      />
+
+      <!-- 空会话首屏 hero：absolute 挂在输入区上方，不参与 wrap 高度计算
+           （下沉时不与位移叠加）；pointer-events:none 避免遮挡消息区滚动。
+           加载历史期间禁用过渡（:css=false）：hero 在加载开始的同一 tick 内
+           直接移除，不走 260ms 离场淡出——否则淡出残影会与「加载历史消息」同屏。
+           正常发送首条消息时 loadingHistory 为 false，过渡保留 -->
+      <Transition name="conv-hero" :css="!loadingHistory">
+        <div v-if="isEmpty" ref="heroRef" class="conv-hero" aria-label="新建会话：输入任务开始对话">
+          <span class="conv-wordmark" aria-hidden="true">forge</span>
+        </div>
+      </Transition>
       <InstructionInput
         ref="inputRef"
         :session-id="props.sessionId ?? undefined"
@@ -566,6 +751,8 @@ watch(
         :project-picker="props.projectPicker"
         :project-path="props.project.path"
         :queue-items="queueItems"
+        :git-project-path="props.projectPicker?.currentPath ?? props.project.path"
+        :git-busy="props.gitBusy ?? false"
         @send="onSend"
         @cancel="onCancelTurn"
         @model-change="onModelChange"
@@ -740,36 +927,110 @@ watch(
   100% { background-position: 0% 0%; }
 }
 
-/* 空会话欢迎页：占满整个内容区可视高度并水平/垂直居中 */
-.conv-welcome {
-  flex: 1;
-  text-align: center;
-  padding: 24px;
+/* ===== 输入区 / 空会话首屏 hero（实现约束见 script 段注释） =====
+   下沉位移只加在外层 wrap 上，InstructionInput 本身不动 DOM 位置 */
+.conv-input-wrap {
+  position: relative;
+  flex-shrink: 0;
+  padding: 12px 22px 18px;
+  /* 字标用 26cqw 跟着可视宽度走，这里建立查询容器 */
+  container-type: inline-size;
+  transform: translateY(var(--conv-hero-lift, 0px));
+  transition: transform var(--transition-decelerate);
+  will-change: transform;
+}
+
+/* 首帧尚未测量出位移：直接落位，不要从底部「滑」到中间。
+   加载历史期间同样禁用过渡：输入框直接以置底全宽呈现（与加载完成态一致），
+   避免 hero 收窄居中 → 全宽的中间态（窄条偏左）闪现 */
+.conv-input-wrap.hero-priming {
+  transition: none;
+}
+
+.conv-input-wrap.hero-priming .compose-box {
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conv-input-wrap {
+    transition: none;
+  }
+  .conv-input-wrap .compose-box {
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  }
+}
+
+.conv-hero {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  animation: fadeIn 0.3s ease-out;
+  gap: 10px;
+  pointer-events: none;
+  user-select: none;
 }
 
-.welcome-icon {
-  width: 56px;
-  height: 56px;
-  margin-bottom: 8px;
-  color: var(--brand);
-  opacity: 0.55;
-}
-
-.welcome-icon svg {
-  width: 100%;
-  height: 100%;
-}
-
-.welcome-title {
-  font-size: 18px;
+/* 巨型 forge 字标：实底 + 下缘蒙版渐隐，融进背板。
+   透明度刻意留低——抬到 0.2 以上深色主题会起脏斑 */
+.conv-wordmark {
+  font-family: var(--font-mono);
   font-weight: 600;
+  letter-spacing: -0.05em;
+  line-height: 1;
   color: var(--foreground);
+  opacity: 0.14;
+  /* 老浏览器兜底 */
+  font-size: 96px;
+  font-size: min(26cqw, 180px);
+  -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+}
+
+.conv-hero-enter-active,
+.conv-hero-leave-active {
+  transition: opacity 260ms ease;
+}
+
+.conv-hero-enter-from,
+.conv-hero-leave-to {
+  opacity: 0;
+}
+
+/* 输入框宽度随 hero 态收窄居中：两端都写成 cqw 派生的长度，
+   避免 percentage ↔ px 插值在 Chromium 上的不确定行为 */
+.conv-input-wrap .compose-box {
+  max-width: 100cqw;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    max-width var(--transition-decelerate);
+}
+
+.conv-input-wrap.hero-mode .compose-box {
+  max-width: min(640px, 100cqw);
+  margin: 0 auto;
+}
+
+/*
+ * CV-S11：hero-mode 下让 TodoPanel 与 compose-box 同宽居中，与 opencode 参考一致。
+ * 该规则在 ConversationView 里写是为了能直接选 .conv-input-wrap 祖先（TodoPanel
+ * scoped CSS 里 :deep() 只能往下穿透、不能往上选祖先）。TodoPanel.vue 不重复定义。
+ */
+.conv-input-wrap.hero-mode :deep(.todo-panel) {
+  max-width: min(640px, 100cqw);
+  /* 保留 -10px 底 margin：面板底部仍塞进输入框背后，保持延伸一体感 */
+  margin: 0 auto -10px;
+}
+
+/* Path 2：问卷面板与 compose-box 同宽居中（与上面 TodoPanel 规则同理，写在
+   ConversationView 才能往上选 .conv-input-wrap 祖先）。 */
+.conv-input-wrap.hero-mode :deep(.ask-panel) {
+  max-width: min(640px, 100cqw);
+  margin: 0 auto -10px;
 }
 
 /* 模型切换横幅：带左右横线的居中提示 */
@@ -811,12 +1072,6 @@ watch(
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-}
-
-/* 输入区 */
-.conv-input-wrap {
-  flex-shrink: 0;
-  padding: 12px 22px 18px;
 }
 
 /* 结果视图：与消息流 v-show 互斥，独立占据消息区位置 */

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { loadPiSessionHistory } from '../../src/pi/loadPiSessionHistory.ts';
+import type { ConversationMessage } from '@forge/core';
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-history-'));
 }
@@ -124,6 +125,103 @@ test('loadPiSessionHistory 不再剥离附件片段：历史消息按原文展�
     assert.equal(history[0]?.role, 'user');
     assert.equal(history[0]?.content, composed, '附件片段按原文保留，不再剥离');
     assert.equal(history[0]?.files, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('loadPiSessionHistory 从 assistant toolCall part 恢复工具入参回填 tool 消息', async () => {
+  const root = makeTempDir();
+  try {
+    const file = path.join(root, 'session.jsonl');
+    fs.writeFileSync(file, [
+      { type: 'session', version: 3, id: 'pi-session-tc', timestamp: '2026-01-01T00:00:00Z', cwd: root },
+      { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:01Z', message: { role: 'user', content: 'hi', timestamp: Date.parse('2026-01-01T00:00:01Z') } },
+      {
+        type: 'message',
+        id: 'm2',
+        parentId: 'm1',
+        timestamp: '2026-01-01T00:00:02Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: '我来改文件' },
+            { type: 'toolCall', id: 'call-1', name: 'edit', arguments: { path: 'src/a.ts', edits: [{ oldText: 'x', newText: 'y' }] } },
+          ],
+          stopReason: 'toolUse',
+          usage: {},
+          api: 'openai-completions',
+          provider: 'test',
+          model: 'test-model',
+          timestamp: Date.parse('2026-01-01T00:00:02Z'),
+        },
+      },
+      {
+        type: 'message',
+        id: 'm3',
+        parentId: 'm2',
+        timestamp: '2026-01-01T00:00:03Z',
+        message: { role: 'toolResult', toolCallId: 'call-1', toolName: 'edit', content: [{ type: 'text', text: 'Edited 1 line' }] },
+      },
+    ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+
+    const history = await loadPiSessionHistory(file);
+
+    const toolMsg = history.find((m) => m.role === 'tool') as
+      | (ConversationMessage & { input?: Record<string, unknown> })
+      | undefined;
+    assert.ok(toolMsg);
+    assert.equal(toolMsg.toolEventId, 'call-1');
+    assert.equal(toolMsg.toolName, 'edit');
+    assert.deepEqual(toolMsg.input, { path: 'src/a.ts', edits: [{ oldText: 'x', newText: 'y' }] });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('loadPiSessionHistory assistant 仅含 toolCall（正文空被跳过）仍回填入参', async () => {
+  const root = makeTempDir();
+  try {
+    const file = path.join(root, 'session.jsonl');
+    fs.writeFileSync(file, [
+      { type: 'session', version: 3, id: 'pi-session-tc-only', timestamp: '2026-01-01T00:00:00Z', cwd: root },
+      { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:01Z', message: { role: 'user', content: 'hi', timestamp: Date.parse('2026-01-01T00:00:01Z') } },
+      {
+        type: 'message',
+        id: 'm2',
+        parentId: 'm1',
+        timestamp: '2026-01-01T00:00:02Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'call-9', name: 'write', arguments: { path: 'b.md', content: 'hello' } }],
+          stopReason: 'toolUse',
+          usage: {},
+          api: 'openai-completions',
+          provider: 'test',
+          model: 'test-model',
+          timestamp: Date.parse('2026-01-01T00:00:02Z'),
+        },
+      },
+      {
+        type: 'message',
+        id: 'm3',
+        parentId: 'm2',
+        timestamp: '2026-01-01T00:00:03Z',
+        message: { role: 'toolResult', toolCallId: 'call-9', content: [{ type: 'text', text: 'ok' }] },
+      },
+    ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+
+    const history = await loadPiSessionHistory(file);
+
+    // assistant 正文为空被跳过，不出现在历史中
+    assert.equal(history.some((m) => m.role === 'assistant'), false);
+    const toolMsg = history.find((m) => m.role === 'tool') as
+      | (ConversationMessage & { input?: Record<string, unknown> })
+      | undefined;
+    assert.ok(toolMsg);
+    // toolResult 无 toolName → 从 toolCall part 兜底恢复
+    assert.equal(toolMsg.toolName, 'write');
+    assert.deepEqual(toolMsg.input, { path: 'b.md', content: 'hello' });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

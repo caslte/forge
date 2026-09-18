@@ -152,6 +152,24 @@
 
 ---
 
+## E-SM-008 冷启动会话树不等待项目打开（回归，v3.66）
+
+- **关联 AC**：无专属 AC（性能回归锁，保障 SM-S05 会话列表在冷启动下可用） | **优先级**：P0 | **上线门禁**：是 | **自动化等级**：mock-backend
+- **角色/页面**：单用户 / 侧栏会话树（冷启动首屏）
+- **前置条件**：存在 ≥1 项目与 ≥1 会话；`project/openProject` 被拖慢
+- **测试数据**：mock 默认项目 `D:/work/aiwork/forge` + 会话种子 `sess-startup`
+- **准备与清理**：`page.addInitScript` 抢在 mock 句柄赋值瞬间注入——`seed('project/openProject', …)` 返回 6s 后 resolve 的 Promise，并 `setSessions` 写入会话种子。
+  （必须用 init script：`setSessions` 落 localStorage 可跨 reload，而 `seed()` 只活在当前 JS 上下文，reload 后再注入已晚于 App.mounted。）
+- **操作**：
+  1. `page.goto('/')`，等待 `.tree-panel`
+  2. 断言 `.tree-project` 数为 1（项目行先到）
+  3. 断言 `.tree-session` 数为 1，超时 **2000ms**
+- **背景**：真实端 `project/openProject` 会触发 pi 扩展预热（jiti 冷编译 3~9s，占满 Electron 主进程事件循环）。v3.66 前 `main.ts` 在 `project.opened` 监听内**同步**触发预热——`void` 只保证不 await、不保证不阻塞，同步段在 RPC handler 内联执行，把 openProject **自身的 IPC 响应**也堵住，于是前端串在其后的 `loadSessions()` 发不出去：项目行已渲染（`queryProjectList` 是纯内存读、先返回）而会话树空白数秒。
+- **修复对应**：源码 `App.vue` onMounted 改为 `loadSessions()` 与 `loadProjects()` **并行**（另见 `main.ts` 的 `PI_WARMUP_DEFER_MS` 延后预热）。回退该行并行调用 → 本用例必失败（`.tree-session` 在整个 2000ms 窗口内 0 个元素，已实测）。
+- **失败检查**：无 console error / pageerror；用例：`e2e/session.spec.ts`（`SESSION-E2E-008`）
+
+---
+
 ## 覆盖汇总
 
 | 用例 | AC | 优先级 | 自动化等级 | 触发展开项 |
@@ -163,5 +181,6 @@
 | E-SM-005 | 017/018/019/020 | P1 | mock-backend | 多步交互（8 区吸附/4窗格/resize/崩溃恢复） |
 | E-SM-006 | 022/023/024/025/026/027 | P1 | mock-backend | 多步交互（双视角/收起展开全部/LOGO 按钮/聚焦行 pill/视角记忆） |
 | E-SM-007 | 013 | P0 | mock-backend | 回归：多窗口窄窗格工具组不被 flex 压缩（mwToolGroupVisible.spec.ts） |
+| E-SM-008 | —（性能回归锁） | P0 | mock-backend | 回归：冷启动会话树不等待 openProject（拖慢 openProject 6s，会话树须 2s 内到位） |
 
 > 注：多窗口并发为集成级风险，真实多 AgentSession 并发（非 mock）见 `test/integration/pi-core.md`（F5/F6）。

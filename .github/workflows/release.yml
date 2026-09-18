@@ -1,0 +1,126 @@
+# 多平台发布：三平台并行构建，全部产物挂到同一个 GitHub Release。
+#
+# 为什么必须用 CI，而不是本机一条 `electron-builder -mwl` 命令：
+#   electron-builder 官方明确「不要指望在一个平台上构建所有平台」——
+#   1) macOS 代码签名/公证只能在 macOS 上做（Apple 工具链限制，无法绕过）；
+#   2) 带 native 依赖（.node）的项目，只能装到宿主平台对应架构的那一份，
+#      Windows 机器上 npm ci 只会装到 win32 的预编译件。
+#   因此「一平台一 runner」不是可选项，是前提。
+#
+# ⚠ 为什么同一平台的两个架构必须合并在同一个 job 里构建（2026-09-16 事故复盘）：
+#   曾按架构拆成独立 job（win-x64 / win-arm64 各一台机器），每个 job 会各自生成并
+#   上传一份 latest.yml —— GitHub Release 同名资产互相覆盖，后完成的 job 赢。
+#   结果 latest.yml 只含最后完成那个架构的条目，electron-updater 拉到的更新
+#   与本机架构不符（实锤：x64 机器被推 arm64-setup.exe，update-info.json 为证），
+#   NSIS 半安装后应用损坏。
+#   合并到同一 job 后，latest.yml 由同一次 electron-builder 调用生成、天然包含
+#   全部架构条目，electron-updater 运行时按 process.arch 自行挑选，无覆盖问题。
+#   代价：arm64 产物内的可选原生依赖（@mariozechner/clipboard）装的是宿主架构
+#   那一份，require 失败走 optionalDependencies 的静默降级 —— 可接受。
+#
+# 触发：打 tag（v0.1.7 等）或手动 workflow_dispatch。
+# 产物：安装包 + latest.yml / latest-mac.yml / latest-linux.yml，electron-updater 按 platform 挑对应那一个。
+#
+# 计费（私有仓库才计费；仓库转公开后标准 runner 免费且不限量）：
+#   免费额度按「Linux 分钟 × 1、Windows × 2、macOS × 10」折算消耗。
+#   一次全量发布约 6 个 job，按 macOS 4 分钟 + Windows 4 分钟 + Linux 4 分钟估，
+#   折算约 40~60 分钟额度 —— 免费版 2000 分钟/月足够，但别把它当事后账：macOS 最贵。
+#   想要省钱：日常只在 tag 上跑，别在 push 上全量跑。
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # electron-builder --publish always 需要写 Release
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 一个架构失败不影响其余架构出包
+      matrix:
+        include:
+          # win / mac：单 job 双架构（理由见文件顶部「事故复盘」）。
+          # electron-builder 一次调用 --x64 --arm64 会下载两个架构的 Electron 外壳分别打包，
+          # 生成的 latest.yml / latest-mac.yml 含全部架构条目，electron-updater 按本机架构挑。
+          - name: win
+            os: windows-latest
+            args: --win --x64 --arm64
+          - name: mac
+            os: macos-14
+            args: --mac --arm64 --x64
+          # linux：仍按架构拆分（x64 runner 无法交叉构建 arm64 AppImage，见下）。
+          # ⚠ 已知限制：两个 job 各传一份 latest-linux.yml，后者覆盖前者 ——
+          #   linux 自动更新 feed 只保证「最后完成的那个架构」正确。
+          #   现阶段（私有仓库、无 Linux 用户）可接受；正式对外前需加 finalize job
+          #   下载两份 yml 合并后重传，或 linux 改单架构发布。
+          - name: linux-x64
+            os: ubuntu-latest
+            args: --linux --x64
+          # 若该标签在你的套餐上不可用，删掉本项；普通 x64 机器无法直接产出 arm64 AppImage，
+          # 需改用 Docker + QEMU 交叉构建（见 electron-builder 文档 Architecture 一节）。
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            args: --linux --arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Linux 打包所需的系统工具（AppImage 依赖 libopenjp2）
+      - name: 安装 Linux 打包系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopenjp2-tools
+
+      # arm64 Linux 的 deb 打包必须用系统 fpm：electron-builder 内置 fpm 是硬编码的 x86 版 Ruby
+      # （fpm-*-linux-x86，无 arm64 版），在 arm64 runner 上 Exec format error（electron-builder#6115）。
+      # 解法是社区/官方 issue 区公认的唯一出路：装系统 ruby + fpm，构建时 USE_SYSTEM_FPM=true。
+      - name: 安装系统 fpm（仅 arm64 Linux）
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          sudo apt-get install -y --no-install-recommends ruby ruby-dev build-essential
+          sudo gem install fpm --no-document
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建并发布
+        # dist:ci 与 dist 的区别：不带 --publish never，由下面追加的 --publish always 接管
+        run: npm run dist:ci -w @forge/desktop -- ${{ matrix.args }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 无 Apple Developer 证书 → 跳过签名身份自动发现，避免 mac 构建报错中断
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # 仅 arm64 Linux 用系统 fpm 打 deb（内置 fpm 只有 x86 版）；x64 上内置 fpm 正常工作，保持不动
+          USE_SYSTEM_FPM: ${{ runner.os == 'Linux' && runner.arch == 'ARM64' && 'true' || 'false' }}
+
+      # 仅在失败时留档，供排查用。
+      # 不要改成 if: always()：成功构建的产物已经进 Release，再存一份到 Actions 制品会
+      # 计入制品存储配额（免费版仅 500 MB，六个平台的安装包合计远超），Release 资产则不计费。
+      - name: 失败时归档产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: warn
+          retention-days: 3
+          path: |
+            packages/forge-desktop/release/*.exe
+            packages/forge-desktop/release/*.dmg
+            packages/forge-desktop/release/*.zip
+            packages/forge-desktop/release/*.AppImage
+            packages/forge-desktop/release/*.deb
+            packages/forge-desktop/release/*.blockmap
+            packages/forge-desktop/release/latest*.yml

@@ -11,6 +11,10 @@ type PiContentPart = {
   /** 图片 part（P3-B 用户附件）：base64 数据 + MIME 类型 */
   data?: string;
   mimeType?: string;
+  /** toolCall part（assistant 消息内）：id/name/arguments 用于恢复历史工具入参 */
+  id?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
 };
 
 type PiMessage = {
@@ -37,6 +41,25 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
     );
   }
   const messages: ConversationMessage[] = [];
+
+  // 预扫描：assistant 消息的 toolCall parts → toolCallId → { name, arguments }。
+  // 独立于主循环（不依赖条目顺序，也在空 assistant skip 之前完成），用于把工具入参
+  // 回填到对应 toolResult 消息——前端据此渲染工具卡 diff 与每轮「改动文件汇总卡片」。
+  const toolCallInputs = new Map<string, { name?: string; arguments?: Record<string, unknown> }>();
+  for (const entry of entries) {
+    if (entry.type !== 'message') continue;
+    const message = (entry as { message?: PiMessage }).message;
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part?.type === 'toolCall' && typeof part.id === 'string') {
+        toolCallInputs.set(part.id, {
+          name: typeof part.name === 'string' ? part.name : undefined,
+          arguments:
+            part.arguments && typeof part.arguments === 'object' ? part.arguments : undefined,
+        });
+      }
+    }
+  }
 
   for (const entry of entries) {
     if (entry.type !== 'message') continue;
@@ -76,13 +99,16 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
     // 附件统一给路径：消息正文就是含路径行的原文，不再做附件片段剥离/占位
     if (role === 'tool') {
       const toolEventId = message.toolCallId ?? raw.id ?? `tool-${raw.timestamp}`;
+      // 回填工具入参（条件性添加：无匹配 toolCall 时不加 input 字段，保持旧数据形态）
+      const tc = toolCallInputs.get(message.toolCallId ?? raw.id ?? '');
       messages.push({
         role,
         content,
         ts: raw.timestamp,
         toolEventId,
-        toolName: message.toolName,
+        toolName: message.toolName ?? tc?.name,
         status: 'completed',
+        ...(tc?.arguments ? { input: tc.arguments } : {}),
       } as unknown as ConversationMessage);
     } else {
       messages.push({
