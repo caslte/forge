@@ -36,7 +36,7 @@ export interface GitBranchInfo {
   detached: boolean;
 }
 
-/** 输入框项目选择器描述（SM-S01 v3.21）：单视图传入，多窗口 compact 不传则不渲染 */
+/** 输入框项目选择器描述（SM-S01 v3.21）：单视图/多窗口均传入；无归属项目（currentPath=null）则不渲染 */
 export interface ProjectPickerDescriptor {
   /** draft=新建会话可选归属；session=会话中只读信息（归属不可换） */
   mode: 'draft' | 'session';

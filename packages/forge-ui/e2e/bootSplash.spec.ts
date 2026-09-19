@@ -133,7 +133,7 @@ async function readWelcomeState(page: Page, selector: string, titleSelector: str
   );
 }
 
-test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（无滚动条 / 无白边），且为亮色', async ({
+test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（无滚动条 / 无白边），且为默认暗色', async ({
   page,
 }) => {
   await freezeBeforeModuleChain(page);
@@ -156,11 +156,11 @@ test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（
   expect(Math.abs(s.width - s.viewportW), `width=${s.width} vs ${s.viewportW}`).toBeLessThanOrEqual(1);
   expect(Math.abs(s.height - s.viewportH), `height=${s.height} vs ${s.viewportH}`).toBeLessThanOrEqual(1);
 
-  // 4) 默认（无持久化主题）= 亮色，且不设 data-theme（与 useTheme 默认值一致）
-  expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBeNull();
+  // 4) 默认（无持久化主题）= 暗色，且引导脚本直接设上 data-theme（与 useTheme 默认值一致）
+  expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBe('dark');
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
-  expect(s.bg.luma, `亮色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeGreaterThan(0.85);
-  expect(s.fg.luma, `亮色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeLessThan(0.4);
+  expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.6);
 });
 
 test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执行即已是暗色欢迎页', async ({

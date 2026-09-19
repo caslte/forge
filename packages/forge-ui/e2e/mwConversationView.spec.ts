@@ -74,7 +74,7 @@ test('多窗口窄窗格长行不撑宽窗口，发送按钮不被裁 @regressio
   await page.locator('.app-toolbar-btn', { hasText: '多窗口' }).click();
   await expect(page.locator('.mw-canvas')).toBeVisible();
   await dragIn(page);
-  await page.locator('.mw-btn', { hasText: '自动布局' }).click();
+  await page.locator('.app-toolbar-btn', { hasText: '自动布局' }).click();
   await expect(page.locator('.mw-win .compose-box')).toBeVisible();
 
   // 窗口不得被内容撑宽：视图根宽度 ≤ 窗口宽度

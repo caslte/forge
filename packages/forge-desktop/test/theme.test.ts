@@ -2,7 +2,7 @@
  * 窗口底色主题镜像（theme.ts）单测。
  *
  * 覆盖两类不变量：
- * 1. 读/写/容错语义：缺文件/损坏/非法取值一律回 light（不能因镜像坏了就让启动失败）；
+ * 1. 读/写/容错语义：缺文件/损坏/非法取值一律回默认主题 dark（不能因镜像坏了就让启动失败）；
  *    写入必须原子（不留 .tmp 残骸）。
  * 2. **底色与设计令牌同源**：THEME_BACKGROUND 是硬编码 hex，而 forge-ui 的
  *    design-tokens.css 才是 --background 的事实来源。两者一旦漂移，主进程建窗底色与
@@ -91,30 +91,30 @@ function assertSameHex(actual: string, expected: string, label: string): void {
 
 // ---------- 用例 ----------
 
-test('缺省与容错：文件缺失 / JSON 损坏 / 取值非法 / mode 类型错 一律回 light', () => {
-  assert.equal(DEFAULT_THEME, 'light');
+test('缺省与容错：文件缺失 / JSON 损坏 / 取值非法 / mode 类型错 一律回 dark（默认主题）', () => {
+  assert.equal(DEFAULT_THEME, 'dark');
 
   // 1) 文件不存在（首次启动）
   const fresh = makeUserDataDir();
-  assert.equal(readThemeSync(fresh), 'light');
+  assert.equal(readThemeSync(fresh), 'dark');
 
   // 2) 目录都不存在（userData 尚未创建）
-  assert.equal(readThemeSync(path.join(fresh, 'not-created-yet')), 'light');
+  assert.equal(readThemeSync(path.join(fresh, 'not-created-yet')), 'dark');
 
   // 3) 半截 JSON（模拟非原子写的后果——正因如此才要原子写）
   const broken = makeUserDataDir();
   fs.writeFileSync(themeFilePath(broken), '{ "mode": "da', 'utf8');
-  assert.equal(readThemeSync(broken), 'light');
+  assert.equal(readThemeSync(broken), 'dark');
 
   // 4) 合法 JSON 但取值非法（旧版本残留 / 手工改坏）
   const invalid = makeUserDataDir();
   fs.writeFileSync(themeFilePath(invalid), JSON.stringify({ mode: 'solarized' }), 'utf8');
-  assert.equal(readThemeSync(invalid), 'light');
+  assert.equal(readThemeSync(invalid), 'dark');
 
   // 5) 合法 JSON 但 mode 不是字符串
   const wrongType = makeUserDataDir();
   fs.writeFileSync(themeFilePath(wrongType), JSON.stringify({ mode: 1 }), 'utf8');
-  assert.equal(readThemeSync(wrongType), 'light');
+  assert.equal(readThemeSync(wrongType), 'dark');
 });
 
 test('写读往返：light/dark 均能原样读回，且写入是原子的（不留 .tmp）', () => {

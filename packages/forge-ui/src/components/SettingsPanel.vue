@@ -649,10 +649,24 @@ onUnmounted(() => {
           <button class="ghost small" @click="onClearDefault">清除</button>
         </div>
 
-        <!-- 添加/编辑表单 -->
-        <div v-if="showAddForm" class="provider-form">
+        <!-- 添加/编辑表单（弹窗形态：不再内联在列表上方挤压/推开模型列表）。
+             Teleport 到 body：settings 区某祖先带 transform，fixed 遮罩会被其裁剪，须脱离组件树定位 -->
+        <Teleport to="body">
+        <div
+          v-if="showAddForm"
+          class="provider-form-overlay"
+          role="dialog"
+          aria-modal="true"
+          @click.self="toggleForm"
+        >
+        <div class="provider-form">
           <div class="form-head">
             <span class="form-head-title">{{ editingId ? '编辑模型' : '添加模型' }}</span>
+            <button type="button" class="form-close" aria-label="关闭" @click="toggleForm">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
           </div>
           <label class="form-field">
             <span class="form-label">名称</span>
@@ -741,6 +755,8 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
+        </div>
+        </Teleport>
 
         <!-- 模型列表 -->
         <div v-if="providerError" class="section-error">{{ providerError }}</div>
@@ -1517,15 +1533,33 @@ onUnmounted(() => {
   color: var(--foreground);
 }
 
-/* 模型配置表单 */
+/* 模型配置表单：弹窗形态（遮罩配方同 .up-confirm），不占用列表空间 */
+.provider-form-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn var(--transition-base);
+}
+
 .provider-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
-  background: color-mix(in oklab, var(--muted) 30%, var(--card));
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 22px 24px;
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-lg);
 }
 
 .form-field {
@@ -1538,6 +1572,30 @@ onUnmounted(() => {
 .form-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+}
+
+.form-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.form-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.form-close:hover {
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .form-head-title {
@@ -1635,7 +1693,9 @@ onUnmounted(() => {
 .level-menu {
   position: absolute;
   z-index: 11;
-  top: calc(100% + 4px);
+  /* 表单已改为弹窗（内部可滚动）：向下弹会被 modal 底边裁切，故朝上展开 */
+  top: auto;
+  bottom: calc(100% + 4px);
   left: 0;
   right: 0;
   background: var(--card);

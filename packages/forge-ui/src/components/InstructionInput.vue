@@ -1374,65 +1374,6 @@ watch(
 
     <div class="compose-bar">
       <div class="compose-links">
-        <!-- 项目选择器（SM-S01 v3.21）：草稿=选归属；会话中=同式样可点，信息态+定位 -->
-        <div v-if="projectPicker" class="proj-wrap">
-          <button
-            type="button"
-            class="meta-link proj-pill"
-            :class="{ 'proj-pill-static': projectPicker.mode === 'session' }"
-            :data-tooltip="projectPicker.mode === 'draft' ? '选择新会话归属项目' : '会话归属项目'"
-            @click="toggleProjMenu"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-            <span>{{ projectPicker.currentName }}</span>
-            <span v-if="projectPicker.mode === 'draft'" class="proj-caret" aria-hidden="true">▾</span>
-          </button>
-          <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
-            <template v-if="projectPicker.mode === 'draft'">
-              <div class="menu-hint">新会话归属项目</div>
-              <button
-                v-for="it in projectPicker.items"
-                :key="it.path"
-                type="button"
-                class="proj-item"
-                :class="{ active: it.path === projectPicker.currentPath }"
-                @click="onPickProject(it.path)"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                </svg>
-                <span class="proj-item-main">
-                  <span class="proj-item-name">{{ it.name }}</span>
-                  <span class="proj-item-path" :title="it.path">{{ it.path }}</span>
-                </span>
-                <span
-                  class="proj-item-del"
-                  :class="{ confirming: projDeleteConfirmPath === it.path }"
-                  :title="projDeleteConfirmPath === it.path ? '再次点击确认移除' : '移除项目（连同其下会话一并删除，源文件保留）'"
-                  role="button"
-                  @click.stop.prevent="onProjDelete(it.path)"
-                >
-                  <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">确认</span>
-                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </span>
-              </button>
-              <div class="proj-menu-sep"></div>
-              <button type="button" class="proj-item" @click="onOpenProjectPicker">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                <span class="proj-item-main"><span class="proj-item-name">打开项目…</span></span>
-              </button>
-            </template>
-          </div>
-          <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
-          <BranchBadge v-if="gitProjectPath" :project-path="gitProjectPath" :busy="gitBusy ?? false" />
-        </div>
-
         <!-- 附件 -->
         <button
           class="meta-link"
@@ -1501,30 +1442,6 @@ watch(
       </div>
 
       <div class="compose-actions">
-        <div class="ctx-wrap">
-          <div
-            class="ctx"
-            :class="{ 'ctx-warn': usageWarning }"
-            :title="usageError || '上下文用量，接近上限可压缩'"
-            data-tooltip="上下文用量"
-          >
-            <span class="ctx-num">{{ usageLabel }}</span>
-            <div class="ctx-track">
-              <div
-                class="ctx-fill"
-                :class="{ warn: usageWarning }"
-                :style="{ width: usagePct + '%' }"
-              ></div>
-            </div>
-            <span
-              class="ctx-cmp"
-              :class="{ disabled: compactDisabled }"
-              :title="compactTitle"
-              @click="onCompact"
-            >{{ compactLabel }}</span>
-          </div>
-        </div>
-
         <!-- CV-S09 待发送队列徽标 + 只读浮窗：忙时入队的消息在派发前暂存于此 -->
         <div v-if="queueList.length > 0" class="queue-wrap">
           <button
@@ -1576,6 +1493,91 @@ watch(
     <!-- 图片预览弹窗（待发缩略图点击打开，滚轮缩放，Esc/点遮罩关闭） -->
     <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
   </div>
+
+  <!-- 输入框下方状态行：左=项目选择器（SM-S01 v3.21，草稿=选归属；会话中=信息态）+ git 分支徽标（PM-S05），
+       右=上下文用量+压缩。与 compose-box 为兄弟节点（组件多根 fragment），浮窗仍向上弹、盖在输入框之上 -->
+  <div class="compose-status">
+    <div v-if="projectPicker" class="proj-wrap">
+      <button
+        type="button"
+        class="meta-link proj-pill"
+        :class="{ 'proj-pill-static': projectPicker.mode === 'session' }"
+        :data-tooltip="projectPicker.mode === 'draft' ? '选择新会话归属项目' : '会话归属项目'"
+        @click="toggleProjMenu"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        <span>{{ projectPicker.currentName }}</span>
+        <span v-if="projectPicker.mode === 'draft'" class="proj-caret" aria-hidden="true">▾</span>
+      </button>
+      <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
+        <div class="menu-hint">新会话归属项目</div>
+        <button
+          v-for="it in projectPicker.items"
+          :key="it.path"
+          type="button"
+          class="proj-item"
+          :class="{ active: it.path === projectPicker.currentPath }"
+          @click="onPickProject(it.path)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          <span class="proj-item-main">
+            <span class="proj-item-name">{{ it.name }}</span>
+            <span class="proj-item-path" :title="it.path">{{ it.path }}</span>
+          </span>
+          <span
+            class="proj-item-del"
+            :class="{ confirming: projDeleteConfirmPath === it.path }"
+            :title="projDeleteConfirmPath === it.path ? '再次点击确认移除' : '移除项目（连同其下会话一并删除，源文件保留）'"
+            role="button"
+            @click.stop.prevent="onProjDelete(it.path)"
+          >
+            <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">确认</span>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </span>
+        </button>
+        <div class="proj-menu-sep"></div>
+        <button type="button" class="proj-item" @click="onOpenProjectPicker">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          <span class="proj-item-main"><span class="proj-item-name">打开项目…</span></span>
+        </button>
+      </div>
+      <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
+      <BranchBadge v-if="gitProjectPath" :project-path="gitProjectPath" :busy="gitBusy ?? false" />
+    </div>
+
+    <!-- 上下文用量 + 压缩：从框内操作条挪到状态行右侧 -->
+    <div class="ctx-wrap">
+      <div
+        class="ctx"
+        :class="{ 'ctx-warn': usageWarning }"
+        :title="usageError || '上下文用量，接近上限可压缩'"
+        data-tooltip="上下文用量"
+      >
+        <span class="ctx-num">{{ usageLabel }}</span>
+        <div class="ctx-track">
+          <div
+            class="ctx-fill"
+            :class="{ warn: usageWarning }"
+            :style="{ width: usagePct + '%' }"
+          ></div>
+        </div>
+        <span
+          class="ctx-cmp"
+          :class="{ disabled: compactDisabled }"
+          :title="compactTitle"
+          @click="onCompact"
+        >{{ compactLabel }}</span>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -1605,6 +1607,24 @@ watch(
 .compose-box:focus-within {
   border-color: var(--brand);
   /* 仅保留外圈边框；去掉内圈 3px 光环 */
+}
+
+/* 输入框下方状态行（左：项目+分支，右：上下文用量+压缩）：贴紧盒子下缘。
+   max-width 与过渡对齐 .compose-box（ConversationView hero 收窄），保证两行同步动画 */
+.compose-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100cqw;
+  margin-top: 2px;
+  padding: 0 8px;
+  transition: max-width var(--transition-decelerate);
+}
+
+/* ctx 恒靠右：窄窗格项目区缺失时（如多窗口无归属路径）也不跟着左移 */
+.compose-status .ctx-wrap {
+  margin-left: auto;
 }
 
 /* 进行中：实线边框 + 呼吸效果 */
@@ -2363,6 +2383,8 @@ watch(
   font-size: 12px;
   color: var(--muted-foreground);
   cursor: pointer;
+  /* 暂时隐藏手动压缩入口（低使用率）；onCompact/超限自动压缩逻辑保留 */
+  display: none;
 }
 
 .ctx-cmp:hover {

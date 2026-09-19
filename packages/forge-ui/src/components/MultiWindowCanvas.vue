@@ -457,18 +457,13 @@ onUnmounted(() => {
   resizeObserver?.disconnect();
   resizeObserver = null;
 });
+
+// 顶部工具栏「自动布局 / 全部关闭」按钮通过 ref 调用
+defineExpose({ arrangeAuto, clearAll });
 </script>
 
 <template>
   <div class="mw-view">
-    <div class="mw-toolbar">
-      <button class="mw-btn" @click="arrangeAuto">自动布局</button>
-      <button class="mw-btn danger" @click="clearAll">
-        全部关闭
-      </button>
-      <span class="mw-hints">从左侧会话拖到画布开窗 · 拖标题栏贴边吸附 · 点标题进会话</span>
-    </div>
-
     <div
       ref="canvasRef"
       class="mw-canvas"
@@ -530,37 +525,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
   padding: 16px;
-}
-
-.mw-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-.mw-btn {
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  background: var(--muted);
-  border: 1px solid var(--border);
-  color: var(--foreground);
-}
-.mw-btn:hover {
-  border-color: var(--brand);
-  color: var(--brand);
-}
-.mw-btn.danger {
-  background: color-mix(in oklab, var(--destructive) 8%, var(--background));
-  border-color: color-mix(in oklab, var(--destructive) 24%, var(--border));
-  color: var(--destructive);
-}
-.mw-hints {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--muted-foreground);
 }
 
 .mw-canvas {

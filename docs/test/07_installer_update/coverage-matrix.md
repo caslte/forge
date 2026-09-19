@@ -26,7 +26,7 @@
 
 | AC ID | 功能点 | 风险维度 | 场景 | 优先级 | Unit ID | API ID | E2E ID | 核心断言 |
 |---|---|---|---|---|---|---|---|---|
-| AC-IN-001 | IN-F01 安装包 | 状态流转 | 全新机双击安装、userData 落位 | P0 | - | - | - | manual |
+| AC-IN-001 | IN-F01 安装包 | 状态流转 | 全新机双击安装出现「选择安装位置」页（默认目录预填、可更改、页顶文案含「自动补 forge 子目录」提示）、userData 落位 | P0 | - | - | - | manual + installerConfig 单测（文案断言） |
 | AC-IN-002 | IN-F01 安装包 | 数据一致性 | 覆盖安装不损坏既有 userData | P0 | - | - | - | manual |
 | AC-IN-003 | IN-F01 安装包 | 异常失败 | 离线/未配 feed 仍能正常安装 | P0 | - | - | - | manual |
 | AC-IN-004 | IN-F02 推荐组件静默预装 | 状态流转 | 首次启动后共享 `~/.pi/agent` 出现推荐清单插件，全程无 UI | P0 | U-IN-001 | - | E-IN-001 | 全部清单项被写入 |
@@ -88,7 +88,9 @@
 | 边界 | 不可校验来源不可接受 | IN-F03 / AC-IN-010 | 签名/哈希校验 |
 | 反馈 | 组件清单不展示 | IN-F02/F04 / AC-IN-005/012~014 | 明细仅日志 + components 快照 |
 | 反馈 | 重启安装弹窗确认 | IN-F03 / AC-IN-009 | 二次确认 |
-| 反馈 | 安装期进度窗口可见、安装器内零点击；不做静默无窗口安装（TD-IN-07） | IN-F03 / AC-IN-009 | nsis.oneClick=true 且 quitAndInstall 非静默（installerConfig 单测锁定） |
+| 反馈 | 安装期进度窗口可见、安装器内零点击；不做静默无窗口安装（TD-IN-07） | IN-F03 / AC-IN-009 | nsis.oneClick=false + allowToChangeInstallationDirectory + installer.nsh 更新零点击守卫，且 quitAndInstall 非静默（installerConfig 单测锁定） |
+| 反馈 | 首装要能选择安装位置（默认目录预填、可更改），不要裸弹选目录框（2026-09-19，TD-IN-07 修订） | IN-F01 / IN-F03 / AC-IN-001/009 | 向导模式配置 + installer.nsh 钩子（installerConfig 单测锁定） |
+| 反馈 | 目录页预览看不到「自动补 forge 子目录」行为，需文案说明（2026-09-19 第三轮） | IN-F01 / AC-IN-001 | `MUI_DIRECTORYPAGE_TEXT_TOP` 默认文案 + 提示行（installerConfig 单测锁定 + 真机 dump 验证；SHOW 回调路线实测证伪） |
 
 ---
 

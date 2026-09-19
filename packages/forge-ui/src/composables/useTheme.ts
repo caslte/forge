@@ -11,7 +11,7 @@ import { ref, watch } from 'vue';
 import type { ThemeMode } from '../types';
 
 const STORAGE_KEY = 'forge:theme';
-const themeMode = ref<ThemeMode>('light');
+const themeMode = ref<ThemeMode>('dark');
 
 /**
  * 回写主进程（fire-and-forget）。两条路径都要能容忍缺失：

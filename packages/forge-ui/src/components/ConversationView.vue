@@ -947,7 +947,7 @@ onUnmounted(() => {
   transition: none;
 }
 
-.conv-input-wrap.hero-priming .compose-box {
+.conv-input-wrap.hero-priming :deep(.compose-box) {
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
@@ -955,7 +955,7 @@ onUnmounted(() => {
   .conv-input-wrap {
     transition: none;
   }
-  .conv-input-wrap .compose-box {
+  .conv-input-wrap :deep(.compose-box) {
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
 }
@@ -1002,7 +1002,9 @@ onUnmounted(() => {
 
 /* 输入框宽度随 hero 态收窄居中：两端都写成 cqw 派生的长度，
    避免 percentage ↔ px 插值在 Chromium 上的不确定行为 */
-.conv-input-wrap .compose-box {
+/* InstructionInput 为多根 fragment（compose-box + 状态行），不再继承父组件 scopeId，
+   父作用域规则必须经 :deep() 才能命中 .compose-box */
+.conv-input-wrap :deep(.compose-box) {
   max-width: 100cqw;
   transition:
     border-color var(--transition-fast),
@@ -1010,9 +1012,16 @@ onUnmounted(() => {
     max-width var(--transition-decelerate);
 }
 
-.conv-input-wrap.hero-mode .compose-box {
+/* hero 收窄居中（状态行同宽跟随，保证项目/分支左缘贴着输入框左缘） */
+.conv-input-wrap.hero-mode :deep(.compose-box) {
   max-width: min(640px, 100cqw);
   margin: 0 auto;
+}
+
+/* 状态行用 margin-inline 而非 margin 简写：保留 InstructionInput 自带的 2px 上间距 */
+.conv-input-wrap.hero-mode :deep(.compose-status) {
+  max-width: min(640px, 100cqw);
+  margin-inline: auto;
 }
 
 /*

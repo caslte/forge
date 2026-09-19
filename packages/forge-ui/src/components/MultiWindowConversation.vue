@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { call } from '../bridge';
-import type { ProjectItem, SessionItem } from '../types';
+import type { ProjectItem, ProjectPickerDescriptor, SessionItem } from '../types';
 import ConversationView from './ConversationView.vue';
 
 /**
@@ -35,6 +35,14 @@ const project = computed<ProjectItem>(() => ({
   trust: 'trusted',
 }));
 
+/** 输入框下方状态行的项目徽标（session 只读态）；显示名=路径末段 */
+const projectPicker = computed<ProjectPickerDescriptor | undefined>(() => {
+  const p = props.session?.projectPath;
+  if (!p) return undefined;
+  const segs = p.replace(/\\/g, '/').split('/');
+  return { mode: 'session', currentPath: p, currentName: segs[segs.length - 1] || p, items: [] };
+});
+
 async function loadModel(): Promise<void> {
   try {
     const res = await call<{ model: string | null }>('model/getSessionModel', {
@@ -67,6 +75,7 @@ onMounted(() => {
     :session="session"
     :models="models"
     :current-model="currentModel"
+    :project-picker="projectPicker"
     :git-busy="gitBusy"
     @model-change="onModelChange"
   />

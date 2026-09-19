@@ -35,8 +35,8 @@ export const THEME_BACKGROUND: Record<ThemeMode, string> = {
   dark: '#242427',
 };
 
-/** 缺省主题：与 useTheme.ts 的「无存储 = light」、index.html 引导脚本同值 */
-export const DEFAULT_THEME: ThemeMode = 'light';
+/** 缺省主题：与 useTheme.ts 的「无存储 = dark」、index.html 引导脚本同值 */
+export const DEFAULT_THEME: ThemeMode = 'dark';
 
 /** 主题镜像文件绝对路径（userData 目录由调用方传入，本模块不自取 app.getPath） */
 export function themeFilePath(userDataDir: string): string {
@@ -54,7 +54,7 @@ export function backgroundFor(mode: ThemeMode): string {
 
 /**
  * 同步读主题镜像。文件缺失 / JSON 损坏 / 取值非法一律回默认值——
- * 「读不到就用 light」不会让启动失败，与渲染进程的缺省行为一致。
+ * 「读不到就用默认主题」不会让启动失败，与渲染进程的缺省行为一致。
  */
 export function readThemeSync(userDataDir: string): ThemeMode {
   try {

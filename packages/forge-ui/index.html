@@ -12,15 +12,18 @@
          故用**同步脚本**（特意不写 type="module"：module 是 deferred，赶不到 splash 之前）
          在模块链之前把主题落到 <html>。
          取值与默认值与 useTheme.ts 严格一致：localStorage['forge:theme'] 为 'dark'/'light'
-         才生效；无存储则整个属性都不设 = light，不跟随系统（与 App 行为一致）。 */
+         才生效；无存储一律落 'dark'（首次安装默认暗色主题），不跟随系统（与 App 行为一致）。 */
       (function () {
         try {
           var saved = localStorage.getItem('forge:theme');
           if (saved === 'dark' || saved === 'light') {
             document.documentElement.setAttribute('data-theme', saved);
+          } else {
+            document.documentElement.setAttribute('data-theme', 'dark');
           }
         } catch (e) {
-          /* localStorage 不可用（隐私模式等）按 light 走 */
+          /* localStorage 不可用（隐私模式等）按默认 dark 走 */
+          document.documentElement.setAttribute('data-theme', 'dark');
         }
       })();
     </script>

@@ -347,7 +347,7 @@ function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
     // 建窗底色（v3.78.6）：窗口建立到首次合成之间唯一的画面，必须与 splash 底色
     // （= 设计令牌 --background，分主题）逐位一致，否则交接口有色阶跳变。主题从
     // userData/forge-theme.json 同步读回（渲染进程每次解析/切换都回写，见 theme.ts 顶部），
-    // 读不到时回 light。
+    // 读不到时回默认主题（dark）。
     backgroundColor: backgroundFor(theme),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -557,9 +557,9 @@ class ElectronUpdaterAdapter implements AutoUpdaterLike {
     return autoUpdater.downloadUpdate();
   }
   quitAndInstall(): void {
-    // 更新安装策略见 QUIT_AND_INSTALL_OPTIONS：非静默（isSilent=false）→ 安装器显示带应用图标
-    // 与「正在安装」文案的进度窗口，用户可见进度且无需点击；forceRunAfter=true 装完自动重开应用。
-    // 配合 electron-builder.yml 的 nsis.oneClick=true，更新路径全程无向导页、零点击。
+    // 更新安装策略见 QUIT_AND_INSTALL_OPTIONS：非静默（isSilent=false）→ 安装器显示可见进度页；
+    // forceRunAfter=true 配合 build/installer.nsh 的 customInstall（--updated 时拉起应用 + Quit），
+    // 向导模式下更新路径依旧零点击、不进结束页（配置详见 electron-builder.yml nsis 块）。
     autoUpdater.quitAndInstall(
       QUIT_AND_INSTALL_OPTIONS.isSilent,
       QUIT_AND_INSTALL_OPTIONS.forceRunAfter,
@@ -595,7 +595,7 @@ function readUpdateDebugEnabled(userDataPath: string): boolean {
 app.whenReady().then(async () => {
   const storePath = path.join(app.getPath('userData'), 'forge-store.json');
   // 建窗底色主题（v3.78.6）：必须在 createWindow 之前同步读回——窗口底色只能在建窗时刻给，
-  // 而那一刻渲染进程尚未执行（拿不到 localStorage）。缺省 light（同 useTheme.ts）。
+  // 而那一刻渲染进程尚未执行（拿不到 localStorage）。缺省 dark（同 useTheme.ts）。
   const themeMode = readThemeSync(app.getPath('userData'));
   // QA-G1/G4：updater-state.json（手动更新 components 快照 + lastUpdateCheckAt 持久化路径）
   const updaterStatePath = defaultUpdaterStatePath(app.getPath('userData'));

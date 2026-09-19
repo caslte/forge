@@ -1,5 +1,19 @@
 # 变更日志
 
+## v3.79.0 (需求：首装可选安装目录（NSIS 向导）、默认暗色主题、模型编辑弹窗化)
+
+- **需求 1 · 首装选安装位置（三轮迭代）**：
+  - 第一版（被否定）：保留 `oneClick:true`，`build/installer.nsh` 的 customInit 在「非静默 + 无 --updated + 注册表无历史目录」时 `nsDialogs::SelectFolderDialog` 弹目录框。用户反馈：「正常都是安装什么，默认在什么目录下安装，可以自定义安装，而不是打开直接就是个选择窗」——裸弹选目录框不是标准安装体验。
+  - 最终版：改用官方**向导模式** `oneClick:false` + `allowToChangeInstallationDirectory:true`（首装/重装显示「选择安装位置」页，默认目录预填、可「更改」）。更新零点击靠三处配合补齐：目录页由模板 `skipPageIfUpdated` 跳过（electron-updater 恒传 --updated）；「安装模式」页由 `customInstallMode`（`$isForceCurrentInstall="1"` → PRE Abort，forge 恒 per-user 该页纯噪音）跳过；结束页由 `customInstall` 在 `--updated + --force-run` 时复刻 oneClick 收尾（HideWindow + 拉起应用 + quitSuccess，不进结束页）。
+  - 编译期实测修正两处：① `!insertmacro StartApp` 与模板静默收尾分支的 `Var startAppArgs` 撞名（variable already declared）→ 内联 `${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "--updated"`；② 模板 `!ifmacrodef customInstallmode` 与 `customInstallMode` 大小写不一致——makensis 3.0.4.1 实测宏名大小写不敏感，钩子有效。installer.nsh 保持 UTF-8 BOM（NSIS 3 无 BOM 按 ANSI 读，中文注释乱码）。
+  - **第三轮反馈（2026-09-19）· 目录页文案补「自动补 forge 子目录」说明**：真机确证官方 `instFilesPre` 在点击「安装」瞬间把不以 forge 结尾的路径自动补 `\forge`（选 `D:\软件\` → 实装 `D:\软件\forge`），但目录页输入框预览看不到，用户误以为装进所选路径本身。用户选定方案：只加静态提示文案、不改行为。做法用 MUI2 官方扩展点 `!define MUI_DIRECTORYPAGE_TEXT_TOP`（installer.nsh 内、BUILD_UNINSTALLER 守卫下），文案 = SimpChinese 默认文案 + 一行提示；代价是该 DirText 原文不走 LangString，全语言统一显示中文（面向中文用户，有意接受）。**踩坑证伪**：先前尝试 `MUI_PAGE_CUSTOMFUNCTION_SHOW` 挂 SHOW 钩子运行时读 static 追加——编译期确认目录页消费了该 define（Pages.nsh 首次消费即 !undef + warning-as-error 证明 Call 已生成），但真机弹窗/日志双探针均无触发：**NSIS 3.0.4.1 内建 directory 页运行时不派发 SHOW 回调**，此路死，勿再尝试。验证：真机 dump 目录页 static 已含提示行；`installerConfig.test.ts` 增至 4 条（新增文案断言 + 反向守卫：禁 SHOW 回退、禁诊断代码残留）。
+  - **验证**：`npm run dist` 出包成功（building target=nsis oneClick=false perMachine=false）；零点击更新真机模拟——`forge-0.1.9-x64-setup.exe --updated --force-run`（electron-updater 的确切参数组合）exit 0、全程无页面停留、装完 forge.exe 自动拉起（`%LOCALAPPDATA%\Programs\forge`）。契约测试 `test/pi/installerConfig.test.ts` 重写为 4 条：向导配置断言（oneClick=false / allowToChangeInstallationDirectory=true / perMachine=false / runAfterFinish=true）、installer.nsh 更新守卫断言（isUpdated+isForceRun 收尾、BUILD_UNINSTALLER 包裹）、目录页文案断言（TEXT_TOP + 提示行 + 禁 SHOW/诊断残留）、isSilent=false 不可回退（2026-09-14 反馈）。
+- **需求 2 · 首次安装默认暗色主题**：三层同步改默认值——`useTheme.ts` 初始 `ref('dark')`、`index.html` 同步引导脚本（无存储/异常时 `data-theme='dark'`，splash 期即暗色不闪白）、`theme.ts` `DEFAULT_THEME='dark'`（主进程建窗底色）。真机日志 `[boot] 建窗底色 theme=dark bg=#242427`。`theme.test.ts` 缺省断言与 `bootSplash.spec.ts` BOOT-SPLASH-001 默认档（亮→暗）同步翻转。
+- **需求 3 · 模型添加/编辑弹窗化**：`SettingsPanel.vue` 表单从列表区移入 `<Teleport to="body">` 的居中模态（遮罩 + blur、点遮罩/关闭按钮退出、Esc），模型列表不再被挤压；`.level-menu` 改朝上展开防被弹窗底边裁切；保留全部既有 e2e 选择器。踩坑：fixed 遮罩最初被带 transform 的祖先裁剪只盖住内容区 → Teleport 到 body 解决。真机验证：overlay 盒子 = 视口（1280×820），侧边栏/顶栏/四角 `elementFromPoint` 均命中遮罩，`.provider-list` 位置不变；`settings + bootSplash` e2e 12/12。
+- **需求 4 · 环境**：`npm install --registry=https://registry.npmmirror.com` 全量装齐并启动 dev（vite 51731 + Electron）。打包侧两个环境坑：winCodeSign 解压需符号链接权限（非管理员失败）→ 手工把已解压目录改名为正式缓存名 `winCodeSign-2.6.0`；NSIS warning-as-error（6010 未引用函数）→ installer.nsh 全量 `!ifndef BUILD_UNINSTALLER` 包裹。
+- **文档同步**：PRD 07（TD-IN-07 修订为「向导 + installer.nsh 零点击收尾」、IN-F01/IN-F03 业务规则、AC-IN-001、反馈/决策追溯表）、coverage-matrix（AC-IN-001、反馈表两条）、packaging.md（安装包形态）。
+- **验证汇总**：forge-desktop 单测 **256/256**、tsc 0 错；forge-ui e2e（settings/bootSplash）12/12；安装包真机三路径（首装向导页在场 + 目录页提示文案可见 + --updated 零点击）验证通过。
+
 ## v3.78.9 (修复：AI 回复中同一句话在工具卡片之间重复出现——切会话再切回才恢复)
 
 - **用户反馈**：AI 回复时同一段文本（如"明白了，回退上次的改动…"）在工具卡片之间反复出现（同一轮内 2~3 次），切换会话再切回后显示恢复正常。此前已改过一次（前端 `onMessage` 以"覆盖最后一条 assistant"避免 delta 累积 + 完整消息成双），未盖住本场景。

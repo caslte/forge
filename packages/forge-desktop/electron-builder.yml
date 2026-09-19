@@ -28,18 +28,24 @@ win:
     - target: nsis
   # v1 不做代码签名（未配置 signtoolOptions/certificateSubjectName）
 nsis:
-  # 一键安装器：安装/更新全程无向导页，用户不需要点「下一步 / 完成」。
-  # 自动更新路径（main.ts 的 ElectronUpdaterAdapter → quitAndInstall(isSilent=false)）走
-  # electron-builder 的非静默分支：安装器显示 SpiderBanner 进度窗口（应用图标 +「正在安装」
-  # 文案 + 进度动画），配合 main.ts QUIT_AND_INSTALL_OPTIONS 与下方 runAfterFinish，
-  # 装完自动重新打开应用 —— 用户全程看得见进度，且零点击。
-  # 反向约束：不要把 isSilent 改成 true，那样安装期不显示任何窗口，用户只看到应用消失、
-  # 过一会儿又突然跳出来（2026-09-14 反馈明确否定该体验）。
-  oneClick: true
+  # 安装向导模式（oneClick:false）+ 可选安装目录：首装/手动重装显示标准向导，
+  # 「选择安装位置」页预填默认 per-user 目录（%LOCALAPPDATA%\Programs\@forgedesktop），
+  # 用户可直接安装或点「更改」自定义 —— 首装必须给用户选择安装位置的机会。
+  # 自动更新体验（可见进度 + 零点击 + 装完自动重开）由 build/installer.nsh 补齐：
+  #   - electron-updater 更新恒传 --updated --force-run（非静默，见 main.ts
+  #     QUIT_AND_INSTALL_OPTIONS，isSilent 不得改 true——2026-09-14 反馈否定无进度窗口）；
+  #   - 目录页：官方模板 skipPageIfUpdated 遇 --updated 自动跳过；
+  #   - 「安装模式」页（仅我/所有用户）：forge 恒 per-user（perMachine:false），
+  #     installer.nsh 的 customInstallMode 强制跳过；
+  #   - 结束页：installer.nsh 的 customInstall 在 --updated 时复刻 oneClick 收尾
+  #     （拉起应用 + Quit），不进结束页，无需任何点击。
+  # 反向约束：不要改回 oneClick:true（首装无法选目录）；不要删 installer.nsh 的
+  # 更新守卫（向导模式默认只在静默时自动拉起应用，更新会停在结束页等点击「完成」）。
+  oneClick: false
   perMachine: false
-  # 注意：oneClick 与 allowToChangeInstallationDirectory 互斥（同时配置 electron-builder 抛
-  # InvalidConfigurationError），默认 per-user 安装目录不再可选。
-  # 装完自动拉起应用（默认即 true，显式声明以固化「更新后自动重开」行为）
+  allowToChangeInstallationDirectory: true
+  include: build/installer.nsh
+  # 首装/重装的结束页显示「运行 forge」勾选（更新路径不进结束页，见上方 customInstall）
   runAfterFinish: true
   # 快捷方式：开始菜单必建，桌面快捷方式默认创建
   createStartMenuShortcut: true

@@ -27,7 +27,7 @@ function mkSession(over: Record<string, unknown> = {}): Record<string, unknown> 
   };
 }
 
-/** 进入应用：注入单个会话并选中它，等压缩按钮就绪 */
+/** 进入应用：注入单个会话并选中它，等压缩入口就绪 */
 async function boot(page: Page): Promise<void> {
   await page.goto('/');
   await seedSessions(page, [mkSession()]);
@@ -35,7 +35,15 @@ async function boot(page: Page): Promise<void> {
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
   await page.locator('.tree-session').first().click();
-  await expect(page.locator('.ctx-cmp')).toBeVisible();
+  await expect(page.locator('.ctx-cmp')).toHaveCount(1);
+}
+
+/**
+ * 触发手动压缩：「压缩」按钮当前暂时隐藏（display:none，低使用率），
+ * 逻辑保留，故用程序化 click 直接驱动处理器。
+ */
+async function clickCompact(page: Page): Promise<void> {
+  await page.locator('.ctx-cmp').evaluate((el) => (el as HTMLElement).click());
 }
 
 test('手动压缩：mock 默认实现可用（点击不报错），toast + 持久横幅反馈', async ({ page }) => {
@@ -43,7 +51,7 @@ test('手动压缩：mock 默认实现可用（点击不报错），toast + 持�
   await boot(page);
   // 不注入 seed：走 mock-bridge 的 conversation/compact 默认实现
   // （曾缺失该分支落到 default 返回 data:null，UI 侧对 null 取值抛 TypeError）
-  await page.locator('.ctx-cmp').click();
+  await clickCompact(page);
 
   // toast（同切换模型的浮窗款式）：mock 默认 4200 → 1680（减少 60%）
   await expect(page.locator('.toast')).toContainText('压缩完成');
@@ -64,7 +72,7 @@ test('手动压缩成功：toast 显示 token 变化与减少百分比', async (
     }));
   });
 
-  await page.locator('.ctx-cmp').click();
+  await clickCompact(page);
 
   await expect(page.locator('.toast')).toContainText('压缩完成');
   await expect(page.locator('.toast')).toContainText('12000');
@@ -83,7 +91,7 @@ test('手动压缩失败：toast 显示失败原因，横幅回退清除，不�
     }));
   });
 
-  await page.locator('.ctx-cmp').click();
+  await clickCompact(page);
 
   await expect(page.locator('.toast')).toContainText('Nothing to compact');
   await expect(page.locator('.toast')).toHaveClass(/error/);
@@ -145,7 +153,7 @@ test('压缩后百分比：压缩完成即显示压缩后的上下文占用（�
   // 压缩前 mock 默认 4200/128000 = 3.3%
   await expect(page.locator('.ctx-num')).toHaveText('3.3%');
 
-  await page.locator('.ctx-cmp').click();
+  await clickCompact(page);
 
   // 压缩后 1680/128000 = 1.3%（mock 压到 40%）；不得退化为 "? tokens"
   await expect(page.locator('.ctx-num')).toHaveText('1.3%');

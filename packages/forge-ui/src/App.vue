@@ -49,6 +49,8 @@ const trustAskPath = ref<string | null>(null);
 const trustAskName = ref('');
 /** 多窗口画布模式（单会话视图 ↔ 多窗口画布 切换） */
 const multiWindow = ref(false);
+/** 多窗口画布组件实例：顶部工具栏「自动布局 / 全部关闭」调用其方法 */
+const mwCanvasRef = ref<InstanceType<typeof MultiWindowCanvas> | null>(null);
 /** 已在多窗口画布上打开的会话 id 列表（供会话池标记灰态） */
 const openedSessionIds = ref<string[]>([]);
 /** 多窗口模式下聚焦查看的会话 id（非空时在画布上方叠加单会话视图，布局保留） */
@@ -759,6 +761,20 @@ onUnmounted(() => {
             </svg>
             <span>多窗口</span>
           </button>
+          <template v-if="multiWindow">
+            <button
+              class="app-toolbar-btn"
+              @click="mwCanvasRef?.arrangeAuto()"
+            >
+              <span>自动布局</span>
+            </button>
+            <button
+              class="app-toolbar-btn"
+              @click="mwCanvasRef?.clearAll()"
+            >
+              <span>全部关闭</span>
+            </button>
+          </template>
           <span class="app-toolbar-space"></span>
         </div>
 
@@ -775,6 +791,7 @@ onUnmounted(() => {
           <div v-if="multiWindow" class="session-stage">
             <!-- 多窗口画布始终挂载，保留窗口布局 -->
             <MultiWindowCanvas
+              ref="mwCanvasRef"
               :sessions="sessions"
               :models="models"
               @close="multiWindow = false"
@@ -1111,11 +1128,19 @@ onUnmounted(() => {
   color: var(--foreground);
   font-size: 12px;
   font-weight: 500;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.06s ease;
 }
 
 .app-toolbar-btn:hover:not(:disabled) {
   border-color: var(--brand);
   color: var(--brand);
+}
+
+/* 按下反馈：底色加深 + 轻微缩放，点击有明确"按到了"的效果 */
+.app-toolbar-btn:active:not(:disabled) {
+  background: color-mix(in oklab, var(--brand) 18%, var(--background));
+  color: var(--brand);
+  transform: scale(0.94);
 }
 
 .app-toolbar-btn.is-active {
