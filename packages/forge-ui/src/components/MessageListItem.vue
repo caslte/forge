@@ -10,21 +10,13 @@
  * 改为：父级只渲染一个组件列表（稳定唯一 key），形态分支隔离在本组件实例内，
  * 同一 key 的组件始终唯一，patch 不再跨列表位置错位。
  */
-import { computed } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import type { ConversationMessage, SessionStatus, ToolEvent } from '../types';
 import type { ChangedFileSummary } from '../composables/useChangedFiles';
+import { formatElapsed } from '../utils/formatElapsed';
 import MessageCard from './MessageCard.vue';
-import DiffView from './DiffView.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import ChangedFilesCard from './ChangedFilesCard.vue';
-
-/** 工具调用 diff（Edit 类工具入参渲染用） */
-export type ToolDiff = {
-  id: string;
-  filePath: string | null;
-  oldString: string | null;
-  newString: string | null;
-};
 
 /** 展示项：单条消息 或 连续 ≥2 的工具组 */
 export type DisplayItem =
@@ -42,9 +34,7 @@ export type DisplayItem =
       key: string;
       kind: 'tool-group';
       tools: ConversationMessage[];
-      toolCounts: Array<{ name: string; count: number }>;
       totalCount: number;
-      diffs: ToolDiff[];
       collapsed: boolean;
     }
   | {
@@ -68,8 +58,46 @@ const props = defineProps<{
 const showDiffEff = computed(() => props.showDiff !== false);
 
 const emit = defineEmits<{
-  (e: 'toggle-group', key: string): void;
+  (e: 'toggle-group', key: string, collapsed: boolean): void;
 }>();
+
+/** 组内任一工具仍为 started → 组在跑，头部切「正在执行中 · Xs」并本地读秒 */
+const groupRunning = computed(() => {
+  const it = props.item;
+  return it.kind === 'tool-group' && it.tools.some((t) => t.status === 'started');
+});
+
+const groupElapsedSec = ref(0);
+let groupTimer: ReturnType<typeof setInterval> | null = null;
+
+watch(groupRunning, (running) => {
+  if (groupTimer) {
+    clearInterval(groupTimer);
+    groupTimer = null;
+  }
+  if (!running) return;
+  const it = props.item;
+  const firstTs = it.kind === 'tool-group' ? it.tools[0]?.ts : undefined;
+  const start = firstTs ? Date.parse(firstTs) : Number.NaN;
+  const base = Number.isFinite(start) ? start : Date.now();
+  const tick = (): void => {
+    groupElapsedSec.value = Math.max(0, Math.floor((Date.now() - base) / 1000));
+  };
+  tick();
+  groupTimer = setInterval(tick, 1000);
+}, { immediate: true });
+
+onUnmounted(() => {
+  if (groupTimer) clearInterval(groupTimer);
+});
+
+const groupHeadText = computed(() => {
+  const it = props.item;
+  if (it.kind !== 'tool-group') return '';
+  return groupRunning.value
+    ? `正在执行中 · ${formatElapsed(groupElapsedSec.value)}`
+    : `执行工具 ${it.totalCount} 次`;
+});
 
 /** 把 ConversationMessage（role=tool）转成 ToolCallCard 需要的 ToolEvent */
 function toToolEvent(m: ConversationMessage): ToolEvent {
@@ -108,42 +136,27 @@ function isToolMessage(m: ConversationMessage): boolean {
     />
   </template>
 
-  <div v-else class="tool-group" :class="{ collapsed: item.collapsed }">
-    <button class="tool-group-head" @click="emit('toggle-group', item.key)">
-      <svg class="tg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /><path d="M5 21l1.5-4.5" /></svg>
-      <span class="tg-label">工具调用</span>
-      <span class="tg-count">{{ item.totalCount }} 次</span>
-      <span class="tg-names">
-        <span v-for="tc in item.toolCounts" :key="tc.name" class="tg-chip"><span class="tg-chip-name">{{ tc.name }}</span><span v-if="tc.count > 1" class="tg-chip-count">×{{ tc.count }}</span></span>
-      </span>
-      <span class="tg-collapse">{{ item.collapsed ? '▸' : '▾' }}</span>
+  <div v-else class="tool-group" :class="{ open: !item.collapsed }">
+    <button class="tool-group-head" @click="emit('toggle-group', item.key, item.collapsed)">
+      <svg class="tg-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="10 8 14 12 10 16" /></svg>
+      <span class="tg-title">{{ groupHeadText }}</span>
     </button>
-    <div class="tool-group-body-shell" :class="{ 'is-collapsed': item.collapsed }">
-      <div class="tool-group-body">
-        <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" hide-diff />
+    <div class="tool-group-body-shell">
+      <div class="tg-inner">
+        <div class="tg-rows">
+          <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" :hide-diff="!showDiffEff" />
+        </div>
       </div>
-    </div>
-    <div v-if="showDiffEff && item.diffs.length > 0" class="tool-group-diffs">
-      <DiffView
-        v-for="diff in item.diffs"
-        :key="diff.id"
-        class="tool-group-diff"
-        :file-path="diff.filePath"
-        :old-string="diff.oldString"
-        :new-string="diff.newString"
-      />
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 工具组折叠（连续 ≥2 的 tool 聚为一组） */
+/* 工具组（连续 ≥2 的 tool 聚为一组）：扁平无卡底，头部一句话 + 圆形 chevron */
 .tool-group {
-  border: none;
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--muted) 58%, transparent);
-  overflow: hidden;
-  /* flex 子项显式允许收缩，窄窗格内 diff/工具卡不再横向撑破 */
+  display: flex;
+  flex-direction: column;
+  /* flex 子项显式允许收缩，窄窗格内行内容不横向撑破 */
   min-width: 0;
   max-width: 100%;
 }
@@ -151,35 +164,55 @@ function isToolMessage(m: ConversationMessage): boolean {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 9px 12px;
-  font-size: 12px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 6px;
+  margin-left: -6px;
+  border-radius: 8px;
+  font-size: 13px;
   color: var(--muted-foreground);
   border: none;
   background: transparent;
   cursor: pointer;
   user-select: none;
   text-align: left;
+  transition: background var(--transition-fast);
 }
-.tool-group-head:hover { background: var(--muted); }
-.tg-icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--muted-foreground); }
-.tg-label { font-weight: 600; color: var(--foreground); white-space: nowrap; }
-.tg-count { font-weight: 500; color: var(--muted-foreground); white-space: nowrap; }
-.tg-names { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; overflow: hidden; flex-wrap: nowrap; }
-.tg-chip { display: inline-flex; align-items: center; gap: 1px; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted) 55%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
-.tg-chip-count { font-weight: 600; color: var(--foreground); }
-.tg-collapse { flex-shrink: 0; color: var(--muted-foreground); font-size: 12px; }
-.tool-group-body-shell { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 200ms cubic-bezier(0.4,0,0.2,1); overflow: hidden; }
-.tool-group-body-shell.is-collapsed { grid-template-rows: 0fr; }
-.tool-group-body { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 10px; transition: padding 200ms cubic-bezier(0.4,0,0.2,1), gap 200ms cubic-bezier(0.4,0,0.2,1); }
-.tool-group-body-shell.is-collapsed .tool-group-body { padding-top: 0; padding-bottom: 0; gap: 0; }
-.tool-group-diffs {
+.tool-group-head:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+}
+.tg-chev {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  transition: transform var(--transition-base);
+}
+.tool-group.open .tg-chev {
+  transform: rotate(90deg);
+}
+.tg-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+/* 0fr↔1fr 网格折叠动画（同 demo；折叠时内容保留挂载，展开无二次渲染成本） */
+.tool-group-body-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--transition-base);
+}
+.tool-group.open .tool-group-body-shell {
+  grid-template-rows: 1fr;
+}
+.tg-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+/* 行缩进 23px = chevron 15 + 间距 8（组头 margin-left:-6 与 padding 6 相抵）：状态点与组头文字左缘对齐 */
+.tg-rows {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-width: 100%;
-}
-.tool-group-diff {
-  background: var(--card);
+  padding: 2px 0 6px 23px;
 }
 </style>

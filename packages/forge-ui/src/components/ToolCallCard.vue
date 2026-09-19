@@ -1,4 +1,9 @@
 <script setup lang="ts">
+/**
+ * 工具调用行（Qoder 式扁平风格）：状态点 + 动作标签 + 参数 pill/plain，
+ * 行内展开详情（左右双栏 diff / 结果文本）。无卡底、无状态徽章。
+ * 类名 .tool-calls / .tool-calls-head 被 e2e 依赖，勿改名。
+ */
 import { computed, ref } from 'vue';
 import type { ToolEvent } from '../types';
 import { parseFileToolInput } from '../composables/useChangedFiles';
@@ -14,13 +19,6 @@ const open = ref(false);
 const isRunning = computed(() => props.event.status === 'started');
 const isError = computed(() => props.event.status === 'error');
 const isDone = computed(() => props.event.status === 'completed');
-
-const statusLabel = computed(() => {
-  if (isRunning.value) return '运行中';
-  if (isError.value) return '失败';
-  if (isDone.value) return '已完成';
-  return props.event.status;
-});
 
 /** 工具名 → 面向用户的中文文案（与 useStreamPhase 口径对齐）；未知工具回退原名 */
 const TOOL_LABELS: Record<string, string> = {
@@ -62,23 +60,38 @@ const askQuestions = computed<string[]>(() => {
     .filter((q): q is string => typeof q === 'string' && q.trim() !== '');
 });
 
-const toolSummaryLabel = computed(() => {
-  if (askQuestions.value.length > 0) {
-    const first = askQuestions.value[0] ?? '';
-    return askQuestions.value.length > 1
-      ? `${first}（等 ${askQuestions.value.length} 个问题）`
-      : first;
-  }
+const firstAskQuestion = computed(() => {
+  if (askQuestions.value.length === 0) return '';
+  const first = askQuestions.value[0] ?? '';
+  return askQuestions.value.length > 1 ? `${first}（等 ${askQuestions.value.length} 个问题）` : first;
+});
+
+/** 行参数：文件路径类取 basename 上 pill；命令/搜索/网页类与问卷问题用等宽 plain 文本 */
+const FILE_ARG_KEYS = ['file_path', 'path'];
+const PLAIN_ARG_KEYS = ['command', 'url', 'query', 'pattern'];
+
+const arg = computed<{ text: string; plain: boolean } | null>(() => {
+  if (askQuestions.value.length > 0) return { text: firstAskQuestion.value, plain: true };
   const input = props.event.input;
-  if (!input || typeof input !== 'object') return props.event.summary ?? '';
-  const candidates = ['file_path', 'path', 'command', 'url', 'query', 'pattern'];
-  for (const key of candidates) {
-    const value = (input as Record<string, unknown>)[key];
-    if (typeof value === 'string' && value.trim() !== '') {
-      return value.replace(/\s+/g, ' ').trim();
+  if (input && typeof input === 'object') {
+    for (const key of FILE_ARG_KEYS) {
+      const value = (input as Record<string, unknown>)[key];
+      if (typeof value === 'string' && value.trim() !== '') {
+        const path = value.trim();
+        const base = path.replace(/\\/g, '/').split('/').pop() || path;
+        return { text: base, plain: false };
+      }
+    }
+    for (const key of PLAIN_ARG_KEYS) {
+      const value = (input as Record<string, unknown>)[key];
+      if (typeof value === 'string' && value.trim() !== '') {
+        return { text: value.replace(/\s+/g, ' ').trim(), plain: true };
+      }
     }
   }
-  return props.event.summary ?? '';
+  const s = props.event.summary;
+  if (s) return { text: s.replace(/\s+/g, ' ').trim(), plain: true };
+  return null;
 });
 
 /** 展开正文的结果文本：问卷回包英文前缀换成中文，其余原样展示 */
@@ -100,150 +113,171 @@ const diffs = computed(() => {
     showPath: i === 0,
   }));
 });
+
+const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || displaySummary.value !== '');
 </script>
 
 <template>
-  <div :class="['tool-calls', `tool-${event.status}`, { open, 'has-diff': !hideDiff && diffs.length > 0 }]">
-    <button class="tool-calls-head" @click="open = !open">
-      <svg class="tc-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="9 6 15 12 9 18" />
-      </svg>
-      <span class="tc-title">
-        {{ displayName }}
-        <span v-if="toolSummaryLabel" class="tc-summary">{{ toolSummaryLabel }}</span>
-      </span>
-      <span class="tc-count">
-        <span v-if="isRunning" class="mini-badge live">{{ statusLabel }}</span>
-        <span v-else-if="isError" class="mini-badge danger">{{ statusLabel }}</span>
-        <span v-else class="mini-badge success">{{ statusLabel }}</span>
-      </span>
+  <div :class="['tool-calls trow', `tool-${event.status}`, { open }]">
+    <button class="tool-calls-head trow-line" @click="open = !open">
+      <svg
+        v-if="isDone"
+        class="ico ok"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      ><circle cx="12" cy="12" r="9" /><polyline points="8.5 12.2 11 14.7 15.5 9.8" /></svg>
+      <svg
+        v-else-if="isError"
+        class="ico err"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      ><circle cx="12" cy="12" r="9" /><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6" /></svg>
+      <svg
+        v-else
+        class="ico spinner"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        stroke-linecap="round"
+      ><path d="M12 3a9 9 0 1 0 9 9" /></svg>
+      <span class="lbl">{{ displayName }}</span>
+      <span v-if="arg" :class="['arg', { plain: arg.plain }]">{{ arg.text }}</span>
     </button>
-    <div v-if="(!hideDiff && diffs.length > 0) || displaySummary" class="tool-item-body">
-      <template v-if="!hideDiff">
-        <DiffView
-          v-for="(diff, i) in diffs"
-          :key="i"
-          class="tc-diff"
-          :file-path="diff.showPath ? diff.filePath : null"
-          :highlight-path="diff.filePath"
-          :old-string="diff.oldString"
-          :new-string="diff.newString"
-        />
-      </template>
-      <pre v-if="displaySummary" class="tool-summary">{{ displaySummary }}</pre>
+    <div class="trow-shell">
+      <div class="trow-inner">
+        <div v-if="hasDetail" class="trow-detail">
+          <template v-if="!hideDiff">
+            <DiffView
+              v-for="(diff, i) in diffs"
+              :key="i"
+              class="tc-diff"
+              :file-path="diff.showPath ? diff.filePath : null"
+              :highlight-path="diff.filePath"
+              :old-string="diff.oldString"
+              :new-string="diff.newString"
+            />
+          </template>
+          <pre v-if="displaySummary" class="tool-summary">{{ displaySummary }}</pre>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .tool-calls {
-  border: none;
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--muted) 58%, transparent);
-  overflow: hidden; /* overflow 非 visible 使 flex 子项 min-width:auto 归 0，窄窗格可收缩、标题省略号生效 */
-  align-self: flex-start;
-  max-width: 94%;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-}
-
-/* 含 diff 时顶满整行（diff 并排双栏需要宽度；纯文本卡片保持收窄） */
-.tool-calls.has-diff {
-  width: 100%;
   max-width: 100%;
 }
 
-.tool-calls-head {
+.trow-line {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 8px 12px;
-  font-size: 12px;
+  width: fit-content;
+  max-width: calc(100% + 6px);
+  padding: 4px 6px;
+  margin-left: -6px;
+  border-radius: 8px;
+  font-size: 13px;
   color: var(--muted-foreground);
   border: none;
   background: transparent;
   cursor: pointer;
   user-select: none;
+  text-align: left;
+  transition: background var(--transition-fast);
 }
 
-.tool-calls-head:hover {
-  background: var(--muted);
+.trow-line:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
 }
 
-.tc-toggle {
-  transition: transform 150ms ease;
-  width: 13px;
-  height: 13px;
+.ico {
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
 }
 
-.tool-calls.open .tc-toggle {
-  transform: rotate(90deg);
+.ico.ok {
+  color: var(--success);
 }
 
-.tc-title {
-  font-weight: 500;
-  color: var(--foreground);
-  font-family: var(--font-mono);
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
+.ico.err {
+  color: var(--destructive);
+}
+
+@keyframes tc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ico.spinner {
+  color: var(--muted-foreground);
+  animation: tc-spin 0.9s linear infinite;
+}
+
+.lbl {
+  flex-shrink: 0;
   white-space: nowrap;
-  text-align: left;
 }
 
-.tc-summary {
-  min-width: 0;
+.arg {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 1px 8px 2px;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* 命令/搜索类参数：等宽但无底，避免整行都是灰块 */
+.arg.plain {
+  background: none;
+  border-color: transparent;
   color: var(--muted-foreground);
-  font-weight: 400;
+  padding-left: 0;
 }
 
-.tc-count {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
+/* 行展开详情：0fr↔1fr 网格动画，diff 与行状态点再缩进 23px 对齐 pill 左缘 */
+.trow-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--transition-base);
 }
 
-.mini-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  white-space: nowrap;
+.tool-calls.open .trow-shell {
+  grid-template-rows: 1fr;
+}
+
+.trow-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.trow-detail {
+  margin: 4px 0 8px 23px;
   border: 1px solid var(--border);
-  background: var(--muted);
-  color: var(--muted-foreground);
-}
-
-.mini-badge.success {
-  color: var(--success);
-  border-color: color-mix(in oklab, var(--success) 30%, var(--border));
-  background: color-mix(in oklab, var(--success) 8%, transparent);
-}
-
-.mini-badge.danger {
-  color: var(--destructive);
-  border-color: color-mix(in oklab, var(--destructive) 30%, var(--border));
-  background: color-mix(in oklab, var(--destructive) 8%, transparent);
-}
-
-.mini-badge.live {
-  color: var(--warning);
-  border-color: color-mix(in oklab, var(--warning) 30%, var(--border));
-  background: color-mix(in oklab, var(--warning) 8%, transparent);
-}
-
-.tool-item-body {
-  display: none;
-  padding: 0 12px 12px 32px;
-  font-size: 12px;
-  color: var(--muted-foreground);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--background);
 }
 
 /* 多 hunk 时多个 DiffView 的纵向间距 */
@@ -251,11 +285,9 @@ const diffs = computed(() => {
   margin-top: 8px;
 }
 
-.tool-calls.open .tool-item-body {
-  display: block;
-}
-
 .tool-summary {
+  margin: 0;
+  padding: 8px 10px;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--foreground);

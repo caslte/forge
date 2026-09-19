@@ -9,9 +9,9 @@ import {
   type ConversationCompactedPayload,
 } from '../bridge.ts';
 import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
-import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
+import type { DisplayItem } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
-import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
+import { collectTurnChangedFiles } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
 import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
 import { createAskQuestionStore } from './askQuestionStore.ts';
@@ -158,24 +158,6 @@ function dismissAskAnswered(): void {
 
   // ===== 展示项组装（消息 / 连续 ≥2 工具聚组） =====
 
-  /** 从 ConversationMessage（role=tool）构造 ToolDiff 列表（edit 多 hunk 逐块一项；
-   *  入参形状判定共享 parseFileToolInput：pi 真实 {path,edits}/{path,content} 与旧形状全兼容） */
-  function toToolDiffs(message: ConversationMessage): ToolDiff[] {
-    const parsed = parseFileToolInput(message.input);
-    if (!parsed) return [];
-    const idBase = message.toolEventId ?? message.ts;
-    return parsed.parts.map((part, i) => ({
-      id: `${idBase}-${i}`,
-      filePath: parsed.path,
-      oldString: part.oldText,
-      newString: part.newText,
-    }));
-  }
-
-  function groupDiffs(tools: ConversationMessage[]): ToolDiff[] {
-    return tools.flatMap(toToolDiffs);
-  }
-
   /**
    * 稳定唯一 key：
    * - 消息：id ?? toolEventId ?? `ts-role`（不依赖列表位置，避免 idx 漂移导致 patch 错位）
@@ -221,19 +203,15 @@ function dismissAskAnswered(): void {
         if (tools.length >= 2) {
           const first = tools[0]!;
           const groupKey = `${first.toolEventId ?? first.ts}-group`;
-          const counts = new Map<string, number>();
-          for (const t of tools) counts.set(t.toolName ?? 'tool', (counts.get(t.toolName ?? 'tool') ?? 0) + 1);
-          const toolCounts = Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
-          // 折叠状态只跟随用户操作；新增工具仅更新头部计数和外部 Diff。
-          const collapsed = toolGroupCollapsed.get(groupKey) ?? true;
+          // 尾部组 = 正在执行的组：默认展开；其后有新消息到达即视为历史组，默认折叠。
+          // 用户手动开合过（Map 有记录）则只跟随用户操作。
+          const collapsed = toolGroupCollapsed.get(groupKey) ?? !(i === msgs.length);
           out.push({
             key: groupKey,
             kind: 'tool-group',
             tools,
-            toolCounts,
             totalCount: tools.length,
             collapsed,
-            diffs: groupDiffs(tools),
           });
         } else {
           for (let j = 0; j < tools.length; j += 1) {
@@ -248,9 +226,9 @@ function dismissAskAnswered(): void {
     return out;
   });
 
-  function toggleGroup(key: string): void {
-    const cur = toolGroupCollapsed.get(key);
-    toolGroupCollapsed.set(key, !(cur ?? true));
+  /** currentCollapsed 为渲染层解析后的折叠态（含默认值）；用户意图 = 其反，记录后不再漂移 */
+  function toggleGroup(key: string, currentCollapsed: boolean): void {
+    toolGroupCollapsed.set(key, !currentCollapsed);
   }
 
   // ===== 历史窗口化（v3.74 首帧卡顿：点大会话 221 项全量挂载 ≈ 4.3s 冻结主线程） =====
