@@ -10,7 +10,7 @@
  * 改为：父级只渲染一个组件列表（稳定唯一 key），形态分支隔离在本组件实例内，
  * 同一 key 的组件始终唯一，patch 不再跨列表位置错位。
  */
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import type { ConversationMessage, SessionStatus, ToolEvent } from '../types';
 import type { ChangedFileSummary } from '../composables/useChangedFiles';
 import { formatElapsed } from '../utils/formatElapsed';
@@ -99,6 +99,36 @@ const groupHeadText = computed(() => {
     : `执行工具 ${it.totalCount} 次`;
 });
 
+/** 组内滚动视口：限高 + 上下边缘虚化（mask 随滚动状态切换，见 .tg-scroll 样式） */
+const tgScrollRef = ref<HTMLElement | null>(null);
+const tgAtTop = ref(true);
+const tgAtBottom = ref(true);
+
+function updateTgFade(): void {
+  const el = tgScrollRef.value;
+  if (!el) return;
+  tgAtTop.value = el.scrollTop <= 1;
+  tgAtBottom.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+}
+
+/** 流式追加工具行：视口原本贴在底部则跟随到最新行，否则保持用户阅读位置 */
+watch(
+  () => (props.item.kind === 'tool-group' ? props.item.tools.length : -1),
+  () => {
+    void nextTick(() => {
+      const el = tgScrollRef.value;
+      if (el && tgAtBottom.value) el.scrollTop = el.scrollHeight;
+      updateTgFade();
+    });
+  }
+);
+
+/** 折叠/展开改变视口高度，动画结束后重算边缘虚化（250ms ≈ --transition-base） */
+watch(
+  () => (props.item.kind === 'tool-group' ? !props.item.collapsed : false),
+  () => setTimeout(updateTgFade, 260)
+);
+
 /** 把 ConversationMessage（role=tool）转成 ToolCallCard 需要的 ToolEvent */
 function toToolEvent(m: ConversationMessage): ToolEvent {
   return {
@@ -143,8 +173,10 @@ function isToolMessage(m: ConversationMessage): boolean {
     </button>
     <div class="tool-group-body-shell">
       <div class="tg-inner">
-        <div class="tg-rows">
-          <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" :hide-diff="!showDiffEff" />
+        <div ref="tgScrollRef" class="tg-scroll" :class="{ 'at-top': tgAtTop, 'at-bottom': tgAtBottom }" @scroll.passive="updateTgFade">
+          <div class="tg-rows">
+            <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" :hide-diff="!showDiffEff" />
+          </div>
         </div>
       </div>
     </div>
@@ -209,10 +241,52 @@ function isToolMessage(m: ConversationMessage): boolean {
   min-height: 0;
   overflow: hidden;
 }
+/* 滚动视口：限高约 5.5 行（露半行暗示可滚），上下边缘用 mask 让内容本身渐隐；
+   at-top/at-bottom 由脚本按滚动位置切换——贴边一侧不虚化，短列表无 mask */
+.tg-scroll {
+  --tg-fade: 28px;
+  max-height: 236px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  mask-image: linear-gradient(to bottom,
+    transparent 0, black var(--tg-fade), black calc(100% - var(--tg-fade)), transparent 100%);
+}
+.tg-scroll.at-top {
+  mask-image: linear-gradient(to bottom, black 0, black calc(100% - var(--tg-fade)), transparent 100%);
+}
+.tg-scroll.at-bottom {
+  mask-image: linear-gradient(to bottom, transparent 0, black var(--tg-fade), black calc(100% - 2px));
+}
+.tg-scroll.at-top.at-bottom {
+  mask-image: none;
+}
+/* 覆盖全局 8px 滚动条：组内用细条，避免窄列表里过抢眼 */
+.tg-scroll::-webkit-scrollbar {
+  width: 3px;
+}
+.tg-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tg-scroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 2px;
+}
 /* 行缩进 23px = chevron 15 + 间距 8（组头 margin-left:-6 与 padding 6 相抵）：状态点与组头文字左缘对齐 */
 .tg-rows {
+  position: relative;
   display: flex;
   flex-direction: column;
   padding: 2px 0 6px 23px;
+}
+/* 左侧贯穿竖线：1px，与组头 chevron 中心（7.5px）同一条垂直线，从组头下方贯穿所有行；
+   半透明化让线在深浅主题下都更淡 */
+.tg-rows::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in oklab, var(--border) 55%, transparent);
 }
 </style>

@@ -274,9 +274,13 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
 
 .trow-detail {
   margin: 4px 0 8px 23px;
-  border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+  background: var(--muted);
+}
+
+/* diff 块保持自己的浅底面板：否则 .diff-file 头部的 --muted 与灰底容器同色糊成一片 */
+.trow-detail :deep(.diff-view) {
   background: var(--background);
 }
 

@@ -839,7 +839,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   margin: 0 8px;
-  padding: 10px 12px;
+  padding: 4px 12px;
   border-radius: var(--radius-lg);
   cursor: pointer;
   color: var(--foreground);
@@ -848,7 +848,7 @@ onUnmounted(() => {
 }
 
 .tree-project:hover {
-  background: var(--surface-hover);
+  background: var(--muted);
 }
 
 /* 项目选中不再使用背景色（仅 hover 有底色），避免与会话选中态视觉打架 */
