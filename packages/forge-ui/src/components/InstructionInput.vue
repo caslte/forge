@@ -1506,10 +1506,10 @@ watch(
         @click="toggleProjMenu"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          <path v-if="projMenuOpen && projectPicker.mode === 'draft'" d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+          <path v-else d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
         <span>{{ projectPicker.currentName }}</span>
-        <span v-if="projectPicker.mode === 'draft'" class="proj-caret" aria-hidden="true">▾</span>
       </button>
       <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
         <div class="menu-hint">新会话归属项目</div>
