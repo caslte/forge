@@ -16,6 +16,7 @@ import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import BootWelcome from './components/BootWelcome.vue';
+import logoMain from './assets/logo-main.png';
 
 /**
  * 启动门闩（v3.76）：false 期间整个正式 UI 不挂载，只显示 BootWelcome。
@@ -43,6 +44,8 @@ const draftMode = ref(false);
 type View = 'sessions' | 'settings';
 const activeView = ref<View>('sessions');
 const sidebarCollapsed = ref(false);
+/** mac：traffic lights 画在窗口左上角（12,12），悬浮 toggle 需右移让位（见主进程 trafficLightPosition） */
+const isMac = window.forge?.platform === 'darwin';
 const showExitDialog = ref(false);
 /** 待信任确认的项目（1005 弹窗） */
 const trustAskPath = ref<string | null>(null);
@@ -641,11 +644,38 @@ onUnmounted(() => {
   <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit -->
   <BootWelcome v-if="!bootReady" />
   <div v-else class="app-container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <TitleBar
-      :sidebar-collapsed="sidebarCollapsed"
-      @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed"
-      @request-exit="requestExit"
-    />
+    <!-- 一体化壳层（prototypes/unified-shell-full.html）：侧栏列通顶、标题栏只盖右列、
+         toggle 悬浮钉死窗口左上角——折叠时侧栏从按钮底下抽走，按钮零位移不跳动。
+         toggle 必须包在窗口级拖拽条内做 no-drag 后代：Electron 的 drag 区只认后代挖洞，
+         同级悬浮会被原生拖拽吞掉 hover/click（旧版 TitleBar 内按钮可用的原因相同） -->
+    <div class="shell-topstrip">
+      <button
+        class="shell-toggle"
+        :class="{ 'shell-toggle-mac': isMac }"
+        :aria-label="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+        :data-tooltip="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <!-- 默认显品牌 LOGO（切图），hover 交叉淡入为面板图标，箭头方向随折叠态翻转 -->
+        <img class="tb-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
+        <span class="tb-panel" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <template v-if="sidebarCollapsed">
+              <rect x="3" y="4" width="18" height="16" rx="2.5" />
+              <path d="M15 4v16" />
+              <path d="m8 15 3-3-3-3" />
+            </template>
+            <template v-else>
+              <rect x="3" y="4" width="18" height="16" rx="2.5" />
+              <path d="M9 4v16" />
+              <path d="m16 15-3-3 3-3" />
+            </template>
+          </svg>
+        </span>
+      </button>
+    </div>
+    <!-- 整窗反光层（伪玻璃）：纯视觉，pointer-events:none -->
+    <div class="shell-sheen" aria-hidden="true"></div>
 
     <section class="main-layout">
       <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
@@ -729,6 +759,8 @@ onUnmounted(() => {
         </div>
       </aside>
 
+      <div class="rightcol">
+        <TitleBar @request-exit="requestExit" />
       <main class="content" :class="{ 'settings-mode': activeView === 'settings' }">
         <div v-if="sessionError" class="error-toast" @click="clearError">
           {{ sessionError }}
@@ -861,6 +893,7 @@ onUnmounted(() => {
           />
         </template>
       </main>
+      </div>
     </section>
 
     <TrustAskDialog
@@ -893,6 +926,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .main-layout {
@@ -901,9 +935,10 @@ onUnmounted(() => {
   display: flex;
   width: 100%;
   overflow: hidden;
-  background: var(--card);
 }
 
+/* 一体化壳层：侧栏列通顶。左右结构不再靠整块压暗的色块台阶表达，
+   而是同底色 + 左深右浅的淡出渐变 + 两端淡出的 1px 中缝（demo：prototypes/unified-shell-full.html） */
 .sidebar {
   width: 292px;
   min-width: 292px;
@@ -914,26 +949,22 @@ onUnmounted(() => {
   height: 100%;
   position: relative;
   overflow: hidden;
-  background: color-mix(in oklab, var(--muted) 10%, transparent);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.035) 0%, rgba(0, 0, 0, 0.012) 72%, transparent 100%);
   transition: width var(--transition-base), min-width var(--transition-base), opacity var(--transition-base);
 }
 
-.sidebar::before {
+.sidebar::after {
   content: '';
   position: absolute;
-  inset: -40%;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse 80% 60% at 20% 30%, color-mix(in oklab, var(--muted-foreground) 10%, transparent) 0%, transparent 60%),
-    radial-gradient(ellipse 70% 50% at 80% 70%, color-mix(in oklab, var(--muted) 30%, transparent) 0%, transparent 55%);
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 4%, var(--border) 18%, var(--border) 82%, transparent 96%);
 }
 
-.sidebar > * {
-  position: relative;
-  z-index: 1;
+:root[data-theme='dark'] .sidebar {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.07) 72%, transparent 100%);
 }
 
 .sidebar.collapsed {
@@ -943,20 +974,128 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* 深色主题下让左侧会话树比主区更黑，产生层次 */
-:root[data-theme='dark'] .sidebar {
-  background: oklch(0.22 0 0);
+.rightcol {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
+/* 侧栏列顶行：纯占位撑高 36px（拖拽已由窗口级 shell-topstrip 统一提供，
+   此处不再声明 drag，避免与 toggle 悬浮洞产生同级重叠区） */
 .workspace-header {
+  height: 36px;
+  min-height: 36px;
+}
+
+/* 窗口级顶部拖拽条：覆盖侧栏列顶部（含 toggle），toggle 作为其 no-drag 后代挖洞
+   （Electron 只对后代做洞，同级悬浮元素会被 drag 吞掉交互）；宽度止于 292px，
+   不伸进窗口按钮区。z 必须高于右列标题栏（200）：侧栏折叠后标题栏从 x=0 铺起，
+   若标题栏 drag 叠在拖拽条之上，toggle 的洞会被其原生拖拽重新吞掉（折叠后无法展开） */
+.shell-topstrip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 292px;
+  height: 36px;
+  z-index: 205;
+  -webkit-app-region: drag;
+}
+
+/* 折叠后右列从 x=0 铺起，右列标题栏的 drag 盒会盖住 toggle：Electron 的 no-drag
+   洞只在自己的 drag 子树内生效（按祖先归属），跨子树重叠无效——所以折叠时标题栏
+   整体让位 292px，该段顶部拖拽由 shell-topstrip 接管，两个 drag 区永不重叠 */
+.app-container.sidebar-collapsed :deep(.titlebar) {
+  margin-left: 292px;
+  /* 覆盖 TitleBar 的 width:100%，否则整条右移把窗口按钮顶出可视区 */
+  width: auto;
+}
+
+/* 悬浮 toggle：钉死窗口左上角，折叠/展开全程零位移，侧栏从它底下抽走 */
+.shell-toggle {
+  position: absolute;
+  left: 8px;
+  top: 2px;
+  z-index: 2;
+  -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
-  padding: 14px 18px;
-  min-height: 56px;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-/* FORGE 渐变文字 LOGO 已随 SM-S07 隐藏（品牌位移至 TitleBar 左上角 LOGO 瓷片）；
-   重设计后如需文字品牌，在 workspace-header 内新增节点即可 */
+.shell-toggle-mac {
+  left: 78px;
+}
+
+.shell-toggle:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  color: var(--foreground);
+}
+
+.tb-logo {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.tb-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.shell-toggle:hover .tb-logo {
+  opacity: 0;
+  transform: scale(0.85);
+}
+
+.shell-toggle:hover .tb-panel {
+  opacity: 1;
+  transform: scale(1);
+  color: var(--foreground);
+}
+
+.tb-panel svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 整窗反光层（伪玻璃）：窗口未开 transparent/vibrancy，设计稿的反光感用一层
+   顶部椭圆柔光 + 右下角微光复现；纯视觉，压在 chrome 之上、悬浮 toggle 之下 */
+.shell-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 210;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 62% at 26% -12%, rgba(255, 255, 255, 0.55) 0%, transparent 58%),
+    radial-gradient(80% 55% at 105% 108%, rgba(255, 255, 255, 0.3) 0%, transparent 60%);
+}
+
+:root[data-theme='dark'] .shell-sheen {
+  background:
+    radial-gradient(120% 62% at 26% -12%, rgba(255, 255, 255, 0.062) 0%, transparent 58%),
+    radial-gradient(80% 55% at 105% 108%, rgba(255, 255, 255, 0.03) 0%, transparent 60%);
+}
 
 .tree-panel {
   flex: 1;
