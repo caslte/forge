@@ -1017,6 +1017,7 @@ onUnmounted(() => {
 }
 
 .tree-session {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1024,8 +1025,38 @@ onUnmounted(() => {
   border-radius: var(--radius-md);
   cursor: pointer;
   color: var(--foreground);
-  transition: background var(--transition-fast);
   min-width: 0;
+}
+
+/* hover 高亮走 ::before 伪元素做「从内向外微延展」（prototypes/session-hover-demo.html 方案 C）：
+   文字/圆点静止，只有背景胶囊缓出铺满，列表零位移；
+   720→950ms、幅度 0.93→0.88（横向每侧约 17px），用户实机持续要更慢更大 */
+.tree-session::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+  opacity: 0;
+  transform: scale(0.88);
+  transition:
+    opacity 950ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 950ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tree-session:hover::before {
+  opacity: 1;
+  transform: scale(1);
+}
+.tree-session.active::before {
+  background: var(--surface-active);
+  opacity: 1;
+  transform: scale(1);
+}
+/* 行内容盖在高亮层之上 */
+.tree-session > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* 已在多窗口画布上：置灰、去交互 */
@@ -1033,8 +1064,8 @@ onUnmounted(() => {
   opacity: 0.45;
   cursor: default;
 }
-.tree-session.on-canvas:hover {
-  background: transparent;
+.tree-session.on-canvas::before {
+  display: none;
 }
 .session-oncanvas-tag {
   flex-shrink: 0;
@@ -1059,14 +1090,6 @@ onUnmounted(() => {
   border-radius: 999px;
   padding: 1px 7px;
   background: color-mix(in oklab, var(--muted) 30%, transparent);
-}
-
-.tree-session:hover {
-  background: var(--surface-hover);
-}
-
-.tree-session.active {
-  background: var(--surface-active);
 }
 
 .tree-session-status-dot {
