@@ -15,6 +15,7 @@ import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
+import logoMain from '../assets/logo-main.png';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 import { formatElapsed } from '../utils/formatElapsed.ts';
 
@@ -739,7 +740,7 @@ onUnmounted(() => {
            正常发送首条消息时 loadingHistory 为 false，过渡保留 -->
       <Transition name="conv-hero" :css="!loadingHistory">
         <div v-if="isEmpty" ref="heroRef" class="conv-hero" aria-label="新建会话：输入任务开始对话">
-          <span class="conv-wordmark" aria-hidden="true">forge</span>
+          <img class="conv-hero-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
         </div>
       </Transition>
       <InstructionInput
@@ -974,20 +975,15 @@ onUnmounted(() => {
   user-select: none;
 }
 
-/* 巨型 forge 字标：实底 + 下缘蒙版渐隐，融进背板。
-   透明度刻意留低——抬到 0.2 以上深色主题会起脏斑 */
-.conv-wordmark {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  line-height: 1;
-  color: var(--foreground);
-  opacity: 0.14;
-  /* 老浏览器兜底 */
-  font-size: 96px;
-  font-size: min(26cqw, 180px);
-  -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+/* 巨型主视觉 LOGO（锤子与铁砧切图）：跟随可视宽度缩放，
+   老浏览器兜底固定 180px */
+.conv-hero-logo {
+  display: block;
+  width: 180px;
+  width: min(28cqw, 220px);
+  height: auto;
+  pointer-events: none;
+  user-select: none;
 }
 
 .conv-hero-enter-active,

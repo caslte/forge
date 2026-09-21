@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import logoMain from '../assets/logo-main.png';
 
 defineProps<{
   sidebarCollapsed: boolean;
@@ -55,8 +56,8 @@ onUnmounted(() => {
       :data-tooltip="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
       @click="emit('toggle-sidebar')"
     >
-      <!-- SM-S07：默认显方形 LOGO 瓷片，hover 交叉淡入为缩放图标，点击行为不变 -->
-      <span class="tb-logo" aria-hidden="true">F</span>
+      <!-- SM-S07：默认显品牌 LOGO（锤子与铁砧切图），hover 交叉淡入为缩放图标，点击行为不变 -->
+      <img class="tb-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
       <span class="tb-panel" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <template v-if="sidebarCollapsed">
@@ -135,7 +136,7 @@ onUnmounted(() => {
   margin-right: 4px;
 }
 
-/* LOGO 瓷片（SM-S07）：默认态；hover 让位于缩放图标 */
+/* LOGO 切图（SM-S07）：默认态；hover 让位于缩放图标 */
 .titlebar-toggle {
   position: relative;
 }
@@ -144,19 +145,10 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   margin: auto;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 5px;
-  background: linear-gradient(135deg, var(--logo-gradient-accent) 0%, color-mix(in oklab, var(--logo-gradient-accent) 55%, oklch(0.6 0.12 60)) 100%);
-  color: oklch(0.22 0.01 286.3);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1;
-  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 14%);
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  pointer-events: none;
   transition: opacity var(--transition-fast), transform var(--transition-fast);
 }
 

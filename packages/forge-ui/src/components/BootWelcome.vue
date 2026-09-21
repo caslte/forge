@@ -7,6 +7,7 @@
  * forge:invoke 请求（invoke handler 尚未注册）。样式与 App 底色 #f6f8fa 对齐。
  */
 import { ref, onMounted, onUnmounted } from 'vue';
+import logoMain from '../assets/logo-main.png';
 
 /**
  * 轮换文案：纯前端节奏，与主进程进度无关联（避免虚假进度条）。
@@ -36,16 +37,7 @@ onUnmounted(() => {
 <template>
   <div class="boot-welcome">
     <div class="boot-logo" aria-hidden="true">
-      <svg viewBox="0 0 48 48" width="56" height="56">
-        <rect x="4" y="4" width="40" height="40" rx="10" fill="#2563eb" />
-        <path
-          d="M15 33V15h13M15 24h10"
-          stroke="#fff"
-          stroke-width="4"
-          stroke-linecap="round"
-          fill="none"
-        />
-      </svg>
+      <img class="boot-logo-img" :src="logoMain" alt="" draggable="false" />
     </div>
     <div class="boot-name">Forge</div>
     <div class="boot-spinner" role="status" aria-label="加载中" />
@@ -67,6 +59,13 @@ onUnmounted(() => {
 }
 .boot-logo {
   animation: boot-fade-in 0.4s ease-out;
+}
+.boot-logo-img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  user-select: none;
 }
 .boot-name {
   font-size: 22px;

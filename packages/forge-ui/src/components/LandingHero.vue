@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import type { ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
+import logoMain from '../assets/logo-main.png';
 
 /**
  * 落地 hero（v3.77）：零项目时的启动首屏，替换旧「选择项目」卡片。
@@ -68,7 +69,7 @@ onMounted(() => {
 
 <template>
   <div class="landing-hero">
-    <span class="landing-wordmark" aria-hidden="true">forge</span>
+    <img class="landing-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
     <div class="landing-input">
       <InstructionInput
         ref="inputRef"
@@ -101,18 +102,13 @@ onMounted(() => {
   container-type: inline-size;
 }
 
-/* 巨型 forge 字标：参数照抄 .conv-wordmark（实底 + 下缘蒙版渐隐，融进背板） */
-.landing-wordmark {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  line-height: 1;
-  color: var(--foreground);
-  opacity: 0.14;
-  font-size: 96px;
-  font-size: min(26cqw, 180px);
-  -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+/* 巨型主视觉 LOGO（与 ConversationView .conv-hero-logo 同参数）；
+   老浏览器兜底固定 180px */
+.landing-logo {
+  display: block;
+  width: 180px;
+  width: min(28cqw, 220px);
+  height: auto;
   pointer-events: none;
   user-select: none;
 }

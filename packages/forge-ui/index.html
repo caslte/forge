@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="data:," />
+    <link rel="icon" href="/favicon.png" />
     <title>forge</title>
     <script>
       /* 主题引导（v3.78.5）：暗色欢迎页的前提条件。
@@ -81,6 +81,12 @@
         user-select: none;
         font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
       }
+      #app-boot-splash .splash-logo {
+        width: 64px;
+        height: 64px;
+        object-fit: contain;
+        user-select: none;
+      }
       #app-boot-splash .splash-name {
         font-size: 22px;
         font-weight: 700;
@@ -110,16 +116,7 @@
   <body>
     <div id="app">
       <div id="app-boot-splash" role="status" aria-label="应用正在启动">
-        <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true">
-          <rect x="4" y="4" width="40" height="40" rx="10" fill="#2563eb" />
-          <path
-            d="M15 33V15h13M15 24h10"
-            stroke="#fff"
-            stroke-width="4"
-            stroke-linecap="round"
-            fill="none"
-          />
-        </svg>
+        <img class="splash-logo" src="/logo-main.png" alt="" aria-hidden="true" draggable="false" />
         <div class="splash-name">Forge</div>
         <div class="splash-spinner"></div>
         <div class="splash-phase">正在准备运行环境…</div>
