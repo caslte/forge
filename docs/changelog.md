@@ -14,6 +14,16 @@
 - **文档同步**：PRD 07（TD-IN-07 修订为「向导 + installer.nsh 零点击收尾」、IN-F01/IN-F03 业务规则、AC-IN-001、反馈/决策追溯表）、coverage-matrix（AC-IN-001、反馈表两条）、packaging.md（安装包形态）。
 - **验证汇总**：forge-desktop 单测 **256/256**、tsc 0 错；forge-ui e2e（settings/bootSplash）12/12；安装包真机三路径（首装向导页在场 + 目录页提示文案可见 + --updated 零点击）验证通过。
 
+## v3.79.1 (样式：子 Agent 运行中指示对齐主会话 — 银色流光 + 读秒，去除三点)
+
+- **用户反馈**：子 Agent 结果视图运行中底部「··· 正在思考…」与主会话流式思考指示器（银色流光 + 读秒）观感不一致；期望同一种「Codex 式」流光表达。
+- **根因（`SubagentResultView.vue`）**：v3.15 引入无边框指示时，为了「简单先于抽象」只用了三圆点 + 静态文字（`.srv-indicator > .thinking-dot ×3 + <span>`），没有复用主会话 `ConversationView.vue` 里 `conv-thinking` 的银色流光结构。运行时两者并排（多窗口/分块）观感分裂。
+- **修复**：
+  - 模板同步主会话结构：`<div class="srv-indicator"><span class="thinking-text thinking-shimmer">{{ text }}</span><span class="thinking-sec">{{ formatElapsed(sec) }}</span></div>`，删除三点 + 静态文案。
+  - 样式对齐：`padding: 10px 14px; font-size: 14px;` 与 `.conv-thinking` 一致；`.thinking-shimmer` 复用主会话同套银色渐变 + 2.4s 流光；`.thinking-sec` 复用主会话同套 `font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.55;`。
+  - 读秒改用既有 `utils/formatElapsed.ts`（`<60s → 42s`、`<60m → 5m30s`、≥1h 进位），与主会话完全同源。
+- **验证**：`packages/forge-ui` 单测 **286/286** 全过、`vue-tsc` 0 错。E-SA-010 断言文字不变（「底部无边框'正在输出…'指示」仍通过），子 Agent e2e 11/11。
+
 ## v3.78.9 (修复：AI 回复中同一句话在工具卡片之间重复出现——切会话再切回才恢复)
 
 - **用户反馈**：AI 回复时同一段文本（如"明白了，回退上次的改动…"）在工具卡片之间反复出现（同一轮内 2~3 次），切换会话再切回后显示恢复正常。此前已改过一次（前端 `onMessage` 以"覆盖最后一条 assistant"避免 delta 累积 + 完整消息成双），未盖住本场景。

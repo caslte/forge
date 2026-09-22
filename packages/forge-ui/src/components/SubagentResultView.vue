@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { call } from '../bridge';
 import { parseSubagentStream, stripDanglingFence, groupStreamNodes } from '../utils/subagentStream';
 import { renderMarkdown } from '@forge/core/markdown';
+import { formatElapsed } from '../utils/formatElapsed.ts';
 import type { Subagent } from '../types';
 
 /**
@@ -96,6 +97,10 @@ const elapsedText = computed(() => {
   const mm = m % 60;
   return `${h} 小时 ${mm} 分`;
 });
+
+/** 流式读秒（与主会话 conv-thinking 的 thinking-sec 同源） */
+const elapsedSec = computed(() => Math.floor(elapsedMs.value / 1000));
+const indicatorText = computed(() => streamItems.value.length > 0 ? '正在输出…' : '正在思考…');
 
 function statusText(status: Subagent['status']): string {
   switch (status) {
@@ -223,12 +228,10 @@ onUnmounted(() => {
         <div v-else-if="subagent.status === 'completed'" class="subagent-result-empty">无结果输出</div>
       </template>
 
-      <!-- 运行中指示（无边框，随内容滚动，与主会话一致） -->
+      <!-- 运行中指示（与主会话 conv-thinking 同结构：银色流光 + 读秒，无圆点） -->
       <div v-if="isActive" class="srv-indicator">
-        <span class="thinking-dot"></span>
-        <span class="thinking-dot"></span>
-        <span class="thinking-dot"></span>
-        <span>{{ streamItems.length > 0 ? '正在输出…' : '正在思考…' }}</span>
+        <span class="thinking-text thinking-shimmer">{{ indicatorText }}</span>
+        <span class="thinking-sec">{{ formatElapsed(elapsedSec) }}</span>
       </div>
       <!-- 失败 / 终止错误信息 -->
       <div v-if="subagent.status === 'failed' || subagent.status === 'stopped'" class="subagent-result-error">
@@ -368,31 +371,37 @@ onUnmounted(() => {
   gap: 14px;
 }
 
-/* 运行中指示（无边框，与主会话同风格） */
+/* 运行中指示（与主会话 conv-thinking 同结构：银色流光文字 + 读秒，无圆点） */
 .srv-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 10px 14px;
   color: var(--muted-foreground);
-  font-size: 13px;
-  padding: 2px 0;
+  font-size: 14px;
 }
 
-.thinking-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--muted-foreground);
-  opacity: 0.4;
-  animation: dot-bounce 1.4s ease-in-out infinite;
+.srv-indicator .thinking-text { margin-left: 0; }
+.thinking-sec {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  margin-left: 2px;
 }
 
-.thinking-dot:nth-child(2) { animation-delay: 0.16s; }
-.thinking-dot:nth-child(3) { animation-delay: 0.32s; }
-
-@keyframes dot-bounce {
-  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-  40% { opacity: 1; transform: scale(1.1); }
+.thinking-shimmer {
+  display: inline-block;
+  font-weight: 500;
+  background: linear-gradient(90deg, #6b7280 0%, #f3f4f6 22%, #6b7280 42%, #e5e7eb 62%, #6b7280 82%, #ffffff 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+}
+@keyframes thinking-shimmer {
+  0% { background-position: 100% 0%; }
+  100% { background-position: 0% 0%; }
 }
 
 .subagent-result-empty {
