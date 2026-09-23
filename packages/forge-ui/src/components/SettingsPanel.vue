@@ -1580,12 +1580,14 @@ onUnmounted(() => {
   color: var(--foreground);
 }
 
-/* 模块 08：语言切换行（外观区内、主题色板下方） */
+/* 模块 08：语言切换行（外观区内、主题色板下方）。
+   与「外观」同款版式：标题独占一行，选项在下方。 */
 .language-row {
   margin-top: 14px;
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .language-label {

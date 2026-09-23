@@ -16,6 +16,7 @@ import SettingsPanel from './components/SettingsPanel.vue';
 import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
+import GitCommitDialog from './components/GitCommitDialog.vue';
 import BootWelcome from './components/BootWelcome.vue';
 import logoMain from './assets/logo-main.png';
 
@@ -933,6 +934,9 @@ onUnmounted(() => {
       @confirm="confirmExit"
       @cancel="showExitDialog = false"
     />
+
+    <!-- 提交或推送弹窗（GC-S11）：入口在 InstructionInput 状态行 / BranchBadge 浮窗，经 useGitCommitDialog 单例开合 -->
+    <GitCommitDialog />
 
     <ToastNotification
       v-if="toastMessage"

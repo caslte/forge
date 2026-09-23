@@ -17,6 +17,7 @@ import { prependQueuedText } from '../utils/prependQueuedText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
+import { openGitCommitDialog } from '../composables/useGitCommitDialog';
 import { useI18n } from '../i18n/index.ts';
 import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
 import ImageLightbox from './ImageLightbox.vue';
@@ -47,8 +48,6 @@ const props = defineProps<{
   projectPath?: string;
   /** git 分支徽标目标项目路径（PM-S05）；未传则不渲染徽标 */
   gitProjectPath?: string;
-  /** 项目忙（任一会话 streaming）：徽标禁用（AC-PM-016） */
-  gitBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -183,6 +182,25 @@ let slashLoadGen = 0;
 
 const { success: toastSuccess, error: toastError } = useToast();
 const { t } = useI18n();
+
+/** 状态行「提交或推送」入口（GC-S11）：busy 禁用，弹窗挂在 App.vue 根 */
+function openCommitDialog(): void {
+  if (props.gitBusy || !props.gitProjectPath) return;
+  openGitCommitDialog({
+    projectPath: props.gitProjectPath,
+    projectName: props.projectPicker?.currentName,
+    sessionId: props.sessionId,
+  });
+}
+/** 非 git 项目不渲染入口（AC：与 BranchBadge isGitRepo 语义一致）；真值由 BranchBadge git-repo 事件回填 */
+const gitIsRepo = ref(false);
+watch(
+  () => props.gitProjectPath,
+  () => {
+    gitIsRepo.value = false;
+  },
+  { immediate: true },
+);
 const { markCompacting, markDone, clear: clearCompactBanner } = useCompactBanner();
 
 // ===== MP-S05：思考级别切换器（模型选择旁紧凑下拉；非推理模型隐藏入口） =====
@@ -1193,7 +1211,12 @@ watch(
       text.value = next.text;
       pendingDraft = next.pendingDraft;
       historyCursor.value = next.historyCursor;
-      nextTick(autoGrow); // 空文本 → 重置回默认高度
+      // 切到新会话：textarea 自然回落（autoGrow 已处理）+ 手动拖高过的 compose-box 也回到自然高度，
+      // 否则下次打开会按上次拖的高度撑开。box-shadow / border 不用清，本身就没内联。
+      nextTick(() => {
+        autoGrow();
+        if (inputBoxRef.value) inputBoxRef.value.style.height = '';
+      });
     }
     loadHistory(sid);
   },
@@ -1555,7 +1578,31 @@ watch(
         </button>
       </div>
       <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
-      <BranchBadge v-if="gitProjectPath" :project-path="gitProjectPath" :busy="gitBusy ?? false" />
+      <BranchBadge
+        v-if="gitProjectPath"
+        :project-path="gitProjectPath"
+        :busy="gitBusy ?? false"
+        :project-name="projectPicker?.currentName"
+        :session-id="sessionId"
+        @git-repo="gitIsRepo = $event"
+      />
+      <!-- 提交或推送入口（GC-S11）：与分支徽标同排，busy 禁用同款灰置 -->
+      <button
+        v-if="gitProjectPath && gitIsRepo"
+        type="button"
+        class="meta-link push-pill"
+        :class="{ 'is-busy': gitBusy }"
+        :data-tooltip="gitBusy ? t('project.sessionBusy') : t('git.entryTooltip')"
+        :aria-disabled="gitBusy"
+        @click="openCommitDialog"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4" />
+          <line x1="12" y1="2" x2="12" y2="8" />
+          <line x1="12" y1="16" x2="12" y2="22" />
+        </svg>
+        <span>{{ t('git.entryLabel') }}</span>
+      </button>
     </div>
 
     <!-- 上下文用量 + 压缩：从框内操作条挪到状态行右侧 -->
@@ -1870,6 +1917,12 @@ watch(
   width: 13px;
   height: 13px;
   flex-shrink: 0;
+}
+
+/* 提交或推送入口 busy 禁用态：与 BranchBadge .git-pill.is-busy 同款 */
+.push-pill.is-busy {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* 模型浮窗菜单（对齐原型 .menu：向上弹、点外部关） */
@@ -2450,5 +2503,14 @@ watch(
 .cancel-btn svg {
   width: 14px;
   height: 14px;
+}
+</style>
+
+<!-- 暗色主题下 --brand 接近纯白 (oklch 0.88)，未聚焦边框仅 0.32，直接切换会突兀。
+     把暗色聚焦边框压到 brand 55% mix，让"聚焦"成为一次温和的提亮而非跳变。
+     ponytail: 调光旋钮是 mix %，想再亮一点改 65、再压一点改 45。light 不动。 -->
+<style>
+:root[data-theme='dark'] .compose-box:focus-within {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
 }
 </style>

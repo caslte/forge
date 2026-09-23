@@ -45,8 +45,21 @@ const DB: {
   projects: Array<Record<string, unknown>>;
   sessions: MockSessionSeed[];
   subagents: Record<string, MockSubagentSeed[]>;
-  /** mock git 状态（PM-S05）：不在表内 = 非 git 项目（isGitRepo:false 全空值） */
-  git: Record<string, { branch: string; branches: string[]; dirty: boolean }>;
+  /** mock git 状态（PM-S05）：不在表内 = 非 git 项目（isGitRepo:false 全空值）；
+   *  GC-S11 扩展可缺省的状态字段（fileCount 等），缺省按 0/true 兜底 */
+  git: Record<
+    string,
+    {
+      branch: string;
+      branches: string[];
+      dirty: boolean;
+      fileCount?: number;
+      added?: number;
+      removed?: number;
+      stagedEmpty?: boolean;
+      hasHead?: boolean;
+    }
+  >;
 } = {
   projects: [
     { path: 'D:/work/aiwork/forge', alias: null, lastOpenedAt: new Date().toISOString(), trust: 'trusted' },
@@ -93,6 +106,12 @@ const DB: {
       branch: 'dev-v0.1.0',
       branches: ['dev-v0.1.0', 'main', 'feat/login'],
       dirty: true,
+      // GC-S11 演示态：有变更但暂存区为空 → 不勾「包含未暂存变更」时按钮禁用+提示
+      fileCount: 8,
+      added: 44,
+      removed: 11,
+      stagedEmpty: true,
+      hasHead: true,
     },
   },
 };
@@ -764,6 +783,92 @@ const bridge: ForgeBridge = {
         g.branch = sb;
         emit('git.branchChanged', { path: sp, branch: sb });
         return { code: 0, message: 'ok', data: { branch: sb } };
+      }
+      case 'git/getStatus': {
+        // GC-S11：与 getBranchInfo 同表；不在表内 = 非 git 项目全空值
+        const gp = (params as { path?: string }).path ?? '';
+        const g = DB.git[gp];
+        if (!g) {
+          return {
+            code: 0,
+            message: 'ok',
+            data: { isGitRepo: false, branch: null, detached: false, fileCount: 0, added: 0, removed: 0, stagedEmpty: true, hasHead: false },
+          };
+        }
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            isGitRepo: true,
+            branch: g.branch,
+            detached: false,
+            fileCount: g.fileCount ?? 0,
+            added: g.added ?? 0,
+            removed: g.removed ?? 0,
+            stagedEmpty: g.stagedEmpty ?? true,
+            hasHead: g.hasHead ?? true,
+          },
+        };
+      }
+      case 'git/commit': {
+        // GC-S11：__fail__ 说明模拟 6006（含 git 原始 stderr）；成功后清空脏状态
+        const cp = params as { path?: string; message?: string; includeUnstaged?: boolean };
+        const cpath = cp.path ?? '';
+        const g = DB.git[cpath];
+        if (!g) return { code: 1002, message: '项目未注册: ' + cpath, data: null };
+        const msg = (cp.message ?? '').trim();
+        if (!msg) return { code: 1001, message: '参数错误：message 必须为非空字符串', data: null };
+        if (msg === '__fail__') {
+          return {
+            code: 6006,
+            message: 'git 提交失败',
+            data: { stderr: 'husky - pre-commit script failed (code 1)\nnpm test exited with 1' },
+          };
+        }
+        if ((cp.includeUnstaged ?? true) === false && (g.stagedEmpty ?? true)) {
+          return { code: 6006, message: '暂存区为空，无变更可提交', data: { stderr: '' } };
+        }
+        if ((g.fileCount ?? 0) === 0) {
+          return { code: 6006, message: '暂存区为空，无变更可提交', data: { stderr: '' } };
+        }
+        const fileCount = g.fileCount ?? 0;
+        const shortHash = 'm' + Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, '0');
+        g.fileCount = 0;
+        g.stagedEmpty = true;
+        g.dirty = false;
+        return { code: 0, message: 'ok', data: { shortHash, fileCount } };
+      }
+      case 'git/push': {
+        // GC-S11：分支为空模拟 6007（detached/不可解析）；__failpush__ 分支模拟远端拒绝
+        const pp = (params as { path?: string }).path ?? '';
+        const g = DB.git[pp];
+        if (!g) return { code: 1002, message: '项目未注册: ' + pp, data: null };
+        if (!g.branch) {
+          return { code: 6007, message: '无法推送：当前处于分离 HEAD 或分支不可解析', data: { stderr: '' } };
+        }
+        if (g.branch === '__failpush__') {
+          return {
+            code: 6007,
+            message: 'git 推送失败',
+            data: { stderr: "To https://github.com/acme/repo.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs" },
+          };
+        }
+        return { code: 0, message: 'ok', data: { branch: g.branch, remote: 'origin' } };
+      }
+      case 'git/generateCommitMessage': {
+        // GC-S11：mock 即时返回固定文案（无真 LLM 调用）；无变更演示 6008
+        const gp = (params as { path?: string; lang?: string }).path ?? '';
+        const lang = (params as { lang?: string }).lang === 'en' ? 'en' : 'zh';
+        const g = DB.git[gp];
+        if (!g) return { code: 1002, message: '项目未注册: ' + gp, data: null };
+        if ((g.fileCount ?? 0) === 0) {
+          return { code: 6008, message: '无变更可总结', data: null };
+        }
+        const msg =
+          lang === 'en'
+            ? `feat: update ${g.fileCount} files on ${g.branch} (mock generated)`
+            : `feat: 在 ${g.branch} 上更新 ${g.fileCount} 个文件（mock 生成）`;
+        return { code: 0, message: 'ok', data: { message: msg } };
       }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };

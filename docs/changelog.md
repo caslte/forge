@@ -1,5 +1,26 @@
 # 变更日志
 
+## v3.82.0 (功能：模块 11 Git 提交与推送)
+
+> PRD：docs/prd/11_git_commit_push.md（2026-09-23「开工」，视觉/交互严格对齐 prototypes/terminal-git-prototype.html 定稿 demo）。
+
+- **后端 4 RPC（forge-core/forge-desktop）**：
+  - `git/getStatus|commit|push` 落 `forge-core/src/git/gitService.ts`（execFile git CLI，写操作 30s 超时）：getStatus 聚合 porcelain v1 + numstat（含未跟踪、二进制安全、unborn 走 `--cached` 基线）；commit 支持 `includeUnstaged`（勾=`add -A`），服务端双保险拒绝空暂存（AC-11-07）；push 自动 `-u origin <branch>`（无 upstream 时）。错误码 **6006 提交 / 6007 推送**，失败信封带 git 原始 `data.stderr`。
+  - `git/generateCommitMessage` 落 `forge-desktop/src/git/commitMessageService.ts`（**单次 OpenAI 兼容 chat/completions，非 agent**，TD-GC 口径）：provider 解析链 = 会话模型→全局默认→models.json（keychain 解密，apiKey 不落日志）；diff 上下文 = 全量文件清单 + 每文件前 40 行 + 30k 字符预算（TD-GC-03）；语言随渲染层 `lang`；错误码 **6008**。
+  - 校验：forge-core 400/400（git 真实仓库临时目录 24 例）、forge-desktop typecheck+单测过；`ipc-contract.ts`/`bridge.ts` 双白名单 +4。
+- **前端（forge-ui）**：`GitCommitDialog.vue`（App 根常驻，`useGitCommitDialog` 模块级单例开合，同 useToast 套路）——ExitConfirmDialog 视觉骨架 + demo `.dlg-*` 控件（分支条 secondary 底、绿实心勾选框、无边框 AI 胶囊按钮、黑色主按钮暗色主题走 primary）；双入口=状态行「⊙ 提交或推送」meta-link + BranchBadge 浮窗分隔线下「提交或推送…」（后者经 BranchBadge `git-repo` 事件与非 git 项目对齐不渲染）；busy 禁用沿用 AC-PM-016；`stagedEmpty && !includeUnstaged` 或无变更 → 提交/提交并推送禁用 + 单行提示（推送独立可用）；提交中三按钮+关闭全禁用；失败（6006/6007/6008）弹窗内展示原始 stderr **不关窗**（BranchBadge 6001 模式）；提交并推送成功只出一条合并 toast；AI 生成 disabled+spinner、结果覆盖输入框。i18n 新域 `domains/git.ts`（zh+en 全键）；`mock-bridge.ts` 内存实现 4 方法（stagedEmpty 演示态 + `__fail__` 提交钩子失败模拟）。
+  - 验证：forge-ui typecheck 0 错、293/293、浏览器 mock 双入口/中英双查/成功·失败·禁用·推送·Esc 全链路通过。**待办**：Electron 真机验收（主进程有改动需重启 dev app）。
+  - 真机反馈修复（2026-09-23 截图，edu-community 实链路）：① 去掉「没有待提交的变更」提示（键删除，仅保留暂存区为空勾选提示）；② footer 三按钮与勾选 label 锁单行（nowrap+shrink-0，en 放不下时整组换行右对齐），460px 实测单行不再挤成竖排；③ AI 生成按钮图标由放射状「加载感」星形换成 sparkles 四角星。
+- **文档**：新增 `docs/api/11_git_commit_push.md`；`docs/api/index.md`（6006/6007/6008 + 模块行）、`docs/overview.md`、PRD 11 状态同步。
+
+## v3.81.0 (文档：模块 10 内嵌终端 / 模块 11 Git 提交与推送 PRD 定稿)
+
+> 口径来源：2026-09-23 对齐讨论 + `prototypes/terminal-git-prototype.html` demo 三轮验收（终端面板形态、弹窗入口收敛、AI 生成按钮样式、连体 tab）。两模块均**待开工**，无代码变更。
+
+- 新增 `docs/prd/10_embedded_terminal.md`：底部面板（非覆盖层）+ 多 tab；新 tab cwd 自动取当前会话项目根、已开 tab 不随项目切换（D2 混合口径）；完整交互终端 xterm.js+node-pty（TD-TM-01 推荐 @lydell/node-pty 预编译回退，**spike 为开发第一步**）；用户终端与 agent bash 两套独立；数据流走事件下行+invoke 上行复用现有 IPC 治理。
+- 新增 `docs/prd/11_git_commit_push.md`：全量提交语义（用户拍板砍掉"仅本会话"，不建变更账本）；弹窗=ExitConfirmDialog 视觉模式，双入口（状态行「提交或推送」+分支浮窗），无文件清单无 diff 统计（D5）；「包含未暂存变更」勾选（勾=add -A+commit，不勾仅暂存区且空时禁用+服务端拒绝）；AI 生成=主进程单次 OpenAI 兼容 chat/completions（复用 models.json provider 与 keychain 解密，diff 截断 30k，语言跟随 app locale）；push 失败弹窗内 stderr 回显（BranchBadge 6001 模式）；busy 禁用沿用 AC-PM-016 语义；新增 git/getStatus·commit·push·generateCommitMessage 四 RPC。
+- `docs/prd/index.md`、`docs/overview.md` 模块表同步 10/11 两行。
+
 ## v3.80.0 (功能：UI 国际化（模块 08）+ Skill 管理（模块 09）)
 
 > PRD：docs/prd/08_ui_i18n.md、docs/prd/09_skill_management.md（2026-09-22 用户「开工」批准后按 08→09 顺序交付）。

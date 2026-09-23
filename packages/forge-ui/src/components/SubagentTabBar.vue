@@ -335,3 +335,17 @@ function onClearClick(): void {
   height: 12px;
 }
 </style>
+
+<!-- 暗色主题 --brand 接近纯白，hover/active 边瞬间跳白显突兀；压到 55% mix 保持可见但柔和。
+     ponytail: 调光旋钮 mix %，想再亮改 65、再压改 45；light 不动。 -->
+<style>
+:root[data-theme='dark'] .subagent-tab:hover {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+}
+:root[data-theme='dark'] .subagent-tab.active {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+}
+:root[data-theme='dark'] .subagent-clear-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+}
+</style>

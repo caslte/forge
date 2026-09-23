@@ -15,14 +15,31 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { GitApi } from '../../src/rpc/gitMethods.ts';
 import type { GitService } from '../../src/git/gitService.ts';
-import type { GitBranchInfo, SwitchResult } from '../../src/git/gitService.ts';
+import type {
+  GitBranchInfo,
+  SwitchResult,
+  GitStatusInfo,
+  CommitResult,
+  PushResult,
+  CommitDiffContext,
+} from '../../src/git/gitService.ts';
 
-/** fake GitService：返回预设分支信息 / 切换结果，记录调用 */
+/** fake GitService：返回预设结果，记录调用（含模块 11 写路径方法） */
 class FakeGitService implements GitService {
   info: GitBranchInfo = { isGitRepo: false, branch: null, branches: [], dirty: false, detached: false };
   switchResult: SwitchResult = { ok: true, data: { branch: 'main', changed: true } };
+  status: GitStatusInfo = {
+    isGitRepo: true, branch: 'main', detached: false,
+    fileCount: 0, added: 0, removed: 0, stagedEmpty: true, hasHead: true,
+  };
+  commitResult: CommitResult = { ok: true, data: { shortHash: 'abc1234', fileCount: 1 } };
+  pushResult: PushResult = { ok: true, data: { branch: 'main', remote: 'origin' } };
+  diffContext: CommitDiffContext = { hasChanges: true, fileCount: 1, text: 'Files (1):' };
   infoCalls: string[] = [];
   switchCalls: Array<{ cwd: string; branch: string }> = [];
+  statusCalls: string[] = [];
+  commitCalls: Array<{ cwd: string; message: string; includeUnstaged: boolean }> = [];
+  pushCalls: string[] = [];
   throwOnSwitch: Error | null = null;
 
   async getBranchInfo(cwd: string): Promise<GitBranchInfo> {
@@ -36,6 +53,25 @@ class FakeGitService implements GitService {
       throw this.throwOnSwitch;
     }
     return this.switchResult;
+  }
+
+  async getStatus(cwd: string): Promise<GitStatusInfo> {
+    this.statusCalls.push(cwd);
+    return this.status;
+  }
+
+  async commit(cwd: string, message: string, includeUnstaged: boolean): Promise<CommitResult> {
+    this.commitCalls.push({ cwd, message, includeUnstaged });
+    return this.commitResult;
+  }
+
+  async push(cwd: string): Promise<PushResult> {
+    this.pushCalls.push(cwd);
+    return this.pushResult;
+  }
+
+  async collectCommitDiff(cwd: string): Promise<CommitDiffContext> {
+    return this.diffContext;
   }
 }
 
@@ -148,4 +184,88 @@ test('git/switchBranch：服务层意外抛错返回 5000', async () => {
   const r = await api.methods['git/switchBranch']({ path: 'C:/dev/a', branch: 'main' });
   assert.equal(r.code, 5000);
   assert.equal(r.data, null);
+});
+
+// ------------------------------------------------- 模块 11：getStatus / commit / push
+
+test('git/getStatus：成功返回 code 0 且透传服务层状态', async () => {
+  const { api, gitService } = makeApi();
+  gitService.status = {
+    isGitRepo: true, branch: 'dev', detached: false,
+    fileCount: 3, added: 44, removed: 11, stagedEmpty: false, hasHead: true,
+  };
+  const r = await api.methods['git/getStatus']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, gitService.status);
+  assert.equal(gitService.statusCalls[0], 'C:/dev/a');
+});
+
+test('git/getStatus：path 缺失 1001；未注册 1002；抛错 5000', async () => {
+  const { api, gitService } = makeApi();
+  assert.equal((await api.methods['git/getStatus']({})).code, 1001);
+  assert.equal((await api.methods['git/getStatus']({ path: ' C:/nope' })).code, 1002);
+  gitService.statusCalls.push = () => {
+    throw new Error('boom');
+  };
+  assert.equal((await api.methods['git/getStatus']({ path: 'C:/dev/a' })).code, 5000);
+});
+
+test('git/commit：成功透传 shortHash+fileCount；includeUnstaged 缺省视为 true', async () => {
+  const { api, gitService } = makeApi();
+  const r = await api.methods['git/commit']({ path: 'C:/dev/a', message: 'feat: x' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, { shortHash: 'abc1234', fileCount: 1 });
+  assert.deepEqual(gitService.commitCalls[0], {
+    cwd: 'C:/dev/a', message: 'feat: x', includeUnstaged: true,
+  });
+  const r2 = await api.methods['git/commit']({
+    path: 'C:/dev/a', message: 'fix: y', includeUnstaged: false,
+  });
+  assert.equal(r2.code, 0);
+  assert.equal(gitService.commitCalls[1]?.includeUnstaged, false);
+});
+
+test('git/commit：message 缺失/空白 1001 不进服务层；未注册 1002', async () => {
+  const { api, gitService } = makeApi();
+  for (const params of [{ path: 'C:/dev/a' }, { path: 'C:/dev/a', message: '' }, { path: 'C:/dev/a', message: '  ' }]) {
+    assert.equal((await api.methods['git/commit'](params)).code, 1001);
+  }
+  assert.equal(gitService.commitCalls.length, 0);
+  assert.equal((await api.methods['git/commit']({ path: 'C:/nope', message: 'x' })).code, 1002);
+  assert.equal(gitService.commitCalls.length, 0);
+});
+
+test('git/commit：6006 透传且 data.stderr 附 git 原始错误（与 6001 同形态）', async () => {
+  const { api, gitService } = makeApi();
+  gitService.commitResult = {
+    ok: false, code: 6006, message: 'git 提交失败',
+    stderr: 'Please tell me who you are',
+  };
+  const r = await api.methods['git/commit']({ path: 'C:/dev/a', message: 'feat: x' });
+  assert.equal(r.code, 6006);
+  assert.deepEqual(r.data, { stderr: 'Please tell me who you are' });
+});
+
+test('git/push：成功透传 branch+remote；6007 附 data.stderr 且弹窗语义由 UI 承接', async () => {
+  const { api, gitService } = makeApi();
+  const r = await api.methods['git/push']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, { branch: 'main', remote: 'origin' });
+  gitService.pushResult = {
+    ok: false, code: 6007, message: 'git 推送失败',
+    stderr: '! [rejected] main -> main (fetch first)',
+  };
+  const r2 = await api.methods['git/push']({ path: 'C:/dev/a' });
+  assert.equal(r2.code, 6007);
+  assert.deepEqual(r2.data, { stderr: '! [rejected] main -> main (fetch first)' });
+});
+
+test('git/push：path 缺失 1001；未注册 1002；抛错 5000', async () => {
+  const { api, gitService } = makeApi();
+  assert.equal((await api.methods['git/push']({})).code, 1001);
+  assert.equal((await api.methods['git/push']({ path: 'C:/nope' })).code, 1002);
+  gitService.pushCalls.push = () => {
+    throw new Error('boom');
+  };
+  assert.equal((await api.methods['git/push']({ path: 'C:/dev/a' })).code, 5000);
 });

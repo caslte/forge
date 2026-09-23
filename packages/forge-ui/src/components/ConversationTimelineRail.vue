@@ -202,3 +202,12 @@ onUnmounted(() => {
   outline-offset: -1px;
 }
 </style>
+
+<!-- 暗色 --ring ≈ oklch 0.78，2px 实线外圈在深底上太刺；压到 55% mix。
+     ponytail: 想再亮改 65、再压改 45；light 不动。 -->
+<style>
+:root[data-theme='dark'] .history-rail-item:focus-visible {
+  outline-color: color-mix(in oklab, var(--ring) 55%, transparent);
+}
+</style>
+

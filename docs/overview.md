@@ -54,13 +54,15 @@
 | 07 | 版本更新与安装包 | 设置页「版本更新」分区（已实现）；Windows 安装包、预装推荐组件、应用自更新与引擎-插件联动更新（待开发） | prd/07_installer_update.md | PRD 已确认 |
 | 08 | UI 国际化（中/英） | App 界面文案中英切换（自研轻量 composable，仅 UI 静态文案，主进程零改动） | prd/08_ui_i18n.md | 已完成（2026-09-22 交付） |
 | 09 | Skill 管理 | 全局+项目级 skill 列表、导入文件夹、模板新建、删除 | prd/09_skill_management.md | 开发中（代码+单测+mock 链路完成，真机验收待确认） |
+| 10 | 内嵌终端 | 底部面板多 tab 交互式终端（xterm.js+node-pty），新 tab cwd 自动跟随当前会话项目 | prd/10_embedded_terminal.md | PRD 已确认（demo 验收通过 2026-09-23；node-pty spike 已过，待开工） |
+| 11 | Git 提交与推送 | 提交或推送弹窗（全量语义+未暂存勾选）、AI 生成提交说明（单次 API 调用）、push 失败 stderr 回显 | prd/11_git_commit_push.md | 代码交付（后端 4 RPC+单测、前端弹窗+mock 链路 2026-09-23，Electron 真机验收待确认） |
 
 ### 配套设计文档
 
 | 类型 | 路径 | 状态 |
 |---|---|---|
 | DB（forge 自有存储） | db/forge-store/schema.md | 已确认 |
-| API（forge-core 接口契约） | api/index.md + api/01~07, 09_skill.md | 已确认 |
+| API（forge-core 接口契约） | api/index.md + api/01~07, 09_skill.md, 11_git_commit_push.md | 已确认 |
 | 测试设计 | [test/index.md](test/index.md) + 各模块 coverage-matrix.md | 已确认 |
 
 ## 六、核心业务流程

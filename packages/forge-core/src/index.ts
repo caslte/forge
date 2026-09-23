@@ -32,6 +32,13 @@ export type {
   GitResult,
   SwitchBranchData,
   SwitchResult,
+  GitStatusInfo,
+  CommitData,
+  CommitResult,
+  PushData,
+  PushResult,
+  CommitDiffContext,
+  GitWriteResult,
 } from './git/gitService.ts';
 
 // Git RPC 方法层（wu-01-project-git-core）

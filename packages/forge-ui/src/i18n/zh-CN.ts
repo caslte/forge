@@ -13,6 +13,7 @@ import { zhSettings } from './domains/settings.ts';
 import { zhProject } from './domains/project.ts';
 import { zhPanels } from './domains/panels.ts';
 import { zhSkills } from './domains/skills.ts';
+import { zhGit } from './domains/git.ts';
 
 export const zhCN = {
   ...zhCommon,
@@ -25,6 +26,7 @@ export const zhCN = {
   ...zhProject,
   ...zhPanels,
   ...zhSkills,
+  ...zhGit,
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

@@ -34,6 +34,11 @@ export type ForgeMethod =
   // git（wu-02）
   | 'git/getBranchInfo'
   | 'git/switchBranch'
+  // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
+  | 'git/getStatus'
+  | 'git/commit'
+  | 'git/push'
+  | 'git/generateCommitMessage'
   // session（02）
   | 'session/createSession'
   | 'session/querySessionList'

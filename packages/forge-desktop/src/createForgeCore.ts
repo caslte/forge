@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ForgeStore,
+  normalizeProjectPath,
   ProjectService,
   createProjectApi,
   createGitApi,
@@ -66,6 +67,7 @@ import {
   type AppUpdaterPort,
 } from './pi/appUpdater.ts';
 import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
+import { createCommitMessageMethods } from './git/commitMessageService.ts';
 import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
@@ -155,7 +157,9 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   const projectApi = createProjectApi(projectService, eventBus);
 
   // git（wu-02）：与 project 共享同一事件汇，switchBranch 分支变化经 eventBus 转发渲染进程
-  const gitApi = createGitApi({ gitService: new GitService(), projectService, events: eventBus });
+  // gitService 提升为共享实例：gitApi（查询/切换）与 generateCommitMessage（diff 收集）复用
+  const gitService = new GitService();
+  const gitApi = createGitApi({ gitService, projectService, events: eventBus });
 
   // conversation adapter 先行声明（sessionService 删除钩子闭包引用；实际初始化在下方）
   let conversationAdapter: PiConversationAdapter;
@@ -499,6 +503,69 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // model（05）：复用共享 ModelService（真实 pi models.json 双向同步；测试可注入 mock）
   const modelApi = createModelApi(modelService, eventBus);
 
+  // generateCommitMessage（模块 11 GC-F05）：单次 chat/completions 调用（不起 agent）。
+  // provider 解析口径：会话模型（session→global 回退在 getSessionModel 内）→ 缺省退
+  // 全局默认模型 → models.json 归属 provider → apiKey 明文（queryProviderList 已经
+  // keychain.readKey 尝试解析 $VAR/!cmd 引用；仍为引用时按 $VAR 兜底查一次进程环境变量，
+  // 未命中即视为无法解析）。错误码 6008（git 域顺延）；apiKey 绝不入日志。
+  const commitMessageMethods = createCommitMessageMethods({
+    gitService,
+    isProjectRegistered: (targetPath) => {
+      const r = projectService.queryProjectList();
+      if (!r.ok) {
+        return false;
+      }
+      let key: string;
+      try {
+        key = normalizeProjectPath(targetPath);
+      } catch {
+        key = path.resolve(targetPath);
+      }
+      return r.data.projects.some((p) => p.path === key);
+    },
+    resolveChatTarget: async (sessionId) => {
+      let model: string | null = null;
+      if (sessionId !== null) {
+        const r = await modelService.getSessionModel(sessionId);
+        if (r.ok) {
+          model = r.data.model;
+        }
+      }
+      if (model === null) {
+        const r = await modelService.queryModels();
+        if (r.ok) {
+          model = r.data.defaultModel;
+        }
+      }
+      if (model === null || model.trim() === '') {
+        return { ok: false, code: 6008, message: '未配置模型：请先在设置页配置 provider 与默认模型' };
+      }
+      const pr = await modelService.queryProviderList();
+      if (!pr.ok) {
+        return { ok: false, code: 6008, message: pr.message };
+      }
+      const provider = pr.data.providers.find((p) => p.models.includes(model));
+      if (provider === undefined) {
+        return { ok: false, code: 6008, message: `模型未归属任何已配置 provider: ${model}` };
+      }
+      if (provider.baseUrl === null || provider.baseUrl.trim() === '') {
+        return { ok: false, code: 6008, message: `provider「${provider.id}」缺少 baseUrl，无法调用` };
+      }
+      if (!provider.type.startsWith('openai')) {
+        return { ok: false, code: 6008, message: `暂不支持 ${provider.type} 协议的 AI 生成提交说明` };
+      }
+      let apiKey = provider.apiKey ?? null;
+      const envRef = apiKey !== null ? /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(apiKey) : null;
+      if (envRef !== null) {
+        apiKey = process.env[envRef[1] as string] ?? null;
+      }
+      if (apiKey === null || apiKey === '' || apiKey.startsWith('!')) {
+        return { ok: false, code: 6008, message: 'API Key 无法解析，请在设置页重新保存该 provider' };
+      }
+      return { ok: true, target: { baseUrl: provider.baseUrl, apiKey, model } };
+    },
+  });
+
   // wu-06：subagent/queryList | subagent/stop | subagent/clearFinished RPC 方法映射
   // 三个方法都委托 SubagentService，返回信封与错误码（1001/1002/5000）严格按 service 输出。
   // 取消 sendMessage 末尾的重复 pushStatus：onStatusChange 回调已处理状态推送（原 completionHandler
@@ -666,6 +733,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...conversationApi.methods,
     ...toolApi.methods,
     ...modelApi.methods,
+    ...commitMessageMethods,
     ...subagentMethods,
     ...skillMethods,
     ...piMethods,

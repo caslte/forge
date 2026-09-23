@@ -36,6 +36,35 @@ export interface GitBranchInfo {
   detached: boolean;
 }
 
+/** git/getStatus 响应 data（GC-S11，docs/api/11_git_commit_push.md §1） */
+export interface GitStatusInfo {
+  isGitRepo: boolean;
+  /** 当前分支；detached 时为短 SHA；null=无法解析（极端仓库态） */
+  branch: string | null;
+  detached: boolean;
+  /** 变更文件数（含未跟踪） */
+  fileCount: number;
+  /** 行数统计（numstat 累加；二进制文件计 0） */
+  added: number;
+  removed: number;
+  /** 暂存区是否为空（X 列全空） */
+  stagedEmpty: boolean;
+  /** 仓库是否已有 HEAD（新仓库 false） */
+  hasHead: boolean;
+}
+
+/** git/commit 成功 data（docs/api/11_git_commit_push.md §2） */
+export interface CommitData {
+  shortHash: string;
+  fileCount: number;
+}
+
+/** git/push 成功 data（docs/api/11_git_commit_push.md §3） */
+export interface PushData {
+  branch: string;
+  remote: string;
+}
+
 /** 输入框项目选择器描述（SM-S01 v3.21）：单视图/多窗口均传入；无归属项目（currentPath=null）则不渲染 */
 export interface ProjectPickerDescriptor {
   /** draft=新建会话可选归属；session=会话中只读信息（归属不可换） */

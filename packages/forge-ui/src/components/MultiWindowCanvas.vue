@@ -640,6 +640,12 @@ defineExpose({ arrangeAuto, clearAll });
   background: var(--muted);
   color: var(--brand);
 }
+
+/* 暗色 --brand 接近纯白，图标瞬间变纯白太亮；保留 hover 反馈但降到 70% mix。
+   light 不动。ponytail: 想再亮改 80、再压改 60。 */
+:root[data-theme='dark'] .mw-icon-btn:hover {
+  color: color-mix(in oklab, var(--brand) 70%, transparent);
+}
 .mw-icon-btn svg {
   width: 13px;
   height: 13px;

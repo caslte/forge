@@ -51,6 +51,11 @@ export type ForgeMethod =
   | 'skill/deleteSkill'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
+  // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
+  | 'git/getStatus'
+  | 'git/commit'
+  | 'git/push'
+  | 'git/generateCommitMessage'
   | 'pi/getInfo'
   | 'pi/updatePlugins'
   | 'app/getUpdateDebug'
