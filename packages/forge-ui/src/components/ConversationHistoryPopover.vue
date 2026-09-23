@@ -14,6 +14,9 @@
  */
 import { computed, ref } from 'vue';
 import type { RoundSnapshot } from '../utils/conversationTimeline';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 一轮对话快照（弹出时刻快照，流式期间内容不刷新） */
@@ -39,7 +42,9 @@ const rootEl = ref<HTMLElement | null>(null);
 defineExpose({ rootEl });
 
 /** 无助手回复时的状态提示文案 */
-const statusText = computed(() => (props.running ? '运行中' : '等待回复'));
+const statusText = computed(() =>
+  props.running ? t('chat.popoverRunning') : t('chat.popoverAwaitingReply'),
+);
 </script>
 
 <template>
@@ -53,12 +58,12 @@ const statusText = computed(() => (props.running ? '运行中' : '等待回复')
   >
     <div class="hp-body">
       <section class="hp-section">
-        <div class="hp-label">用户</div>
+        <div class="hp-label">{{ t('chat.popoverUserLabel') }}</div>
         <!-- 纯文本插值：Markdown 符号原样显示，绝不 v-html -->
         <p class="hp-text" data-testid="history-popover-user">{{ snapshot.userText }}</p>
       </section>
       <section class="hp-section">
-        <div class="hp-label">助手</div>
+        <div class="hp-label">{{ t('chat.popoverAssistantLabel') }}</div>
         <p
           v-if="snapshot.assistantText !== null"
           class="hp-text"

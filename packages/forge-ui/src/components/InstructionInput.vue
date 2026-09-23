@@ -17,6 +17,7 @@ import { prependQueuedText } from '../utils/prependQueuedText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
+import { useI18n } from '../i18n/index.ts';
 import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
 import ImageLightbox from './ImageLightbox.vue';
 import BranchBadge from './BranchBadge.vue';
@@ -181,6 +182,7 @@ let slashFetching = false;
 let slashLoadGen = 0;
 
 const { success: toastSuccess, error: toastError } = useToast();
+const { t } = useI18n();
 const { markCompacting, markDone, clear: clearCompactBanner } = useCompactBanner();
 
 // ===== MP-S05：思考级别切换器（模型选择旁紧凑下拉；非推理模型隐藏入口） =====
@@ -265,12 +267,12 @@ const canSend = computed(
  */
 const compactDisabled = computed(() => compacting.value || autoCompacting.value || isStreaming.value);
 const compactLabel = computed(() =>
-  compacting.value || autoCompacting.value ? '压缩中…' : '压缩',
+  compacting.value || autoCompacting.value ? t('input.compacting') : t('input.compact'),
 );
 const compactTitle = computed(() => {
-  if (compacting.value || autoCompacting.value) return '压缩中…';
-  if (isStreaming.value) return '回答生成中，暂不支持压缩';
-  return '压缩上下文';
+  if (compacting.value || autoCompacting.value) return t('input.compacting');
+  if (isStreaming.value) return t('input.compact.streamingTitle');
+  return t('input.compact.context');
 });
 
 /**
@@ -281,10 +283,10 @@ function formatCompactToast(r: ConversationCompactResult): string {
   const pct = compactReductionPct(r.tokensBefore, r.tokensAfter);
   if (typeof r.tokensBefore === 'number' && typeof r.tokensAfter === 'number') {
     return pct !== null
-      ? `压缩完成：${r.tokensBefore} → ${r.tokensAfter} tokens（减少 ${pct}%）`
-      : `压缩完成：${r.tokensBefore} → ${r.tokensAfter} tokens`;
+      ? t('input.compact.doneTokensPct', { before: r.tokensBefore, after: r.tokensAfter, pct })
+      : t('input.compact.doneTokens', { before: r.tokensBefore, after: r.tokensAfter });
   }
-  return '压缩完成：上下文已更新';
+  return t('input.compact.done');
 }
 
 /** 拉取当前会话上下文用量（P3-A） */
@@ -313,7 +315,7 @@ async function onCompact(): Promise<void> {
     });
     const r = res.result;
     if (!r.ok) {
-      toastError(r.message ?? '压缩失败');
+      toastError(r.message ?? t('input.compact.failed'));
       clearCompactBanner(props.sessionId);
       return;
     }
@@ -335,7 +337,7 @@ async function onCompact(): Promise<void> {
     toastSuccess(formatCompactToast(r));
     markDone(props.sessionId, r.tokensBefore ?? null, r.tokensAfter ?? null);
   } catch (e) {
-    toastError(e instanceof Error ? e.message : '压缩失败');
+    toastError(e instanceof Error ? e.message : t('input.compact.failed'));
     clearCompactBanner(props.sessionId);
   } finally {
     compacting.value = false;
@@ -715,17 +717,17 @@ function onKeydown(ev: KeyboardEvent): void {
 
 function onSend(): void {
   if (!canSend.value) return;
-  const t = text.value.trim();
+  const trimmed = text.value.trim();
   const atts = attachments.value;
   // CV-S09 队列上限：忙时入队前校验（软校验，双窗口极端并发可能超 1 条）
   if (isStreaming.value && queueList.value.length >= QUEUE_MAX) {
-    toastError(`待发送队列已满（最多 ${QUEUE_MAX} 条），请稍候`);
+    toastError(t('input.queueFull', { max: QUEUE_MAX }));
     return;
   }
   // 密钥嗅探确认：flagged 附件（路径对应文件含疑似凭据）出域前需确认
   const flagged = atts.filter((a) => a.flagged);
   if (flagged.length > 0 && !window.confirm(
-    `检测到疑似密钥/凭据：\n${flagged.map((a) => a.name).join('、')}\n\n附件会被模型读取并发送给模型服务商，确认仍要附带吗？`,
+    t('input.secretConfirm', { names: flagged.map((a) => a.name).join('、') }),
   )) {
     return;
   }
@@ -734,11 +736,11 @@ function onSend(): void {
   attachments.value = [];
   attachError.value = null;
   // 发送成功后入栈输入历史（未跳过验证 / 文本非空 / 有 sessionId）
-  pushHistory(t);
+  pushHistory(trimmed);
   nextTick(autoGrow);
   // 附件行追加在正文后（换行分隔），@ 前缀是附件协议标记：@开头=附件，
   // 手敲裸路径=正文，展示层零歧义；模型据此自行 read，纯附件消息就是纯附件行
-  emit('send', paths.length > 0 ? `${t}\n${paths.map((p) => `@${p}`).join('\n')}` : t);
+  emit('send', paths.length > 0 ? `${trimmed}\n${paths.map((p) => `@${p}`).join('\n')}` : trimmed);
 }
 
 /** 把一批路径加入待发区（格式白名单 + 主进程密钥嗅探后返回标记）；返回是否全部成功 */
@@ -748,14 +750,16 @@ async function addPaths(paths: string[]): Promise<boolean> {
   const accepted = paths.filter((p) => isAllowedAttachmentPath(p));
   const rejected = paths.filter((p) => !isAllowedAttachmentPath(p));
   if (rejected.length > 0) {
+    const names = rejected.slice(0, 3).map(baseName).join('、');
     showAttachError(
-      `不支持的文件格式：${rejected.slice(0, 3).map(baseName).join('、')}${rejected.length > 3 ? ` 等 ${rejected.length} 个` : ''}`,
+      t('input.unsupportedFormat', { names }) +
+        (rejected.length > 3 ? t('input.unsupportedFormatMore', { count: rejected.length }) : ''),
     );
   }
   if (accepted.length === 0) return false;
   const all = [...attachments.value, ...accepted];
   if (all.length > MAX_ATTACHMENTS) {
-    showAttachError(`附件最多 ${MAX_ATTACHMENTS} 个，已跳过`);
+    showAttachError(t('input.attach.maxSkipped', { max: MAX_ATTACHMENTS }));
     return false;
   }
   try {
@@ -770,7 +774,7 @@ async function addPaths(paths: string[]): Promise<boolean> {
     attachError.value = null;
     return true;
   } catch (e) {
-    showAttachError(e instanceof Error ? e.message : '附件嗅探失败');
+    showAttachError(e instanceof Error ? e.message : t('input.attach.scanFailed'));
     return false;
   }
 }
@@ -783,7 +787,7 @@ async function pickAttachments(): Promise<void> {
     if (files.length === 0) return;
     await addPaths(files);
   } catch (e) {
-    showAttachError(e instanceof Error ? e.message : '读取附件失败');
+    showAttachError(e instanceof Error ? e.message : t('input.attach.readFailed'));
   }
 }
 
@@ -804,10 +808,10 @@ function blobToBase64(blob: Blob): Promise<string> {
       if (typeof r === 'string' && r.includes(',')) {
         resolve(r.slice(r.indexOf(',') + 1));
       } else {
-        reject(new Error('图片读取失败'));
+        reject(new Error(t('input.image.readFailed')));
       }
     };
-    reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
+    reader.onerror = () => reject(reader.error ?? new Error(t('input.image.readFailed')));
     reader.readAsDataURL(blob);
   });
 }
@@ -824,7 +828,7 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
   }
   // 无盘文件：仅支持图片（剪贴板截图），先落盘临时文件；其余格式拒绝并提示
   if (!f.type.startsWith('image/')) {
-    showAttachError(`不支持的文件格式：${f.name || '未知文件'}`);
+    showAttachError(t('input.unsupportedFormat', { names: f.name || t('input.unknownFile') }));
     return;
   }
   const mimeType = f.type || 'image/png';
@@ -832,7 +836,7 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
   const data = await blobToBase64(f);
   const saved = await window.forge.file.savePasteImage(data, ext);
   if (!saved) {
-    showAttachError('截图落盘失败，已跳过');
+    showAttachError(t('input.screenshotSaveFailed'));
     return;
   }
   // base64 已在手，缩略图直接本地拼 data URL，不再走 IPC 回读
@@ -868,7 +872,7 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
       try {
         await collectFile(f, diskPaths);
       } catch (e) {
-        showAttachError(e instanceof Error ? e.message : '图片读取失败');
+        showAttachError(e instanceof Error ? e.message : t('input.image.readFailed'));
       }
     }
     await addPaths(diskPaths);
@@ -892,12 +896,12 @@ async function convertPastedTextToFile(pastedText: string): Promise<void> {
   }
   if (!saved) {
     insertTextAtCaret(pastedText);
-    showAttachError('超长文本转附件失败，已直接粘贴');
+    showAttachError(t('input.pasteConvertFailed'));
     return;
   }
   const ok = await addPaths([saved.path]);
   if (!ok) {
-    showAttachError('附件已满或格式受限，超长文本未转存，请分段粘贴');
+    showAttachError(t('input.pasteNotSaved'));
   }
 }
 
@@ -948,7 +952,7 @@ async function onDrop(ev: DragEvent): Promise<void> {
     try {
       await collectFile(f, diskPaths);
     } catch (e) {
-      showAttachError(e instanceof Error ? e.message : '图片读取失败');
+      showAttachError(e instanceof Error ? e.message : t('input.image.readFailed'));
     }
   }
   await addPaths(diskPaths);
@@ -1240,7 +1244,7 @@ watch(
     <!-- 上边沿：透明拖拽带，悬停显示 row-resize，可拖拽调整整个输入框高度 -->
     <div
       class="cb-resize"
-      title="拖动调整输入框高度"
+      :title="t('input.resizeHint')"
       @pointerdown="onResizeDown"
       @pointermove="onResizeMove"
       @pointerup="onResizeUp"
@@ -1261,7 +1265,7 @@ watch(
             draggable="false"
             @click="lightboxSrc = att.dataUrl ?? null"
           />
-          <button class="attach-remove" title="移除附件" @click.stop="removeAttachment(i)">
+          <button class="attach-remove" :title="t('input.attach.remove')" @click.stop="removeAttachment(i)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -1280,8 +1284,8 @@ watch(
               <polyline points="14 2 14 8 20 8" />
             </svg>
           </span>
-          <span class="attach-name" :title="att.flagged ? `${att.name}（疑似含密钥）` : att.name">{{ att.name }}</span>
-          <button class="attach-remove" title="移除附件" @click="removeAttachment(i)">
+          <span class="attach-name" :title="att.flagged ? t('input.attach.flaggedName', { name: att.name }) : att.name">{{ att.name }}</span>
+          <button class="attach-remove" :title="t('input.attach.remove')" @click="removeAttachment(i)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -1296,7 +1300,11 @@ watch(
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? `${spinnerFrame} 助手回复中，Enter 排队发送…` : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '今天聊点啥，/ 查看命令，@ 找文件，Enter 发送，Ctrl+V 粘贴截图'"
+      :placeholder="isStreaming
+        ? t('input.placeholder.streaming', { frame: spinnerFrame })
+        : compacting || autoCompacting
+          ? t('input.placeholder.compacting')
+          : t('input.placeholder.default')"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"
@@ -1315,7 +1323,7 @@ watch(
       class="slash-menu"
       @mousedown.prevent
     >
-      <div v-if="commands.length === 0" class="slash-empty">无可用命令</div>
+      <div v-if="commands.length === 0" class="slash-empty">{{ t('input.slash.empty') }}</div>
       <template v-else>
         <button
           v-for="(item, i) in filteredCommands"
@@ -1331,7 +1339,7 @@ watch(
           </span>
           <span v-if="item.description" class="slash-desc">{{ item.description }}</span>
         </button>
-        <div v-if="filteredCommands.length === 0" class="slash-empty">无匹配命令</div>
+        <div v-if="filteredCommands.length === 0" class="slash-empty">{{ t('input.slash.noMatch') }}</div>
       </template>
     </div>
 
@@ -1341,7 +1349,7 @@ watch(
       class="slash-menu at-menu"
       @mousedown.prevent
     >
-      <div v-if="atFiltered.length === 0" class="slash-empty">无匹配文件</div>
+      <div v-if="atFiltered.length === 0" class="slash-empty">{{ t('input.at.noMatch') }}</div>
       <button
         v-for="(p, i) in atFiltered"
         :key="p"
@@ -1375,14 +1383,14 @@ watch(
         <button
           class="meta-link"
           :disabled="inputLocked"
-          data-tooltip="添加附件（图片 / 文本 / Office 文档）"
-          aria-label="附件"
+          :data-tooltip="t('input.attach.tooltip')"
+          :aria-label="t('input.attach.label')"
           @click="pickAttachments"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
-          <span>附件</span>
+          <span>{{ t('input.attach.label') }}</span>
         </button>
 
         <!-- 模型：点击字样弹浮窗切换 -->
@@ -1390,13 +1398,13 @@ watch(
           <button
             class="meta-link"
             type="button"
-            data-tooltip="会话模型 · 点击切换"
+            :data-tooltip="t('input.model.tooltip')"
             @click.stop="toggleModelMenu"
           >
-            <span>{{ currentModel ?? '选择模型' }}</span>
+            <span>{{ currentModel ?? t('input.model.select') }}</span>
           </button>
           <div v-if="modelMenuOpen" class="model-menu">
-            <div class="menu-hint">本会话生效模型</div>
+            <div class="menu-hint">{{ t('input.model.hint') }}</div>
             <button
               v-for="m in models"
               :key="m"
@@ -1418,7 +1426,7 @@ watch(
             class="meta-link"
             :class="{ 'is-max': displayLevel === 'max' }"
             type="button"
-            data-tooltip="思考级别 · 点击切换"
+            :data-tooltip="t('input.level.tooltip')"
             @click.stop="toggleLevelMenu"
           >
             <span>{{ displayLevel ?? 'off' }}</span>
@@ -1444,13 +1452,13 @@ watch(
           <button
             class="queue-badge"
             type="button"
-            data-tooltip="待发送队列"
+            :data-tooltip="t('input.queue.tooltip')"
             @click.stop="queuePanelOpen = !queuePanelOpen"
           >
-            待发送 {{ queueList.length }}
+            {{ t('input.queue.badge', { count: queueList.length }) }}
           </button>
           <div v-if="queuePanelOpen" class="queue-panel">
-            <div class="menu-hint">待发送队列（忙完自动按序发出）</div>
+            <div class="menu-hint">{{ t('input.queue.hint') }}</div>
             <div v-for="(item, i) in queueList" :key="i" class="queue-item">{{ item }}</div>
           </div>
         </div>
@@ -1460,8 +1468,8 @@ watch(
           v-if="!isStreaming"
           class="send-btn"
           :disabled="!canSend"
-          aria-label="发送"
-          data-tooltip="发送（Enter）"
+          :aria-label="t('input.send.aria')"
+          :data-tooltip="t('input.send.tooltip')"
           @click="onSend"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1472,8 +1480,8 @@ watch(
         <button
           v-if="isStreaming && canSend"
           class="send-btn queue-send"
-          aria-label="排队发送"
-          data-tooltip="排队发送（Enter）"
+          :aria-label="t('input.queueSend.aria')"
+          :data-tooltip="t('input.queueSend.tooltip')"
           @click="onSend"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1481,7 +1489,7 @@ watch(
             <polygon points="22 2 15 22 11 13 2 9 22 2" />
           </svg>
         </button>
-        <button v-if="isStreaming" class="cancel-btn" aria-label="停止" data-tooltip="停止（清空待发送队列并回填输入框）" @click="onCancel">
+        <button v-if="isStreaming" class="cancel-btn" :aria-label="t('input.stop.aria')" :data-tooltip="t('input.stop.tooltip')" @click="onCancel">
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
         </button>
       </div>
@@ -1499,7 +1507,7 @@ watch(
         type="button"
         class="meta-link proj-pill"
         :class="{ 'proj-pill-static': projectPicker.mode === 'session' }"
-        :data-tooltip="projectPicker.mode === 'draft' ? '选择新会话归属项目' : '会话归属项目'"
+        :data-tooltip="projectPicker.mode === 'draft' ? t('input.project.draftTooltip') : t('input.project.sessionTooltip')"
         @click="toggleProjMenu"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1509,7 +1517,7 @@ watch(
         <span>{{ projectPicker.currentName }}</span>
       </button>
       <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
-        <div class="menu-hint">新会话归属项目</div>
+        <div class="menu-hint">{{ t('input.project.hint') }}</div>
         <button
           v-for="it in projectPicker.items"
           :key="it.path"
@@ -1528,11 +1536,11 @@ watch(
           <span
             class="proj-item-del"
             :class="{ confirming: projDeleteConfirmPath === it.path }"
-            :title="projDeleteConfirmPath === it.path ? '再次点击确认移除' : '移除项目（连同其下会话一并删除，源文件保留）'"
+            :title="projDeleteConfirmPath === it.path ? t('input.project.removeConfirmTooltip') : t('input.project.removeTooltip')"
             role="button"
             @click.stop.prevent="onProjDelete(it.path)"
           >
-            <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">确认</span>
+            <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">{{ t('common.confirm') }}</span>
             <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>
@@ -1543,7 +1551,7 @@ watch(
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
           </svg>
-          <span class="proj-item-main"><span class="proj-item-name">打开项目…</span></span>
+          <span class="proj-item-main"><span class="proj-item-name">{{ t('input.project.open') }}</span></span>
         </button>
       </div>
       <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
@@ -1555,8 +1563,8 @@ watch(
       <div
         class="ctx"
         :class="{ 'ctx-warn': usageWarning }"
-        :title="usageError || '上下文用量，接近上限可压缩'"
-        data-tooltip="上下文用量"
+        :title="usageError || t('input.ctx.hint')"
+        :data-tooltip="t('input.ctx.tooltip')"
       >
         <span class="ctx-num">{{ usageLabel }}</span>
         <div class="ctx-track">

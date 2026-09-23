@@ -18,6 +18,7 @@ import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import logoMain from '../assets/logo-main.png';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 import { formatElapsed } from '../utils/formatElapsed.ts';
+import { useI18n } from '../i18n/index.ts';
 
 /**
  * 对话主视图。
@@ -26,6 +27,8 @@ import { formatElapsed } from '../utils/formatElapsed.ts';
  *
  * 其他职责与原文档一致。
  */
+const { t } = useI18n();
+
 const props = defineProps<{
   /** 草稿态（新建会话尚未发送首条消息）时为 null；发送首条消息时先创建会话再发送 */
   sessionId: string | null;
@@ -204,7 +207,7 @@ function onModelChange(model: string): void {
 const switchBanner = ref<string | null>(null);
 let switchBannerTimer: ReturnType<typeof setTimeout> | null = null;
 function showSwitchBanner(model: string): void {
-  switchBanner.value = `已切换模型 ${model}`;
+  switchBanner.value = t('chat.modelSwitched', { model });
   // 横幅渲染在对话流底部，立即滚动到底部，避免需要手动下拉才能看到
   autoScrollToBottom();
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
@@ -616,7 +619,7 @@ onUnmounted(() => {
             <span class="loading-dot"></span>
             <span class="loading-dot"></span>
             <span class="loading-dot"></span>
-            <span class="loading-text">加载历史消息</span>
+            <span class="loading-text">{{ t('chat.loadHistoryMessages') }}</span>
           </div>
           <!-- 消息流：连续 ≥2 的 tool 聚为可折叠组。每个展示项独立组件 + 稳定 key，
                流式聚合边界变化（单条 ↔ 组）只在组件内部切换形态，避免 patch 错位 -->
@@ -648,7 +651,7 @@ onUnmounted(() => {
             <span
               class="cb-text"
               :class="{ 'thinking-shimmer': compactBanner.phase === 'compacting' }"
-            >{{ compactBanner.phase === 'compacting' ? '正在压缩上下文' : compactBanner.text }}</span>
+            >{{ compactBanner.phase === 'compacting' ? t('chat.compactingContext') : compactBanner.text }}</span>
             <span class="cb-line"></span>
           </div>
 
@@ -685,7 +688,7 @@ onUnmounted(() => {
             <line x1="12" y1="5" x2="12" y2="19" />
             <polyline points="5 12 12 19 19 12" />
           </svg>
-          <span>回到底部</span>
+          <span>{{ t('chat.backToBottom') }}</span>
         </button>
       </Transition>
     </div>
@@ -739,7 +742,7 @@ onUnmounted(() => {
            直接移除，不走 260ms 离场淡出——否则淡出残影会与「加载历史消息」同屏。
            正常发送首条消息时 loadingHistory 为 false，过渡保留 -->
       <Transition name="conv-hero" :css="!loadingHistory">
-        <div v-if="isEmpty" ref="heroRef" class="conv-hero" aria-label="新建会话：输入任务开始对话">
+        <div v-if="isEmpty" ref="heroRef" class="conv-hero" :aria-label="t('chat.heroAriaLabel')">
           <img class="conv-hero-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
         </div>
       </Transition>
@@ -782,12 +785,12 @@ onUnmounted(() => {
 
     <!-- 单个子 agent 终止二次确认弹窗（不可逆） -->
     <div v-if="pendingStopAgentId" class="stop-confirm-overlay" @click.self="cancelSubagentStop">
-      <div class="stop-confirm" role="alertdialog" aria-modal="true" aria-label="确认终止子 Agent">
-        <div class="stop-confirm-title">确认终止该子 Agent？</div>
-        <div class="stop-confirm-desc">该操作不可逆。终止后子 Agent 将转“已终止”状态，未完成的工作不会保留。</div>
+      <div class="stop-confirm" role="alertdialog" aria-modal="true" :aria-label="t('chat.stopSubagentAriaLabel')">
+        <div class="stop-confirm-title">{{ t('chat.stopSubagentTitle') }}</div>
+        <div class="stop-confirm-desc">{{ t('chat.stopSubagentDesc') }}</div>
         <div class="stop-confirm-actions">
-          <button type="button" class="stop-confirm-cancel" @click="cancelSubagentStop">取消</button>
-          <button type="button" class="stop-confirm-confirm" @click="confirmSubagentStop">确认终止</button>
+          <button type="button" class="stop-confirm-cancel" @click="cancelSubagentStop">{{ t('common.cancel') }}</button>
+          <button type="button" class="stop-confirm-confirm" @click="confirmSubagentStop">{{ t('chat.stopSubagentConfirm') }}</button>
         </div>
       </div>
     </div>

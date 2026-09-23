@@ -3,6 +3,9 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
 import { sortSessionsByActivation, projectTagOf } from '../utils/sessionView';
+import { useI18n, type MessageKey } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   projects: ProjectItem[];
@@ -63,11 +66,11 @@ const draggedPath = ref<string | null>(null);
 const dragOverPath = ref<string | null>(null);
 const dragOverPos = ref<'before' | 'after' | null>(null);
 
-const statusTitleMap: Record<SessionStatus, string> = {
-  idle: '空闲',
-  streaming: '运行中',
-  error: '出错',
-  done: '已完成',
+const statusTitleMap: Record<SessionStatus, MessageKey> = {
+  idle: 'project.statusIdle',
+  streaming: 'project.statusStreaming',
+  error: 'project.statusError',
+  done: 'project.statusDone',
 };
 
 type StatusTone = 'streaming' | 'error' | 'done' | 'none';
@@ -80,7 +83,7 @@ function projectDisplayName(p: ProjectItem): string {
 }
 
 function sessionDisplayName(s: SessionItem): string {
-  return s.alias || '会话 ' + s.sessionId.slice(-6);
+  return s.alias || t('project.sessionName', { id: s.sessionId.slice(-6) });
 }
 
 // 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序
@@ -171,7 +174,7 @@ function sessionTone(s: SessionItem): StatusTone {
 }
 
 function statusTitle(s: SessionItem): string {
-  return statusTitleMap[s.status];
+  return t(statusTitleMap[s.status]);
 }
 
 function isExpanded(path: string): boolean {
@@ -461,7 +464,7 @@ onUnmounted(() => {
   <div class="project-tree">
     <!-- 任务视角（SM-S06）：平摊全部会话，行尾项目 tag，排序与项目视角同规则 -->
     <template v-if="isTaskView">
-      <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">暂无会话</div>
+      <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noSessions') }}</div>
       <div v-else class="tree-section task">
         <div
           v-for="session in visibleTaskSessions"
@@ -491,7 +494,7 @@ onUnmounted(() => {
               v-model="renameSessionValue"
               class="tree-rename-input"
               type="text"
-              placeholder="会话别名"
+              :placeholder="t('project.sessionAlias')"
               @click.stop
               @dblclick.stop
               @keydown.enter.prevent="commitRenameSession()"
@@ -504,7 +507,7 @@ onUnmounted(() => {
               :title="sessionDisplayName(session)"
               @dblclick.stop="startRenameSession(session)"
             >{{ sessionDisplayName(session) }}</div>
-            <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">已开窗</span>
+            <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
           </div>
 
           <span class="tree-session-proj-tag" :title="session.projectPath">{{ taskProjectTag(session) }}</span>
@@ -514,11 +517,11 @@ onUnmounted(() => {
               type="button"
               class="tree-icon-button danger"
               :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
-              :aria-label="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
-              :data-tooltip="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
+              :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+              :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
               @click.stop="handleDeleteSessionClick(session)"
             >
-              <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">确认</span>
+              <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
               <svg
                 v-else
                 viewBox="0 0 24 24"
@@ -542,14 +545,14 @@ onUnmounted(() => {
           class="tree-session-toggle"
           @click.stop="taskExpanded = !taskExpanded"
         >
-          {{ taskExpanded ? '折叠显示' : `展开显示 ${hiddenTaskCount} 个` }}
+          {{ taskExpanded ? t('project.collapseDisplay') : t('project.expandDisplay', { count: hiddenTaskCount }) }}
         </button>
       </div>
     </template>
 
     <!-- 项目视角（现状）：按项目分组 -->
     <template v-else>
-      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">暂无项目</div>
+      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noProjects') }}</div>
 
     <div v-else class="tree-section" @dragover="onSectionDragOver" @drop="onSectionDrop">
       <div
@@ -577,7 +580,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="tree-arrow"
-            :aria-label="isExpanded(project.path) ? '折叠项目' : '展开项目'"
+            :aria-label="isExpanded(project.path) ? t('project.collapseProject') : t('project.expandProject')"
             @click.stop="toggleExpand(project.path)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -593,7 +596,7 @@ onUnmounted(() => {
               v-model="renameProjectValue"
               class="tree-rename-input"
               type="text"
-              placeholder="项目别名"
+              :placeholder="t('project.projectAlias')"
               @click.stop
               @dblclick.stop
               @keydown.enter.prevent="commitRenameProject()"
@@ -612,8 +615,8 @@ onUnmounted(() => {
             <button
               type="button"
               class="tree-icon-button"
-              aria-label="新建会话"
-              data-tooltip="新建会话"
+              :aria-label="t('project.newSession')"
+              :data-tooltip="t('project.newSession')"
               @click.stop="onCreateSession(project)"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -625,8 +628,8 @@ onUnmounted(() => {
               type="button"
               class="tree-icon-button project-more-trigger"
               :class="{ active: menuOpenPath === project.path }"
-              aria-label="更多操作"
-              data-tooltip="更多操作"
+              :aria-label="t('project.moreActions')"
+              :data-tooltip="t('project.moreActions')"
               @click.stop="openProjectMenu(project, $event)"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -668,7 +671,7 @@ onUnmounted(() => {
                   v-model="renameSessionValue"
                   class="tree-rename-input"
                   type="text"
-                  placeholder="会话别名"
+                  :placeholder="t('project.sessionAlias')"
                   @click.stop
                   @dblclick.stop
                   @keydown.enter.prevent="commitRenameSession()"
@@ -681,7 +684,7 @@ onUnmounted(() => {
                   :title="sessionDisplayName(session)"
                   @dblclick.stop="startRenameSession(session)"
                 >{{ sessionDisplayName(session) }}</div>
-                <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">已开窗</span>
+                <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
               </div>
 
               <div class="tree-node-actions">
@@ -689,11 +692,11 @@ onUnmounted(() => {
                   type="button"
                   class="tree-icon-button danger"
                   :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
-                  :aria-label="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
-                  :data-tooltip="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
+                  :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                  :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
                   @click.stop="handleDeleteSessionClick(session)"
                 >
-                  <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">确认</span>
+                  <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
                   <svg
                     v-else
                     viewBox="0 0 24 24"
@@ -717,10 +720,10 @@ onUnmounted(() => {
               class="tree-session-toggle"
               @click.stop="toggleSessionListExpand(project.path)"
             >
-              {{ expandedSessionLists.has(project.path) ? '折叠显示' : `展开显示 ${hiddenSessionCount(project.path)} 个` }}
+              {{ expandedSessionLists.has(project.path) ? t('project.collapseDisplay') : t('project.expandDisplay', { count: hiddenSessionCount(project.path) }) }}
             </button>
             <div v-else-if="sessionsOf(project.path).length === 0" class="tree-empty tree-empty-inline">
-              暂无会话
+              {{ t('project.noSessions') }}
             </div>
           </div>
         </div>
@@ -742,14 +745,14 @@ onUnmounted(() => {
           <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          打开项目所在目录
+          {{ t('project.openProjectDir') }}
         </button>
         <button type="button" class="project-action-menu-item" @click="onMenuRename">
           <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
-          重命名
+          {{ t('project.rename') }}
         </button>
         <button
           type="button"
@@ -761,7 +764,7 @@ onUnmounted(() => {
             <polyline points="3 6 5 6 21 6" />
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
           </svg>
-          {{ projectDeleteConfirmPath === menuOpenPath ? '确认删除' : '删除项目' }}
+          {{ projectDeleteConfirmPath === menuOpenPath ? t('project.confirmDelete') : t('project.deleteProject') }}
         </button>
       </div>
     </Teleport>

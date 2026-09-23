@@ -11,6 +11,9 @@ import {
 } from '../utils/slashCommand';
 import MermaidBlock from './MermaidBlock.vue';
 import ImageLightbox from './ImageLightbox.vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   message: ConversationMessage;
@@ -249,7 +252,7 @@ const timeLabel = computed(() => {
           v-else
         ><span class="msg-cmd-name is-skill">{{ formatCommandLabel(seg.text) }}</span><span
             class="msg-cmd-tag tag-skill"
-          >技能</span></template></template></div>
+          >{{ t('chat.skillTag') }}</span></template></template></div>
       <div v-else class="msg-content" v-html="bodyHtml"></div>
       <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->
       <div v-if="userParsed.files.length > 0" class="msg-att-files">
@@ -280,7 +283,7 @@ const timeLabel = computed(() => {
       </div>
     </div>
     <div v-if="!streaming && showFooter !== false" class="msg-footer">
-      <button class="msg-copy" :title="copied ? '已复制' : '复制'" @click="copy">
+      <button class="msg-copy" :title="copied ? t('chat.copied') : t('chat.copy')" @click="copy">
         <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="20 6 9 17 4 12" />
         </svg>
@@ -288,7 +291,7 @@ const timeLabel = computed(() => {
           <rect x="9" y="9" width="13" height="13" rx="2" />
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
         </svg>
-        <span>{{ copied ? '已复制' : '' }}</span>
+        <span>{{ copied ? t('chat.copied') : '' }}</span>
       </button>
       <span class="msg-time">{{ timeLabel }}</span>
     </div>

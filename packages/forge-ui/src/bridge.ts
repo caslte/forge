@@ -44,6 +44,11 @@ export type ForgeMethod =
   | 'subagent/stop'
   | 'subagent/clearFinished'
   | 'subagent/queryOutput'
+  // skill（09：Skill 管理，docs/prd/09_skill_management.md）
+  | 'skill/listSkills'
+  | 'skill/importSkill'
+  | 'skill/createSkill'
+  | 'skill/deleteSkill'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
   | 'pi/getInfo'
@@ -356,6 +361,60 @@ export interface PendingAttachment {
   flagged: boolean;
   /** 图片缩略图 data URL（仅图片附件，加载后填充；预览/放大用） */
   dataUrl?: string;
+}
+
+/**
+ * ===== Skill 管理（09）类型 =====
+ * 事实来源在 @forge/desktop pi/skillService.ts；按本文件惯例本地声明同形类型。
+ */
+
+/** skill 作用域：user=全局，project=当前项目 */
+export type SkillScope = 'user' | 'project';
+
+/** 单条生效 skill（loader 返回的均为同名冲突生效方；loser 走 issues 诊断） */
+export interface SkillEntry {
+  name: string;
+  description: string;
+  /** pi sourceInfo.scope 映射；'other'=不归组兜底展示 */
+  scope: 'user' | 'project' | 'other';
+  /** skill 目录绝对路径（根路径徽标数据源） */
+  dirPath: string;
+  /** SKILL.md 绝对路径 */
+  filePath: string;
+  disableModelInvocation: boolean;
+}
+
+/** 异常/冲突诊断（warning=非法或未加载，collision=同名被覆盖） */
+export interface SkillIssue {
+  type: 'warning' | 'error' | 'collision';
+  message: string;
+  path: string | null;
+  winnerPath: string | null;
+  loserPath: string | null;
+}
+
+/** skill/listSkills 响应 data */
+export interface ListSkillsResult {
+  cwd: string;
+  skills: SkillEntry[];
+  issues: SkillIssue[];
+}
+
+/** skill/importSkill | createSkill 同名冲突响应（code=4090，确认后带 overwrite=true 重调） */
+export interface SkillConflictData {
+  conflictPath: string;
+  sourceDir?: string;
+}
+
+/**
+ * 调用主进程方法并原样返回信封（不抛错）。
+ * Skill 管理用：4090 冲突是需要 UI 弹确认的**正常分支**，不适合 call() 的抛错语义。
+ */
+export async function invokeRaw<T = unknown>(
+  method: ForgeMethod,
+  params?: Record<string, unknown>,
+): Promise<ForgeResult<T>> {
+  return (await window.forge.invoke(method, params)) as ForgeResult<T>;
 }
 
 /**

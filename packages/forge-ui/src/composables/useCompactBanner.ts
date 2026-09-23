@@ -9,6 +9,8 @@
  */
 import { reactive } from 'vue';
 
+import { i18n } from '../i18n/index.ts';
+
 export interface CompactBannerState {
   phase: 'compacting' | 'done';
   /** 完成横幅文案（含减少百分比）；压缩中为 null */
@@ -50,7 +52,10 @@ export function useCompactBanner() {
     const pct = compactReductionPct(tokensBefore, tokensAfter);
     banners.set(sessionId, {
       phase: 'done',
-      text: pct !== null ? `上下文已压缩（减少 ${pct}%）` : '上下文已压缩',
+      text:
+        pct !== null
+          ? i18n.t('chat.contextCompactedReduction', { pct })
+          : i18n.t('chat.contextCompacted'),
     });
   }
 

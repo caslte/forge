@@ -1,5 +1,22 @@
 # 变更日志
 
+## v3.80.0 (功能：UI 国际化（模块 08）+ Skill 管理（模块 09）)
+
+> PRD：docs/prd/08_ui_i18n.md、docs/prd/09_skill_management.md（2026-09-22 用户「开工」批准后按 08→09 顺序交付）。
+
+- **模块 08 · UI 国际化（已完成）**：自研轻量 composable（零新依赖，不引 vue-i18n），仅覆盖 App UI 静态文案（AI 回复内容不翻译）。
+  - 基础设施：`forge-ui/src/i18n/`（`index.ts` 提供 `useI18n().t(key, vars)` + `{name}` 插值 + zh 缺键回退；`zh-CN.ts` 为键集事实来源 `MessageKey`；字典按域拆 `domains/*.ts`，键名前缀即域名禁止跨域重名）。
+  - 全量迁移：28 组件 + utils 硬编码中文 → `t()` 调用；`en.ts` 合并字典允许缺键（回退 zh，逐批补齐纪律）。
+  - 三态偏好：zh-CN / en / system（跟随 `navigator.language`），localStorage `forge.locale` 持久化；设置页「通用」Tab 语言切换器即时生效。主进程零改动。
+  - 验证：forge-ui `vue-tsc` 0 错、单测 293/293（含 `i18n.test.ts` 键集/插值/回退断言）、浏览器三态切换验收通过。
+- **模块 09 · Skill 管理（代码交付，真机验收待确认）**：设置页「关于」Tab 版本更新分区下方新增「Skills」分区——查看（全局/项目两组 + 真实根路径徽标 + 异常与冲突折叠区）、导入本地文件夹、模板新建、删除。
+  - 后端 `forge-desktop/src/pi/skillService.ts`（纯 TS，Electron 经端口注入）：`skill/listSkills|importSkill|createSkill|deleteSkill` 四方法并入 forge-core methodTable；枚举复用 pi `DefaultResourceLoader`（口径 == agent 实际加载，TD-SK-01），pi 静默跳过的非法目录补**影子扫描**以 warning 如实上报（AC-09-02）；同名冲突走 **4090 确认协议**（`data.conflictPath` → UI 弹确认 → `overwrite:true` 重调，旧目录先入回收站，TD-SK-03）；删除/覆盖统一 `shell.trashItem` 优先、失败回退永久删除并回报 `trashed:false`（TD-SK-04）；写目标固定 `<agentDir>/skills` 与 `<project>/.agents/skills`（TD-SK-05）；containment：直接子目录 + realpath 复核父目录 + 符号链接指向复验，越界 1001（AC-09-11）；导入临时目录 + rename 原子落位、失败清理不留半个 skill。零重载/零通知（TD-SK-06），新会话与下次查询自然生效。
+  - IPC 契约：`ipc-contract.ts` ForgeMethod +4；类型经 **type-only re-export** 暴露（不把 pi SDK 拉进 preload 打包）。preload 无运行期方法白名单，零改动；目录选择/打开目录复用既有 `dialog.selectDirectory` / `shell.openPath`。
+  - 前端 `SkillsSection.vue`：4090 为正常分支不适用 `call()` 抛错语义 → bridge 新增 `invokeRaw<T>()` 原样返回信封；确认/删除/新建弹窗 Teleport 到 body（规避设置页祖先 transform 裁剪 fixed 遮罩）；文案全走 i18n（`domains/skills.ts` zh+en）。`mock-bridge.ts` 内存实现四方法（含 4090/overwrite/trashed 协议）供浏览器 dev 预览。
+  - 验证：forge-desktop 单测全套 **272 过/0 挂/1 skip**（新增 `test/pi/skillService.test.ts` 15 例，覆盖 AC-09-01/02/05/06/07/08/09/11/12）、tsc 0 错；forge-ui typecheck 0 错、293/293；浏览器 mock 链路交互验收通过（列表分组/新建/同名冲突覆盖/删除 toast/导入/导入冲突取消/项目级落 `.agents/skills`/非法名保留输入报错）。**待办**：Electron 实应用真实链路 + Windows 回收站实测（AC-09-10）后翻 09 状态为已完成。
+  - e2e 回归修复（i18n 交付的连带账）：Playwright 默认 `navigator.language=en-US` + 语言偏好 `system` → 整页英文渲染，打爆全部中文文本选择器（settings 8 条、subagent/tooltip/todoPanel 等约 30 条）。修法：`playwright.config.ts` `use.locale='zh-CN'`（测试环境钉死中文，语言切换本身仍由设置页用例覆盖）。另修复 2 条**存量挂**（非本期引入）：`smoke` 断言的 `.workspace-brand` 文字品牌位已在 757f328 换成 logo 图（改断言 `.tb-logo` 可见）；`updater` E-IN-001/002 期望 `0.2.0` 而版本行 551e6d7 起按设计渲染 `v0.2.0`（期望补 `v` 前缀）。修复后 settings+updater+smoke 全绿。全量套件 **106/117**：剩余 11 条挂经 HEAD 干净基线 worktree 对照跑验证为**逐条一致的存量挂**（repro 草稿用例、bootSplash-004 splash svg、landingHero `.landing-wordmark`、branchBadge ×2、mw-restore 几何 ×2、queue QC-003 停止回填、session E-SM-001 树排序、todoPanel 009b hero 遮挡、conversationHistoryLocate），归属近几笔已提交的 UI 重构（logo/TitleBar/hero），与本期 08/09 无关，留待对应改动方修期望值。
+  - 文档：新增 `docs/api/09_skill.md`；`docs/api/index.md`（4090 码 + 08/09 模块行）、`docs/prd/index.md`、`docs/overview.md` 状态同步。
+
 ## v3.79.0 (需求：首装可选安装目录（NSIS 向导）、默认暗色主题、模型编辑弹窗化)
 
 - **需求 1 · 首装选安装位置（三轮迭代）**：

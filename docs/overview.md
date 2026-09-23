@@ -52,13 +52,15 @@
 | 05 | 模型与 Provider 配置 | pi models.json 可视化编辑、密钥安全、模型选择；扩展：思考级别选择（输入框）、上下文 1M 配置 | prd/05_model_provider.md | PRD 已确认（含扩展 MP-S05/MP-S06） |
 | 06 | 子 Agent 管理 | 主会话状态与后台子 agent 联动、Tab 栏+结果视图监控、停止级联/单个终止 | prd/06_subagent_management.md | PRD 已确认 |
 | 07 | 版本更新与安装包 | 设置页「版本更新」分区（已实现）；Windows 安装包、预装推荐组件、应用自更新与引擎-插件联动更新（待开发） | prd/07_installer_update.md | PRD 已确认 |
+| 08 | UI 国际化（中/英） | App 界面文案中英切换（自研轻量 composable，仅 UI 静态文案，主进程零改动） | prd/08_ui_i18n.md | 已完成（2026-09-22 交付） |
+| 09 | Skill 管理 | 全局+项目级 skill 列表、导入文件夹、模板新建、删除 | prd/09_skill_management.md | 开发中（代码+单测+mock 链路完成，真机验收待确认） |
 
 ### 配套设计文档
 
 | 类型 | 路径 | 状态 |
 |---|---|---|
 | DB（forge 自有存储） | db/forge-store/schema.md | 已确认 |
-| API（forge-core 接口契约） | api/index.md + api/01~05_*.md | 已确认 |
+| API（forge-core 接口契约） | api/index.md + api/01~07, 09_skill.md | 已确认 |
 | 测试设计 | [test/index.md](test/index.md) + 各模块 coverage-matrix.md | 已确认 |
 
 ## 六、核心业务流程
@@ -84,6 +86,7 @@
 - 已完成（2026-09-02）：模块 03 扩展 CV-S08 斜杠命令全档确认（gen-doc-all：PRD + API §9 + 测试设计 U-CV-011/012、A-CV-011~013、E-CV-014~018、PIC-007）。
 - 进行中：CV-S08 开发交付（dev-flow run `20260902145236`，状态文件 `docs/plan/dev-20260902145236-flow.json`）——5 WU 中 4 个已通过 D3+D4（WU-01 core 服务与 RPC 329 测试、WU-02 forge-extensions 命令上报扩展+desktop 装配 161 测试、WU-03 UI 纯函数+bridge+mock 103 测试、WU-05 desktop 桥接+草稿态 port 171 测试）；**WU-04（InstructionInput 浮窗集成 + e2e）代码已落地但 5 条 e2e（E-CV-014~018）全部失败，Dev Agent 结果丢失，需重派修复**（WU 仍处 claimed/in_progress，重派修复后直接提交即可，不消耗 local_fix 次数）；之后 D5 Fan-in（全量回归）→ D6 模块 QA（含 PIC-007 真实链路验证项）。
 - 已完成（2026-09-07）：模块 01 扩展 PM-S05 git 分支查看与切换全档确认（gen-doc-all）与开发交付（dev-flow run `20260907175149`，COMPLETE：4 WU 通过 + Fan-in 706 单测全绿 + e2e 74 过/2 存量挂 + 模块 QA PASS gap 0）；改动待提交。
+- 已完成（2026-09-22）：模块 08 UI 国际化开发交付（自研 composable + domains 字典拆分 + 全量硬编码迁移 + 设置页三态语言切换器；forge-ui typecheck/293 单测/浏览器三态验收全绿）。模块 09 Skill 管理代码交付：desktop 侧 `pi/skillService.ts` 四方法 RPC（list/import/create/delete，4090 冲突确认协议 + 影子扫描补报 + containment 防穿越）+ 15 单测（全套 272 过/1 skip），UI 侧 `SkillsSection.vue` 挂设置页「关于」Tab + mock-bridge 内存实现；浏览器 mock 链路全交互验收通过（建/冲突覆盖/删/导入/项目级落 `.agents/skills`/非法名保留输入）。e2e 连带修复：`playwright.config.ts` 钉 `locale=zh-CN`（否则 i18n system 偏好在 en-US 测试浏览器整页英文，打爆中文选择器），并修复 smoke（logo 化后的 `.workspace-brand` 存量挂）与 updater E-IN-001/002（`v0.2.0` 前缀存量挂）。全量 e2e **106/117**，剩余 11 条经 HEAD 干净基线 worktree 对照验证为逐条一致的存量挂（归属近期已提交的 logo/TitleBar/hero 重构，留待对应改动方修期望值），与 08/09 无关。**真机（Electron 实应用 + Windows 回收站 AC-09-10）待用户验收后翻状态为已完成**。
 - 阻塞项：无（v1.1 范围待确认点见计划文档 §7）。
 - 风险项：pi 扩展 API/SDK 覆盖度、ai-coding 前端改造量（多窗口为新开发 + fetch/SSE 改 IPC 适配）、pi 事件->CanonicalEvent 映射可行性（已补集成测试设计 `test/integration/pi-core.md`，开发期实现验证）、pi 多 AgentSession 并发（源码分析支持 + demo 已运行时验证 2 并发；纪律=每会话独立 ResourceLoader + forge 扩展禁用模块级可变状态；已补 PIC-003 真实并发集成用例）、pi 信任事件拦截可行性（待开发验证）；PRD 05 扩展的思考级别真实链路（PIC-005）与 1M 上下文运行时验证、PIC-006 子 agent 真实链路 **已于 2026-08-30 用户确认 OK**；forge-ui session 模块 2 条既有 e2e（E-SM-001/002）已修复（全量 41/41 通过）。
 ## 九、AI 开发约束

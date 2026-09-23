@@ -17,6 +17,9 @@ import { formatElapsed } from '../utils/formatElapsed';
 import MessageCard from './MessageCard.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import ChangedFilesCard from './ChangedFilesCard.vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 /** 展示项：单条消息 或 连续 ≥2 的工具组 */
 export type DisplayItem =
@@ -95,8 +98,8 @@ const groupHeadText = computed(() => {
   const it = props.item;
   if (it.kind !== 'tool-group') return '';
   return groupRunning.value
-    ? `正在执行中 · ${formatElapsed(groupElapsedSec.value)}`
-    : `执行工具 ${it.totalCount} 次`;
+    ? t('chat.toolGroupRunning', { elapsed: formatElapsed(groupElapsedSec.value) })
+    : t('chat.toolGroupCount', { count: it.totalCount });
 });
 
 /** 组内滚动视口：限高 + 上下边缘虚化（mask 随滚动状态切换，见 .tg-scroll 样式） */

@@ -14,6 +14,8 @@ import { call, subscribe } from '../bridge';
 import type { PiGetInfoResult, UpdaterSnapshot } from '../bridge';
 import { useToast } from '../composables/useToast';
 import { usePreferences } from '../composables/usePreferences';
+import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
+import SkillsSection from './SkillsSection.vue';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
 /**
@@ -24,7 +26,7 @@ import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
  * - 「主会话模型」单选项：复用 setDefault，全局唯一
  * 底层 forge-core 契约不变（saveProvider 的 type 固定 openai-completions，models 传单元素数组）。
  */
-const props = defineProps<{
+defineProps<{
   themeMode: ThemeMode;
 }>();
 
@@ -64,9 +66,18 @@ const apiKeyVisible = ref(false);
 const deleteConfirmId = ref<string | null>(null);
 let deleteTimer: ReturnType<typeof setTimeout> | null = null;
 
-const themeSwatches: { mode: ThemeMode; label: string; color: string }[] = [
-  { mode: 'light', label: '浅色', color: 'oklch(1 0 0)' },
-  { mode: 'dark', label: '深色', color: 'oklch(0.24 0.01 286.3)' },
+const { t, preference, activeLocale, setPreference } = useI18n();
+
+const themeSwatches: { mode: ThemeMode; labelKey: MessageKey; color: string }[] = [
+  { mode: 'light', labelKey: 'settings.theme.light', color: 'oklch(1 0 0)' },
+  { mode: 'dark', labelKey: 'settings.theme.dark', color: 'oklch(0.24 0.01 286.3)' },
+];
+
+// 模块 08：语言偏好三态；选项文案不随界面语言翻译（各语言自身书写，PRD 常规默认项）
+const languageOptions: { value: LocalePreference; labelKey: MessageKey }[] = [
+  { value: 'zh-CN', labelKey: 'settings.language.zhCN' },
+  { value: 'en', labelKey: 'settings.language.en' },
+  { value: 'system', labelKey: 'settings.language.system' },
 ];
 
 const toast = useToast();
@@ -87,11 +98,11 @@ const levelOptions: ThinkingLevel[] = THINKING_LEVELS.filter((l) => l !== 'off')
 /** MP-S07：多选下拉触发器文案（未启用思考/空选/已选列表；off 不展示） */
 const selectedLevelsLabel = computed(() => {
   if (!formReasoning.value) {
-    return '未启用思考';
+    return t('settings.model.reasoningOff');
   }
   const shown = formLevels.value.filter((l) => l !== 'off');
   if (shown.length === 0) {
-    return '未选择思考等级';
+    return t('settings.model.noLevels');
   }
   return shown.join(' / ');
 });
@@ -152,7 +163,7 @@ async function onSaveProvider(): Promise<void> {
     await loadModels();
     resetForm();
     showAddForm.value = false;
-    toast.success('模型配置已保存');
+    toast.success(t('settings.model.saved'));
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -269,12 +280,12 @@ function selectTheme(mode: ThemeMode): void {
 
 // ===== 版本更新（07，「关于」Tab）：明面为 forge 产品更新；内部为内置引擎的共享扩展更新 =====
 // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照
-const activeTab = ref<'general' | 'personal' | 'about'>('general');
+const activeTab = ref<'general' | 'personal' | 'skills' | 'about'>('general');
 const tabsEl = ref<HTMLElement | null>(null);
 const thumbEl = ref<HTMLElement | null>(null);
-const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, about: null as HTMLElement | null };
+const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, skills: null as HTMLElement | null, about: null as HTMLElement | null };
 
-function setTabRef(name: 'general' | 'personal' | 'about', el: unknown): void {
+function setTabRef(name: 'general' | 'personal' | 'skills' | 'about', el: unknown): void {
   tabBtns[name] = (el as HTMLElement) ?? null;
 }
 
@@ -309,6 +320,9 @@ function moveThumb(): void {
 }
 
 watch(activeTab, () => { void nextTick(moveThumb); });
+
+// 语言切换重排 Tab 文案宽度：等 DOM 更新后重贴滑块（RO 兜底字体加载，这里管文案换语言）
+watch(activeLocale, () => { void nextTick(moveThumb); });
 
 function onResize(): void { moveThumb(); }
 
@@ -363,7 +377,7 @@ function applyUpSnapshot(snap: UpdaterSnapshot | null | undefined): void {
   }
   if (snap.status === 'found' && snap.latestVersion && snap.latestVersion !== lastNotifiedUpVersion) {
     lastNotifiedUpVersion = snap.latestVersion;
-    toast.info(`发现新版本 ${snap.latestVersion}`);
+    toast.info(t('settings.update.foundVersion', { version: snap.latestVersion }));
   }
 }
 
@@ -437,21 +451,21 @@ const upBtnView = computed<UpBtnView>(() => {
   const status = snap?.status ?? 'idle';
   const latest = snap?.latestVersion ?? null;
   if (upChecking.value || status === 'checking') {
-    return { action: null, label: '检查中…', busy: true };
+    return { action: null, label: t('settings.update.checking'), busy: true };
   }
   if (status === 'downloading') {
-    return { action: null, label: '更新', busy: true };
+    return { action: null, label: t('settings.update.update'), busy: true };
   }
   if (status === 'installing') {
-    return { action: null, label: '安装中…', busy: true };
+    return { action: null, label: t('settings.update.installing'), busy: true };
   }
   if (status === 'downloaded' || (upInstallRetry.value && latest !== null)) {
-    return { action: 'install', label: '重启安装', busy: false };
+    return { action: 'install', label: t('settings.update.installNow'), busy: false };
   }
   if (latest !== null) {
-    return { action: 'download', label: '更新', busy: false };
+    return { action: 'download', label: t('settings.update.update'), busy: false };
   }
-  return { action: 'check', label: '检查更新', busy: false };
+  return { action: 'check', label: t('settings.update.check'), busy: false };
 });
 
 /** 初始状态拉取（getState 快照还原；found 时按需补一次 toast） */
@@ -542,6 +556,8 @@ watch(activeTab, (tab) => {
 
 let unsubProviders: (() => void) | null = null;
 let unsubUpdater: (() => void) | null = null;
+// Tab 按钮宽度变化（语言切换改文案、字体加载）时重贴滑块
+let thumbRo: ResizeObserver | null = null;
 
 onMounted(() => {
   void loadProviders();
@@ -552,6 +568,10 @@ onMounted(() => {
   // 滑动选中块初始定位（含字体加载后宽度变化的一次校准）
   void nextTick(moveThumb);
   window.addEventListener('resize', onResize);
+  thumbRo = new ResizeObserver(() => moveThumb());
+  for (const btn of Object.values(tabBtns)) {
+    if (btn) thumbRo.observe(btn);
+  }
   unsubProviders = subscribe('model.providersChanged', () => {
     void loadProviders();
   });
@@ -563,6 +583,8 @@ onUnmounted(() => {
   unsubUpdater?.();
   if (deleteTimer) clearTimeout(deleteTimer);
   window.removeEventListener('resize', onResize);
+  thumbRo?.disconnect();
+  thumbRo = null;
 });
 </script>
 
@@ -570,9 +592,9 @@ onUnmounted(() => {
   <div class="settings">
     <header class="settings-header">
       <div>
-        <h1 class="settings-title">设置</h1>
+        <h1 class="settings-title">{{ t('settings.title') }}</h1>
       </div>
-      <button class="ghost settings-close" aria-label="关闭设置" @click="emit('close')">
+      <button class="ghost settings-close" :aria-label="t('settings.closeSettings')" @click="emit('close')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M6 6l12 12M18 6L6 18" />
         </svg>
@@ -587,40 +609,60 @@ onUnmounted(() => {
         :class="{ active: activeTab === 'general' }"
         :ref="(el) => setTabRef('general', el)"
         @click="activeTab = 'general'"
-      >通用</button>
+      >{{ t('settings.tab.general') }}</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'personal' }"
         :ref="(el) => setTabRef('personal', el)"
         @click="activeTab = 'personal'"
-      >个性化</button>
+      >{{ t('settings.tab.personal') }}</button>
+      <button
+        class="settings-tab"
+        :class="{ active: activeTab === 'skills' }"
+        :ref="(el) => setTabRef('skills', el)"
+        @click="activeTab = 'skills'"
+      >{{ t('settings.tab.skills') }}</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'about' }"
         :ref="(el) => setTabRef('about', el)"
         @click="activeTab = 'about'"
-      >关于</button>
+      >{{ t('settings.tab.about') }}</button>
     </nav>
 
     <div class="settings-body" v-if="activeTab === 'general'">
       <!-- 外观（通用 Tab 顶部） -->
       <section class="settings-section aside">
-        <h2 class="section-title">外观</h2>
+        <h2 class="section-title">{{ t('settings.appearance') }}</h2>
         <div class="theme-swatches">
           <button
-            v-for="t in themeSwatches"
-            :key="t.mode"
+            v-for="swatch in themeSwatches"
+            :key="swatch.mode"
             class="theme-swatch"
-            :class="{ active: themeMode === t.mode }"
-            @click="selectTheme(t.mode)"
+            :class="{ active: themeMode === swatch.mode }"
+            @click="selectTheme(swatch.mode)"
           >
-            <span class="swatch-color" :style="{ background: t.color }">
-              <svg v-if="themeMode === t.mode" class="swatch-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <span class="swatch-color" :style="{ background: swatch.color }">
+              <svg v-if="themeMode === swatch.mode" class="swatch-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </span>
-            <span class="swatch-label">{{ t.label }}</span>
+            <span class="swatch-label">{{ t(swatch.labelKey) }}</span>
           </button>
+        </div>
+        <div class="language-row">
+          <span class="language-label">{{ t('settings.language') }}</span>
+          <div class="language-options" role="radiogroup" :aria-label="t('settings.language')">
+            <button
+              v-for="opt in languageOptions"
+              :key="opt.value"
+              class="language-option"
+              :class="{ active: preference === opt.value }"
+              role="radio"
+              :aria-checked="preference === opt.value"
+              @click="setPreference(opt.value)"
+            >{{ t(opt.labelKey) }}</button>
+          </div>
         </div>
       </section>
 
@@ -628,7 +670,7 @@ onUnmounted(() => {
       <section class="settings-section main">
         <div class="section-head">
           <div>
-            <h2 class="section-title">模型配置</h2>
+            <h2 class="section-title">{{ t('settings.model.title') }}</h2>
           </div>
           <button class="section-action" @click="toggleForm">
             <svg v-if="!showAddForm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -638,15 +680,15 @@ onUnmounted(() => {
             <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>
-            {{ showAddForm ? '取消' : '添加模型' }}
+            {{ showAddForm ? t('common.cancel') : t('settings.model.add') }}
           </button>
         </div>
 
         <!-- 当前主会话模型（置于列表上方，模型多时不遮挡） -->
         <div v-if="defaultModel" class="default-model-row">
-          <span class="default-model-label">当前主会话模型：</span>
+          <span class="default-model-label">{{ t('settings.model.currentDefault') }}</span>
           <span class="default-model-value">{{ defaultModel }}</span>
-          <button class="ghost small" @click="onClearDefault">清除</button>
+          <button class="ghost small" @click="onClearDefault">{{ t('settings.model.clear') }}</button>
         </div>
 
         <!-- 添加/编辑表单（弹窗形态：不再内联在列表上方挤压/推开模型列表）。
@@ -661,19 +703,19 @@ onUnmounted(() => {
         >
         <div class="provider-form">
           <div class="form-head">
-            <span class="form-head-title">{{ editingId ? '编辑模型' : '添加模型' }}</span>
-            <button type="button" class="form-close" aria-label="关闭" @click="toggleForm">
+            <span class="form-head-title">{{ editingId ? t('settings.model.edit') : t('settings.model.add') }}</span>
+            <button type="button" class="form-close" :aria-label="t('common.close')" @click="toggleForm">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                 <path d="M6 6l12 12M18 6L6 18" />
               </svg>
             </button>
           </div>
           <label class="form-field">
-            <span class="form-label">名称</span>
-            <input v-model="formName" type="text" placeholder="如 Grok、GPT、MiniMax" />
+            <span class="form-label">{{ t('settings.model.name') }}</span>
+            <input v-model="formName" type="text" :placeholder="t('settings.model.namePlaceholder')" />
           </label>
           <label class="form-field">
-            <span class="form-label">API 地址</span>
+            <span class="form-label">{{ t('settings.model.baseUrl') }}</span>
             <input v-model="formBaseUrl" type="text" placeholder="https://api.xxx.com/v1" />
           </label>
           <label class="form-field">
@@ -683,13 +725,13 @@ onUnmounted(() => {
                 v-model="formApiKey"
                 :type="apiKeyVisible ? 'text' : 'password'"
                 class="api-key-input"
-                placeholder="sk-…（存入系统密钥链，不明文保存）"
+                :placeholder="t('settings.model.apiKeyPlaceholder')"
               />
               <button
                 type="button"
                 class="api-key-toggle"
-                :aria-label="apiKeyVisible ? '隐藏密钥' : '显示密钥'"
-                :data-tooltip="apiKeyVisible ? '隐藏密钥' : '显示密钥'"
+                :aria-label="apiKeyVisible ? t('settings.model.hideKey') : t('settings.model.showKey')"
+                :data-tooltip="apiKeyVisible ? t('settings.model.hideKey') : t('settings.model.showKey')"
                 @click="apiKeyVisible = !apiKeyVisible"
               >
                 <svg v-if="apiKeyVisible" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -704,30 +746,30 @@ onUnmounted(() => {
             </div>
           </label>
           <label class="form-field">
-            <span class="form-label">模型 ID</span>
-            <input v-model="formModel" type="text" placeholder="如 gpt-4o、grok-4.5" />
+            <span class="form-label">{{ t('settings.model.modelId') }}</span>
+            <input v-model="formModel" type="text" :placeholder="t('settings.model.modelIdPlaceholder')" />
           </label>
           <!-- MP-S06：上下文窗口 1M 单档勾选（勾选写 1000000，未勾选移除字段） -->
           <label class="form-field context-check context-1m">
             <input v-model="formContext1M" type="checkbox" />
-            <span class="form-label">上下文窗口 1M（100 万 tokens）</span>
+            <span class="form-label">{{ t('settings.model.context1M') }}</span>
           </label>
           <!-- 多模态：勾选写模型 input:["text","image"]（能发图片给模型），未勾选移除 -->
           <label class="form-field context-check context-vision">
             <input v-model="formVision" type="checkbox" />
-            <span class="form-label">支持图片输入（多模态）</span>
+            <span class="form-label">{{ t('settings.model.vision') }}</span>
           </label>
           <!-- MP-S07：思考强度勾选（与上下勾选行样式一致）+ 下方思考等级多选下拉（控制对话框可选挡位） -->
           <label class="form-field context-check">
             <input v-model="formReasoning" type="checkbox" />
-            <span class="form-label">思考强度</span>
+            <span class="form-label">{{ t('settings.model.reasoning') }}</span>
           </label>
           <div class="form-field level-picker" :class="{ disabled: !formReasoning }">
             <button
               type="button"
               class="level-picker-trigger"
               :disabled="!formReasoning"
-              data-tooltip="选择对话时可选用的思考等级"
+              :data-tooltip="t('settings.model.levelsTooltip')"
               @click.stop="levelMenuOpen = !levelMenuOpen"
             >
               <span class="level-picker-label">{{ selectedLevelsLabel }}</span>
@@ -737,7 +779,7 @@ onUnmounted(() => {
             </button>
             <div v-if="levelMenuOpen" class="level-overlay" @click="levelMenuOpen = false"></div>
             <div v-if="levelMenuOpen" class="level-menu">
-              <div class="menu-hint">对话框中可选的思考等级</div>
+              <div class="menu-hint">{{ t('settings.model.levelsHint') }}</div>
               <label v-for="l in levelOptions" :key="l" class="level-option">
                 <input
                   type="checkbox"
@@ -751,7 +793,7 @@ onUnmounted(() => {
           <div v-if="formError" class="form-error">{{ formError }}</div>
           <div class="form-actions">
             <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
-              {{ saving ? '保存中…' : (editingId ? '保存修改' : '添加模型') }}
+              {{ saving ? t('settings.model.saving') : (editingId ? t('settings.model.saveChanges') : t('settings.model.add')) }}
             </button>
           </div>
         </div>
@@ -761,7 +803,7 @@ onUnmounted(() => {
         <!-- 模型列表 -->
         <div v-if="providerError" class="section-error">{{ providerError }}</div>
         <div v-if="providers.length === 0 && !loadingModels" class="empty-state">
-          还没有模型，点击「添加模型」配置第一个
+          {{ t('settings.model.empty') }}
         </div>
         <div v-else-if="providers.length" class="provider-list">
           <div v-for="p in providers" :key="p.id" class="provider-item"
@@ -769,35 +811,35 @@ onUnmounted(() => {
             <div class="provider-info">
               <div class="provider-name-row">
                 <span class="provider-name">{{ p.name }}</span>
-                <span v-if="p.models[0] && isDefault(p.models[0])" class="default-tag">主会话模型</span>
-                <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">异常</span>
+                <span v-if="p.models[0] && isDefault(p.models[0])" class="default-tag">{{ t('settings.model.defaultTag') }}</span>
+                <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">{{ t('settings.model.errorTag') }}</span>
               </div>
               <div class="provider-meta">
                 <span v-if="p.baseUrl" class="provider-baseurl">{{ p.baseUrl }}</span>
-                <span v-else class="provider-baseurl muted">本地默认</span>
+                <span v-else class="provider-baseurl muted">{{ t('settings.model.localDefault') }}</span>
                 <span class="provider-models-count">{{ p.models[0] ?? '—' }}</span>
-                <span v-if="p.vision === true" class="vision-tag">多模态</span>
+                <span v-if="p.vision === true" class="vision-tag">{{ t('settings.model.visionTag') }}</span>
               </div>
             </div>
             <div class="provider-actions">
               <button
                 class="provider-default-btn"
-                data-tooltip="编辑模型配置"
+                :data-tooltip="t('settings.model.editTooltip')"
                 @click="onEdit(p)"
-              >编辑</button>
+              >{{ t('settings.model.editBtn') }}</button>
               <button
                 v-if="p.models[0] && !isDefault(p.models[0])"
                 class="provider-default-btn"
-                data-tooltip="设为主会话模型"
+                :data-tooltip="t('settings.model.setDefaultTooltip')"
                 @click="onSetDefault(p.models[0])"
-              >设为主会话</button>
+              >{{ t('settings.model.setDefault') }}</button>
               <button
                 class="provider-delete"
                 :class="{ confirming: deleteConfirmId === p.id }"
-                :data-tooltip="deleteConfirmId === p.id ? '再次点击确认删除' : '删除'"
+                :data-tooltip="deleteConfirmId === p.id ? t('settings.model.confirmDeleteTooltip') : t('common.delete')"
                 @click="onDeleteProvider(p.id)"
               >
-                {{ deleteConfirmId === p.id ? '确认删除' : '' }}
+                {{ deleteConfirmId === p.id ? t('settings.model.confirmDelete') : '' }}
                 <svg v-if="deleteConfirmId !== p.id" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="3 6 5 6 21 6" />
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -814,15 +856,15 @@ onUnmounted(() => {
       <section class="settings-section">
         <div class="pref-row">
           <div class="pref-text">
-            <span class="pref-title">显示代码 Diff</span>
-            <span class="pref-desc">关闭后对话框不再展示代码变更对比，页面更简洁</span>
+            <span class="pref-title">{{ t('settings.personal.showDiffTitle') }}</span>
+            <span class="pref-desc">{{ t('settings.personal.showDiffDesc') }}</span>
           </div>
           <button
             class="pref-switch"
             :class="{ on: showDiff }"
             role="switch"
             :aria-checked="showDiff"
-            aria-label="显示代码 Diff"
+            :aria-label="t('settings.personal.showDiffTitle')"
             @click="setShowDiff(!showDiff)"
           >
             <span class="pref-knob"></span>
@@ -836,7 +878,7 @@ onUnmounted(() => {
       <section class="settings-section update-section">
         <!-- 版本行 + 同行右侧操作按钮；行占满到底（about-body 不限制宽度） -->
         <div class="version-row">
-          <span class="version-label">Forge 版本</span>
+          <span class="version-label">{{ t('settings.update.forgeVersion') }}</span>
           <span class="version-value">v{{ forgeVersion ?? '—' }}</span>
           <template v-if="upFoundVersion !== null">
             <span class="version-arrow">→</span>
@@ -846,7 +888,7 @@ onUnmounted(() => {
           <span class="version-actions">
             <span v-if="upCheckedUpToDate" class="up-uptodate">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-              已是最新
+              {{ t('settings.update.uptodate') }}
             </span>
             <button
               class="up-btn"
@@ -858,23 +900,23 @@ onUnmounted(() => {
         </div>
         <!-- 下载进度（原型：版本行下方进度条；检查/下载/安装失败静默回可重试态） -->
         <div v-if="upSnapshot?.status === 'downloading'" class="up-progress">
-          <div class="up-progress-meta"><span>正在下载 forge {{ upFoundVersion }}</span><b>{{ upDownloadPct }}%</b></div>
+          <div class="up-progress-meta"><span>{{ t('settings.update.downloading', { version: upFoundVersion ?? '' }) }}</span><b>{{ upDownloadPct }}%</b></div>
           <div class="up-progress-track"><div class="up-progress-fill" :style="{ width: upDownloadPct + '%' }"></div></div>
         </div>
         <!-- 调试控制台（仅本地配置文件开启后可见；滚动日志展示 updater 状态迁移/调用结果/错误） -->
         <div v-if="upDebugEnabled" class="up-debug">
           <button class="up-debug-toggle" @click="upDebugOn = !upDebugOn">
-            {{ upDebugOn ? '收起调试日志' : '展开调试日志' }}
+            {{ upDebugOn ? t('settings.update.collapseDebug') : t('settings.update.expandDebug') }}
           </button>
           <div v-if="upDebugOn" class="up-debug-console">
             <div class="up-debug-ver">
-              <span>当前 {{ forgeVersion ?? '—' }}</span>
-              <span>快照 {{ upSnapshot?.status ?? '—' }}</span>
-              <span v-if="upSnapshot?.error" class="up-debug-err">错误 {{ upSnapshot.error }}</span>
+              <span>{{ t('settings.update.debugCurrent', { version: forgeVersion ?? '—' }) }}</span>
+              <span>{{ t('settings.update.debugSnapshot', { status: upSnapshot?.status ?? '—' }) }}</span>
+              <span v-if="upSnapshot?.error" class="up-debug-err">{{ t('settings.update.debugError', { error: upSnapshot.error }) }}</span>
               <span class="up-debug-spacer"></span>
-              <button class="up-debug-copy" :disabled="upDebugLines.length === 0" @click="onCopyDebugLog">复制全部</button>
+              <button class="up-debug-copy" :disabled="upDebugLines.length === 0" @click="onCopyDebugLog">{{ t('settings.update.copyAll') }}</button>
             </div>
-            <div v-if="upDebugLines.length === 0" class="up-debug-empty">暂无日志：进入「关于」Tab 后自动记录检查与状态迁移</div>
+            <div v-if="upDebugLines.length === 0" class="up-debug-empty">{{ t('settings.update.debugEmpty') }}</div>
             <div ref="upDebugScrollEl" class="up-debug-scroll">
               <div v-for="(l, i) in upDebugLines" :key="i" class="up-debug-line">{{ l }}</div>
             </div>
@@ -884,16 +926,21 @@ onUnmounted(() => {
         <div v-if="upConfirming" class="up-confirm" role="dialog" aria-modal="true" @click.self="upConfirming = false">
           <div class="up-confirm-box">
             <div class="up-confirm-main">
-              <span class="up-confirm-title">安装 forge {{ upFoundVersion }}</span>
-              <span class="up-confirm-desc">关闭应用并安装更新，完成后自动重启。</span>
+              <span class="up-confirm-title">{{ t('settings.update.installTitle', { version: upFoundVersion ?? '' }) }}</span>
+              <span class="up-confirm-desc">{{ t('settings.update.installDesc') }}</span>
             </div>
             <div class="up-confirm-actions">
-              <button class="ghost small" @click="upConfirming = false">取消</button>
-              <button class="primary small" :disabled="upInstalling" @click="onQuitAndInstall">确认安装</button>
+              <button class="ghost small" @click="upConfirming = false">{{ t('common.cancel') }}</button>
+              <button class="primary small" :disabled="upInstalling" @click="onQuitAndInstall">{{ t('settings.update.confirmInstall') }}</button>
             </div>
           </div>
         </div>
       </section>
+    </div>
+
+    <!-- Skills Tab（模块 09）：独立 Tab 页，进入即挂载刷新 -->
+    <div class="settings-body" v-if="activeTab === 'skills'">
+      <SkillsSection />
     </div>
   </div>
 </template>
@@ -1531,6 +1578,47 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 500;
   color: var(--foreground);
+}
+
+/* 模块 08：语言切换行（外观区内、主题色板下方） */
+.language-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.language-label {
+  /* 与「外观」分区标题（.section-title）同款：14px/600 前景色 */
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.language-options {
+  display: flex;
+  gap: 8px;
+}
+
+.language-option {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.language-option:hover {
+  border-color: var(--muted-foreground);
+}
+
+.language-option.active {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 6%, var(--card));
 }
 
 /* 模型配置表单：弹窗形态（遮罩配方同 .up-confirm），不占用列表空间 */

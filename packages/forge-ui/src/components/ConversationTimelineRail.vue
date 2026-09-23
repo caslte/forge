@@ -16,6 +16,9 @@
 import { computed, onUnmounted, ref } from 'vue';
 import type { ConversationMessage } from '../types';
 import { buildTimelineEntries } from '../utils/conversationTimeline';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 当前会话已加载消息流（时间线唯一数据源） */
@@ -125,7 +128,7 @@ onUnmounted(() => {
     v-if="entries.length > 0"
     class="history-rail"
     data-testid="history-rail"
-    aria-label="会话提问时间线"
+    :aria-label="t('chat.timelineAriaLabel')"
     @mouseleave="onRailLeave"
   >
     <button

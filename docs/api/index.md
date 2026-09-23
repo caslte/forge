@@ -28,6 +28,7 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 | 1002 | 资源不存在 |
 | 1004 | provider 未配置 |
 | 1005 | 信任未通过 |
+| 4090 | skill 同名冲突待用户确认（data.conflictPath；正常分支，UI 弹确认后带 overwrite=true 重调） |
 | 6001 | git 切换失败（data.stderr 附 git 原始错误） |
 | 6002 | 组件更新失败（data.output 附更新器输出尾部） |
 | 6003 | 应用更新检查失败（feed 不可达/网络失败；UI 静默处理） |
@@ -46,6 +47,8 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 | 05 | 模型与 Provider | api/05_model.md | 已确认 | 05 |
 | 06 | 子 Agent 管理 | api/06_subagent.md | 已确认 | 06 |
 | 07 | 版本更新与安装包（pi 运行时） | api/07_pi.md | 已确认 | 07 |
+| 08 | UI 国际化 | —（纯前端，无 RPC 接口） | 已实现 | 08 |
+| 09 | Skill 管理 | api/09_skill.md | 已确认 | 09 |
 
 ## 更新规则
 

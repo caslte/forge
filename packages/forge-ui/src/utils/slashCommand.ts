@@ -2,7 +2,7 @@
  * 斜杠命令基础层纯函数（CV-S08，AC-CV-026~030，U-CV-011/012）。
  *
  * 设计约束（docs/api/03_conversation.md §9「斜杠命令清单」）：
- * - 纯 TS、零运行时依赖（仅 `import type` 导入 ../bridge 的 SlashCommand），
+ * - 纯 TS、运行时依赖仅 ../i18n（展示文案 SOURCE_LABELS 惰性取字典；逻辑函数零依赖），
  *   Node type stripping 可直跑（先例 utils/conversationTimeline.ts）；
  * - 匹配/过滤一律按原始 name（skill 命令带 `skill:` 前缀，不含 `/`）；
  *   选中后经 buildInsertion 以 `/` + 原始名 + 尾随空格替换 [lineStart, prefixEnd)
@@ -13,6 +13,7 @@
  *   不产生 undefined/NaN。
  */
 import type { SlashCommand } from '../bridge';
+import { i18n } from '../i18n/index.ts';
 
 /** 激活态：光标所在行行首为 `/` 且 `/` 后至光标无空白 */
 export interface ActiveSlashContext {
@@ -115,11 +116,18 @@ export function formatCommandLabel(name: string): string {
   return segments.join(' ');
 }
 
-/** 来源标签映射（AC-CV-027 副标签）：skill=技能；extension=命令；prompt=模板 */
+/** 来源标签映射（AC-CV-027 副标签）：skill=技能；extension=命令；prompt=模板。
+ *  展示文案走 i18n 字典（模块 08）：getter 惰性取值，保持对象访问形态与 zh 值逐字不变 */
 export const SOURCE_LABELS: Record<SlashCommand['source'], string> = {
-  skill: '技能',
-  extension: '命令',
-  prompt: '模板',
+  get skill() {
+    return i18n.t('input.slash.sourceSkill');
+  },
+  get extension() {
+    return i18n.t('input.slash.sourceExtension');
+  },
+  get prompt() {
+    return i18n.t('input.slash.sourcePrompt');
+  },
 };
 
 /** 消息气泡里的命令展示段（用户消息美化渲染用） */

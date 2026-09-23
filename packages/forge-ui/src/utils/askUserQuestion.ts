@@ -10,6 +10,7 @@ import type {
   AskUserQuestionItem,
   AskUserQuestionOption,
 } from '../bridge';
+import { i18n } from '../i18n/index.ts';
 
 /**
  * 已答态：面板折叠摘要的数据源（composable 持有，按 sessionId 隔离）。
@@ -171,13 +172,17 @@ export function summarizeAskAnswers(answers: AskUserQuestionAnswer[]): string {
   for (const answer of answers) {
     if (answer.kind === 'multi') {
       const selected = answer.selected ?? [];
-      parts.push(selected.length > 0 ? selected.join('、') : '（无输入）');
+      parts.push(selected.length > 0 ? selected.join('、') : i18n.t('dialogs.ask.summaryNoInput'));
       continue;
     }
     const text = answer.answer;
-    parts.push(typeof text === 'string' && text.trim() !== '' ? text.trim() : '（无输入）');
+    parts.push(
+      typeof text === 'string' && text.trim() !== ''
+        ? text.trim()
+        : i18n.t('dialogs.ask.summaryNoInput'),
+    );
   }
-  return parts.length > 0 ? parts.join(' · ') : '（已答）';
+  return parts.length > 0 ? parts.join(' · ') : i18n.t('dialogs.ask.summaryAnswered');
 }
 
 /** tab 标题截断（原型：超 14 字符截 12 + 省略号） */

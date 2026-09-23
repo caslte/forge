@@ -666,6 +666,8 @@ app.whenReady().then(async () => {
     updaterStatePath,
     // 更新调试开关（userData/updater-debug.json，实时读取；false=普通用户不可见调试控制台）
     getUpdateDebugEnabled: () => readUpdateDebugEnabled(app.getPath('userData')),
+    // 模块 09：skill 删除/覆盖导入的回收站能力（Electron Shell API；失败由 skillService 回退永久删除）
+    trashItem: (targetPath) => shell.trashItem(targetPath),
   });
   coreEventBus = eventBus;
   registerCoreIpc(invoke, methodTable, eventBus);

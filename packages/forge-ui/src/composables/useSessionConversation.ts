@@ -15,6 +15,7 @@ import { collectTurnChangedFiles } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
 import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
 import { createAskQuestionStore } from './askQuestionStore.ts';
+import { i18n } from '../i18n/index.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
@@ -479,7 +480,7 @@ function dismissAskAnswered(): void {
     if (p.sessionId !== options.getSessionId()) return;
     // 不在此处置 isStreaming=false：终态错误必伴随 status='error' 事件收尾；
     // conversation.error 还承载自动重试提示（轮次仍在 streaming），此处置假会误断进行中状态
-    errorMsg.value = p.message ?? `对话错误（${p.code ?? 'unknown'}）`;
+    errorMsg.value = p.message ?? i18n.t('chat.conversationError', { code: p.code ?? 'unknown' });
   }
 
   /**

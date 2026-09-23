@@ -6,6 +6,9 @@ import {
   highlightDiffLine,
   type SideBySideRow,
 } from '@forge/core/side-by-side-diff';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   filePath: string | null;
@@ -68,7 +71,7 @@ const highlightedRows = computed(() =>
       class="diff-expand"
       @click="truncated = false"
     >
-      展开全部 {{ rows.length }} 行
+      {{ t('tool.diffExpandAll', { n: rows.length }) }}
     </button>
   </div>
 </template>

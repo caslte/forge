@@ -6,6 +6,7 @@ import { projectTagOf } from './utils/sessionView';
 import { isProjectBusy } from './utils/branchBadge';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
+import { useI18n } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
 import ProjectTree from './components/ProjectTree.vue';
 import ConversationView from './components/ConversationView.vue';
@@ -17,6 +18,8 @@ import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import BootWelcome from './components/BootWelcome.vue';
 import logoMain from './assets/logo-main.png';
+
+const { t, activeLocale } = useI18n();
 
 /**
  * 启动门闩（v3.76）：false 期间整个正式 UI 不挂载，只显示 BootWelcome。
@@ -82,8 +85,24 @@ watch(treeView, (v) => {
   }
 });
 
-/** 切项目/任务视角：等同直接赋值，但提供切入口用于后续重启滑动胶囊过渡。
- *  当前 CSS 仅依赖 is-task class 切换即可触发过渡，无需额外触发器；
+/* 滑动指示胶囊 JS 定位：CSS 50% 几何假设两键等宽，英文长词（Projects/Tasks）下
+   内容收缩容器无剩余空间可分配、flex:1 也无法等分，改为按 active 按钮实测宽贴 */
+const viewSegEl = ref<HTMLElement | null>(null);
+
+function moveViewPill(): void {
+  const seg = viewSegEl.value;
+  if (!seg) return;
+  const btn = seg.querySelector<HTMLElement>('.view-seg-btn.active');
+  if (!btn || btn.offsetWidth === 0) return; // 侧栏折叠隐藏时跳过，展开后重贴
+  seg.style.setProperty('--pill-l', `${btn.offsetLeft}px`);
+  seg.style.setProperty('--pill-r', `${seg.clientWidth - btn.offsetLeft - btn.offsetWidth}px`);
+}
+
+watch([treeView, sidebarCollapsed, activeLocale], () => {
+  void nextTick(moveViewPill);
+});
+
+/** 切项目/任务视角：等同直接赋值，胶囊几何由上方 watch 在 nextTick 重贴。
  *  保留函数是为和模板里已存在的 @click="switchTreeView(...)" 对齐。 */
 function switchTreeView(v: 'project' | 'task'): void {
   if (treeView.value === v) return;
@@ -147,7 +166,7 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
     // 零项目（落地 hero，v3.77）：没有可归属项目，项目区只提供「打开项目…」入口。
     // currentPath:null 是类型既有的「未选归属」草稿语义；此时会话分支不渲染，
     // 该描述只被 LandingHero 消费，不影响其他使用点。
-    return { mode: 'draft', currentPath: null, currentName: '打开项目', items: [] };
+    return { mode: 'draft', currentPath: null, currentName: t('app.openProject'), items: [] };
   }
   const s = currentSession.value;
   const inSession = s !== null && !draftMode.value;
@@ -284,9 +303,13 @@ async function onTrustDecide(decision: 'trust' | 'reject' | 'trustOnce'): Promis
   if (!path) return;
   try {
     await call('project/setTrust', { path, decision });
-    const label =
-      decision === 'trust' ? '已信任' : decision === 'reject' ? '已拒绝' : '本次已信任';
-    showToast(`${label}：${basename(path)}`, decision === 'reject' ? 'info' : 'success');
+    const toast =
+      decision === 'trust'
+        ? t('app.trustedToast', { name: basename(path) })
+        : decision === 'reject'
+          ? t('app.rejectedToast', { name: basename(path) })
+          : t('app.trustedOnceToast', { name: basename(path) });
+    showToast(toast, decision === 'reject' ? 'info' : 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -322,7 +345,7 @@ async function onAddProject(path: string): Promise<void> {
     // 新建即选中：归属切到新项目（v3.48 用户反馈：排第一但未选中）；
     // 走 onPickProject 语义——草稿保留，与下拉选中一致
     await onPickProject(path);
-    showToast('项目已添加', 'success');
+    showToast(t('app.projectAdded'), 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -349,7 +372,7 @@ async function onRemoveProject(path: string): Promise<void> {
     }
     await loadProjects();
     await loadSessions();
-    showToast(res.removedSessions > 0 ? `项目已移除，连同 ${res.removedSessions} 个会话一并删除` : '项目已移除', 'success');
+    showToast(res.removedSessions > 0 ? t('app.projectRemovedWithSessions', { count: res.removedSessions }) : t('app.projectRemoved'), 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -585,6 +608,8 @@ function startPostBootInit(): void {
 }
 
 onMounted(() => {
+  // 指示胶囊初始定位（含字体加载后的一次校准由语言/视角 watch 兜底）
+  void nextTick(moveViewPill);
   // 事件订阅先挂：订阅本身不发请求，core 未就绪期间主进程也不会推业务事件，
   // 挂早了无副作用（放行后 loadSessions 等才真正出发）
   unsubSessionRemoved = subscribe('session.removed', (payload) => {
@@ -652,8 +677,8 @@ onUnmounted(() => {
       <button
         class="shell-toggle"
         :class="{ 'shell-toggle-mac': isMac }"
-        :aria-label="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
-        :data-tooltip="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+        :aria-label="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
+        :data-tooltip="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
         @click="sidebarCollapsed = !sidebarCollapsed"
       >
         <!-- 默认显品牌 LOGO（切图），hover 交叉淡入为面板图标，箭头方向随折叠态翻转 -->
@@ -682,19 +707,19 @@ onUnmounted(() => {
         <header class="workspace-header"></header>
         <div class="tree-panel">
           <div class="sidebar-top">
-            <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" role="tablist" aria-label="会话列表视角">
+            <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" ref="viewSegEl" role="tablist" :aria-label="t('app.sessionListPerspective')">
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'project' }"
                 @click="switchTreeView('project')"
-              >项目</button>
+              >{{ t('app.viewProject') }}</button>
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'task' }"
                 @click="switchTreeView('task')"
-              >任务</button>
+              >{{ t('app.viewTask') }}</button>
             </div>
             <div class="sidebar-top-actions">
               <!-- ponytail: 不用 v-if/v-show——两者在 Vue 里都是 display:none，折叠按钮隐藏时
@@ -707,8 +732,8 @@ onUnmounted(() => {
                   visibility: treeView === 'project' ? 'visible' : 'hidden',
                   pointerEvents: treeView === 'project' ? 'auto' : 'none',
                 }"
-                :aria-label="allCollapsed ? '展开全部项目' : '收起全部项目'"
-                :data-tooltip="allCollapsed ? '展开全部项目' : '收起全部项目'"
+                :aria-label="allCollapsed ? t('app.expandAllProjects') : t('app.collapseAllProjects')"
+                :data-tooltip="allCollapsed ? t('app.expandAllProjects') : t('app.collapseAllProjects')"
                 :tabindex="treeView === 'project' ? 0 : -1"
                 @click="onFoldAll"
               >
@@ -754,7 +779,7 @@ onUnmounted(() => {
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
-            <span>设置</span>
+            <span>{{ t('app.settings') }}</span>
           </button>
         </div>
       </aside>
@@ -769,7 +794,7 @@ onUnmounted(() => {
         <div v-if="activeView !== 'settings'" class="app-toolbar">
           <button
             class="app-toolbar-btn"
-            data-tooltip="新建会话"
+            :data-tooltip="t('app.newSessionTooltip')"
             :disabled="projects.length === 0"
             @click="onCreateSession()"
           >
@@ -777,12 +802,12 @@ onUnmounted(() => {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            <span>新会话</span>
+            <span>{{ t('app.newSession') }}</span>
           </button>
           <button
             class="app-toolbar-btn"
             :class="{ 'is-active': multiWindow }"
-            data-tooltip="多窗口画布：会话并排观察"
+            :data-tooltip="t('app.multiWindowTooltip')"
             @click="toggleMultiWindow"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -791,20 +816,20 @@ onUnmounted(() => {
               <rect x="3" y="13" width="8" height="8" rx="1.5" />
               <rect x="13" y="13" width="8" height="8" rx="1.5" />
             </svg>
-            <span>多窗口</span>
+            <span>{{ t('app.multiWindow') }}</span>
           </button>
           <template v-if="multiWindow">
             <button
               class="app-toolbar-btn"
               @click="mwCanvasRef?.arrangeAuto()"
             >
-              <span>自动布局</span>
+              <span>{{ t('app.autoLayout') }}</span>
             </button>
             <button
               class="app-toolbar-btn"
               @click="mwCanvasRef?.clearAll()"
             >
-              <span>全部关闭</span>
+              <span>{{ t('app.closeAll') }}</span>
             </button>
           </template>
           <span class="app-toolbar-space"></span>
@@ -840,10 +865,10 @@ onUnmounted(() => {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M19 12H5M12 19l-7-7 7-7" />
                   </svg>
-                  <span>返回多窗口</span>
+                  <span>{{ t('app.backToMultiWindow') }}</span>
                 </button>
                 <span class="win-focus-title">
-                  {{ currentSession.alias || '会话 ' + currentSession.sessionId.slice(-6) }}
+                  {{ currentSession.alias || t('app.sessionFallback', { id: currentSession.sessionId.slice(-6) }) }}
                 </span>
                 <span class="win-focus-proj">{{ winFocusProjectName }}</span>
               </div>
@@ -1132,8 +1157,8 @@ onUnmounted(() => {
   position: absolute;
   top: 2px;
   bottom: 2px;
-  left: 2px;
-  right: calc(50% + 1px);
+  left: var(--pill-l, 2px);
+  right: var(--pill-r, calc(50% + 1px));
   border-radius: 999px;
   background: var(--surface-active);
   pointer-events: none;
@@ -1142,9 +1167,8 @@ onUnmounted(() => {
     right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
 }
 
+/* 几何由 JS（--pill-l/--pill-r）按 active 按钮实测宽度给出，这里只切换方向时序 */
 .view-seg.is-task::before {
-  left: calc(50% + 1px);
-  right: 2px;
   transition:
     right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
     left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;

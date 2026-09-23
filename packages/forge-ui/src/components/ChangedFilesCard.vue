@@ -8,7 +8,10 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { ChangedFileEntry, ChangedFileSummary } from '../composables/useChangedFiles';
+import { useI18n } from '../i18n/index.ts';
 import DiffView from './DiffView.vue';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   summary: ChangedFileSummary;
@@ -104,7 +107,7 @@ onBeforeUnmount(() => {
   <div class="changed-files" :class="{ collapsed }">
     <button class="cf-head" @click="collapsed = !collapsed">
       <svg class="cf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5h-7a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-11z" /><path d="M14 2.5v6h6.5" /></svg>
-      <span class="cf-count">{{ files.length }} 个文件已更改</span>
+      <span class="cf-count">{{ t('tool.changedFilesCount', { n: files.length }) }}</span>
       <span class="cf-spacer"></span>
       <span class="cf-total">
         <span class="cf-add">+{{ summary.totalAdded }}</span>
@@ -158,7 +161,7 @@ onBeforeUnmount(() => {
         <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-        打开所在目录
+        {{ t('tool.openContainingDir') }}
       </button>
     </div>
   </Teleport>

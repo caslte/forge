@@ -65,6 +65,7 @@ import {
   createUpdaterMethods,
   type AppUpdaterPort,
 } from './pi/appUpdater.ts';
+import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
 import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
@@ -110,6 +111,11 @@ export interface ForgeCoreDeps {
   /** 更新调试开关（main.ts 读 userData/updater-debug.json，enabled=true 时前端显示调试控制台）。
    * 缺省 false=普通用户不可见 */
   getUpdateDebugEnabled?: () => boolean;
+  /** 模块 09（skill 管理）：移入系统回收站端口（main.ts 注入 Electron shell.trashItem，
+   * 纯 TS 内核不 import Electron）。缺省/失败时删除与覆盖导入回退永久删除（TD-SK-04） */
+  trashItem?: (targetPath: string) => Promise<void>;
+  /** 模块 09：测试接缝——替换 skill 枚举用的 pi DefaultResourceLoader 装配 */
+  skillLoaderFactory?: (cwd: string, agentDir: string) => SkillLoaderLike;
 }
 
 /**
@@ -645,6 +651,14 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     return baseResult;
   };
 
+  // skill（09）：skill 管理 RPC（list/import/create/delete）。枚举复用 pi loader；
+  // 回收站能力经 deps.trashItem 端口（main.ts 注入 shell.trashItem，缺省回退永久删除）。
+  const skillMethods: MethodTable = createSkillMethods({
+    agentDir,
+    trashItem: deps.trashItem,
+    loaderFactory: deps.skillLoaderFactory,
+  });
+
   const methodTable: MethodTable = {
     ...projectApi.methods,
     ...gitApi.methods,
@@ -653,6 +667,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...toolApi.methods,
     ...modelApi.methods,
     ...subagentMethods,
+    ...skillMethods,
     ...piMethods,
     ...updaterMethods,
     // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）

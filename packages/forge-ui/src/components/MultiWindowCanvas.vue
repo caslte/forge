@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionItem } from '../types';
 import MultiWindowConversation from './MultiWindowConversation.vue';
 import { isProjectBusy } from '../utils/branchBadge';
+import { useI18n } from '../i18n/index.ts';
 import {
   detectSnapZone,
   snapRectFor,
@@ -38,6 +39,8 @@ const emit = defineEmits<{
   (e: 'focus-session', sessionId: string): void;
   (e: 'opened-change', sessionIds: string[]): void;
 }>();
+
+const { t } = useI18n();
 
 interface Win {
   id: string; // = sessionId
@@ -157,7 +160,7 @@ function sessionOf(id: string): SessionItem | undefined {
 }
 
 function displayName(s: SessionItem): string {
-  return s.alias || '会话 ' + s.sessionId.slice(-6);
+  return s.alias || t('panels.multiwin.session', { id: s.sessionId.slice(-6) });
 }
 
 function projectNameOf(s: SessionItem): string {
@@ -471,7 +474,7 @@ defineExpose({ arrangeAuto, clearAll });
       @drop="onCanvasDrop"
     >
       <div class="mw-hint" v-if="wins.length === 0">
-        把左侧会话拖到画布开窗，多个会话可并排观察。
+        {{ t('panels.multiwin.canvasHint') }}
       </div>
       <div ref="snapPreview" class="snap-preview"></div>
 
@@ -484,13 +487,13 @@ defineExpose({ arrangeAuto, clearAll });
       >
         <div class="mw-bar" @mousedown.stop="onBarMouseDown($event, w)">
           <div class="mw-title">
-            <b>{{ sessionOf(w.sessionId) ? displayName(sessionOf(w.sessionId)!) : '会话' }}</b>
+            <b>{{ sessionOf(w.sessionId) ? displayName(sessionOf(w.sessionId)!) : t('panels.multiwin.sessionFallback') }}</b>
             <span v-if="sessionOf(w.sessionId)" class="mw-proj">{{ projectNameOf(sessionOf(w.sessionId)!) }}</span>
           </div>
           <button
             class="mw-icon-btn"
-            title="在单视图打开"
-            data-tooltip="在单视图打开"
+            :title="t('panels.multiwin.openInSingle')"
+            :data-tooltip="t('panels.multiwin.openInSingle')"
             @click.stop="goSession(w)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -498,7 +501,7 @@ defineExpose({ arrangeAuto, clearAll });
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
-          <button class="mw-close" title="关闭窗口" data-tooltip="关闭窗口" @click.stop="closeWindow(w.id)">
+          <button class="mw-close" :title="t('panels.multiwin.closeWindow')" :data-tooltip="t('panels.multiwin.closeWindow')" @click.stop="closeWindow(w.id)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>

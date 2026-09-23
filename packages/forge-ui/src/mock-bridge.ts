@@ -380,6 +380,49 @@ function sortSubagents(list: MockSubagentSeed[]): MockSubagentSeed[] {
   });
 }
 
+/* ===== skill 管理 mock（模块 09）=====
+ * 内存版 skills 目录：与 skillService.ts 语义对齐（4090 冲突 → overwrite=true 重调、
+ * 删除回报 trashed 标记），仅面向浏览器 dev 预览/E2E，不落盘。 */
+
+/** 与 forge-ui bridge.ts SkillEntry 同构（mock 本地声明，不 import 避免类型环路） */
+interface MockSkillEntry {
+  name: string;
+  description: string;
+  scope: 'user' | 'project' | 'other';
+  dirPath: string;
+  filePath: string;
+  disableModelInvocation: boolean;
+}
+
+const SKILL_USER_ROOT = 'C:/Users/dev/.pi/agent/skills';
+
+function skillRootFor(scope: unknown, projectPath: string | undefined): string | null {
+  if (scope === 'user') return SKILL_USER_ROOT;
+  if (scope === 'project') return projectPath ? `${projectPath.replace(/\/+$/, '')}/.agents/skills` : null;
+  return null;
+}
+
+function mockSkillEntry(name: string, description: string, scope: 'user' | 'project', dirPath: string): MockSkillEntry {
+  return { name, description, scope, dirPath, filePath: `${dirPath}/SKILL.md`, disableModelInvocation: false };
+}
+
+/** 种子数据：演示分组展示/删除/导入冲突（真实端同名语义一致） */
+const mockSkills: MockSkillEntry[] = [
+  mockSkillEntry('pdf-report', '生成 PDF 周报（mock 种子）', 'user', `${SKILL_USER_ROOT}/pdf-report`),
+  mockSkillEntry('changelog', '按提交历史起草变更日志（mock 种子）', 'user', `${SKILL_USER_ROOT}/changelog`),
+  mockSkillEntry('db-migrate', '本项目数据库迁移流程（mock 种子）', 'project', 'D:/work/aiwork/forge/.agents/skills/db-migrate'),
+];
+
+function findMockSkill(dirPath: string): MockSkillEntry | undefined {
+  const key = dirPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return mockSkills.find((s) => s.dirPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === key);
+}
+
+function basenameOf(dir: string): string {
+  const segs = dir.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+  return segs[segs.length - 1] ?? '';
+}
+
 const bridge: ForgeBridge = {
   // 纯浏览器预览：非 Electron 环境，UI 按「无系统窗口控件」处理（不影响 mock 布局核对）
   platform: 'browser',
@@ -762,6 +805,57 @@ const bridge: ForgeBridge = {
           message: 'ok',
           data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
         };
+      case 'skill/listSkills': {
+        // 枚举口径与真实端一致：projectPath 缺省时项目组自然为空（按路径归组在 UI 侧）
+        return { code: 0, message: 'ok', data: { cwd: (params as { projectPath?: string }).projectPath ?? '', skills: [...mockSkills], issues: [] } };
+      }
+      case 'skill/importSkill': {
+        const p = params as { scope?: string; sourceDir?: string; projectPath?: string; overwrite?: boolean };
+        const root = skillRootFor(p.scope, p.projectPath);
+        if (root === null || typeof p.sourceDir !== 'string' || p.sourceDir === '') {
+          return { code: 1001, message: '参数错误：scope/sourceDir 非法或项目作用域缺少 projectPath', data: null };
+        }
+        const dirName = basenameOf(p.sourceDir);
+        const dest = `${root}/${dirName}`;
+        const existing = findMockSkill(dest);
+        if (existing && !p.overwrite) {
+          return { code: 4090, message: `目标已存在同名 skill 目录：${dest}`, data: { conflictPath: dest, sourceDir: p.sourceDir } };
+        }
+        if (existing) mockSkills.splice(mockSkills.indexOf(existing), 1);
+        mockSkills.push(mockSkillEntry(dirName, `导入的 mock skill：${dirName}`, p.scope === 'project' ? 'project' : 'user', dest));
+        return { code: 0, message: 'ok', data: { path: dest, overwritten: existing !== undefined } };
+      }
+      case 'skill/createSkill': {
+        const p = params as { scope?: string; name?: string; description?: string; projectPath?: string; overwrite?: boolean };
+        const root = skillRootFor(p.scope, p.projectPath);
+        if (root === null) {
+          return { code: 1001, message: '参数错误：scope 非法或项目作用域缺少 projectPath', data: null };
+        }
+        if (typeof p.name !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(p.name) || p.name.length > 64) {
+          return { code: 1001, message: '名称不合法：仅小写字母/数字/连字符，以字母或数字开头，不超过 64 字符', data: null };
+        }
+        if (typeof p.description !== 'string' || p.description.trim() === '') {
+          return { code: 1001, message: '描述不能为空', data: null };
+        }
+        const dest = `${root}/${p.name}`;
+        const existing = findMockSkill(dest);
+        if (existing && !p.overwrite) {
+          return { code: 4090, message: `目标已存在同名 skill 目录：${dest}`, data: { conflictPath: dest } };
+        }
+        if (existing) mockSkills.splice(mockSkills.indexOf(existing), 1);
+        mockSkills.push(mockSkillEntry(p.name, p.description.trim(), p.scope === 'project' ? 'project' : 'user', dest));
+        return { code: 0, message: 'ok', data: { path: dest, name: p.name } };
+      }
+      case 'skill/deleteSkill': {
+        const p = params as { path?: string };
+        const target = typeof p.path === 'string' ? findMockSkill(p.path) : undefined;
+        if (!target) {
+          return { code: 1002, message: 'skill 目录不存在（可能已被外部删除），请刷新列表', data: null };
+        }
+        mockSkills.splice(mockSkills.indexOf(target), 1);
+        // mock 恒回收站成功（真实端降级语义 trashed=false 由 E2E seed 覆盖模拟）
+        return { code: 0, message: 'ok', data: { path: target.dirPath, trashed: true } };
+      }
       default:
         return { code: 0, message: 'ok', data: null };
     }

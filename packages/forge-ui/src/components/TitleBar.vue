@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 /**
  * 一体化壳层（prototypes/unified-shell-full.html）：本组件退化为「右列顶栏」——
@@ -46,10 +49,10 @@ onUnmounted(() => {
     <div class="titlebar-spacer"></div>
 
     <div v-if="!isMac" class="titlebar-controls">
-      <button class="titlebar-btn minimize" aria-label="最小化" @click="onMinimize">
+      <button class="titlebar-btn minimize" :aria-label="t('app.minimize')" @click="onMinimize">
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5h6" stroke="currentColor" stroke-width="1" stroke-linecap="square"/></svg>
       </button>
-      <button class="titlebar-btn maximize" :aria-label="isMaximized ? '还原' : '最大化'" @click="onToggleMaximize">
+      <button class="titlebar-btn maximize" :aria-label="isMaximized ? t('app.restore') : t('app.maximize')" @click="onToggleMaximize">
         <svg v-if="isMaximized" width="10" height="10" viewBox="0 0 10 10">
           <rect x="2.5" y="0.5" width="6" height="6" stroke="currentColor" stroke-width="1" fill="none"/>
           <rect x="0.5" y="2.5" width="6" height="6" stroke="currentColor" stroke-width="1" fill="none"/>
@@ -58,7 +61,7 @@ onUnmounted(() => {
           <rect x="1.5" y="1.5" width="7" height="7" stroke="currentColor" stroke-width="1" fill="none"/>
         </svg>
       </button>
-      <button class="titlebar-btn close" aria-label="关闭" @click="emit('request-exit')">
+      <button class="titlebar-btn close" :aria-label="t('common.close')" @click="emit('request-exit')">
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1" stroke-linecap="square"/></svg>
       </button>
     </div>

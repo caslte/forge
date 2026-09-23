@@ -67,6 +67,11 @@ export type ForgeMethod =
   | 'subagent/stop'
   | 'subagent/clearFinished'
   | 'subagent/queryOutput'
+  // skill（09：Skill 管理，docs/prd/09_skill_management.md）
+  | 'skill/listSkills'
+  | 'skill/importSkill'
+  | 'skill/createSkill'
+  | 'skill/deleteSkill'
   // pi（07）
   | 'pi/getInfo'
   | 'pi/updatePlugins'
@@ -277,6 +282,14 @@ export interface SubagentRemovedPayload {
   sessionId: string;
   agentIds: string[];
 }
+
+/**
+ * Skill 管理（09）契约类型（事实来源在 ./pi/skillService.ts；type-only 再导出，
+ * 不会把 pi SDK 拉进 preload 运行时 bundle）。forge-ui 按仓库惯例在 types.ts 独立
+ * 声明同形类型。4090 = 同名冲突待确认（data.conflictPath，UI 弹确认后带
+ * overwrite=true 重调）。
+ */
+export type { SkillScope, SkillEntry, SkillIssue, ListSkillsResult } from './pi/skillService.ts';
 
 /** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json） */
 export interface PiGetInfoResult {

@@ -47,6 +47,9 @@ import {
   TODO_AUTO_HIDE_DELAY_MS,
   type TodoSnapshot,
 } from '../utils/todoPanel';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 当前会话 id；面板可见性 = 快照有 visible task（不依赖 sessionId 显式校验，
@@ -304,7 +307,7 @@ defineExpose({
       :aria-expanded="!collapsed"
       @click="toggleCollapsed"
     >
-      <span class="todo-heading-text">已完成 <span class="roll-num" data-testid="todo-completed-num"><Transition name="num-roll"><span :key="counts.completed" class="num-val">{{ counts.completed }}</span></Transition></span> / 共 {{ counts.total }} 个</span>
+      <span class="todo-heading-text">{{ t('panels.todo.completedPrefix') }} <span class="roll-num" data-testid="todo-completed-num"><Transition name="num-roll"><span :key="counts.completed" class="num-val">{{ counts.completed }}</span></Transition></span>{{ t('panels.todo.totalSuffix', { total: counts.total }) }}</span>
       <span class="todo-heading-chevron" aria-hidden="true">{{ chevron }}</span>
     </button>
     <Transition name="todo-collapse">

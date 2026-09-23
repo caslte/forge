@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, computed } from 'vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   message: string;
@@ -51,7 +54,7 @@ const parsed = computed(() => {
       </span>
     </div>
 
-    <button class="ghost toast-close" aria-label="关闭" @click="emit('close')">
+    <button class="ghost toast-close" :aria-label="t('common.close')" @click="emit('close')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <path d="M6 6l12 12M18 6L6 18" />
       </svg>

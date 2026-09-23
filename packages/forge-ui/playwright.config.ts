@@ -30,6 +30,10 @@ export default defineConfig({
   ],
   use: {
     baseURL: DEV_URL,
+    // 模块 08 i18n：偏好默认 system 按 navigator.language 判定；Playwright 默认 en-US
+    // 会把整页渲染成英文，打爆全部中文文本选择器。钉死 zh-CN 保持既有用例语义
+    // （语言切换本身由 SettingsPanel 语言行用例覆盖）。
+    locale: 'zh-CN',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'on-first-retry',

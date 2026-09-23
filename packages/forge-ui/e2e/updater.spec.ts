@@ -46,7 +46,7 @@ test('E-IN-001 @P0 发现新版本：toast 一次 + 分区常驻「更新」按�
   await openAboutTab(page);
 
   // 常驻：版本行内「0.1.0 → 0.2.0」+ 更新按钮
-  await expect(page.locator('.version-row .version-next')).toHaveText('0.2.0');
+  await expect(page.locator('.version-row .version-next')).toHaveText('v0.2.0');
   await expect(page.locator('.up-btn')).toHaveText(/更新/);
   // toast 提示一次
   await expect(page.locator('.toast .toast-message').filter({ hasText: '发现新版本' })).toHaveCount(1);
@@ -55,7 +55,7 @@ test('E-IN-001 @P0 发现新版本：toast 一次 + 分区常驻「更新」按�
   await page.locator('.settings-close').click();
   await page.locator('.sidebar-link', { hasText: '设置' }).click();
   await page.locator('.settings-tab', { hasText: '关于' }).click();
-  await expect(page.locator('.version-row .version-next')).toHaveText('0.2.0');
+  await expect(page.locator('.version-row .version-next')).toHaveText('v0.2.0');
   await expect(page.locator('.toast .toast-message').filter({ hasText: '发现新版本' })).toHaveCount(0);
 
   // 全程无「组件/插件」自更新文案（明面只有 forge 产品更新）
@@ -88,7 +88,7 @@ test('E-IN-002 @P0 下载进度→重启安装→确认弹窗→捕获 quitAndIn
   await openAboutTab(page);
 
   // 进入关于 Tab 自动检查 → 发现新版（版本行内「0.1.0 → 0.2.0」）
-  await expect(page.locator('.version-row .version-next')).toHaveText('0.2.0');
+  await expect(page.locator('.version-row .version-next')).toHaveText('v0.2.0');
 
   // 点「更新」→ 下载中（按钮 busy，进度走进度条；mock emit 首参为 sessionId，无会话事件传 ''）
   await page.locator('.up-btn').click();

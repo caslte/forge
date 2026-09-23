@@ -6,8 +6,11 @@
  * 主线程是唯一空闲资源——严禁在此 import renderMarkdown/hljs 等重模块或发任何
  * forge:invoke 请求（invoke handler 尚未注册）。样式与 App 底色 #f6f8fa 对齐。
  */
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import logoMain from '../assets/logo-main.png';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 /**
  * 轮换文案：纯前端节奏，与主进程进度无关联（避免虚假进度条）。
@@ -15,18 +18,18 @@ import logoMain from '../assets/logo-main.png';
  * 欢迎页常态时长从 ~2.7s 变 4~7s——轮换节奏放慢到 1600ms、档位加到四档，
  * 覆盖预热窗口；最后一档如实告知「还需几秒」，不承诺精确进度。
  */
-const PHASES = [
-  '正在准备运行环境',
-  '正在加载 AI 引擎',
-  '正在准备会话引擎',
-  '马上就好，可能还需几秒',
-] as const;
+const PHASES = computed(() => [
+  t('app.bootPhasePrepareEnv'),
+  t('app.bootPhaseLoadEngine'),
+  t('app.bootPhaseSessionEngine'),
+  t('app.bootPhaseAlmostReady'),
+]);
 const phaseIndex = ref(0);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 onMounted(() => {
   timer = setInterval(() => {
-    if (phaseIndex.value < PHASES.length - 1) phaseIndex.value += 1;
+    if (phaseIndex.value < PHASES.value.length - 1) phaseIndex.value += 1;
   }, 1600);
 });
 onUnmounted(() => {
@@ -40,7 +43,7 @@ onUnmounted(() => {
       <img class="boot-logo-img" :src="logoMain" alt="" draggable="false" />
     </div>
     <div class="boot-name">Forge</div>
-    <div class="boot-spinner" role="status" aria-label="加载中" />
+    <div class="boot-spinner" role="status" :aria-label="t('app.bootLoading')" />
     <div class="boot-phase">{{ PHASES[phaseIndex] }}…</div>
   </div>
 </template>

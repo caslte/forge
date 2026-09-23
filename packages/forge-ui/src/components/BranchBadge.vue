@@ -2,6 +2,9 @@
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import type { GitBranchInfo } from '../types';
 import { filterBranches, shouldAskConfirm, displayBranch } from '../utils/branchBadge';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 /**
  * 分支徽标与切换浮窗（PM-S05，AC-PM-013/014/016/017，docs/api/01_project.md §10/§11）。
@@ -143,7 +146,7 @@ async function doSwitch(branch: string): Promise<void> {
       type="button"
       class="meta-link git-pill"
       :class="{ 'is-busy': busy }"
-      :data-tooltip="busy ? '会话执行中' : '切换分支'"
+      :data-tooltip="busy ? t('project.sessionBusy') : t('project.switchBranch')"
       :aria-disabled="busy"
       @click="togglePanel"
     >
@@ -165,10 +168,10 @@ async function doSwitch(branch: string): Promise<void> {
           v-model="query"
           class="git-filter"
           type="text"
-          placeholder="过滤分支…"
+          :placeholder="t('project.filterBranches')"
           spellcheck="false"
         />
-        <div v-if="filtered.length === 0" class="git-empty">无其他分支</div>
+        <div v-if="filtered.length === 0" class="git-empty">{{ t('project.noOtherBranches') }}</div>
         <button
           v-for="b in filtered"
           :key="b"
@@ -178,18 +181,18 @@ async function doSwitch(branch: string): Promise<void> {
           @click="pickBranch(b)"
         >
           <span>{{ b }}</span>
-          <span v-if="b === info?.branch" class="git-current">当前</span>
+          <span v-if="b === info?.branch" class="git-current">{{ t('project.current') }}</span>
         </button>
         <div v-if="stderr" class="git-stderr">{{ stderr }}</div>
       </template>
       <template v-else>
-        <div class="menu-hint">确认切换分支</div>
+        <div class="menu-hint">{{ t('project.confirmSwitchBranch') }}</div>
         <div class="git-confirm-desc">
-          工作区有未提交更改，建议先提交或暂存
+          {{ t('project.dirtySwitchWarning') }}
         </div>
         <div class="git-confirm-actions">
-          <button type="button" class="git-btn" @click="closePanel">取消</button>
-          <button type="button" class="git-btn git-btn-danger" @click="doSwitch(pendingBranch)">仍要切换</button>
+          <button type="button" class="git-btn" @click="closePanel">{{ t('common.cancel') }}</button>
+          <button type="button" class="git-btn git-btn-danger" @click="doSwitch(pendingBranch)">{{ t('project.switchAnyway') }}</button>
         </div>
       </template>
     </div>

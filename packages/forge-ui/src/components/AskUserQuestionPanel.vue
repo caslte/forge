@@ -59,6 +59,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { renderMarkdown } from '@forge/core/markdown';
+import { useI18n } from '../i18n/index.ts';
 import type {
   AskUserQuestionAnswer,
   AskUserQuestionItem,
@@ -85,6 +86,8 @@ import {
   type AskDraft,
   type AskUserAnsweredState,
 } from '../utils/askUserQuestion';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 当前会话 id（仅用于调试/断言；归属判定在 composable 内完成） */
@@ -303,7 +306,7 @@ const answeredSummary = computed(() => summarizeAskAnswers(props.answered?.answe
 const answeredTotal = computed(() => props.answered?.questions.length ?? 0);
 const answeredCountFinal = computed(() => props.answered?.answers.length ?? 0);
 const answeredHeading = computed(
-  () => props.answered?.questions[0]?.question ?? '问卷已作答',
+  () => props.answered?.questions[0]?.question ?? t('dialogs.ask.answeredHeading'),
 );
 
 const showInteractive = computed(() => props.request !== null);
@@ -311,7 +314,7 @@ const showAnswered = computed(() => props.request === null && props.answered !==
 const visible = computed(() => showInteractive.value || showAnswered.value);
 const headingText = computed(() => {
   if (showAnswered.value) return answeredHeading.value;
-  if (onNoteTab.value) return '备注';
+  if (onNoteTab.value) return t('dialogs.ask.note');
   const q = activeQuestion.value;
   return q === null ? '' : q.question;
 });
@@ -496,7 +499,7 @@ onBeforeUnmount(() => {
         <!-- 操作条：折叠时随之隐藏（收起了就没有可操作的正文） -->
         <div v-if="showInteractive && !collapsed" class="ask-head-actions" @click.stop>
           <span class="ask-progress" data-testid="ask-progress">
-            已答 {{ answeredCount }}/{{ questions.length }}
+            {{ t('dialogs.ask.progress', { count: answeredCount, total: questions.length }) }}
           </span>
           <button
             v-if="isMultiQuestion && canStepPrev(activeTab)"
@@ -504,20 +507,20 @@ onBeforeUnmount(() => {
             class="ask-btn ask-btn-mini ask-btn-nav"
             data-testid="ask-prev"
             @click="stepPrev"
-          >上一题</button>
+          >{{ t('dialogs.ask.prev') }}</button>
           <button
             v-if="isMultiQuestion && canStepNext(activeTab, questions.length)"
             type="button"
             class="ask-btn ask-btn-mini ask-btn-nav"
             data-testid="ask-next"
             @click="stepNext"
-          >下一题</button>
+          >{{ t('dialogs.ask.next') }}</button>
           <button
             type="button"
             class="ask-btn ask-btn-mini"
             data-testid="ask-cancel"
             @click="submit(true)"
-          >取消</button>
+          >{{ t('common.cancel') }}</button>
           <button
             v-if="isLastStep(activeTab, questions.length)"
             type="button"
@@ -526,16 +529,16 @@ onBeforeUnmount(() => {
             :title="
               canSubmitAnswers(draftAnswers)
                 ? undefined
-                : '至少要作答一题；只想拒绝作答请点「取消」'
+                : t('dialogs.ask.submitDisabledHint')
             "
             data-testid="ask-submit"
             @click="submit(false)"
-          >提交答案</button>
+          >{{ t('dialogs.ask.submit') }}</button>
         </div>
 
-        <span v-if="showAnswered" class="ask-meta done" data-testid="ask-meta-done">已回答</span>
+        <span v-if="showAnswered" class="ask-meta done" data-testid="ask-meta-done">{{ t('dialogs.ask.answered') }}</span>
         <span v-else class="ask-meta live" data-testid="ask-meta-live">
-          等待回答 · {{ remaining }}s
+          {{ t('dialogs.ask.waiting', { seconds: remaining }) }}
         </span>
         <span v-if="!showAnswered" class="ask-chevron" aria-hidden="true">
           {{ collapsed ? '▸' : '▾' }}
@@ -545,12 +548,12 @@ onBeforeUnmount(() => {
       <!-- 已答折叠摘要 -->
       <div v-if="showAnswered" class="ask-answered" data-testid="ask-answered-summary">
         <span class="ask-pill">
-          已答 {{ answeredCountFinal }}/{{ answeredTotal }}
-          <template v-if="answered?.cancelled">（已取消）</template>
+          {{ t('dialogs.ask.progress', { count: answeredCountFinal, total: answeredTotal }) }}
+          <template v-if="answered?.cancelled">{{ t('dialogs.ask.cancelledTag') }}</template>
         </span>
         <span class="ask-answered-text">{{ answeredSummary }}</span>
         <span v-if="answered?.globalNote" class="ask-answered-note">
-          备注：{{ answered.globalNote }}
+          {{ t('dialogs.ask.noteValue', { note: answered.globalNote }) }}
         </span>
       </div>
 
@@ -584,7 +587,7 @@ onBeforeUnmount(() => {
                 @click="switchTab(noteTabIndex)"
               >
                 <span class="ask-tab-dot" aria-hidden="true" />
-                <span class="ask-tab-label">备注</span>
+                <span class="ask-tab-label">{{ t('dialogs.ask.note') }}</span>
               </button>
             </div>
 
@@ -594,14 +597,14 @@ onBeforeUnmount(() => {
                 v-model="globalNote"
                 class="ask-note-input"
                 data-testid="ask-global-note"
-                placeholder="备注…"
+                :placeholder="t('dialogs.ask.notePlaceholder')"
                 rows="3"
               />
             </div>
 
             <!-- 题目 tab：多选提示 + 选项列表（带 preview 时左右分栏）+「自己答」选项 -->
             <template v-else-if="activeQuestion">
-              <p v-if="activeQuestion.multiSelect" class="ask-multi-hint">可多选</p>
+              <p v-if="activeQuestion.multiSelect" class="ask-multi-hint">{{ t('dialogs.ask.multiHint') }}</p>
               <div class="ask-question-layout" :class="{ 'ask-split': previewMode }">
                 <div class="ask-option-list" data-testid="ask-option-list">
                   <button
@@ -625,7 +628,7 @@ onBeforeUnmount(() => {
                         class="ask-recommended"
                         :title="RECOMMENDED_SUFFIX.slice(1, -1)"
                         data-testid="ask-recommended-tag"
-                      >推荐</span>
+                      >{{ t('dialogs.ask.recommendedTag') }}</span>
                       <span class="ask-option-desc">{{ option.description }}</span>
                     </span>
                   </button>
@@ -645,9 +648,9 @@ onBeforeUnmount(() => {
                   >
                     <span class="ask-option-marker" aria-hidden="true" />
                     <span class="ask-option-label">
-                      <span class="ask-option-name">✎ 自己答</span>
+                      <span class="ask-option-name">{{ t('dialogs.ask.customOption') }}</span>
                       <span class="ask-option-desc">
-                        {{ activeQuestion.multiSelect === true ? '可与其他选项同时选' : '输入自定义答案' }}
+                        {{ activeQuestion.multiSelect === true ? t('dialogs.ask.customMultiDesc') : t('dialogs.ask.customInputPlaceholder') }}
                       </span>
                     </span>
                   </button>
@@ -667,7 +670,7 @@ onBeforeUnmount(() => {
                 ref="customRef"
                 class="ask-custom-input"
                 data-testid="ask-custom-input"
-                placeholder="输入自定义答案"
+                :placeholder="t('dialogs.ask.customInputPlaceholder')"
                 :value="activeDraft.custom"
                 @input="onCustomInput(($event.target as HTMLTextAreaElement).value)"
               />
@@ -678,7 +681,7 @@ onBeforeUnmount(() => {
                   v-model="globalNote"
                   class="ask-note-input"
                   data-testid="ask-global-note"
-                  placeholder="备注…"
+                  :placeholder="t('dialogs.ask.notePlaceholder')"
                   rows="2"
                 />
               </div>

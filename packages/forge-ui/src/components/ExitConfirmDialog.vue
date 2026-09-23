@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
+
 const emit = defineEmits<{
   (e: 'confirm'): void;
   (e: 'cancel'): void;
@@ -9,8 +13,8 @@ const emit = defineEmits<{
   <div class="overlay" @click.self="emit('cancel')">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="exit-title">
       <header class="dialog-header">
-        <h2 id="exit-title" class="dialog-title">确认退出</h2>
-        <button class="ghost dialog-close" aria-label="关闭" @click="emit('cancel')">
+        <h2 id="exit-title" class="dialog-title">{{ t('dialogs.exitConfirm.title') }}</h2>
+        <button class="ghost dialog-close" :aria-label="t('common.close')" @click="emit('cancel')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M6 6l12 12M18 6L6 18" />
           </svg>
@@ -18,12 +22,12 @@ const emit = defineEmits<{
       </header>
 
       <div class="dialog-body">
-        <p class="dialog-text">是否关闭 forge 窗口？</p>
+        <p class="dialog-text">{{ t('dialogs.exitConfirm.message') }}</p>
       </div>
 
       <footer class="dialog-footer">
-        <button @click="emit('cancel')">取消</button>
-        <button class="confirm-btn" @click="emit('confirm')">退出</button>
+        <button @click="emit('cancel')">{{ t('common.cancel') }}</button>
+        <button class="confirm-btn" @click="emit('confirm')">{{ t('dialogs.exitConfirm.exit') }}</button>
       </footer>
     </div>
   </div>
