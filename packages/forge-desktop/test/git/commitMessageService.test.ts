@@ -89,6 +89,8 @@ test('git/generateCommitMessage：成功单次调用并返回剥围栏后的首�
   const body = JSON.parse(call.init.body) as Record<string, unknown>;
   assert.equal(body.model, 'm-1');
   assert.equal(body.stream, false);
+  // 思考型模型预算修正：max_tokens 恒 1024（真机「空内容」反馈，2026-09-23）
+  assert.equal(body.max_tokens, 1024);
   const messages = body.messages as Array<{ role: string; content: string }>;
   assert.equal(messages.length, 2);
   assert.ok(messages[1]!.content.includes('Files (2):'));
@@ -146,6 +148,25 @@ test('git/generateCommitMessage：模型返回空内容 → 6008', async () => {
   const r = await methods['git/generateCommitMessage']({ path: 'C:/dev/a' });
   assert.equal(r.code, 6008);
   assert.match(r.message, /空内容/);
+});
+
+test('git/generateCommitMessage：HTTP 200 + base_resp 业务错误 → 6008 透传码与消息（MiniMax 形态）', async () => {
+  const { methods } = makeFakes({
+    fetchResponse: { ok: true, json: { base_resp: { status_code: 1004, status_msg: 'invalid api key' } } },
+  });
+  const r = await methods['git/generateCommitMessage']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 6008);
+  assert.match(r.message, /1004/);
+  assert.match(r.message, /invalid api key/);
+});
+
+test('git/generateCommitMessage：只有 reasoning_content 无正文 → 6008 提示思考模型（MiniMax-M3 形态）', async () => {
+  const { methods } = makeFakes({
+    fetchResponse: { ok: true, json: { choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: '让我分析一下这个 diff……' } }] } },
+  });
+  const r = await methods['git/generateCommitMessage']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 6008);
+  assert.match(r.message, /思考内容/);
 });
 
 test('git/generateCommitMessage：path 缺失 1001；未注册项目 1002', async () => {

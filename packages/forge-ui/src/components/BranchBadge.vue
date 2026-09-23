@@ -15,7 +15,7 @@ const { t } = useI18n();
 const props = defineProps<{
   /** 项目规范化路径（git 查询目标） */
   projectPath: string;
-  /** 项目忙（任一会话 streaming）：禁用徽标 */
+  /** 忙（当前会话自身 streaming）：禁用徽标；同项目其他会话执行中不锁（2026-09-23 口径修正） */
   busy: boolean;
   /** 项目显示名（GC-S11「提交或推送…」入口透传给弹窗副标题） */
   projectName?: string;

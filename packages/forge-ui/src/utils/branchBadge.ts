@@ -1,8 +1,9 @@
 /**
- * 分支徽标纯函数（PM-S05，AC-PM-013/014/016/017）。
+ * 分支徽标纯函数（PM-S05，AC-PM-013/014/017）。
+ * 忙态口径（2026-09-23 修正）：只看当前会话自身 streaming，非项目级，故无项目忙纯函数。
  * 契约：docs/api/01_project.md §10/§11。
  */
-import type { GitBranchInfo, SessionItem } from '../types';
+import type { GitBranchInfo } from '../types';
 
 /** 浮窗分支过滤：空查询返回全量；大小写不敏感子串匹配；不改入参 */
 export function filterBranches(branches: string[], query: string): string[] {
@@ -14,11 +15,6 @@ export function filterBranches(branches: string[], query: string): string[] {
 /** 未提交更改确认决策：dirty 且目标 ≠ 当前分支时需确认（AC-PM-017 前置） */
 export function shouldAskConfirm(dirty: boolean, target: string, current: string): boolean {
   return dirty && target !== current;
-}
-
-/** 项目忙判定：该项目任一会话 status === 'streaming'（AC-PM-016 流式禁用） */
-export function isProjectBusy(sessions: SessionItem[], projectPath: string): boolean {
-  return sessions.some((s) => s.projectPath === projectPath && s.status === 'streaming');
 }
 
 /** 徽标显示文案：非 git 项目 null（不渲染徽标）；detached 时 branch 字段即短 SHA（§10） */

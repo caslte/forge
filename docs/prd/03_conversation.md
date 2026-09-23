@@ -464,7 +464,7 @@
   - **协议分层**（TD-CV-12）：工具注册用 pi 官方 `registerTool` SDK；`questions[]` 入参与 `details` 出参照抄 rpiv 私有约定（本地固化，不跟随上游）；传输通道（事件名 / RPC 方法 / `requestId` / 超时）为 forge 自有设计。
   - **投递**：扩展在 `execute` 内投递 `ask-user:request`（`{ requestId, questions, timeoutMs }`）到**该会话私有**的扩展事件总线 → 适配器按会话订阅并补齐必需 `sessionId` → 上抛 `conversation.askUserQuestionRequested`（已登记 `FORGE_EVENTS` 白名单）→ 渲染进程各窗格按 `sessionId` 认领。
   - **回填**：`askUserQuestion/reply` RPC（`{ sessionId, requestId, answers, cancelled, globalNote? }`）→ 适配器 `replyAskUserQuestion` 经该会话总线 emit `ask-user:reply:{requestId}` → 扩展侧 await 的 Promise 兑现 → 工具返回 `{ content:[{type:'text',text:envelope}], details }`。
-  - **超时双阈值**：`DEFAULT_ASK_USER_TIMEOUT_MS = 60s` 随请求下发给面板驱动倒计时；面板**归零时主动回填**「已答部分 + `cancelled:true`」；扩展侧实际等待 `60s + ASK_USER_REPLY_GRACE_MS(1.5s)` 作为安全网。错开 1.5s 是为避免「扩展先超时 → 已答部分丢失」的竞态。
+  - **超时双阈值**：`DEFAULT_ASK_USER_TIMEOUT_MS = 600s`（10 分钟）随请求下发给面板驱动倒计时；面板**归零时主动回填**「已答部分 + `cancelled:true`」；扩展侧实际等待 `600s + ASK_USER_REPLY_GRACE_MS(1.5s)` 作为安全网。错开 1.5s 是为避免「扩展先超时 → 已答部分丢失」的竞态。
   - **preview 不回流**：`details.answers[].preview` 照常填充供 UI 展示，但模型侧 envelope **不含** `selected preview:` 段（rpiv 因 CLI 无面板被迫回流；forge 有真面板，省 token）。
   - **推荐标记双通道**：模型可能按新约定置 `options[].recommended = true`，也可能沿用旧习惯在 label 尾部加 `(Recommended)`。UI 两条通道都识别；识别到后缀时**仅显示层**剥离，回填给模型的 label 保持原始值。
   - **校验**：`validateQuestionnaire` 6 条规则（无题目 / 超 4 题 / 题干重复 / 选项为空 / 保留标签 / 选项标签重复）在扩展侧拦截，失败直接返回 `cancelled:true + error`，不投递面板。

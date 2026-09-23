@@ -3,7 +3,6 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe, getBootState } from './bridge';
 import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
 import { projectTagOf } from './utils/sessionView';
-import { isProjectBusy } from './utils/branchBadge';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
 import { useI18n } from './i18n/index.ts';
@@ -226,9 +225,6 @@ watch(
   { flush: 'post' },
 );
 
-/** 项目忙（PM-S05 AC-PM-016）：当前项目任一会话 streaming 时分支徽标禁用 */
-const projectBusy = computed(() => isProjectBusy(sessions.value, currentProjectPath.value ?? ''));
-
 const sessionError = ref<string | null>(null);
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
 function showError(msg: string): void {
@@ -412,6 +408,8 @@ function onCreateSession(sessionProjectPath?: string): void {
   if (target !== null && target !== currentProjectPath.value) void selectProject(target);
   currentSessionId.value = null;
   draftMode.value = true;
+  // 新会话且输入为空：还原被手动拖高的输入框（等本 tick 会话切换 watch 清完文本再判定）
+  nextTick(() => convRef.value?.resetInputHeightIfEmpty());
 }
 
 /**
@@ -880,7 +878,6 @@ onUnmounted(() => {
                 :models="models"
                 :current-model="currentSessionModel"
                 :project-picker="projectPicker ?? undefined"
-                :git-busy="projectBusy"
                 @model-change="onModelChange"
                 @pick-project="onPickProject"
                 @open-project-picker="openFolderPicker"
@@ -897,7 +894,6 @@ onUnmounted(() => {
               :models="models"
               :current-model="currentSessionModel"
               :project-picker="projectPicker ?? undefined"
-              :git-busy="projectBusy"
               @model-change="onModelChange"
               @session-created="onSessionCreated"
               @pick-project="onPickProject"

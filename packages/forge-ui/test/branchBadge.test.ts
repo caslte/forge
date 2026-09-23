@@ -1,11 +1,12 @@
 /**
- * 分支徽标纯函数单测（PM-S05，AC-PM-013/014/016/017，
+ * 分支徽标纯函数单测（PM-S05，AC-PM-013/014/017，
  * docs/api/01_project.md §10/§11 契约）。
  *
  * 覆盖：filterBranches（空查询/大小写不敏感命中/无匹配）、
  * shouldAskConfirm（dirty 且目标≠当前才确认）、
- * isProjectBusy（空数组/命中 streaming/非 streaming 不算/detached 不算 busy——
- * detached 是分支状态与会话无关）、displayBranch（非 git null / detached 短 SHA / 正常分支名）。
+ * displayBranch（非 git null / detached 短 SHA / 正常分支名）。
+ * 忙态判定（AC-PM-016）2026-09-23 起为「当前会话自身 streaming」，
+ * 收敛在 InstructionInput 的 computed，不再是项目级纯函数。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,15 +14,9 @@ import assert from 'node:assert/strict';
 import {
   filterBranches,
   shouldAskConfirm,
-  isProjectBusy,
   displayBranch,
 } from '../src/utils/branchBadge.ts';
 import type { GitBranchInfo } from '../src/types.ts';
-import type { SessionItem } from '../src/types.ts';
-
-function sess(projectPath: string, status: SessionItem['status']): SessionItem {
-  return { sessionId: 's-' + Math.random().toString(36).slice(2), projectPath, alias: null, status, lastActiveAt: '' };
-}
 
 function info(partial: Partial<GitBranchInfo>): GitBranchInfo {
   return { isGitRepo: true, branch: 'main', branches: ['main'], dirty: false, detached: false, ...partial };
@@ -57,27 +52,6 @@ test('shouldAskConfirm: dirty 但目标=当前 → false', () => {
 
 test('shouldAskConfirm: 不 dirty → false', () => {
   assert.equal(shouldAskConfirm(false, 'feat/x', 'main'), false);
-});
-
-// ===== isProjectBusy =====
-
-test('isProjectBusy: 空会话数组 → false', () => {
-  assert.equal(isProjectBusy([], 'D:/a'), false);
-});
-
-test('isProjectBusy: 该项目存在 streaming 会话 → true', () => {
-  const sessions = [sess('D:/a', 'idle'), sess('D:/a', 'streaming'), sess('D:/b', 'streaming')];
-  assert.equal(isProjectBusy(sessions, 'D:/a'), true);
-});
-
-test('isProjectBusy: 只有其他项目 streaming / 本项目非 streaming → false', () => {
-  const sessions = [sess('D:/b', 'streaming'), sess('D:/a', 'done'), sess('D:/a', 'idle')];
-  assert.equal(isProjectBusy(sessions, 'D:/a'), false);
-});
-
-test('isProjectBusy: detached 分支状态不影响 busy 判定（busy 只看会话 status）', () => {
-  const sessions = [sess('D:/a', 'done')];
-  assert.equal(isProjectBusy(sessions, 'D:/a'), false);
 });
 
 // ===== displayBranch =====

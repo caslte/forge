@@ -21,7 +21,7 @@ forge 的 git 能力目前止于**分支查看与切换**（`gitService.ts` 的 
 | GC-S03 | 提交执行 | 可靠落库 | 勾选=先 `git add -A` 再 commit；不勾=只 commit 已暂存内容，**暂存区为空时提交/提交并推送按钮禁用并提示**；成功后 toast 含 commit 短哈希与文件数，弹窗关闭 | 不做 patch 级部分暂存（文件级 add -A 语义，用户手动 stage 的内容与全量合并提交） |
 | GC-S04 | 推送执行 | 一键出网 | 推送当前分支到 origin（`git push`，无 upstream 时 `-u origin <branch>`）；失败时**弹窗不关**，git 原始 stderr 展示在弹窗内错误区（参照 BranchBadge 6001 模式） | 不做 force push、不做远程选择、不代输凭据（凭据走用户 git 全局配置/管理器） |
 | GC-S05 | AI 生成提交说明 | 免手写 | 点「AI 生成」→ 主进程单次 OpenAI 兼容 `chat/completions` 调用（当前会话模型所在 provider）→ 填入 textarea（可手改、可重新生成）；生成中按钮转圈禁用 | 不起 agent 会话（用户已确认口径）；不做"留空自动提交时生成"（显式按钮触发）；不做仓库历史风格学习（第一版语言跟随 app locale，记待办） |
-| GC-S06 | 并发保护 | 防提交半成品 | 项目 busy（任一会话 streaming）时入口禁用（复用 BranchBadge 的 busy prop 与 AC-PM-016 同款语义，tooltip「会话进行中」）；弹窗打开后 agent 开始跑 → 提交按钮不额外禁用（git 原子性由 CLI 保证），但 toast 如实反映结果 | 不做提交前 diff 预览、不做 pre-commit hook 定制 |
+| GC-S06 | 并发保护 | 防提交半成品 | **当前会话自身** streaming 时入口禁用（2026-09-23 用户口径修正：判定粒度=当前会话而非项目，同项目其他会话执行中不锁本会话——不同会话可以提交不同的代码；BranchBadge busy 同步改口径），tooltip「会话执行中」；弹窗打开后 agent 开始跑 → 提交按钮不额外禁用（git 原子性由 CLI 保证），但 toast 如实反映结果 | 不做提交前 diff 预览、不做 pre-commit hook 定制 |
 
 ### 1.3 边界与权限
 
@@ -170,7 +170,7 @@ AI 生成：点按钮 → 主进程 git diff HEAD（截断）→ 读当前会话
 
 | AC ID | 验收事实 | 验证层级 | 场景 | 风险维度 | 边界条件 |
 |---|---|---|---|---|---|
-| AC-11-13 | 会话 streaming 中两入口禁用，空闲恢复 | e2e | GC-S06 | 竞态 | 与 AC-PM-016 同语义 |
+| AC-11-13 | 当前会话 streaming 中两入口禁用，空闲恢复；其他会话 streaming 不锁本会话入口 | e2e | GC-S06 | 竞态 | 与 AC-PM-016（2026-09-23 粒度修正后）同语义 |
 | AC-11-14 | 非 git 项目两入口消失 | e2e | GC-S01 | 降级 | — |
 
 ### 3.4 页面承载

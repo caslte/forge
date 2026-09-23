@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
 import { sortSessionsByActivation, projectTagOf } from '../utils/sessionView';
@@ -445,23 +445,63 @@ function onWindowScroll(): void {
   if (menuOpenPath.value) closeMenu();
 }
 
+// 滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩
+const treeRoot = ref<HTMLElement | null>(null);
+const fadeTop = ref(false);
+const fadeBottom = ref(false);
+
+function updateTreeFade(): void {
+  const el = treeRoot.value;
+  if (!el) return;
+  fadeTop.value = el.scrollTop > 1;
+  fadeBottom.value = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+}
+
+let fadeObserver: ResizeObserver | null = null;
+function observeTreeFadeSource(): void {
+  const el = treeRoot.value;
+  if (!el) return;
+  fadeObserver?.disconnect();
+  // 观察容器自身（尺寸变化）与内容节点（增删/折叠动画导致的高度变化）
+  fadeObserver = new ResizeObserver(updateTreeFade);
+  fadeObserver.observe(el);
+  if (el.firstElementChild) fadeObserver.observe(el.firstElementChild);
+  updateTreeFade();
+}
+
+watch(
+  () => [props.projects, props.sessions, taskExpanded.value],
+  () => nextTick(observeTreeFadeSource),
+  { deep: true }
+);
+
 onMounted(() => {
   document.addEventListener('click', onDocumentClick, true);
   document.addEventListener('keydown', onDocumentKeydown);
   window.addEventListener('scroll', onWindowScroll, true);
+  window.addEventListener('resize', updateTreeFade);
+  observeTreeFadeSource();
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocumentClick, true);
   document.removeEventListener('keydown', onDocumentKeydown);
   window.removeEventListener('scroll', onWindowScroll, true);
+  window.removeEventListener('resize', updateTreeFade);
+  fadeObserver?.disconnect();
+  fadeObserver = null;
   clearDeleteConfirmTimer();
   clearProjectDeleteTimer();
 });
 </script>
 
 <template>
-  <div class="project-tree">
+  <div
+    ref="treeRoot"
+    class="project-tree"
+    :class="{ 'fade-t': fadeTop, 'fade-b': fadeBottom }"
+    @scroll="updateTreeFade"
+  >
     <!-- 任务视角（SM-S06）：平摊全部会话，行尾项目 tag，排序与项目视角同规则 -->
     <template v-if="isTaskView">
       <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noSessions') }}</div>
@@ -778,6 +818,33 @@ onUnmounted(() => {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  /* 与侧栏上方「项目/任务」切换、下方「设置」保持固定间距（含渐隐区） */
+  margin: 6px 0;
+  --edge-fade: 28px;
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+}
+
+.project-tree.fade-t {
+  --fade-top: var(--edge-fade);
+}
+
+.project-tree.fade-b {
+  --fade-bottom: var(--edge-fade);
 }
 
 .project-tree::-webkit-scrollbar {
@@ -845,7 +912,7 @@ onUnmounted(() => {
   padding: 4px 12px;
   border-radius: var(--radius-lg);
   cursor: pointer;
-  color: var(--foreground);
+  color: color-mix(in oklab, var(--foreground) 80%, var(--muted-foreground));
   transition: background var(--transition-fast);
   min-width: 0;
 }
@@ -1023,12 +1090,21 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 12px 4px 24px;
+  gap: 6px;
+  padding: 2px 12px 2px 24px;
   border-radius: var(--radius-md);
   cursor: pointer;
-  color: var(--foreground);
+  color: var(--muted-foreground);
   min-width: 0;
+}
+
+.tree-session.active {
+  color: var(--foreground);
+}
+
+/* hover 高亮时文字恢复常规黑色 */
+.tree-session:hover {
+  color: var(--foreground);
 }
 
 /* hover 高亮走 ::before 伪元素做「从内向外微延展」（prototypes/session-hover-demo.html 方案 C）：

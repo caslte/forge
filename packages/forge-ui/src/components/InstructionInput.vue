@@ -48,6 +48,8 @@ const props = defineProps<{
   projectPath?: string;
   /** git 分支徽标目标项目路径（PM-S05）；未传则不渲染徽标 */
   gitProjectPath?: string;
+  /** 显式 false 时隐藏「提交或推送」入口（空会话 hero，2026-09-23 反馈）；缺省显示 */
+  commitEntry?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -183,9 +185,13 @@ let slashLoadGen = 0;
 const { success: toastSuccess, error: toastError } = useToast();
 const { t } = useI18n();
 
+/** git 徽标/提交入口的忙态（2026-09-23 用户口径修正）：只看当前会话自身是否 streaming，
+ *  同项目其他会话执行中不锁本会话的提交/切分支（不同会话可以提交不同的代码） */
+const gitBusy = computed(() => props.sessionStatus === 'streaming');
+
 /** 状态行「提交或推送」入口（GC-S11）：busy 禁用，弹窗挂在 App.vue 根 */
 function openCommitDialog(): void {
-  if (props.gitBusy || !props.gitProjectPath) return;
+  if (gitBusy.value || !props.gitProjectPath) return;
   openGitCommitDialog({
     projectPath: props.gitProjectPath,
     projectName: props.projectPicker?.currentName,
@@ -1131,8 +1137,15 @@ function getText(): string {
   return text.value;
 }
 
+/** 点「新会话」时由上层显式调用：无输入内容且无附件才把拖高过的盒子/textarea 还原为自然高度 */
+function resetHeightIfEmpty(): void {
+  if (text.value !== '' || attachments.value.length > 0) return;
+  if (inputBoxRef.value) inputBoxRef.value.style.height = '';
+  if (textareaRef.value) textareaRef.value.style.height = '';
+}
+
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
-defineExpose({ focus, currentLevel, restoreQueuedText, getText });
+defineExpose({ focus, currentLevel, restoreQueuedText, getText, resetHeightIfEmpty });
 
 /** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;
@@ -1581,14 +1594,14 @@ watch(
       <BranchBadge
         v-if="gitProjectPath"
         :project-path="gitProjectPath"
-        :busy="gitBusy ?? false"
+        :busy="gitBusy"
         :project-name="projectPicker?.currentName"
         :session-id="sessionId"
         @git-repo="gitIsRepo = $event"
       />
-      <!-- 提交或推送入口（GC-S11）：与分支徽标同排，busy 禁用同款灰置 -->
+      <!-- 提交或推送入口（GC-S11）：与分支徽标同排，busy 禁用同款灰置；hero 空态隐藏 -->
       <button
-        v-if="gitProjectPath && gitIsRepo"
+        v-if="gitProjectPath && gitIsRepo && commitEntry !== false"
         type="button"
         class="meta-link push-pill"
         :class="{ 'is-busy': gitBusy }"
@@ -2011,7 +2024,6 @@ watch(
 
 .proj-pill {
   font-weight: 600;
-  color: var(--foreground);
 }
 
 /* 会话中归属只读：不弹浮窗、去除可点反馈 */
@@ -2506,11 +2518,11 @@ watch(
 }
 </style>
 
-<!-- 暗色主题下 --brand 接近纯白 (oklch 0.88)，未聚焦边框仅 0.32，直接切换会突兀。
-     把暗色聚焦边框压到 brand 55% mix，让"聚焦"成为一次温和的提亮而非跳变。
-     ponytail: 调光旋钮是 mix %，想再亮一点改 65、再压一点改 45。light 不动。 -->
+<!-- 暗色 --brand 接近纯白 (oklch 0.88)，常态边框只 0.32，直接切换会突兀。
+     压到 40% brand mix，让聚焦成为几乎看不出的轻微提亮而非跳变；1px 细线不会看出环状。
+     ponytail: 想再亮一点改 50、再压一点改 35。light 不动。 -->
 <style>
 :root[data-theme='dark'] .compose-box:focus-within {
-  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+  border-color: color-mix(in oklab, var(--brand) 40%, transparent);
 }
 </style>

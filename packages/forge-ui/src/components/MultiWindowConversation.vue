@@ -21,8 +21,6 @@ const props = defineProps<{
   session: SessionItem | null;
   /** 可选模型列表（透传给输入框，与单视图一致） */
   models: string[];
-  /** 项目忙（PM-S05 AC-PM-016）：透传给分支徽标禁用 */
-  gitBusy?: boolean;
 }>();
 
 const currentModel = ref<string | null>(null);
@@ -76,7 +74,6 @@ onMounted(() => {
     :models="models"
     :current-model="currentModel"
     :project-picker="projectPicker"
-    :git-busy="gitBusy"
     @model-change="onModelChange"
   />
 </template>

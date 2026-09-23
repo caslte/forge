@@ -2,7 +2,6 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionItem } from '../types';
 import MultiWindowConversation from './MultiWindowConversation.vue';
-import { isProjectBusy } from '../utils/branchBadge';
 import { useI18n } from '../i18n/index.ts';
 import {
   detectSnapZone,
@@ -512,7 +511,6 @@ defineExpose({ arrangeAuto, clearAll });
             :session-id="w.sessionId"
             :session="sessionOf(w.sessionId) ?? null"
             :models="models"
-            :git-busy="isProjectBusy(props.sessions, sessionOf(w.sessionId)?.projectPath ?? '')"
           />
         </div>
       </div>

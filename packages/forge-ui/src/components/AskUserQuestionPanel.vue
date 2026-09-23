@@ -736,9 +736,9 @@ onBeforeUnmount(() => {
 }
 
 /* 暗色压暗外圈；light 不动。
-   ponytail: 想再亮改 65、再压改 45。 */
+   ponytail: 想再亮改 50、再压改 25。 */
 :root[data-theme='dark'] .ask-heading.is-toggle:focus-visible {
-  outline-color: color-mix(in oklab, var(--ring) 55%, transparent);
+  outline-color: color-mix(in oklab, var(--ring) 40%, transparent);
 }
 
 .ask-head-actions {

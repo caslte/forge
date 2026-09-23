@@ -38,8 +38,6 @@ const props = defineProps<{
   currentModel: string | null;
   /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
   projectPicker?: ProjectPickerDescriptor;
-  /** 项目忙（任一会话 streaming，PM-S05 AC-PM-016）：透传给分支徽标禁用 */
-  gitBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -196,7 +194,12 @@ function restoreDraft(text: string): void {
   inputRef.value?.restoreQueuedText([text]);
 }
 
-defineExpose({ restoreDraft });
+/** 点「新会话」：输入框无内容时还原被手动拖高的高度（App 经此透传，草稿态重复点击 sessionId 不变、watch 不触发） */
+function resetInputHeightIfEmpty(): void {
+  inputRef.value?.resetHeightIfEmpty();
+}
+
+defineExpose({ restoreDraft, resetInputHeightIfEmpty });
 
 function onModelChange(model: string): void {
   emit('model-change', model);
@@ -633,6 +636,7 @@ onUnmounted(() => {
               :project-path="props.session?.projectPath ?? ''"
               :show-diff="showDiff"
               @toggle-group="toggleGroup"
+              @send-suggestion="onSend"
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
             <div v-if="isStreaming" class="conv-thinking">
@@ -756,7 +760,7 @@ onUnmounted(() => {
         :project-path="props.project.path"
         :queue-items="queueItems"
         :git-project-path="props.projectPicker?.currentPath ?? props.project.path"
-        :git-busy="props.gitBusy ?? false"
+        :commit-entry="!isEmpty"
         @send="onSend"
         @cancel="onCancelTurn"
         @model-change="onModelChange"

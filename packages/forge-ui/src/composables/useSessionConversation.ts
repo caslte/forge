@@ -16,6 +16,7 @@ import { useStreamPhase } from './useStreamPhase.ts';
 import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
 import { createAskQuestionStore } from './askQuestionStore.ts';
 import { i18n } from '../i18n/index.ts';
+import { SUGGEST_NEXT_STEPS_TOOL_NAME } from '../constants.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
@@ -194,10 +195,18 @@ function dismissAskAnswered(): void {
           ...(footer ? { showFooter: footer.showFooter, copyText: footer.copyText } : {}),
         });
         i += 1;
+      } else if (cur.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {
+        // 契约 I3：建议工具消息永不聚组，单独成项渲染为芯片行
+        out.push({ key: itemKey(cur), kind: 'message', msg: cur, idx: i });
+        i += 1;
       } else {
         const start = i;
         const tools: ConversationMessage[] = [];
-        while (i < msgs.length && msgs[i]!.role === 'tool') {
+        while (
+          i < msgs.length &&
+          msgs[i]!.role === 'tool' &&
+          msgs[i]!.toolName !== SUGGEST_NEXT_STEPS_TOOL_NAME
+        ) {
           tools.push(msgs[i]!);
           i += 1;
         }

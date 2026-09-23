@@ -818,6 +818,8 @@ const bridge: ForgeBridge = {
         if (!g) return { code: 1002, message: '项目未注册: ' + cpath, data: null };
         const msg = (cp.message ?? '').trim();
         if (!msg) return { code: 1001, message: '参数错误：message 必须为非空字符串', data: null };
+        // 模拟真实 git 耗时（1.2s），让弹窗「提交中…」进行中态在浏览器 dev 可见
+        await new Promise((r) => setTimeout(r, 1200));
         if (msg === '__fail__') {
           return {
             code: 6006,
@@ -843,6 +845,8 @@ const bridge: ForgeBridge = {
         const pp = (params as { path?: string }).path ?? '';
         const g = DB.git[pp];
         if (!g) return { code: 1002, message: '项目未注册: ' + pp, data: null };
+        // 模拟真实 git 网络耗时（1.8s），让「推送中…」进行中态在浏览器 dev 可见
+        await new Promise((r) => setTimeout(r, 1800));
         if (!g.branch) {
           return { code: 6007, message: '无法推送：当前处于分离 HEAD 或分支不可解析', data: { stderr: '' } };
         }

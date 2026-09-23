@@ -15,5 +15,8 @@ export type { ReportedSlashCommand } from './slashCommandReporter.ts';
 /** ask_user_question 自建内置扩展（Path 2，契约见 docs/plan/ask-user-question-contract.md） */
 export * from './askUserQuestion/index.ts';
 
+/** suggest_next_steps 下一步建议工具（契约见 docs/plan/suggest-next-steps.md） */
+export * from './suggestNextSteps/index.ts';
+
 /** forge-extensions 包版本号（骨架期占位导出） */
 export const FORGE_EXTENSIONS_VERSION = '0.1.0';

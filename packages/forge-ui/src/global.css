@@ -124,11 +124,13 @@ textarea:focus {
 }
 
 /* 暗色主题：--brand 接近纯白 (oklch 0.88)，常态边框只 0.32，直接换 + 3px 光环会"闪"。
-   把 border 和光环都压到 55% brand mix，让焦点成为温和提亮。ponytail: 想再亮改 65%，再压改 45%。 */
+   把 border 压到 40% brand mix（贴近未聚焦的 0.32），让聚焦成为几乎看不出的轻微提亮；
+   光环在暗色下关掉，避免与细边框叠加成双圈。
+   ponytail: 想再亮一点改 50%，再压一点改 35%；border 同上，ring 直接 none 最稳。 */
 :root[data-theme='dark'] input:focus,
 :root[data-theme='dark'] textarea:focus {
-  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand) 7%, transparent);
+  border-color: color-mix(in oklab, var(--brand) 40%, transparent);
+  box-shadow: none;
 }
 
 /* 滚动条 */

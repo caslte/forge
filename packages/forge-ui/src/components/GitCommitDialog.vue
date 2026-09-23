@@ -11,7 +11,8 @@ import { useI18n } from '../i18n/index.ts';
  * prototypes/terminal-git-prototype.html 定稿 demo）。
  * 全量语义：只操作整个仓库（add -A 可含未暂存），无按会话提交、无文件清单/diff 统计。
  * 失败（6006/6007/6008/5000）在弹窗内展示 git 原始 stderr 或 message，弹窗不关（AC-PM-017 同款）。
- * 加载中（working）时三按钮与关闭全部禁用；成功后关闭弹窗并 toast。
+ * 加载中（working）时三按钮与关闭全部禁用，进行中的按钮换成 spinner+「提交中…/推送中…」；
+ * 成功后关闭弹窗并 toast。
  */
 const { t, activeLocale } = useI18n();
 const { success: toastSuccess } = useToast();
@@ -24,6 +25,8 @@ const includeUnstaged = ref(true);
 const generating = ref(false);
 /** 进行中的写操作（提交中三按钮+关闭全禁用） */
 const working = ref<null | 'commit' | 'push' | 'commit-push'>(null);
+/** commit-push 的当前小阶段：驱动「提交并推送」按钮文案 提交中…→推送中… */
+const phase = ref<'commit' | 'push'>('commit');
 const errText = ref<string | null>(null);
 
 const busy = computed(() => working.value !== null);
@@ -119,6 +122,7 @@ async function onPush(): Promise<void> {
 async function onCommitPush(): Promise<void> {
   if (!canCommit.value) return;
   working.value = 'commit-push';
+  phase.value = 'commit';
   errText.value = null;
   try {
     const c = await doCommit();
@@ -126,6 +130,7 @@ async function onCommitPush(): Promise<void> {
       await refresh();
       return;
     }
+    phase.value = 'push';
     const p = await doPush();
     if (p.ok) {
       toastSuccess(
@@ -171,6 +176,14 @@ function tryClose(): void {
   closeGitCommitDialog();
 }
 
+/** 进行中按钮的进行时文案（真机反馈：只禁用不给提示像卡死）；未在该操作返 null */
+function workingLabel(op: 'commit' | 'push' | 'commit-push'): string | null {
+  if (working.value !== op) return null;
+  if (op === 'push') return t('git.doingPush');
+  if (op === 'commit') return t('git.doingCommit');
+  return phase.value === 'commit' ? t('git.doingCommit') : t('git.doingPush');
+}
+
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') tryClose();
 }
@@ -191,6 +204,7 @@ watch(visible, (v) => {
   includeUnstaged.value = true;
   generating.value = false;
   working.value = null;
+  phase.value = 'commit';
   errText.value = null;
   void refresh();
 }, { immediate: true });
@@ -257,9 +271,15 @@ watch(visible, (v) => {
         </label>
         <span v-if="footHint" class="dlg-stat">{{ footHint }}</span>
         <span class="spacer"></span>
-        <button type="button" :disabled="!canPush" @click="onPush">{{ t('git.push') }}</button>
-        <button type="button" :disabled="!canCommit" @click="onCommitPush">{{ t('git.commitAndPush') }}</button>
-        <button type="button" class="confirm-btn" :disabled="!canCommit" @click="onCommit">{{ t('git.commit') }}</button>
+        <button type="button" :disabled="!canPush" @click="onPush">
+          <span v-if="working === 'push'" class="spin" aria-hidden="true"></span>{{ workingLabel('push') ?? t('git.push') }}
+        </button>
+        <button type="button" :disabled="!canCommit" @click="onCommitPush">
+          <span v-if="working === 'commit-push'" class="spin" aria-hidden="true"></span>{{ workingLabel('commit-push') ?? t('git.commitAndPush') }}
+        </button>
+        <button type="button" class="confirm-btn" :disabled="!canCommit" @click="onCommit">
+          <span v-if="working === 'commit'" class="spin" aria-hidden="true"></span>{{ workingLabel('commit') ?? t('git.commit') }}
+        </button>
       </footer>
     </div>
   </div>
@@ -358,6 +378,10 @@ watch(visible, (v) => {
 .dialog-footer button {
   white-space: nowrap;
   flex-shrink: 0;
+  /* 进行中态 spinner 与文案水平对齐 */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .dialog-footer .spacer {

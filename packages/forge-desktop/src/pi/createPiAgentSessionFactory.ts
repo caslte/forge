@@ -11,7 +11,7 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
-import { askUserQuestionExtension, slashCommandReporterExtension } from '@forge/extensions';
+import { askUserQuestionExtension, slashCommandReporterExtension, suggestNextStepsExtension } from '@forge/extensions';
 
 import type {
   MinimalPiSession,
@@ -204,7 +204,7 @@ export function createPiAgentSessionFactory(
       // CV-S08：命令上报扩展（slash-commands:reported）。
       // Path 2（ask_user_question 自建内置扩展，契约见 docs/plan/ask-user-question-contract.md）：
       // 与 rpiv 插件工具同名，靠下方 extensionsOverride 屏蔽插件本体，二者不共存。
-      extensionFactories: [slashCommandReporterExtension, askUserQuestionExtension],
+      extensionFactories: [slashCommandReporterExtension, askUserQuestionExtension, suggestNextStepsExtension],
       // 冲突处置（契约 §5 / 计划 §3.5）：用户环境 ~/.pi/agent/settings.json 的 packages
       // 含 @juicesharp/rpiv-ask-user-question，DefaultResourceLoader.reload() 会经
       // packageManager.resolve() 把它也加载进来并注册同名 ask_user_question。

@@ -99,8 +99,13 @@ AI 一键生成提交说明（GC-F05）。**参数**：
    （`queryProviderList` 已经 keychain 尝试解析 `$VAR`/`!cmd`；仍为 `$VAR` 时兜底查一次
    进程环境变量；未命中或 `!cmd` → 6008 引导重新保存）。
 3. **单次** 非流式 `{baseUrl}/chat/completions` fetch（TD-GC-02，不起 agent）：
-   `temperature 0.2`、`max_tokens 300`、`AbortSignal.timeout(30s)`；baseUrl 尾斜杠归一。
+   `temperature 0.2`、`max_tokens 1024`（原 300，思考型模型 reasoning 吃预算致空正文，
+   2026-09-23 真机反馈修正）、`AbortSignal.timeout(30s)`；baseUrl 尾斜杠归一。
 4. 响应后处理（`extractCommitMessage`）：剥 ``` 围栏、取首段非空、首尾 trim（PRD 口径不二次加工）。
+5. 网关形态兜底：HTTP 200 但 body 带 `base_resp.status_code≠0`（MiniMax 等）→ 6008 透传
+   码与 status_msg，不误报「空内容」；正文空但有 `reasoning_content` → 6008 明示
+   「只输出了思考内容没有正文」；真空内容分支打诊断日志（model/finish_reason/content 类型/
+   reasoning 字符数，只记形状不记内容）。
 
 成功响应 `data`：`{ "message": "feat: …" }`。失败统一 6008 + 可读 message；
 HTTP 非 2xx 日志只记状态码与模型名（响应体可能回显请求内容，刻意不记）。

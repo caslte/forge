@@ -29,7 +29,7 @@ export function askUserReplyChannel(requestId: string): string {
  * 面板倒计时时长（也是「用户未作答」的判定点）。此时刻 UI 应自行提交
  * **已答部分 + cancelled: true**，从而兑现契约「超时后保留超时前已答部分」。
  */
-export const DEFAULT_ASK_USER_TIMEOUT_MS = 180_000;
+export const DEFAULT_ASK_USER_TIMEOUT_MS = 600_000;
 
 /**
  * extension 侧安全网宽限：extension 的实际等待上限是

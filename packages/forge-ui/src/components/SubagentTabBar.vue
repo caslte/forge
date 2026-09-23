@@ -336,8 +336,8 @@ function onClearClick(): void {
 }
 </style>
 
-<!-- 暗色主题 --brand 接近纯白，hover/active 边瞬间跳白显突兀；压到 55% mix 保持可见但柔和。
-     ponytail: 调光旋钮 mix %，想再亮改 65、再压改 45；light 不动。 -->
+<!-- 暗色 --brand 接近纯白，hover/active 边瞬间跳白显突兀；压到 40% mix 极轻提亮，不形成可辨环。
+     ponytail: 调光旋钮 mix %，想再亮改 50%、再压改 30%；light 不动。 -->
 <style>
 :root[data-theme='dark'] .subagent-tab:hover {
   border-color: color-mix(in oklab, var(--brand) 55%, transparent);

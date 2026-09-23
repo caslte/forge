@@ -56,8 +56,11 @@ function fail(code: number, message: string): RpcResult<null> {
 /** chat/completions 响应体（只取需要的字段，容错 content 为数组的分片形式） */
 interface ChatCompletionResponse {
   choices?: Array<{
-    message?: { content?: string | Array<{ text?: string }> };
+    finish_reason?: string;
+    message?: { content?: string | Array<{ text?: string }>; reasoning_content?: string };
   }>;
+  /** MiniMax 等网关用 HTTP 200 + base_resp.status_code≠0 表达业务错误 */
+  base_resp?: { status_code?: number; status_msg?: string };
 }
 
 /** 响应文本 → 提交说明：剥 ``` 围栏、取首段非空、首尾 trim（PRD GC-F05 异常边界） */
@@ -113,7 +116,9 @@ export function createCommitMessageMethods(
           { role: 'user', content: diff.text },
         ],
         temperature: 0.2,
-        max_tokens: 300,
+        // 1024（原 300）：思考型模型（如 MiniMax-M3）输出预算先被 reasoning_content 消耗，
+        // 300 易致 content 为空——真机「模型返回空内容」反馈，2026-09-23
+        max_tokens: 1024,
         stream: false,
       });
       const res = await fetchImpl(url, {
@@ -131,7 +136,19 @@ export function createCommitMessageMethods(
         return fail(GENERATE_FAILED, `生成失败：provider 返回 HTTP ${res.status}`);
       }
       const json = (await res.json()) as ChatCompletionResponse;
-      const content = json.choices?.[0]?.message?.content;
+      // MiniMax 等网关 HTTP 200 但 body 带业务错误——不当「空内容」误报，直接透传
+      const baseResp = json.base_resp;
+      if (baseResp && typeof baseResp.status_code === 'number' && baseResp.status_code !== 0) {
+        console.warn(
+          `[commitMessage] provider base_resp=${baseResp.status_code} model=${target.target.model}`,
+        );
+        return fail(
+          GENERATE_FAILED,
+          `生成失败：provider 返回错误 ${baseResp.status_code}${baseResp.status_msg ? '（' + baseResp.status_msg + '）' : ''}`,
+        );
+      }
+      const choice = json.choices?.[0];
+      const content = choice?.message?.content;
       const raw =
         typeof content === 'string'
           ? content
@@ -140,6 +157,14 @@ export function createCommitMessageMethods(
             : '';
       const message = extractCommitMessage(raw);
       if (message === '') {
+        const reasoning = choice?.message?.reasoning_content;
+        // 诊断日志只记形状不记内容（避免回显 diff/模型原文）；apiKey 纪律同 §3.5
+        console.warn(
+          `[commitMessage] empty content model=${target.target.model} finish_reason=${choice?.finish_reason ?? 'n/a'} content_type=${typeof content} reasoning_chars=${typeof reasoning === 'string' ? reasoning.length : 0}`,
+        );
+        if (typeof reasoning === 'string' && reasoning.trim() !== '') {
+          return fail(GENERATE_FAILED, '生成失败：模型只输出了思考内容没有正文，请换非思考模型或重试');
+        }
         return fail(GENERATE_FAILED, '生成失败：模型返回空内容');
       }
       console.log(
