@@ -6,8 +6,16 @@
  * - 安全（白名单 sanitize-html，见 docs/prd/03_conversation.md 渲染安全要求）：
  *   - 禁止原生 HTML：script/style/iframe/事件属性（on*）一律移除。
  *   - 危险协议链接：javascript:/data:/vbscript: 等 href/src 被清除。
+ *   - 链接策略：仅 http/https/mailto 保留为 <a>（点击由渲染层拦截交系统浏览器打开），
+ *     相对路径/锚点/协议相对等一律降级为 <span> 纯文本——防投毒链接把应用窗口导航走。
  * - mermaid 块：语言为 mermaid 时输出带 `data-md-mermaid` 的占位 div（源码经 base64 编码），
  *   前端扫描该标记后异步渲染为图表（渲染失败时该 div 内已含转义原文，直接可读）。
+ * - canvas 块：语言为 canvas 时同理输出 `data-md-canvas` 占位，前端解码后塞进
+ *   iframe srcdoc 沙箱渲染（见 forge-ui HtmlCanvasBlock）。卡片源码是完整 HTML，
+ *   **绝不能过本文件的 sanitize 白名单**（白名单不含 style，会把卡片样式剥光），
+ *   故走 base64 占位绕开；安全边界由 iframe 的 sandbox 全关承担，两条线互斥。
+ *   注意 ` ```html ` 仍走 hljs 高亮展示源码（模型给项目写 HTML 示例是常态），
+ *   不可劫持——画布围栏只用 canvas 这一个语言名。
  * - 统一渲染：流式与结束后均用本函数完整渲染，保证两种状态样式一致
  *   （曾用流式简化渲染导致紧凑/正常样式跳变，已移除）。
  *
@@ -18,8 +26,20 @@ import { Marked } from 'marked';
 import { hljs } from './hljsCore.ts';
 import sanitizeHtml from 'sanitize-html';
 
+import { CANVAS_LANGUAGE } from './canvasSandbox.ts';
+
 /** marked 实例：gfm + 换行即 <br>（对齐消息正文既有行为） */
 const marked = new Marked({ gfm: true, breaks: true });
+
+export {
+  CANVAS_LANGUAGE,
+  CANVAS_DEFAULT_HEIGHT,
+  CANVAS_TALL_HEIGHT,
+  looksLikeHtmlCanvas,
+  buildCanvasDocument,
+  buildCanvasStandaloneFile,
+  type CanvasTokens,
+} from './canvasSandbox.ts';
 
 /** 白名单标签（sanitize-html allowedTags） */
 const ALLOWED_TAGS = [
@@ -33,7 +53,7 @@ const ALLOWED_ATTRIBUTES = {
   a: ['href', 'title', 'target'],
   img: ['src', 'alt', 'title'],
   pre: ['class'],
-  code: ['class', 'data-md-mermaid'],
+  code: ['class', 'data-md-mermaid', 'data-md-canvas'],
   span: ['class'],
   div: ['class'],
   th: ['align'],
@@ -86,6 +106,14 @@ function codeRenderer(lang: string | undefined, text: string): string {
     const escaped = htmlEscape(trimmed);
     const encoded = encodeBase64Utf8(trimmed);
     return `<pre class="md-mermaid-wrap"><code class="md-mermaid" data-md-mermaid="${encoded}">${escaped}</code></pre>`;
+  }
+
+  // Canvas：模型手写的 HTML 卡片。转义原文兜底（非 HTML 内容降级时可读），
+  // 真正的渲染源是 base64 —— 它绕开 sanitize，交给 iframe 沙箱承载
+  if (language === CANVAS_LANGUAGE) {
+    const escaped = htmlEscape(trimmed);
+    const encoded = encodeBase64Utf8(trimmed);
+    return `<pre class="md-canvas-wrap"><code class="md-canvas" data-md-canvas="${encoded}">${escaped}</code></pre>`;
   }
 
   let highlighted: string;
@@ -202,6 +230,17 @@ export function renderMarkdown(source: string, cacheable = true): string {
           delete next['class'];
         }
         return { tagName, attribs: next } as never;
+      },
+      // 链接白名单前移到标签转换：http/https/mailto 保留为 <a>（点击交渲染层拦截
+      // → openExternal），其余（相对路径、#锚点、//协议相对、javascript: 等）整体
+      // 降级为 span——模型爱写 [`docs/x.md`](docs/x.md) 当文档入口，这类死链不该
+      // 有链接形态，更不该让窗口导航。
+      a: (tagName, attribs) => {
+        const href = attribs['href'] ?? '';
+        if (/^(https?:|mailto:)/i.test(href)) {
+          return { tagName, attribs } as never;
+        }
+        return { tagName: 'span', attribs: {} } as never;
       },
     },
   });

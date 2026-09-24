@@ -27,7 +27,7 @@
 - **前端**：Vue 3 + Vite + TS（复用 ai-coding），marked / prismjs / mermaid
 - **通信**：forge-core 传输无关接口（方法+事件）；桌面端 Electron IPC（不走 HTTP，避免本地端口攻击面），headless HTTP/SSE（v2+）；pi 事件映射到 `CanonicalEvent`
 - **扩展**：pi 扩展（TS，jiti 加载）
-- **存储**：pi session JSONL（`~/.pi/agent/sessions`）+ forge 项目组织层
+- **存储**：pi session JSONL（`<userData>/agent/sessions`）+ forge 项目组织层
 - **构建**：npm workspaces，tsc/tsgo
 
 ## 四、技术分层（实现结构，非 PRD 模块）

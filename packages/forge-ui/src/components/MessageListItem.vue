@@ -185,14 +185,18 @@ function isSuggestMessage(m: ConversationMessage): boolean {
   <div v-else class="tool-group" :class="{ open: !item.collapsed }">
     <button class="tool-group-head" @click="emit('toggle-group', item.key, item.collapsed)">
       <svg class="tg-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="10 8 14 12 10 16" /></svg>
-      <span class="tg-title">{{ groupHeadText }}</span>
+      <span class="tg-title">
+        <Transition name="tg-head" mode="out-in">
+          <span :key="groupRunning ? 'run' : 'count'" class="tg-head-text">{{ groupHeadText }}</span>
+        </Transition>
+      </span>
     </button>
     <div class="tool-group-body-shell">
       <div class="tg-inner">
         <div ref="tgScrollRef" class="tg-scroll" :class="{ 'at-top': tgAtTop, 'at-bottom': tgAtBottom }" @scroll.passive="updateTgFade">
-          <div class="tg-rows">
+          <TransitionGroup tag="div" name="tg-row" class="tg-rows">
             <ToolCallCard v-for="tm in item.tools" :key="tm.toolEventId ?? tm.ts" :event="toToolEvent(tm)" :hide-diff="!showDiffEff" />
-          </div>
+          </TransitionGroup>
         </div>
       </div>
     </div>
@@ -304,5 +308,31 @@ function isSuggestMessage(m: ConversationMessage): boolean {
   bottom: 0;
   width: 1px;
   background: color-mix(in oklab, var(--border) 55%, transparent);
+}
+/* 流式追加行的入场（0.5x 节奏，见 design-tokens --motion-*）：淡入+上浮 5px，
+   只做 transform/opacity 不动高度，滚动跟随与 mask 逻辑不受影响；move 兜底兄弟行位移 */
+.tg-row-enter-active {
+  transition:
+    opacity var(--motion-row-fade),
+    transform var(--motion-row-move);
+}
+.tg-row-enter-from {
+  opacity: 0;
+  transform: translateY(5px);
+}
+.tg-row-move {
+  transition: transform var(--motion-row-move);
+}
+/* 组头「正在执行中 · Xs」↔「执行工具 N 次」按 groupRunning 换 key 做 out-in 淡切（220ms×2） */
+.tg-head-text {
+  display: inline-block;
+}
+.tg-head-enter-active,
+.tg-head-leave-active {
+  transition: opacity var(--motion-head-swap);
+}
+.tg-head-enter-from,
+.tg-head-leave-to {
+  opacity: 0;
 }
 </style>

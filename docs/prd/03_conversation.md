@@ -459,7 +459,7 @@
 > 契约见 `docs/plan/ask-user-question-contract.md`（编码唯一依据），实施计划见 `docs/plan/ask-user-question-extension.md`。
 
 - **目标**：模型在需求不明确时主动向用户提出结构化问题（1–4 题 × 2–4 选项，可多选、可带 markdown 预览），forge 在输入框上方以内嵌面板承载交互，替代 CLI 侧的 TUI 左右分栏；用户作答后答案经原路回填给模型继续推理。
-- **前置条件**：主会话已激活；forge 内置扩展 `ask_user_question` 已注册（随 forge 版本走，不依赖 `~/.pi/agent` 预装）；模型判定需要澄清并调用该工具。用户环境若装有同名 rpiv 插件，由 `extensionsOverride` 在内存中屏蔽（不修改用户 `settings.json`）。
+- **前置条件**：主会话已激活；forge 内置扩展 `ask_user_question` 已注册（随 forge 版本走，不依赖 agent 目录预装）；模型判定需要澄清并调用该工具。用户环境若装有同名 rpiv 插件，由 `extensionsOverride` 在内存中屏蔽（不修改用户 `settings.json`）。
 - **业务规则**：
   - **协议分层**（TD-CV-12）：工具注册用 pi 官方 `registerTool` SDK；`questions[]` 入参与 `details` 出参照抄 rpiv 私有约定（本地固化，不跟随上游）；传输通道（事件名 / RPC 方法 / `requestId` / 超时）为 forge 自有设计。
   - **投递**：扩展在 `execute` 内投递 `ask-user:request`（`{ requestId, questions, timeoutMs }`）到**该会话私有**的扩展事件总线 → 适配器按会话订阅并补齐必需 `sessionId` → 上抛 `conversation.askUserQuestionRequested`（已登记 `FORGE_EVENTS` 白名单）→ 渲染进程各窗格按 `sessionId` 认领。

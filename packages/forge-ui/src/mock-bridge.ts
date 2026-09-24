@@ -1005,9 +1005,15 @@ const bridge: ForgeBridge = {
     // 浏览器 dev 下无原生对话框，返回默认示例路径（可直接回车创建）
     selectDirectory: async () => 'D:/work/aiwork',
     selectFiles: async () => [],
+    // 无原生保存对话框：一律视为用户取消（画布卡片据此不报错、静默返回）
+    saveFile: async () => null,
   },
   shell: {
     openPath: async () => true,
+    // 浏览器 dev 无系统浏览器：直接回失败（点击行为由拦截器静默处理，不报错）
+    openExternal: async () => false,
+    // 浏览器 dev 无主进程解析：回健康占位，shell 横幅只在 Electron 真机上出现
+    shellProbe: async () => ({ ok: true, shell: 'C:\\mock\\Git\\bin\\bash.exe' }),
   },
   theme: {
     // 浏览器 dev/e2e 无主进程：回写只对 Electron 窗口底色有意义，这里空实现
@@ -1021,6 +1027,8 @@ const bridge: ForgeBridge = {
     savePasteImage: async () => null,
     savePastedText: async () => null,
     readImage: async () => null,
+    // 浏览器 dev 无写盘能力：返回 false，卡片按「保存失败」提示
+    writeText: async () => false,
     // 浏览器 dev/e2e 无真实盘：固定小清单，@ 补全链路可走通（本地过滤逻辑在渲染层）
     listProjectFiles: async () => [
       'D:/work/aiwork/forge/edu-community/README.md',

@@ -11,6 +11,7 @@ import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { useCompactBanner } from '../composables/useCompactBanner';
+import { useShellHealth } from '../composables/useShellHealth';
 import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
@@ -115,6 +116,19 @@ const { getBanner: getCompactBanner } = useCompactBanner();
 /** 个性化：对话框 diff 展示开关（设置页个性化 Tab，localStorage 持久） */
 const { showDiff } = usePreferences();
 const compactBanner = computed(() => getCompactBanner(props.sessionId));
+
+/**
+ * shell 健康横幅（全局单例，非按会话隔离——shell 是机器属性）。
+ * 主进程按 pi 同口径探测 bash；命中 System32 WSL 占位或三级落空时 broken 非空，
+ * 底部常驻提示 + 一键打开配置文件所在目录（2026-09 dev 切根后 WSL 拦截事故）。
+ */
+const { broken: shellBroken, ensureProbed: ensureShellProbed } = useShellHealth();
+ensureShellProbed();
+/** 打开 settings.json 所在目录做修复（路径去掉末段文件名，win/posix 通用） */
+function openShellSettingsDir(): void {
+  const p = shellBroken.value?.settingsPath;
+  if (p) void window.forge.shell.openPath(p.replace(/[\\/][^\\/]+$/, ''));
+}
 const scrollRef = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 
@@ -696,6 +710,17 @@ onUnmounted(() => {
             <span class="csb-line"></span>
           </div>
 
+          <!-- shell 健康横幅（常驻）：bash 解析到 WSL 占位/未找到时说明原因并给修复入口 -->
+          <div v-if="shellBroken" class="shell-banner">
+            <span class="sb-line"></span>
+            <div class="sb-body">
+              <span class="sb-text">{{ shellBroken.reason === 'wsl-stub' ? t('chat.shellWslStub') : t('chat.shellNoShell') }}</span>
+              <span class="sb-hint">{{ t('chat.shellFixHint', { path: shellBroken.settingsPath }) }}</span>
+              <button type="button" class="sb-fix" @click="openShellSettingsDir">{{ t('chat.shellOpenFolder') }}</button>
+            </div>
+            <span class="sb-line"></span>
+          </div>
+
           <!-- 错误提示 -->
           <div v-if="errorMsg" class="conv-error">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1119,6 +1144,53 @@ onUnmounted(() => {
   font-size: 11.5px;
   white-space: nowrap;
   font-weight: 500;
+}
+
+/* shell 健康横幅：同款横线分隔；主句警示色，修复路径小字可选中复制（供手动编辑配置） */
+.shell-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  animation: fadeIn 0.2s ease-out;
+}
+.sb-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+}
+.sb-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+}
+.sb-text {
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--destructive);
+}
+.sb-hint {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  max-width: 520px;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.sb-fix {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 /* 错误提示 */

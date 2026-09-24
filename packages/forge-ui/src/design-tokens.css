@@ -82,6 +82,15 @@
   /* decelerate：快出发、缓落地。用于「位移并停靠」类动效（空会话输入框下沉到底部），
      不引入 overshoot 回弹——工具型界面里回弹会显得晃动 */
   --transition-decelerate: 420ms cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* 工具行动效（tool-row-motion-demo 0.5x 节奏，用户选定）：
+     行入场位移/淡入、状态图标交叉淡化、对勾描线、组头文案淡切 */
+  --motion-row-move: 720ms cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-row-fade: 640ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-icon-out: 280ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-icon-in: 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-check-draw: 680ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-head-swap: 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 :root[data-theme='dark'] {

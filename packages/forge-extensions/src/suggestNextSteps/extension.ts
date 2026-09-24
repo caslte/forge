@@ -20,21 +20,21 @@ export const SUGGEST_NEXT_STEPS_TOOL_NAME = 'suggest_next_steps';
 export const SUGGEST_PROMPT_SNIPPET =
   'Offer the user 1-3 clickable next-step suggestions as the final action of your reply';
 
-/** 系统提示 Guidelines（契约 §4 四条的英文原文，引导模型何时调用/如何填参）。 */
+/** 系统提示 Guidelines（引导模型何时调用/如何填参；v2 翻转为默认调用+禁正文复述）。 */
 export const SUGGEST_PROMPT_GUIDELINES: readonly string[] = [
-  'Use suggest_next_steps ONLY when your reply ends with clear next steps the user could send as-is; if the task is complete or the direction is still open, skip the call entirely — never pad it every turn.',
+  'Call suggest_next_steps by DEFAULT at the end of every substantive reply, as your final action — skip it ONLY when the task is fully concluded with nothing meaningful left to do. Do not be shy: if you would otherwise write "如果需要我接下来做…", that IS a trigger.',
   `Each step is one complete instruction phrased in the user's voice (e.g. "落设计文档并评审", not "I will write the doc"), MAX ${MAX_STEP_LENGTH} CHARACTERS, 1-3 steps, most valuable first.`,
-  'Do not use suggest_next_steps to restate your own plan or to ask the user a question — clarifying questions go to ask_user_question.',
-  'Call it as the LAST action of the turn; do not continue working after it.',
+  'NEVER enumerate next steps or follow-up options as prose/bullets in the reply body, and never restate the suggestions after the call — the chips already show them. Clarifying questions go to ask_user_question, not this tool.',
+  'Call it as the LAST action of the turn; after it, output no further text or tool calls.',
 ];
 
 /** 工具详情页描述。 */
 export const SUGGEST_TOOL_DESCRIPTION = `Offer the user 1-3 short clickable next-step suggestions. The UI renders them as buttons under your reply; clicking one sends that exact text as the user's next message.
 
 Usage notes:
-- Only suggest steps that are genuinely actionable given the current state; omit the call when there is nothing obvious next.
+- Call by DEFAULT when wrapping up a substantive reply; skip only when the task is fully concluded — do not instead list next steps as prose in the reply body.
 - Write each step as a complete instruction in the user's voice, self-contained (no "继续上面的" references), MAX ${MAX_STEP_LENGTH} characters.
-- At most one call per reply, made as your final action.`;
+- At most one call per reply, made as your final action; do not restate the suggestions in text afterward.`;
 
 /** 工具返回值形态（与 pi 的 `AgentToolResult` 结构兼容）。 */
 export interface SuggestToolResult {

@@ -44,13 +44,43 @@ test('XSS：事件属性被移除', () => {
 test('XSS：javascript: 链接被清除', () => {
   const html = renderMarkdown('[点我](javascript:alert(1))');
   assert.doesNotMatch(html, /javascript:/i);
-  // 链接本身被降级为无 href 的文本（sanitize-html 去掉危险 href）
-  assert.match(html, /<a[^>]*>点我<\/a>/);
+  // 非白名单协议整体降级为 span：连 <a> 外壳都不保留（防无 href 的伪链接形态）
+  assert.doesNotMatch(html, /<a[\s>]/);
+  assert.match(html, /<span[^>]*>点我<\/span>|点我/);
 });
 
 test('XSS：data: 链接被清除', () => {
   const html = renderMarkdown('[bad](data:text/html,<script>alert(1)</script>)');
   assert.doesNotMatch(html, /data:/i);
+});
+
+test('相对路径链接降级为纯文本（模型写的文档入口死链不成链接）', () => {
+  const html = renderMarkdown('[`docs/overview.md`](docs/overview.md)');
+  assert.doesNotMatch(html, /<a[\s>]/);
+  assert.doesNotMatch(html, /href=/);
+  // 行内代码胶囊保留，下划线来源（a）消失
+  assert.match(html, /<code class="md-inline-code">docs\/overview\.md<\/code>/);
+});
+
+test('协议相对链接（//evil）降级为纯文本', () => {
+  const html = renderMarkdown('[x](//evil.example.com/a)');
+  assert.doesNotMatch(html, /<a[\s>]/);
+  assert.doesNotMatch(html, /evil\.example\.com/);
+});
+
+test('锚点链接降级为纯文本', () => {
+  const html = renderMarkdown('[跳转](#section-1)');
+  assert.doesNotMatch(html, /<a[\s>]/);
+});
+
+test('合法 https 链接保留', () => {
+  const html = renderMarkdown('[官方](https://pi.earendil.dev)');
+  assert.match(html, /href="https:\/\/pi\.earendil\.dev"/);
+});
+
+test('mailto 链接保留', () => {
+  const html = renderMarkdown('[邮件](mailto:someone@example.com)');
+  assert.match(html, /href="mailto:someone@example\.com"/);
 });
 
 test('XSS：链接 text 中夹带 HTML 被转义', () => {

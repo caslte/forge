@@ -104,6 +104,21 @@ export interface BootState {
   durationMs: number | null;
 }
 
+/**
+ * shell 健康探测结果（与 @forge/desktop ipc-contract.ts ShellProbeResult 同构，本地声明惯例）。
+ * 背景：pi 的 bash 三级兜底在 Windows 上可能命中 System32 的 WSL 占位（每条命令只回
+ * 一句乱码的「未安装 Linux 子系统」），ok=false 时对话区渲染常驻横幅指引修复。
+ */
+export type ShellProbeResult = {
+  ok: true;
+  shell: string;
+} | {
+  ok: false;
+  reason: 'wsl-stub' | 'no-shell';
+  shell: string | null;
+  settingsPath: string;
+}
+
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
 export interface ForgeResult<T = unknown> {
   code: number;
@@ -328,10 +343,16 @@ export interface ForgeBridge {
   dialog: {
     selectDirectory(): Promise<string | null>;
     selectFiles(): Promise<string[]>;
+    /** 另存对话框（画布卡片用）：返回用户选定的绝对路径，取消返回 null */
+    saveFile(defaultName: string): Promise<string | null>;
   };
   shell: {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
     openPath(path: string): Promise<boolean>;
+    /** 系统浏览器/邮件客户端打开外链（仅 http/https/mailto，主进程校验）；失败返回 false */
+    openExternal(url: string): Promise<boolean>;
+    /** pi bash 解析健康探测（对话区横幅数据源，见 ShellProbeResult 注释） */
+    shellProbe(): Promise<ShellProbeResult>;
   };
   theme: {
     /**
@@ -355,6 +376,8 @@ export interface ForgeBridge {
     readImage(path: string): Promise<string | null>;
     /** @ 补全候选：项目内白名单文件绝对路径（BFS 浅层优先，上限 2000）；项目缺失/不可读返回 [] */
     listProjectFiles(projectPath: string): Promise<string[]>;
+    /** 写 UTF-8 文本（画布卡片另存，主进程限定 .html/.htm）；失败返回 false */
+    writeText(path: string, text: string): Promise<boolean>;
   };
 }
 

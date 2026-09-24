@@ -102,9 +102,10 @@ function setup(opts: {
   return fake;
 }
 
-test('recommendedPlugins：清单 6 项；missingRecommended 保持推荐顺序且跳过已装项', () => {
-  assert.equal(RECOMMENDED_PLUGINS.length, 6);
+test('recommendedPlugins：清单 7 项；missingRecommended 保持推荐顺序且跳过已装项', () => {
+  assert.equal(RECOMMENDED_PLUGINS.length, 7);
   assert.ok(RECOMMENDED_PLUGINS.includes('@tintinweb/pi-subagents'));
+  assert.ok(RECOMMENDED_PLUGINS.includes('pi-memory'));
   // Path 2：rpiv-ask-user-question 必须**不在**清单里 —— forge 已自建同名工具
   // （@forge/extensions 的 ask_user_question），继续预装会让用户环境里出现两个同名
   // 工具（虽然运行时由 extensionsOverride 屏蔽，也不该再给新用户装）。
@@ -124,6 +125,7 @@ test('recommendedPlugins：清单 6 项；missingRecommended 保持推荐顺序�
     '@narumitw/pi-goal',
     'pi-compact-display',
     '@juicesharp/rpiv-todo',
+    'pi-memory',
   ]);
 });
 
@@ -136,7 +138,7 @@ test('首启预装：缺失项逐项 install、既有项保留、settings 不被
   const h = setup({ agentDir, currentVersion: '0.2.0' });
   await h.run();
 
-  // 缺失项 = 推荐清单顺序中除已装 pi-mcp-adapter 外的 9 项；@user/custom 不在推荐清单、不受影响
+  // 缺失项 = 推荐清单顺序中除已装 pi-mcp-adapter 外的其余项；@user/custom 不在推荐清单、不受影响
   const expected = RECOMMENDED_PLUGINS.filter((n) => n !== 'pi-mcp-adapter');
   assert.deepEqual(h.cliCalls, expected.map((pkg) => ['install', pkg, '--no-approve']));
   // 只增不删：编排不直接改 settings.json（补装由内置 CLI 负责）

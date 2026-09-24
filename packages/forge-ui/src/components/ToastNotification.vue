@@ -15,10 +15,11 @@ const emit = defineEmits<{
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 
+// 长文案换行后需要更多阅读时间（如 skill 导入错误提示）
 onMounted(() => {
   timer = setTimeout(() => {
     emit('close');
-  }, 3000);
+  }, props.message.length > 40 ? 6000 : 3000);
 });
 
 onUnmounted(() => {
@@ -28,12 +29,14 @@ onUnmounted(() => {
   }
 });
 
-// 长消息含全角冒号时拆为 label+value 富文本，模型名等关键值一眼可辨
+// 长消息含全角冒号时拆为 label+value 富文本，模型名等关键值一眼可辨；
+// 仅短值（≤32 字符）走该形态，长错误说明回落为普通文本，避免被单行省略号截断
 const parsed = computed(() => {
   const m = props.message;
   const idx = m.indexOf('：');
   if (idx > -1 && m.length > 20) {
-    return { label: m.slice(0, idx), value: m.slice(idx + 1) };
+    const value = m.slice(idx + 1);
+    if (value.length <= 32) return { label: m.slice(0, idx), value };
   }
   return { label: null as string | null, value: m };
 });
@@ -122,7 +125,7 @@ const parsed = computed(() => {
   background: linear-gradient(90deg, transparent 0%, color-mix(in oklab, var(--destructive) 22%, transparent) 24%, color-mix(in oklab, var(--destructive) 14%, var(--brand) 86%) 50%, transparent 100%);
 }
 
-/* 文案：label 11/ muted + value 单行 inline，模型名突出，不换行 */
+/* 文案：label 11/ muted + value 单行 inline，模型名突出；普通长文本允许换行完整显示 */
 .toast-body {
   min-width: 0;
   display: flex;
@@ -130,7 +133,6 @@ const parsed = computed(() => {
   flex-direction: row;
   gap: 4px;
   line-height: 1.4;
-  white-space: nowrap;
 }
 .toast-label {
   font-size: 11px;
@@ -138,13 +140,15 @@ const parsed = computed(() => {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted-foreground);
+  white-space: nowrap;
 }
 .toast-message {
   min-width: 0;
   font-size: 13.4px;
   font-weight: 500;
   color: var(--foreground);
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .toast-message.is-split {
   display: flex;

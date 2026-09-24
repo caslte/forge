@@ -9,7 +9,7 @@ forge 是 Electron 桌面应用，**无 MySQL / ClickHouse 等传统数据库**�
 | 层 | 归属 | 介质 | 内容 | 设计文档 |
 |---|---|---|---|---|
 | forge 自有存储 | forge | JSON 文件（forge-desktop 传入的 userData 路径） | 项目元数据、会话元数据缓存、全局默认模型 | [db/forge-store/schema.md](forge-store/schema.md) |
-| pi 会话存储 | pi | JSONL（`~/.pi/agent/sessions`） | 会话与消息原始数据 | 只读对接，不设计为 forge 表 |
+| pi 会话存储 | pi | JSONL（`<userData>/agent/sessions`） | 会话与消息原始数据 | 只读对接，不设计为 forge 表 |
 | pi 配置与密钥 | pi | models.json + OS keychain | provider 配置、API key | forge 读写对接，不设计为 forge 表 |
 
 ## 模块清单

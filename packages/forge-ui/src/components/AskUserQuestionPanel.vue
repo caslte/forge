@@ -59,6 +59,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { renderMarkdown } from '@forge/core/markdown';
+import { onMarkdownContentClick } from '../utils/markdownLinks';
 import { useI18n } from '../i18n/index.ts';
 import type {
   AskUserQuestionAnswer,
@@ -660,6 +661,7 @@ onBeforeUnmount(() => {
                   <div
                     class="ask-preview-body"
                     v-html="renderMarkdown(previewOption?.preview ?? '')"
+                    @click="onMarkdownContentClick"
                   />
                 </div>
               </div>

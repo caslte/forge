@@ -6,7 +6,7 @@
 
 ### 1.1 业务背景与目标
 
-forge 的 skill 生态目前是**只读**的：pi 自动发现并加载四个位置的 skill——全局 `~/.pi/agent/skills/` 与 `~/.agents/skills/`（scope=user）、项目 `<project>/.pi/skills/` 与 `<project>/.agents/skills/`（scope=project，`.agents/skills` 还会从 cwd 向上遍历至 git 仓库根；以上均要求项目已信任，优先级 project-auto > user-auto，已在 pi 0.84.3 `core/package-manager.js` 源码验证）。forge 仅在斜杠命令浮窗（CV-S08）间接展示为 `/skill:<name>`。用户增删 skill 目前只能手工到文件系统操作，无感知、无校验、无入口。
+forge 的 skill 生态目前是**只读**的：pi 自动发现并加载四个位置的 skill——全局 `<userData>/agent/skills/`（forge 生产 agentDir，未注入回退 `~/.pi/agent/skills/`）与 `~/.agents/skills/`（scope=user）、项目 `<project>/.pi/skills/` 与 `<project>/.agents/skills/`（scope=project，`.agents/skills` 还会从 cwd 向上遍历至 git 仓库根；以上均要求项目已信任，优先级 project-auto > user-auto，已在 pi 0.84.3 `core/package-manager.js` 源码验证）。forge 仅在斜杠命令浮窗（CV-S08）间接展示为 `/skill:<name>`。用户增删 skill 目前只能手工到文件系统操作，无感知、无校验、无入口。
 
 本模块目标：在设置页提供 Skill 管理能力——**查看（全局+项目两级）、导入本地文件夹、按模板新建、删除**，操作结果自动被现有斜杠命令与 pi 运行链接 consume。
 
@@ -43,7 +43,7 @@ forge 的 skill 生态目前是**只读**的：pi 自动发现并加载四个位
 | TD-SK-02 | SK-S02~S04 | 写操作归属层。forge-core 纯 Node 可 fs 操作，需按现有 `domain/method` 惯例扩 RPC | 新增 `skill/listSkills / skill/importSkill / skill/createSkill / skill/deleteSkill` 四方法（ipc-contract → preload → core handler），import 的目录选择用主进程 `dialog.showOpenDialog`（沿用附件选择的既有模式）；删除的回收站能力经 desktop 主进程 `shell.trashItem` 落地 | 四方法 RPC + 主进程对话框 | 已确认（采纳推荐，无异议） |
 | TD-SK-03 | SK-S02 | 同名冲突语义 | A: 一律拒绝，用户先删再导（操作明确但两步）；B: 弹窗询问"覆盖"（覆盖=旧目录移入回收站再拷新，一步完成且可恢复） | B（用户 2026-09-22 拍板：提示确认后先删再导） | 已确认 |
 | TD-SK-04 | SK-S04/SK-S02 | 删除的是用户磁盘文件，不可逆性最高 | A: 永久删除（rm）+ 二次确认；B: 优先 `shell.trashItem` 移入系统回收站，失败回退永久删除（Electron 主进程原生能力，误删可恢复） | B（用户 2026-09-22 拍板：移入回收站；覆盖式导入的"删旧"同样走回收站） | 已确认 |
-| TD-SK-05 | SK-S01/S02 | 项目级区块的呈现范围，以及**写入目标根**的选择（pi 实际扫描 4 个根：`~/.pi/agent/skills`、`~/.agents/skills`、`<project>/.pi/skills`、`<project>/.agents/skills`，后两者需项目信任，已在 0.84.3 `core/package-manager.js` 验证） | A: 列表按 scope 两组展示全部 4 根的 skill（每条带实际根目录路径徽标），写入目标固定——全局→`~/.pi/agent/skills`（用户存量 skill 所在根）、项目→`<project>/.agents/skills`（跨工具约定，用户倾向）；B: 每次导入/新建让用户在 4 根中任选（灵活但暴露 pi 环境细节，选择负担大） | A | 已确认（用户 2026-09-22：仅当前项目 + `.agents/` 写入目标；pi 识别 `.agents/skills` 已二次源码查证，修正首轮错误结论） |
+| TD-SK-05 | SK-S01/S02 | 项目级区块的呈现范围，以及**写入目标根**的选择（pi 实际扫描 4 个根：`<agentDir>/skills`（生产 = `<userData>/agent/skills`）、`~/.agents/skills`、`<project>/.pi/skills`、`<project>/.agents/skills`，后两者需项目信任，已在 0.84.3 `core/package-manager.js` 验证） | A: 列表按 scope 两组展示全部 4 根的 skill（每条带实际根目录路径徽标），写入目标固定——全局→`<agentDir>/skills`（生产 = `<userData>/agent/skills`；2026-09-24 前为 `~/.pi/agent/skills`）、项目→`<project>/.agents/skills`（跨工具约定，用户倾向）；B: 每次导入/新建让用户在 4 根中任选（灵活但暴露 pi 环境细节，选择负担大） | A | 已确认（用户 2026-09-22：仅当前项目 + `.agents/` 写入目标；pi 识别 `.agents/skills` 已二次源码查证，修正首轮错误结论） |
 | TD-SK-06 | SK-S05 | 生效时机是否引入主动通知 | A: 零通知——斜杠命令现状每次查询新建 loader，天然下次输入即最新；活跃会话系统提示词内 skill 注入不热更（与手工改文件行为一致）；B: 变更后向所有活跃会话广播 reload | A（采纳推荐，无异议） | 已确认 |
 
 ### 已采用的常规默认项
@@ -105,7 +105,7 @@ forge 的 skill 生态目前是**只读**的：pi 自动发现并加载四个位
 
 - 目标：把含 SKILL.md 的目录复制进目标根。
 - 前置条件：主进程可弹原生目录对话框。
-- 业务规则：目标根固定（全局→`~/.pi/agent/skills`，项目→`<project>/.agents/skills`）；校验源目录含可解析 SKILL.md，失败拒绝并给原因；同名冲突→确认弹窗，同意后旧目录移回收站再导新（用户 2026-09-22 拍板）；取消确认=放弃导入，旧目录不动。
+- 业务规则：目标根固定（全局→`<agentDir>/skills`，生产 = `<userData>/agent/skills`，项目→`<project>/.agents/skills`）；校验源目录含可解析 SKILL.md，失败拒绝并给原因；同名冲突→确认弹窗，同意后旧目录移回收站再导新（用户 2026-09-22 拍板）；取消确认=放弃导入，旧目录不动。
 - 业务数据：`skill/importSkill { scope, sourceDir? }`；sourceDir 由主进程对话框返回或 UI 传参（对话框在 desktop 层）。
 - 交互与反馈：成功 toast+列表刷新；冲突确认弹窗展示将移入回收站的旧路径与新来源路径。
 - 权限边界：写入仅限目标根直接子目录。

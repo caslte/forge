@@ -3,7 +3,7 @@
  *
  * forge 会话在 pi 侧以 **JSONL 转录文件**落盘，路径规则由 pi 的 SessionManager 固定：
  *   {agentDir}/sessions/{encodeURIComponent(cwd)}/forge-{forgeSessionId}.jsonl
- * - agentDir 默认 ~/.pi/agent（Windows 为 %USERPROFILE%\.pi\agent）
+ * - agentDir 生产由 main.ts 注入 <userData>/agent；未注入回退 ~/.pi/agent（仅 dev/测试）
  * - 目录名是 cwd 的 encodeURIComponent（与 pi 逐字节一致，**不能**自己拼 "-"）
  * - 文件名前缀 `forge-` 把 forge 会话与 pi CLI 原生会话（`<ts>_<uuid>.jsonl`）
  *   区分开 —— 这是 forge 删除时只删自己文件的依据，绝不碰 CLI 会话。
@@ -20,7 +20,7 @@ const FORGE_SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 /** pi 会话文件名主体（含前缀）合法形态：pi SessionManager 对文件名的约束 */
 const PI_SESSION_FILE_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
-/** 解析 pi agent 目录（未指定时默认 ~/.pi/agent） */
+/** 解析 pi agent 目录（生产必须显式注入 <userData>/agent；未注入回退 ~/.pi/agent，仅供 dev/测试隔离） */
 export function resolvePiAgentDir(agentDir?: string): string {
   return (
     agentDir ??
@@ -31,7 +31,7 @@ export function resolvePiAgentDir(agentDir?: string): string {
 /**
  * 项目会话目录：`{agentDir}/sessions/{encodeURIComponent(cwd)}`。
  * @param cwd 项目工作目录
- * @param agentDir pi agent 目录（缺省 ~/.pi/agent，相对路径按当前进程 cwd 解析）
+ * @param agentDir pi agent 目录（未注入回退见 resolvePiAgentDir；相对路径按当前进程 cwd 解析）
  */
 export function resolveProjectSessionDir(cwd: string, agentDir?: string): string {
   return path.join(resolvePiAgentDir(agentDir), 'sessions', encodeURIComponent(cwd));
@@ -57,7 +57,7 @@ export function forgePiSessionId(sessionId: string): string {
  * pi 会话 JSONL 完整路径（建会话用；ID 非法直接抛错）。
  * @param sessionId forge 会话 ID
  * @param cwd 项目工作目录
- * @param agentDir pi agent 目录（缺省 ~/.pi/agent）
+ * @param agentDir pi agent 目录（未注入回退见 resolvePiAgentDir）
  */
 export function resolveForgeSessionFile(
   sessionId: string,

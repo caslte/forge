@@ -14,7 +14,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electro
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // v3.76 欢迎页启动链：createForgeCore（连带整个 pi SDK，静态 import 实测 2.4s）不再
 // 顶层静态加载——whenReady 先建窗口显示欢迎页，再动态 import 组装 core，完成后推
 // boot.ready（见 app.whenReady 内注释）。此处仅保留纯类型 import（零运行时代价）。
@@ -25,14 +25,14 @@ import {
   type AutoUpdaterLike,
 } from './pi/appUpdater.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
-import { defaultPiAgentDir } from './pi/piRuntime.ts';
+import { probePiShell } from './pi/shellProbe.ts';
 import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 import { defaultUpdaterStatePath } from './pi/updaterState.ts';
 import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode } from './theme.ts';
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_THEME_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -401,6 +401,24 @@ function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
 function createAndLoadWindow(isDev: boolean, themeMode: ThemeMode): BrowserWindow {
   const win = createWindow(isDev, themeMode);
   const devUrl = process.env.FORGE_DEV_SERVER_URL;
+  // 导航守卫（Electron 安全清单）：window.forge 桥绑在 webContents 上，跟加载哪个
+  // URL 无关——一旦消息里的投毒链接把窗口导航走，攻击者页面就拿到整套 IPC 能力。
+  // 故只放行应用自身文档：dev 限 dev server 同源，prod 限 index.html 本体；
+  // window.open（target=_blank / JS）一律 deny。
+  const allowedOrigin = devUrl ? new URL(devUrl).origin : null;
+  const appFileUrl = pathToFileURL(path.join(__dirname, '../../forge-ui/dist/index.html')).href;
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (e, target) => {
+    let ok = false;
+    try {
+      ok = allowedOrigin !== null
+        ? new URL(target).origin === allowedOrigin
+        : target === appFileUrl;
+    } catch {
+      ok = false;
+    }
+    if (!ok) e.preventDefault();
+  });
   if (devUrl) {
     const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;
     const loadedUrl = new URL(devUrl);
@@ -419,11 +437,15 @@ function createAndLoadWindow(isDev: boolean, themeMode: ThemeMode): BrowserWindo
  * 注册与 forge-core 无关的 IPC：启动状态查询 + 窗口控制 / 对话框 / 附件 / 文件。
  * v3.76 欢迎页启动链：窗口创建后立即注册（core 组装是异步的，这批 handler 不等它），
  * 保证欢迎页期间窗口最小化/关闭/文件选择等都可用。
+ * @param agentDir pi 数据域根（<userData>/agent），shell 健康探测据此解析
  */
-function registerShellIpc(bootState: BootState): void {
+function registerShellIpc(bootState: BootState, agentDir: string): void {
   // 启动状态查询（欢迎页门闩「拉」通道）：handler 引用 bootState 对象本身，
   // core 组装完成后原地改写字段即可，无需重注册 handler
   ipcMain.handle(IPC_BOOT_STATE, () => bootState);
+  // shell 健康探测（对话区横幅数据源）：与 pi 会话同口径解析 bash，命中 WSL 占位/
+  // 三级落空时返回异常，见 pi/shellProbe.ts
+  ipcMain.handle(IPC_SHELL_PROBE, () => probePiShell(agentDir));
   // splash 上屏回执（v3.78.7）：渲染进程报「已绘制并提交两帧」，主进程据此显示窗口。
   // 监听在这里注册（loadURL 之后、页面脚本执行之前），回执不会早于监听而丢失。
   ipcMain.on(IPC_BOOT_SPLASH_READY, () => notifySplashReady?.());
@@ -473,6 +495,51 @@ function registerShellIpc(bootState: BootState): void {
   ipcMain.handle(IPC_SHELL_OPEN_PATH, (_e, p: unknown) => {
     if (typeof p !== 'string' || p === '') return false;
     return shell.openPath(p).then((err) => err === '');
+  });
+  // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
+  // URL，其余协议一律拒绝——这条通道绝不能转交 openPath（.exe 会被“打开”=运行）。
+  ipcMain.handle(IPC_SHELL_OPEN_EXTERNAL, (_e, u: unknown) => {
+    if (typeof u !== 'string' || u === '') return false;
+    let parsed: URL;
+    try {
+      parsed = new URL(u);
+    } catch {
+      return false;
+    }
+    if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) return false;
+    return shell.openExternal(u).then(() => true).catch(() => false);
+  });
+  // 画布卡片另存：原生保存对话框选位置，取消返回 null。
+  // defaultPath 只取 basename——渲染进程给的是模型起的标题，含 ../ 会把对话框
+  // 初始位置带出预期目录，这里一次性掐掉（用户仍可在对话框里自行改文件名）。
+  ipcMain.handle(IPC_DIALOG_SAVE_FILE, async (_e, name: unknown) => {
+    const safeName = typeof name === 'string' && name !== '' ? path.basename(name) : 'canvas.html';
+    const options = {
+      title: '另存为',
+      defaultPath: safeName,
+      filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+    } as Electron.SaveDialogOptions;
+    const res = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (res.canceled || !res.filePath) {
+      return null;
+    }
+    return res.filePath;
+  });
+  // 写文本：仅服务「用户刚在保存对话框里亲手选定的路径」这一场景，故限定 .html/.htm；
+  // 不校验目录归属——路径由用户在原生对话框里挑，越权写盘不是这条通道的威胁模型。
+  ipcMain.handle(IPC_FILE_WRITE_TEXT, (_e, args: unknown) => {
+    const p = (args as { path?: unknown } | null)?.path;
+    const text = (args as { text?: unknown } | null)?.text;
+    if (typeof p !== 'string' || p === '' || typeof text !== 'string') return false;
+    if (!/\.html?$/i.test(p)) return false;
+    try {
+      fs.writeFileSync(p, text, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
   });
   // 主题回写（v3.78.6）：渲染进程解析/切换主题时告知主进程——落盘供下次冷启动建窗
   // 取用（消除暗色主题下先闪一帧亮底色的现象），并就地刷新当前窗口底色，使
@@ -599,6 +666,10 @@ app.whenReady().then(async () => {
   const themeMode = readThemeSync(app.getPath('userData'));
   // QA-G1/G4：updater-state.json（手动更新 components 快照 + lastUpdateCheckAt 持久化路径）
   const updaterStatePath = defaultUpdaterStatePath(app.getPath('userData'));
+  // pi 数据域根（skills/sessions/models.json/trust.json/settings.json 全部派生于此）：
+  // 产品上与终端 pi 的 ~/.pi/agent 隔离，落 forge userData，卸载即随目录清理。
+  // 单一注入点——createForgeCore/预热/预装更新共用，内置 CLI 子进程经 PI_CODING_AGENT_DIR 同根。
+  const forgeAgentDir = path.join(app.getPath('userData'), 'agent');
   // P3-D：Windows 下优先用 safeStorage（DPAPI）持久化密钥；不可用时回退环境变量适配器
   const keychain = new SafeStorageKeychainAdapter(
     path.join(app.getPath('userData'), 'forge-keyvault.json'),
@@ -635,7 +706,7 @@ app.whenReady().then(async () => {
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
   const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null };
   const win = createAndLoadWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
-  registerShellIpc(bootState);
+  registerShellIpc(bootState, forgeAgentDir);
 
   // ===== v3.78.2：先让静态 splash 上屏，再放开主进程做同步重活 =====
   // core 组装（pi SDK 同步求值）与预热（jiti 同步编译）跑在 Node 事件循环上，而该
@@ -658,6 +729,8 @@ app.whenReady().then(async () => {
   const { createForgeCore, invoke } = await import('./createForgeCore.ts');
   const { methodTable, eventBus } = createForgeCore(storePath, {
     keychain,
+    // pi 数据域根注入（缺省会回退 ~/.pi/agent，生产禁止依赖缺省）
+    piAgentDir: forgeAgentDir,
     // 设置页「版本更新」展示用产品版本
     forgeVersion: appVersion,
     // IN-S03：应用自更新端口（updater/* RPC + updater.stateChanged 事件）
@@ -686,7 +759,9 @@ app.whenReady().then(async () => {
     // 要求 main.ts 顶层不静态依赖它）；此处到达时 SDK 本就已被 core 组装加载进
     // 模块缓存，二次 import 零成本。warmPiResourceLoader 内部已 catch 全部异常
     // （仅告警后正常 resolve），promise 不会 reject，下方 Promise.race 安全。
-    warmupPromise = import('./pi/createPiAgentSessionFactory.ts').then((m) => m.warmPiResourceLoader(cwd));
+    warmupPromise = import('./pi/createPiAgentSessionFactory.ts').then((m) =>
+      m.warmPiResourceLoader(cwd, forgeAgentDir),
+    );
     return warmupPromise;
   };
 
@@ -742,7 +817,7 @@ app.whenReady().then(async () => {
   // 后台 fire-and-forget，不阻塞启动；编排内部绝不抛出，仅结构化日志（无 UI 提示）
   void createStartupUpdate({
     statePath: updaterStatePath,
-    agentDir: defaultPiAgentDir(),
+    agentDir: forgeAgentDir,
     currentVersion: appVersion,
     logger: (line) => console.log('[startup-update]', line),
   })

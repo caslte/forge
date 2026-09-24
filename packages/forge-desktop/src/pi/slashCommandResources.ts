@@ -14,9 +14,9 @@
  *
  * SettingsManager 在 DefaultResourceLoader 构造中可选，loader 不依赖注入也可工作。
  */
-import path from 'node:path';
 import { DefaultResourceLoader } from '@earendil-works/pi-coding-agent';
 import type { SlashCommand } from '@forge/core';
+import { resolvePiAgentDir } from './piSessionPaths.ts';
 
 /** 草稿态资源查询 port（与 forge-core SlashCommandResources 同构） */
 export interface SlashCommandResources {
@@ -38,7 +38,7 @@ export interface FakeResourceLoader {
 
 /** createSlashCommandResources 选项（loader 工厂为内部测试接缝） */
 export interface SlashCommandResourceOptions {
-  /** pi agent 目录（缺省 ~/.pi/agent） */
+  /** pi agent 目录（生产由工厂注入；未注入回退 resolvePiAgentDir 缺省，仅 dev/测试） */
   agentDir?: string;
   /** 测试接缝：替换 loader 创建逻辑（缺省走真实 DefaultResourceLoader） */
   loaderFactory?: (cwd: string, agentDir: string) => FakeResourceLoader;
@@ -57,7 +57,7 @@ function defaultLoaderFactory(cwd: string, agentDir: string): FakeResourceLoader
 
 /**
  * 创建草稿态斜杠命令资源查询 port。
- * @param agentDir pi agent 目录（缺省 ~/.pi/agent）；也可传选项对象（含内部测试接缝）
+ * @param agentDir pi agent 目录（生产恒由 createForgeCore 注入）；也可传选项对象（含内部测试接缝）
  * @returns SlashCommandResources（listCommands）
  */
 export function createSlashCommandResources(agentDir?: string): SlashCommandResources;
@@ -69,7 +69,7 @@ export function createSlashCommandResources(
 ): SlashCommandResources {
   const options: SlashCommandResourceOptions =
     typeof arg === 'string' ? { agentDir: arg } : (arg ?? {});
-  const agentDir = options.agentDir ?? resolveDefaultAgentDir();
+  const agentDir = options.agentDir ?? resolvePiAgentDir();
   const loaderFactory = options.loaderFactory ?? defaultLoaderFactory;
 
   return {
@@ -99,9 +99,4 @@ export function createSlashCommandResources(
       }
     },
   };
-}
-
-/** 解析默认 pi agent 目录（~/.pi/agent；与 createPiAgentSessionFactory 一致） */
-function resolveDefaultAgentDir(): string {
-  return path.join(process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(), '.pi', 'agent');
 }

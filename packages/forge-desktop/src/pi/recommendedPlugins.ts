@@ -1,10 +1,10 @@
 /**
  * 内置推荐组件清单（docs/prd/07_installer_update.md IN-F02 / TD-IN-03）。
  *
- * v1 = 当前 6 个（清单固化在 forge 包内，可随版本演进）；
- * 预装 = 与 ~/.pi/agent settings.packages 对比补缺（只增不删），经内置 CLI 逐项安装。
+ * v1 = 当前 7 个（清单固化在 forge 包内，可随版本演进）；
+ * 预装 = 与 forge agent 目录（<userData>/agent）settings.packages 对比补缺（只增不删），经内置 CLI 逐项安装。
  *
- * 仅保留 forge 内核必备项（子代理编排 / 目标模式 / MCP 网关 / 网页访问 / 紧凑展示 / 任务列表）。
+ * 仅保留 forge 内核必备项（子代理编排 / 目标模式 / MCP 网关 / 网页访问 / 紧凑展示 / 任务列表 / 持久记忆）。
  * 其余扩展（`@vndv/pi-codegraph` / `pi-image-view` / `pi-tool-display` / `@dietrichgebert/ponytail`）
  * 由宿主 `pi` CLI 自带 / 用户按需安装 —— forge 不再代为预装，避免双份装载与版本漂移。
  *
@@ -22,6 +22,10 @@ export const RECOMMENDED_PLUGINS: string[] = [
   'pi-web-access',
   'pi-compact-display',
   '@juicesharp/rpiv-todo',
+  // 跨会话持久记忆（MEMORY.md/SCRATCHPAD.md/每日日志 + compaction 交接兜底）。
+  // 注意：其记忆根只认 PI_MEMORY_DIR 环境变量、不读 PI_CODING_AGENT_DIR，
+  // 发布前需在宿主侧钉根到 <userData>/agent/memory，否则违背 agentDir 隔离（写回 ~/.pi）。
+  'pi-memory',
 ];
 
 /**

@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue';
 import type { ConversationMessage } from '../types';
 import { renderMarkdown, hasOpenFence } from '@forge/core/markdown';
 import { parseUserContent, baseName, isImagePath } from '../attachmentText';
+import { onMarkdownContentClick } from '../utils/markdownLinks';
 import {
   extractCommandFromMessage,
   formatCommandLabel,
@@ -10,6 +11,7 @@ import {
   SOURCE_LABELS,
 } from '../utils/slashCommand';
 import MermaidBlock from './MermaidBlock.vue';
+import HtmlCanvasBlock from './HtmlCanvasBlock.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { useI18n } from '../i18n/index.ts';
 
@@ -192,6 +194,51 @@ const bodyHtml = computed(() => {
   );
 });
 
+/** 正文分段：一段安全 HTML，或一个画布卡片槽位 */
+type Segment =
+  | { kind: 'html'; html: string }
+  | { kind: 'canvas'; key: string; encoded: string; blocked: boolean };
+
+/**
+ * 正文分段：把 canvas 占位从 HTML 流里切出来，换成组件槽位。
+ *
+ * 与 mermaid 的差别是刻意的：mermaid 图统一堆到气泡底部（历史行为，不动它），
+ * 而画布卡片是「夹在两段正文中间、给上文配图」的，切到底部就丢了语义——
+ * 用户按顺序读时图必须在它解释的那段话旁边。
+ */
+const segments = computed<Segment[]>(() => {
+  const html = bodyHtml.value;
+  const re = /<pre class="md-canvas-wrap"><code class="md-canvas" data-md-canvas="([^"]*)">[\s\S]*?<\/code><\/pre>/g;
+  const out: Segment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let i = 0;
+  while ((match = re.exec(html)) !== null) {
+    if (match.index > cursor) {
+      out.push({ kind: 'html', html: html.slice(cursor, match.index) });
+    }
+    const encoded = match[1] ?? '';
+    out.push({ kind: 'canvas', key: `c${i}-${encoded.slice(0, 8)}`, encoded, blocked: false });
+    cursor = match.index + match[0].length;
+    i += 1;
+  }
+  if (cursor < html.length) {
+    out.push({ kind: 'html', html: html.slice(cursor) });
+  }
+  // 末围栏未闭合（流式中卡片只写了一半）：只有最后那张换成骨架蒙版。
+  // 蒙版高度 == 终态高度，所以闭合瞬间既不跳变也不顶动下方正文。
+  if (renderedOpenFence.value) {
+    for (let j = out.length - 1; j >= 0; j -= 1) {
+      const seg = out[j];
+      if (seg && seg.kind === 'canvas') {
+        seg.blocked = true;
+        break;
+      }
+    }
+  }
+  return out;
+});
+
 const timeLabel = computed(() => {
   try {
     const d = new Date(props.message.ts);
@@ -253,7 +300,13 @@ const timeLabel = computed(() => {
         ><span class="msg-cmd-name is-skill">{{ formatCommandLabel(seg.text) }}</span><span
             class="msg-cmd-tag tag-skill"
           >{{ t('chat.skillTag') }}</span></template></template></div>
-      <div v-else class="msg-content" v-html="bodyHtml"></div>
+      <!-- 助手/系统/工具正文：分段渲染，画布卡片留在它原本的段落位置 -->
+      <template v-else>
+        <template v-for="(seg, i) in segments" :key="seg.kind === 'canvas' ? seg.key : `h${i}`">
+          <div v-if="seg.kind === 'html'" class="msg-content" v-html="seg.html" @click="onMarkdownContentClick"></div>
+          <HtmlCanvasBlock v-else :encoded="seg.encoded" :blocked="seg.blocked" />
+        </template>
+      </template>
       <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->
       <div v-if="userParsed.files.length > 0" class="msg-att-files">
         <span

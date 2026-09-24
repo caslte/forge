@@ -7,7 +7,7 @@
 
 ### 1.1 业务背景与目标
 
-forge 对接 pi 的 provider / model 系统。pi 通过 `~/.pi/agent/models.json` 声明 provider 与模型，打开 `/model` 时自动重载。forge 作为 models.json 的可视化编辑器：用户用表单配置第三方 provider（OpenAI / Anthropic / OpenRouter / 自定义 / 本地模型），forge 生成并读写 models.json。**v1 为尽快联调跑通，apiKey 暂以明文直接写入 `models.json`（与 pi 原生明文形式一致，不经 OS keychain / `$ENV_VAR` 引用）；安全引用（`!command`/`$ENV_VAR`）留至后续迭代。** v1 不涉及扩展层 `registerProvider`（OAuth/非标准 API 留后续）。
+forge 对接 pi 的 provider / model 系统。pi 通过 forge agent 目录（`<userData>/agent`）的 `models.json` 声明 provider 与模型，打开 `/model` 时自动重载。forge 作为 models.json 的可视化编辑器：用户用表单配置第三方 provider（OpenAI / Anthropic / OpenRouter / 自定义 / 本地模型），forge 生成并读写 models.json。**v1 为尽快联调跑通，apiKey 暂以明文直接写入 `models.json`（与 pi 原生明文形式一致，不经 OS keychain / `$ENV_VAR` 引用）；安全引用（`!command`/`$ENV_VAR`）留至后续迭代。** v1 不涉及扩展层 `registerProvider`（OAuth/非标准 API 留后续）。
 
 ### 1.2 场景清单
 

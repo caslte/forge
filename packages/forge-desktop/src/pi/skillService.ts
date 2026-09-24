@@ -29,7 +29,7 @@ export type SkillMethodTable = Record<
   (params: unknown) => RpcResult | Promise<RpcResult>
 >;
 
-/** skill 作用域：user=全局（~/.pi/agent/skills + ~/.agents/skills），project=当前项目 */
+/** skill 作用域：user=全局（<agentDir>/skills + ~/.agents/skills），project=当前项目 */
 export type SkillScope = 'user' | 'project';
 
 /** 单条生效 skill（loader 返回的均为生效方；同名冲突 loser 走 issues 诊断） */

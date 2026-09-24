@@ -3,7 +3,7 @@
  *
  * 由 main.ts 在 app.whenReady 内 fire-and-forget 挂接（后台静默，不阻塞启动）：
  * - 预装（AC-IN-004/005/006/007）：preinstallDone=false 时对比推荐清单与
- *   ~/.pi/agent settings.packages 补缺（只增不删，不动用户已装/自装项），
+ *   forge agent 目录（<userData>/agent）settings.packages 补缺（只增不删，不动用户已装/自装项），
  *   逐项经内置 CLI `pi install <pkg>`；全部成功置 preinstallDone=true；
  *   任一失败保持 false，下次启动重试（幂等）
  * - 联动（AC-IN-012/013/014）：lastRunForgeVersion ≠ 当前版本 → 后台静默
@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 import {
   PI_UPDATE_TIMEOUT_MS,
   type PiUpdateResult,
+  buildPiCliEnv,
   readPiExtensionList,
   resolveBundledPiCli,
   updatePiExtensions,
@@ -38,7 +39,7 @@ function tail(s: string): string {
 export interface StartupUpdateDeps {
   /** updater-state.json 绝对路径（userData 目录下） */
   statePath: string;
-  /** pi agent 目录（~/.pi/agent，与 createForgeCore 解析一致） */
+  /** forge agent 目录（<userData>/agent，与 createForgeCore 注入同一根） */
   agentDir: string;
   /** 当前 forge 版本（main.ts 注入 app.getVersion()） */
   currentVersion: string;
@@ -56,8 +57,9 @@ export interface StartupUpdate {
   run(): Promise<void>;
 }
 
-/** 默认 CLI 执行：经 ELECTRON_RUN_AS_NODE 以 node 模式跑内置引擎 CLI（不依赖全局 pi） */
-async function defaultRunCli(args: string[]): Promise<{ ok: boolean; output: string }> {
+/** 默认 CLI 执行：经 ELECTRON_RUN_AS_NODE 以 node 模式跑内置引擎 CLI（不依赖全局 pi）；
+ * env 经 buildPiCliEnv 注入 PI_CODING_AGENT_DIR，组件装到 forge 自有 agent 目录 */
+async function defaultRunCli(args: string[], agentDir: string): Promise<{ ok: boolean; output: string }> {
   const cli = resolveBundledPiCli();
   if (cli === null) {
     return { ok: false, output: '内置引擎 CLI 不存在，无法执行组件命令' };
@@ -67,7 +69,7 @@ async function defaultRunCli(args: string[]): Promise<{ ok: boolean; output: str
       windowsHide: true,
       timeout: PI_UPDATE_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: buildPiCliEnv(agentDir),
     });
     return { ok: true, output: tail(stdout) };
   } catch (err) {
@@ -91,8 +93,8 @@ export function snapshotComponents(agentDir: string): Record<string, string> {
 }
 
 export function createStartupUpdate(deps: StartupUpdateDeps): StartupUpdate {
-  const runCli = deps.runCli ?? defaultRunCli;
-  const extensionUpdater = deps.extensionUpdater ?? updatePiExtensions;
+  const runCli = deps.runCli ?? ((args: string[]) => defaultRunCli(args, deps.agentDir));
+  const extensionUpdater = deps.extensionUpdater ?? (() => updatePiExtensions(deps.agentDir));
   const now = deps.now ?? (() => new Date());
   const log = (line: string): void => {
     try {

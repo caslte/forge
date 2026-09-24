@@ -135,6 +135,47 @@ export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
 
 /**
+ * preload ↔ main shell 通道：系统浏览器/邮件客户端打开外链（消息正文链接拦截）。
+ * 与 openPath 刻意分开：这条只收 http/https/mailto 绝对 URL，绝不落到 shell.openPath
+ * （后者会把任意字符串交给系统「打开」，指向 .exe 就等于双击运行）。
+ */
+export const IPC_SHELL_OPEN_EXTERNAL = 'forge:shell:openExternal';
+
+/** preload ↔ main shell 通道：pi bash 解析健康探测（渲染层启动横幅数据源） */
+export const IPC_SHELL_PROBE = 'forge:shell:probe';
+
+/**
+ * shell 探测结果（forge:shell:probe 响应）。
+ *
+ * 背景：pi 的 bash 解析在 Windows 上按 settings.shellPath → Program Files Git ×2 →
+ * PATH bash.exe 三级兜底，第三级会命中 System32 的 WSL 占位 bash.exe——WSL 未装时
+ * 每条命令只返回一句 UTF-16 乱码的「未安装 Linux 子系统」，模型侧表现为
+ * 「bash 工具被 WSL 拦截、彻底不可用」（2026-09 dev 切根事故）。forge 启动时用同一
+ * 口径探测一次，异常则在对话区横幅给出可操作指引。
+ */
+export type ShellProbeResult =
+  | { ok: true; /** 解析到的 shell 绝对路径 */ shell: string }
+  | {
+      ok: false;
+      /** wsl-stub=PATH 兜底命中 System32 WSL 占位；no-shell=三级全落空（getShellConfig 抛错） */
+      reason: 'wsl-stub' | 'no-shell';
+      /** 探测到的可疑/缺失 shell 路径；no-shell 时为 null */
+      shell: string | null;
+      /** 修复目标：forge agent 根下 settings.json（可不存在，用户可新建） */
+      settingsPath: string;
+    };
+
+/**
+ * 画布卡片「另存」（见 docs/plan/canvas-card.md）：原生保存对话框选位置 + 写 UTF-8 文本。
+ *
+ * 为什么走保存对话框而不是自造目录（如项目下 .forge/canvas/）：卡片是模型产出的
+ * 一次性图示，落到项目里会污染 git 状态（改动文件卡会变吵），落到 userData 又不好
+ * 找。让用户在对话框里自己决定去哪，两条顾虑一起消掉。
+ */
+export const IPC_DIALOG_SAVE_FILE = 'forge:dialog:saveFile';
+export const IPC_FILE_WRITE_TEXT = 'forge:file:writeText';
+
+/**
  * preload ↔ main 主题通道（v3.78.6）：渲染进程把当前主题同步给主进程。
  *
  * 为什么需要：`BrowserWindow.backgroundColor` 只在建窗时刻可给，而那一刻主进程读不到

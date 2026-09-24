@@ -1,4 +1,4 @@
-/** 域 08-tool：工具调用卡 / Diff / 改动文件汇总 / Mermaid 图表文案（模块 08 I18N-F03 迁移批次）。 */
+/** 域 08-tool：工具调用卡 / Diff / 改动文件汇总 / Mermaid 图表 / 画布卡片文案（模块 08 I18N-F03 迁移批次）。 */
 export const zhTool = {
   'tool.askUser': '向用户提问',
   'tool.readFile': '读取文件',
@@ -20,6 +20,18 @@ export const zhTool = {
   'tool.mermaidEmpty': 'Mermaid 内容为空',
   'tool.mermaidFailed': 'Mermaid 渲染失败：',
   'tool.mermaidNotDiagram': '内容不是 mermaid 语法，按代码块显示',
+  'canvas.generating': '正在绘制图示…',
+  'canvas.expand': '放大',
+  'canvas.close': '关闭',
+  'canvas.taller': '拉高',
+  'canvas.tallerReset': '复位',
+  'canvas.save': '另存',
+  'canvas.copy': '复制源码',
+  'canvas.copied': '已复制',
+  'canvas.notHtml': '内容不是 HTML 图示，按代码块显示',
+  'canvas.empty': '图示内容为空',
+  'canvas.saved': '已保存到 {path}',
+  'canvas.saveFailed': '保存失败',
 } as const;
 
 export const enTool: Record<string, string> = {
@@ -43,4 +55,16 @@ export const enTool: Record<string, string> = {
   'tool.mermaidEmpty': 'Mermaid content is empty',
   'tool.mermaidFailed': 'Mermaid render failed: ',
   'tool.mermaidNotDiagram': 'Content is not mermaid syntax, shown as a code block',
+  'canvas.generating': 'Drawing diagram…',
+  'canvas.expand': 'Expand',
+  'canvas.close': 'Close',
+  'canvas.taller': 'Taller',
+  'canvas.tallerReset': 'Reset',
+  'canvas.save': 'Save as',
+  'canvas.copy': 'Copy source',
+  'canvas.copied': 'Copied',
+  'canvas.notHtml': 'Content is not an HTML diagram, shown as a code block',
+  'canvas.empty': 'Diagram content is empty',
+  'canvas.saved': 'Saved to {path}',
+  'canvas.saveFailed': 'Save failed',
 };

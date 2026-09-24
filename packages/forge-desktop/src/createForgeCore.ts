@@ -48,7 +48,7 @@ import {
 } from './pi/piSessionPaths.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { createSlashCommandResources } from './pi/slashCommandResources.ts';
-import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
+import { PiModelsFileAdapter } from './pi/piModelsFileAdapter.ts';
 import {
   SUBAGENT_OUTPUT_TAIL_BYTES,
   readTail,
@@ -87,9 +87,10 @@ export interface ForgeCoreDeps {
   keychain?: KeychainAdapter;
   /** 项目信任权威端口（P2-A）；缺省接真实 pi trust store（agentDir 下 trust.json） */
   trustStore?: TrustStorePort;
-  /** pi models.json 路径（默认 ~/.pi/agent/models.json） */
+  /** pi models.json 路径（缺省派生自 piAgentDir：<agentDir>/models.json） */
   piModelsPath?: string;
-  /** pi agent 目录（默认 ~/.pi/agent）；测试指向空目录可隔离真实凭据 */
+  /** pi agent 目录（生产由 main.ts 注入 <userData>/agent；缺省回退 ~/.pi/agent，
+   * 测试指向空目录可隔离真实凭据） */
   piAgentDir?: string;
   /** 可注入 pi 会话工厂；缺省时使用真实 pi 会话工厂 */
   piAgentSessionFactory?: PiAgentSessionFactory<MinimalPiSession>;
@@ -141,17 +142,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       }
     },
   };
+  // agentDir 单点解析（生产 = <userData>/agent，main.ts 注入）：trust store、会话转录、
+  // models.json、skill 写入根全部从这一根派生，杜绝多处各自缺省造成读写裂脑。
+  const agentDir = resolvePiAgentDir(deps.piAgentDir);
+  const piModelsPath = deps.piModelsPath ?? path.join(agentDir, 'models.json');
   const projectService = new ProjectService(
     store,
-    deps.trustStore ??
-      new PiTrustStoreAdapter(
-        deps.piAgentDir ??
-          path.join(
-            process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
-            '.pi',
-            'agent',
-          ),
-      ),
+    deps.trustStore ?? new PiTrustStoreAdapter(agentDir),
     projectSessionsPort,
   );
   const projectApi = createProjectApi(projectService, eventBus);
@@ -168,9 +165,8 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   let subagentServiceRef: SubagentService | undefined;
 
   // session（02）：删除会话时先释放对话侧运行资源（P2-D lease dispose + stop）。
-  // agentDir 提前到此处解析：会话删除要按同一 agentDir 推导 pi 转录文件路径
+  // 会话删除按同一 agentDir 推导 pi 转录文件路径
   //（与 createPiAgentSessionFactory 的建文件路径必须逐字节一致，否则删不掉）。
-  const agentDir = resolvePiAgentDir(deps.piAgentDir);
   const piSessionAdapter = new PiSessionAdapter({ agentDir });
   const sessionService = new SessionService(
     store,
@@ -201,7 +197,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // streaming」（照常 notifyMainTurnStart）。非 streaming 状态统一清理防标记泄漏到下一轮。
   const retryRestorePending = new Set<string>();
   const piAgentSessionFactory =
-    deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir: deps.piAgentDir });
+    deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir, modelsPath: piModelsPath });
   // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件
   // （agentDir/sessions/<encodeURIComponent(cwd)>/forge-<id>.jsonl，见 piSessionPaths）
   const resolveSessionFile = (sessionId: string): string | undefined => {
@@ -318,7 +314,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   });
   // model（05）共享实例：提供真实 provider 就绪检查（models 非空）与会话模型解析
   const modelService = new ModelService({
-    modelsFile: deps.modelsFile ?? new PiModelsFileAdapter(deps.piModelsPath ?? defaultPiModelsPath()),
+    modelsFile: deps.modelsFile ?? new PiModelsFileAdapter(piModelsPath),
     keychain: deps.keychain ?? new EnvVarKeychainAdapter(),
     store,
     // P3-D：配置变更审计日志（追加写 store 同目录，载荷仅动作标识 + providerId，无密钥）
@@ -340,7 +336,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     // 过滤规则）。模型解析失败时内部返回 null -> 服务层映射为 1004「模型未配置」。
     thinkLevels: {
       getSupportedThinkingLevels: (model: string) =>
-        getPiSupportedThinkingLevels(model, deps.piModelsPath),
+        getPiSupportedThinkingLevels(model, piModelsPath),
     },
   });
   const conversationService = new ConversationService(conversationAdapter, {
@@ -651,7 +647,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       data: { forgeVersion: deps.forgeVersion ?? '0.0.0-dev' },
     }),
     'pi/updatePlugins': async () => {
-      const result = await (deps.piUpdateExtensions ?? updatePiExtensions)();
+      const result = await (deps.piUpdateExtensions ?? (() => updatePiExtensions(agentDir)))();
       if (!result.ok) {
         return { code: 6002, message: '组件更新失败', data: { output: result.output } };
       }

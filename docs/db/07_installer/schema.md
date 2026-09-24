@@ -9,7 +9,7 @@
 ## 0. 设计前提与边界
 
 - 刻意**不放入 forge-store.json**：forge-store 是项目组织层存储（项目/会话/模型偏好），更新体系的状态与其无业务关联，独立文件避免 schemaVersion 迁移耦合（用户拍板：独立 updater-state）。
-- **不存**：pi/共享组件的任何数据（`~/.pi/agent` 归 pi 侧）；安装包本体（下载缓存由 electron-updater 自管）。
+- **不存**：pi/共享组件的任何数据（forge 专属 agent 目录 `<userData>/agent` 归引擎侧文件形态管理）；安装包本体（下载缓存由 electron-updater 自管）。
 - 单文件原子写（临时文件 + rename），与 forge-store 同一策略；文件损坏/缺失时按全默认值重建（降级为重新预装/重新触发联动，均幂等安全）。
 - 单写者：仅 forge-desktop 主进程更新流程读写，无并发写者。
 
@@ -49,5 +49,5 @@
 |---|---|---|---|
 | 联动/预装标志、检查时间 | forge（本文件） | updater-state.json | 读写 |
 | 项目/会话/模型偏好 | forge | forge-store.json | 不涉及 |
-| 共享组件清单与实体 | pi 侧 | `~/.pi/agent/settings.json` + `npm/` | 经模块 07 更新器读写（见 api/07_pi.md） |
+| 共享组件清单与实体 | forge 引擎侧 | `<userData>/agent/settings.json` + `npm/` | 经模块 07 更新器读写（见 api/07_pi.md） |
 | 更新包下载缓存 | electron-updater | 其自管目录 | 不设计、不干预 |

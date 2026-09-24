@@ -19,10 +19,6 @@ const props = defineProps<{
 
 const open = ref(false);
 
-const isRunning = computed(() => props.event.status === 'started');
-const isError = computed(() => props.event.status === 'error');
-const isDone = computed(() => props.event.status === 'completed');
-
 /** 工具名 → i18n 键（与 useStreamPhase 口径对齐）；key 是与后端工具名比对的逻辑串不动，展示值进字典；未知工具回退原名 */
 const TOOL_LABELS: Record<string, MessageKey> = {
   ask_user_question: 'tool.askUser',
@@ -126,35 +122,36 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
 <template>
   <div :class="['tool-calls trow', `tool-${event.status}`, { open }]">
     <button class="tool-calls-head trow-line" @click="open = !open">
-      <svg
-        v-if="isDone"
-        class="ico ok"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      ><circle cx="12" cy="12" r="9" /><polyline points="8.5 12.2 11 14.7 15.5 9.8" /></svg>
-      <svg
-        v-else-if="isError"
-        class="ico err"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      ><circle cx="12" cy="12" r="9" /><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6" /></svg>
-      <svg
-        v-else
-        class="ico spinner"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-        stroke-linecap="round"
-      ><path d="M12 3a9 9 0 1 0 9 9" /></svg>
+      <!-- 状态图标叠放同格：根节点 tool-{status} 类驱动交叉淡化+对勾描线（0.5x 节奏，见 design-tokens --motion-*），
+           不再 v-if 硬切；历史加载/折叠展开直接呈现终态，无首帧过渡 -->
+      <span class="icon-slot" aria-hidden="true">
+        <svg
+          class="ico spinner"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        ><path d="M12 3a9 9 0 1 0 9 9" /></svg>
+        <svg
+          class="ico ok"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        ><circle cx="12" cy="12" r="9" pathLength="1" /><polyline points="8.5 12.2 11 14.7 15.5 9.8" pathLength="1" /></svg>
+        <svg
+          class="ico err"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        ><circle cx="12" cy="12" r="9" /><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6" /></svg>
+      </span>
       <span class="lbl">{{ displayName }}</span>
       <span v-if="arg" :class="['arg', { plain: arg.plain }]">{{ arg.text }}</span>
     </button>
@@ -210,10 +207,22 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
   background: color-mix(in oklab, var(--muted) 60%, transparent);
 }
 
-.ico {
+/* 状态图标叠放：三 svg 同格，状态类切换只动 opacity/scale/dashoffset */
+.icon-slot {
+  display: grid;
+  place-items: center;
   width: 15px;
   height: 15px;
   flex-shrink: 0;
+}
+
+.icon-slot > svg {
+  grid-area: 1 / 1;
+}
+
+.ico {
+  width: 15px;
+  height: 15px;
 }
 
 .ico.ok {
@@ -233,6 +242,50 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
 .ico.spinner {
   color: var(--muted-foreground);
   animation: tc-spin 0.9s linear infinite;
+  transition: opacity var(--motion-icon-out);
+}
+
+.ico.ok,
+.ico.err {
+  opacity: 0;
+  transform: scale(0.7);
+  transition:
+    opacity var(--motion-icon-in) calc(var(--motion-icon-out) / 2),
+    transform var(--motion-icon-in) calc(var(--motion-icon-out) / 2);
+}
+
+/* 完成/失败：spinner 淡出并暂停旋转（避免定格随机角度被看见），对勾/叉淡入放大 */
+.tool-completed .ico.spinner,
+.tool-error .ico.spinner {
+  opacity: 0;
+  animation-play-state: paused;
+}
+
+.tool-completed .ico.ok,
+.tool-error .ico.err {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* 对勾描线：pathLength=1，圆环先画、折线延迟接上 */
+.ico.ok circle,
+.ico.ok polyline {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset var(--motion-check-draw);
+}
+
+.ico.ok circle {
+  transition-delay: calc(var(--motion-icon-out) / 2);
+}
+
+.ico.ok polyline {
+  transition-delay: calc(var(--motion-icon-out) / 2 + var(--motion-check-draw) * 0.45);
+}
+
+.tool-completed .ico.ok circle,
+.tool-completed .ico.ok polyline {
+  stroke-dashoffset: 0;
 }
 
 .lbl {
