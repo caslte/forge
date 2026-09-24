@@ -88,6 +88,10 @@ export interface GitStatusInfo {
   removed: number;
   /** 暂存区是否为空（X 列全为空格或 ?；D2 勾选不勾时的提交判据） */
   stagedEmpty: boolean;
+  /** 暂存区文件数（X 列非空格非 ? 的 porcelain 行数；不勾「包含未暂存」时的待提交数） */
+  stagedCount: number;
+  /** 未推送提交涉及的文件数（upstream→origin/分支→--not --remotes 三级判据）；无远端/detached/无 HEAD → null（未知） */
+  unpushedCount: number | null;
   /** HEAD 是否存在（空仓库=false，影响 diff 基线与推送语义） */
   hasHead: boolean;
 }
@@ -101,8 +105,22 @@ const NOT_A_STATUS: GitStatusInfo = {
   added: 0,
   removed: 0,
   stagedEmpty: true,
+  stagedCount: 0,
+  unpushedCount: null,
   hasHead: false,
 };
+
+/** name-only / log --name-only 输出的文件路径计数（去重、去空行） */
+function uniquePaths(out: string): number {
+  const set = new Set<string>();
+  for (const line of out.split('\n')) {
+    const p = line.trim();
+    if (p !== '') {
+      set.add(p);
+    }
+  }
+  return set.size;
+}
 
 /** commit 成功数据：shortHash=新提交短哈希，fileCount=本次提交涉及文件数 */
 export interface CommitData {
@@ -249,7 +267,7 @@ export class GitService {
 
   /**
    * 提交弹窗数据源（模块 11 GC-F01，只读无副作用）：porcelain v1 文件数 +
-   * numstat 增删汇总 + 暂存空判定。非 git 仓库返回 isGitRepo:false 空值。
+   * numstat 增删汇总 + 暂存空判定/暂存文件数 + 未推送文件数。非 git 仓库返回 isGitRepo:false 空值。
    */
   async getStatus(cwd: string): Promise<GitStatusInfo> {
     const inside = await this.run(cwd, ['rev-parse', '--is-inside-work-tree']);
@@ -259,7 +277,9 @@ export class GitService {
     const status = await this.run(cwd, ['status', '--porcelain=v1', '--untracked-files=all']);
     const lines = status.ok ? status.stdout.split('\n').filter((l) => l.length >= 4) : [];
     // X 列（索引状态）非空格且非 ? 即有已暂存变更
-    const stagedEmpty = !lines.some((l) => (l.charCodeAt(0) ?? 32) !== 32 && l[0] !== '?');
+    const isStagedLine = (l: string): boolean => (l.charCodeAt(0) ?? 32) !== 32 && l[0] !== '?';
+    const stagedEmpty = !lines.some(isStagedLine);
+    const stagedCount = lines.filter(isStagedLine).length;
     const head = await this.run(cwd, ['rev-parse', 'HEAD']);
     const hasHead = head.ok;
     const num = await this.run(
@@ -288,6 +308,34 @@ export class GitService {
       const short = await this.run(cwd, ['rev-parse', '--short', 'HEAD']);
       branch = short.ok ? short.stdout.trim() : null;
     }
+    // 未推送文件数（真机反馈修正 2026-09-24：本地新分支无 upstream 也要如实计数）：
+    // 有 upstream 比 upstream；否则比 origin/<branch>；分支从未推送则数
+    // 「本地有、任何远端分支没有」的提交涉及文件（--not --remotes）。
+    // 仅无远端 / detached / 无 HEAD 时为 null（未知，UI 不显示）
+    let unpushedCount: number | null = null;
+    if (hasHead && !detached) {
+      const remotes = await this.run(cwd, ['remote']);
+      if (remotes.ok && remotes.stdout.trim() !== '') {
+        const up = await this.run(cwd, ['rev-parse', '--abbrev-ref', '@{upstream}']);
+        let baseRef = up.ok ? up.stdout.trim() : '';
+        if (baseRef === '' && branch) {
+          const rb = await this.run(cwd, ['rev-parse', '--verify', '--quiet', `origin/${branch}`]);
+          baseRef = rb.ok ? rb.stdout.trim() : '';
+        }
+        if (baseRef !== '') {
+          const ud = await this.run(cwd, ['diff', '--name-only', `${baseRef}...HEAD`]);
+          if (ud.ok) {
+            unpushedCount = uniquePaths(ud.stdout);
+          }
+        } else {
+          // 显式 HEAD：零远端跟踪引用时 `--not --remotes` 会把隐式 HEAD 一并吞掉（实测）
+          const lg = await this.run(cwd, ['log', '--pretty=tformat:', '--name-only', 'HEAD', '--not', '--remotes']);
+          if (lg.ok) {
+            unpushedCount = uniquePaths(lg.stdout);
+          }
+        }
+      }
+    }
     return {
       isGitRepo: true,
       branch,
@@ -296,6 +344,8 @@ export class GitService {
       added,
       removed,
       stagedEmpty,
+      stagedCount,
+      unpushedCount,
       hasHead,
     };
   }

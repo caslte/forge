@@ -49,6 +49,10 @@ export interface GitStatusInfo {
   removed: number;
   /** 暂存区是否为空（X 列全空） */
   stagedEmpty: boolean;
+  /** 暂存区文件数（不勾「包含未暂存」时的待提交数） */
+  stagedCount: number;
+  /** 未推送提交涉及的文件数（无 upstream 时退 origin/分支，再退「本地领先所有远端」）；无远端/detached/无 HEAD → null（未知） */
+  unpushedCount: number | null;
   /** 仓库是否已有 HEAD（新仓库 false） */
   hasHead: boolean;
 }

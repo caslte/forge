@@ -2,7 +2,7 @@
  * GitService 写路径单元测试（模块 11：git 提交/推送，docs/prd/11_git_commit_push.md）。
  *
  * 覆盖 getStatus / commit / push / collectCommitDiff 服务层契约：
- * - getStatus：文件数/numstat 汇总/stagedEmpty/hasHead/detached/非仓库空值
+ * - getStatus：文件数/numstat 汇总/stagedEmpty/stagedCount/unpushedCount/hasHead/detached/非仓库空值
  * - commit：空 message 1001、暂存空 6006（AC-11-07 双保险的服务端一道）、
  *   includeUnstaged=true 先 add -A、shortHash+fileCount、多行/横杠开头 message 原样入库
  * - push：无 upstream 自动 -u origin、成功回 {branch,remote}、落后远端 6007+stderr、
@@ -68,6 +68,8 @@ test('getStatus：干净仓库 fileCount=0、stagedEmpty=true、hasHead=true、b
       added: 0,
       removed: 0,
       stagedEmpty: true,
+      stagedCount: 0,
+      unpushedCount: null,
       hasHead: true,
     });
   } finally {
@@ -84,11 +86,13 @@ test('getStatus：未暂存改动计数且 stagedEmpty=true；暂存后 stagedEm
     let st = await svc.getStatus(dir);
     assert.equal(st.fileCount, 2); // 1 modified + 1 untracked
     assert.equal(st.stagedEmpty, true);
+    assert.equal(st.stagedCount, 0); // 未 add → 暂存区 0 个文件
     assert.equal(st.added, 1); // untracked 不进 numstat；a.txt +1 -1
     assert.equal(st.removed, 1);
     await git(dir, 'add', '.');
     st = await svc.getStatus(dir);
     assert.equal(st.stagedEmpty, false);
+    assert.equal(st.stagedCount, 2); // add 后待提交（不勾包含未暂存）= 2
     assert.equal(st.added, 3); // a.txt +1 + new.txt +2
     assert.equal(st.removed, 1);
   } finally {
@@ -134,6 +138,35 @@ test('getStatus：非 git 目录返回 isGitRepo=false 空值', async () => {
     assert.equal(st.stagedEmpty, true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('getStatus：unpushedCount 三级判据（upstream→origin/分支→从未推送的本地提交）', async () => {
+  const { dir, remote } = await makePushableRepo();
+  try {
+    const svc = new GitService();
+    // origin 已配置但从未 fetch（无任何远端跟踪引用）→ 全部提交都算未推送：init 动了 1 个文件
+    assert.equal((await svc.getStatus(dir)).unpushedCount, 1);
+    await git(dir, 'push', '-u', 'origin', 'main');
+    assert.equal((await svc.getStatus(dir)).unpushedCount, 0);
+    // 本地新提交涉及 2 个文件 → 待推送 2（工作区脏与否不影响该数）
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'line1\nline2\nline3\n');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+    await git(dir, 'add', '.');
+    await git(dir, 'commit', '-m', 'two files');
+    assert.equal((await svc.getStatus(dir)).unpushedCount, 2);
+    const r = await svc.push(dir);
+    assert.ok(r.ok);
+    assert.equal((await svc.getStatus(dir)).unpushedCount, 0);
+    // 用户真机场景：新分支 feature 从未推送（无 upstream、无 origin/feature）→ 数本地独有提交
+    await git(dir, 'checkout', '-b', 'feature');
+    fs.writeFileSync(path.join(dir, 'c.txt'), 'c\n');
+    await git(dir, 'add', '.');
+    await git(dir, 'commit', '-m', 'feature only');
+    assert.equal((await svc.getStatus(dir)).unpushedCount, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(remote, { recursive: true, force: true });
   }
 });
 

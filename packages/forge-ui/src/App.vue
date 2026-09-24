@@ -48,6 +48,57 @@ const draftMode = ref(false);
 type View = 'sessions' | 'settings';
 const activeView = ref<View>('sessions');
 const sidebarCollapsed = ref(false);
+
+/* 侧栏宽度可拖拽调整：限制在 [220, 440]，记忆在 localStorage。
+   宽度经 CSS 变量 --sidebar-w 驱动侧栏 / shell-topstrip / 折叠态标题栏让位，三处同源 */
+const SIDEBAR_W_KEY = 'forge:sidebar:width';
+const SIDEBAR_MIN = 220;
+const SIDEBAR_MAX = 440;
+const SIDEBAR_DEFAULT = 292;
+const sidebarWidth = ref(readSidebarWidth());
+const sidebarResizing = ref(false);
+let resizeStartX = 0;
+let resizeStartW = 0;
+
+function readSidebarWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(SIDEBAR_W_KEY));
+    return Number.isFinite(raw) && raw >= SIDEBAR_MIN && raw <= SIDEBAR_MAX ? raw : SIDEBAR_DEFAULT;
+  } catch {
+    return SIDEBAR_DEFAULT;
+  }
+}
+
+function onSidebarResizeStart(e: PointerEvent): void {
+  if (e.button !== 0) return;
+  resizeStartX = e.clientX;
+  resizeStartW = sidebarWidth.value;
+  sidebarResizing.value = true;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  document.body.classList.add('sidebar-resizing');
+  e.preventDefault();
+}
+
+function onSidebarResizeMove(e: PointerEvent): void {
+  (e.currentTarget as HTMLElement).style.setProperty('--seg-y', `${e.clientY}px`);
+  if (!sidebarResizing.value) return;
+  const next = resizeStartW + (e.clientX - resizeStartX);
+  sidebarWidth.value = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, next));
+}
+
+function onSidebarResizeEnd(e: PointerEvent): void {
+  if (!sidebarResizing.value) return;
+  sidebarResizing.value = false;
+  const el = e.currentTarget as HTMLElement;
+  if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  document.body.classList.remove('sidebar-resizing');
+  try {
+    localStorage.setItem(SIDEBAR_W_KEY, String(sidebarWidth.value));
+  } catch {
+    // 存储失败忽略（不影响运行）
+  }
+}
+
 /** mac：traffic lights 画在窗口左上角（12,12），悬浮 toggle 需右移让位（见主进程 trafficLightPosition） */
 const isMac = window.forge?.platform === 'darwin';
 const showExitDialog = ref(false);
@@ -668,7 +719,12 @@ onUnmounted(() => {
 <template>
   <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit -->
   <BootWelcome v-if="!bootReady" />
-  <div v-else class="app-container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+  <div
+    v-else
+    class="app-container"
+    :class="{ 'sidebar-collapsed': sidebarCollapsed, 'sidebar-resizing': sidebarResizing }"
+    :style="{ '--sidebar-w': `${sidebarWidth}px` }"
+  >
     <!-- 一体化壳层（prototypes/unified-shell-full.html）：侧栏列通顶、标题栏只盖右列、
          toggle 悬浮钉死窗口左上角——折叠时侧栏从按钮底下抽走，按钮零位移不跳动。
          toggle 必须包在窗口级拖拽条内做 no-drag 后代：Electron 的 drag 区只认后代挖洞，
@@ -784,6 +840,18 @@ onUnmounted(() => {
           <!-- 侧栏更新入口（07 改造）：仅更新相关时出现，紧跟设置 -->
           <UpdateEntry />
         </div>
+        <!-- 右缘拖拽手柄：hover/拖拽时中缝高亮为品牌青绿 -->
+        <div
+          class="sidebar-resizer"
+          :class="{ active: sidebarResizing }"
+          role="separator"
+          aria-orientation="vertical"
+          :data-tooltip="t('app.resizeSidebar')"
+          @pointerdown="onSidebarResizeStart"
+          @pointermove="onSidebarResizeMove"
+          @pointerup="onSidebarResizeEnd"
+          @pointercancel="onSidebarResizeEnd"
+        ></div>
       </aside>
 
       <div class="rightcol">
@@ -968,8 +1036,8 @@ onUnmounted(() => {
 /* 一体化壳层：侧栏列通顶。左右结构不再靠整块压暗的色块台阶表达，
    而是同底色 + 左深右浅的淡出渐变 + 两端淡出的 1px 中缝（demo：prototypes/unified-shell-full.html） */
 .sidebar {
-  width: 292px;
-  min-width: 292px;
+  width: var(--sidebar-w, 292px);
+  min-width: var(--sidebar-w, 292px);
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1002,6 +1070,52 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* 拖拽调宽期间关掉宽度过渡，否则侧栏跟手滞后、松手后又继续滑行 */
+.app-container.sidebar-resizing .sidebar {
+  transition: none;
+}
+
+/* 右缘拖拽手柄：透明热区骑在中缝上（sidebar overflow:hidden，故全部置于内侧），
+   hover/拖拽时以 2px 品牌青绿线覆盖默认 1px 灰缝作高亮反馈 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+
+/* 高亮取 demo 方案 B 形态（两端渐隐的柔光段，中心品牌青绿），但不自动流动：
+   --seg-y 由 pointermove 写入视口 Y 坐标，鼠标停在哪光段就在哪；
+   不做 top 过渡保证贴手；侧栏通顶且容器从 y=0 起，clientY 可直接用作 top */
+.sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: var(--seg-y, 50%);
+  right: 0;
+  height: 110px;
+  width: 2px;
+  transform: translateY(-50%);
+  border-radius: 1px;
+  background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--brand-accent) 65%, transparent) 50%, transparent);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer.active::after {
+  opacity: 1;
+}
+
+/* 捕获指针后光标仍按命中元素渲染，拖拽中需在全局压住 col-resize 并禁选中 */
+:global(body.sidebar-resizing) {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .rightcol {
   flex: 1;
   min-width: 0;
@@ -1018,14 +1132,14 @@ onUnmounted(() => {
 }
 
 /* 窗口级顶部拖拽条：覆盖侧栏列顶部（含 toggle），toggle 作为其 no-drag 后代挖洞
-   （Electron 只对后代做洞，同级悬浮元素会被 drag 吞掉交互）；宽度止于 292px，
-   不伸进窗口按钮区。z 必须高于右列标题栏（200）：侧栏折叠后标题栏从 x=0 铺起，
+   （Electron 只对后代做洞，同级悬浮元素会被 drag 吞掉交互）；宽度与侧栏同源
+   （--sidebar-w），不伸进窗口按钮区。z 必须高于右列标题栏（200）：侧栏折叠后标题栏从 x=0 铺起，
    若标题栏 drag 叠在拖拽条之上，toggle 的洞会被其原生拖拽重新吞掉（折叠后无法展开） */
 .shell-topstrip {
   position: absolute;
   left: 0;
   top: 0;
-  width: 292px;
+  width: var(--sidebar-w, 292px);
   height: 36px;
   z-index: 205;
   -webkit-app-region: drag;
@@ -1033,9 +1147,9 @@ onUnmounted(() => {
 
 /* 折叠后右列从 x=0 铺起，右列标题栏的 drag 盒会盖住 toggle：Electron 的 no-drag
    洞只在自己的 drag 子树内生效（按祖先归属），跨子树重叠无效——所以折叠时标题栏
-   整体让位 292px，该段顶部拖拽由 shell-topstrip 接管，两个 drag 区永不重叠 */
+   整体让位一个侧栏宽度（--sidebar-w），该段顶部拖拽由 shell-topstrip 接管，两个 drag 区永不重叠 */
 .app-container.sidebar-collapsed :deep(.titlebar) {
-  margin-left: 292px;
+  margin-left: var(--sidebar-w, 292px);
   /* 覆盖 TitleBar 的 width:100%，否则整条右移把窗口按钮顶出可视区 */
   width: auto;
 }

@@ -52,6 +52,17 @@ const footHint = computed(() => {
   if (i && i.stagedEmpty && !includeUnstaged.value) return t('git.stagedEmptyTip');
   return '';
 });
+/** 副标题后的计数：待提交随「包含未暂存」勾选切换（fileCount↔stagedCount，纯前端派生）；
+    待推送取 upstream...HEAD 文件数，无 upstream/detached（null）时不显示 */
+const statText = computed(() => {
+  const i = info.value;
+  if (!i) return '';
+  // ?? 0 / != null 双防御：主进程未重启时新字段为 undefined（旧信封无这两键）
+  const n = includeUnstaged.value ? i.fileCount : i.stagedCount ?? 0;
+  const parts = [t('git.statCommit', { n })];
+  if (i.unpushedCount != null) parts.push(t('git.statPush', { n: i.unpushedCount }));
+  return parts.join(' · ');
+});
 
 function stderrOf(res: { message: string; data: unknown }): string {
   const d = res.data as { stderr?: string } | null;
@@ -227,7 +238,9 @@ watch(visible, (v) => {
         </button>
       </header>
 
-      <div class="dialog-sub">{{ t('git.subPre') }}<b>{{ projectName }}</b>{{ t('git.subPost') }}</div>
+      <div class="dialog-sub">
+        {{ t('git.subPre') }}<b>{{ projectName }}</b>{{ t('git.subPost') }}<span v-if="statText" class="dlg-counts">{{ statText }}</span>
+      </div>
 
       <div class="dlg-branch">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -363,6 +376,12 @@ watch(visible, (v) => {
   font-size: 12.5px;
   color: var(--muted-foreground);
   margin-top: -10px;
+}
+
+/* 待提交/待推送计数：数字比句子稍亮一档 */
+.dlg-counts {
+  margin-left: 6px;
+  color: var(--foreground);
 }
 
 .dialog-footer {

@@ -31,6 +31,8 @@
   "added": 44,
   "removed": 11,
   "stagedEmpty": false,
+  "stagedCount": 2,
+  "unpushedCount": 5,
   "hasHead": true
 }
 ```
@@ -40,6 +42,8 @@
 | fileCount | `status --porcelain=v1 --untracked-files=all` 行数（含未跟踪；重命名计 1） |
 | added/removed | `diff HEAD --numstat` 汇总（无 HEAD 退 `--cached`）；二进制行 `-\t-` 不计；未跟踪文件不进 numstat |
 | stagedEmpty | porcelain X 列全为空格或 `?`（D2 勾选不勾时提交/禁用判据，UI 禁用+服务端拒绝双保险） |
+| stagedCount | porcelain X 列非空格非 `?` 的行数（不勾「包含未暂存」时的待提交文件数，弹窗计数用） |
+| unpushedCount | 未推送提交涉及的文件数，三级判据：有 upstream 比 `upstream...HEAD`；无 upstream 比 `origin/<分支>...HEAD`；分支从未推送则数 `HEAD --not --remotes`（本地有、任何远端分支没有的提交，显式 HEAD 防零远端引用时输出为空）。仅无远端 / detached / 无 HEAD → `null`（UI 不显示） |
 | hasHead | 空仓库（无 commit）= false；弹窗仍可用，diff 基线自动退 `--cached`（AC-11-02） |
 | branch/detached | 与 getBranchInfo 五态口径一致：detached 时 branch=短 SHA |
 | 非 git 目录 | `isGitRepo:false` 全空值（不报错，与 §10 既有语义一致） |

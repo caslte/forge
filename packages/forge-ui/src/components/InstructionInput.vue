@@ -620,6 +620,9 @@ function onResizeDown(e: PointerEvent): void {
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 }
 function onResizeMove(e: PointerEvent): void {
+  // 流光高亮跟随鼠标 X：pointermove 在 hover 与拖拽（指针捕获）下都会触发
+  const band = e.currentTarget as HTMLElement;
+  band.style.setProperty('--seg-x', `${e.clientX - band.getBoundingClientRect().left}px`);
   if (rsStartH === 0) return;
   const el = inputBoxRef.value;
   if (!el) return;
@@ -1667,6 +1670,28 @@ watch(
   cursor: row-resize;
   touch-action: none;
   z-index: 2;
+}
+
+/* 与侧栏右缘同款「流光」：110px 两端渐隐柔光段压在边框线上，--seg-x 由
+   pointermove 写入鼠标 X，停哪亮哪，不自动流动 */
+.cb-resize::after {
+  content: '';
+  position: absolute;
+  left: var(--seg-x, 50%);
+  top: 50%;
+  width: 110px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--brand-accent) 65%, transparent) 50%, transparent);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+}
+
+.cb-resize:hover::after,
+.cb-resize:active::after {
+  opacity: 1;
 }
 
 .compose-box:focus-within {

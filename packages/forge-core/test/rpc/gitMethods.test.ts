@@ -30,7 +30,7 @@ class FakeGitService implements GitService {
   switchResult: SwitchResult = { ok: true, data: { branch: 'main', changed: true } };
   status: GitStatusInfo = {
     isGitRepo: true, branch: 'main', detached: false,
-    fileCount: 0, added: 0, removed: 0, stagedEmpty: true, hasHead: true,
+    fileCount: 0, added: 0, removed: 0, stagedEmpty: true, stagedCount: 0, unpushedCount: null, hasHead: true,
   };
   commitResult: CommitResult = { ok: true, data: { shortHash: 'abc1234', fileCount: 1 } };
   pushResult: PushResult = { ok: true, data: { branch: 'main', remote: 'origin' } };
@@ -192,7 +192,7 @@ test('git/getStatus：成功返回 code 0 且透传服务层状态', async () =>
   const { api, gitService } = makeApi();
   gitService.status = {
     isGitRepo: true, branch: 'dev', detached: false,
-    fileCount: 3, added: 44, removed: 11, stagedEmpty: false, hasHead: true,
+    fileCount: 3, added: 44, removed: 11, stagedEmpty: false, stagedCount: 2, unpushedCount: 5, hasHead: true,
   };
   const r = await api.methods['git/getStatus']({ path: 'C:/dev/a' });
   assert.equal(r.code, 0);

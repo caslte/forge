@@ -57,6 +57,8 @@ const DB: {
       added?: number;
       removed?: number;
       stagedEmpty?: boolean;
+      stagedCount?: number;
+      unpushedCount?: number | null;
       hasHead?: boolean;
     }
   >;
@@ -111,6 +113,8 @@ const DB: {
       added: 44,
       removed: 11,
       stagedEmpty: true,
+      stagedCount: 0,
+      unpushedCount: 2,
       hasHead: true,
     },
   },
@@ -792,7 +796,7 @@ const bridge: ForgeBridge = {
           return {
             code: 0,
             message: 'ok',
-            data: { isGitRepo: false, branch: null, detached: false, fileCount: 0, added: 0, removed: 0, stagedEmpty: true, hasHead: false },
+            data: { isGitRepo: false, branch: null, detached: false, fileCount: 0, added: 0, removed: 0, stagedEmpty: true, stagedCount: 0, unpushedCount: null, hasHead: false },
           };
         }
         return {
@@ -806,6 +810,8 @@ const bridge: ForgeBridge = {
             added: g.added ?? 0,
             removed: g.removed ?? 0,
             stagedEmpty: g.stagedEmpty ?? true,
+            stagedCount: g.stagedCount ?? 0,
+            unpushedCount: g.unpushedCount ?? null,
             hasHead: g.hasHead ?? true,
           },
         };
@@ -837,6 +843,8 @@ const bridge: ForgeBridge = {
         const shortHash = 'm' + Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, '0');
         g.fileCount = 0;
         g.stagedEmpty = true;
+        g.stagedCount = 0;
+        if (typeof g.unpushedCount === 'number') g.unpushedCount += fileCount;
         g.dirty = false;
         return { code: 0, message: 'ok', data: { shortHash, fileCount } };
       }
