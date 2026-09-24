@@ -345,7 +345,7 @@ const timeLabel = computed(() => {
 
 .msg-content {
   font-size: 14px;
-  line-height: 1.8;
+  line-height: 2;
   color: var(--foreground);
   word-break: break-word;
   user-select: text; /* 对话内容允许鼠标选择 */
@@ -582,7 +582,7 @@ const timeLabel = computed(() => {
 
 .msg-content :deep(li) {
   padding-left: 4px;
-  line-height: 1.8;
+  line-height: 2;
 }
 
 /* li 内部的段落/子列表不再产生块间距（marked 默认 <li><p>xxx</p></li> 会撑开） */
@@ -615,7 +615,7 @@ const timeLabel = computed(() => {
   border-collapse: collapse;
   margin: 12px 0;
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 2;
   display: block;
   max-width: 100%;
   overflow-x: auto;

@@ -16,6 +16,7 @@ import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import GitCommitDialog from './components/GitCommitDialog.vue';
+import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
 import logoMain from './assets/logo-main.png';
 
@@ -780,6 +781,8 @@ onUnmounted(() => {
             </svg>
             <span>{{ t('app.settings') }}</span>
           </button>
+          <!-- 侧栏更新入口（07 改造）：仅更新相关时出现，紧跟设置 -->
+          <UpdateEntry />
         </div>
       </aside>
 
@@ -1229,13 +1232,16 @@ onUnmounted(() => {
 
 .sidebar-footer {
   padding: 10px 12px 14px 28px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
 }
 
 .sidebar-link {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  width: auto;
   padding: 0;
   background: transparent;
   border: none;

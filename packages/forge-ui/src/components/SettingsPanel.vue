@@ -1,19 +1,12 @@
-<script lang="ts">
-/**
- * 模块级「已 toast 版本」记忆：SettingsPanel 随设置视图 v-if 挂载/卸载，
- * 发现新版本的 toast 需跨面板重开去重（同版本只提示一次）。
- */
-let lastNotifiedUpVersion: string | null = null;
-</script>
-
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 // 从瘦 subpath 导入：@forge/core 根入口 re-export 含 node:events 的 RPC 层，浏览器打包会炸
 import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
-import type { PiGetInfoResult, UpdaterSnapshot } from '../bridge';
+import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
 import { usePreferences } from '../composables/usePreferences';
+import { useUpdater } from '../composables/useUpdater';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import SkillsSection from './SkillsSection.vue';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
@@ -337,66 +330,47 @@ async function loadPiInfo(): Promise<void> {
   }
 }
 
-// ===== 应用自更新（07 IN-S03）：发现新版 toast 一次 + 分区常驻；检查/下载/安装失败静默可重试 =====
-// 快照镜像：updater.stateChanged 到达即整体替换；失败（6003/6004/6005）不弹窗、不出现红色报错横幅
-const upSnapshot = ref<UpdaterSnapshot | null>(null);
-/** 检查在途本地标记（checkForUpdates invoke 往返；状态跃迁本身经事件推送） */
-const upChecking = ref(false);
-/** 「重启安装」确认弹窗显隐（fixed 遮罩 + 居中 box，IN-F03 弹窗确认语义） */
+// ===== 应用自更新（07 IN-S03 改造）：状态与动作在 useUpdater 全局单例，本面板为「关于」页镜像消费方 =====
+// 口径：发现新版不再弹 toast（提示由侧栏 UpdateEntry 图标承担）；检查/下载/安装失败静默可重试
+const {
+  snapshot: upSnapshot,
+  checking: upChecking,
+  installing: upInstalling,
+  installRetry: upInstallRetry,
+  checkedUpToDate: upCheckedUpToDate,
+  logLines: upDebugLines,
+  foundVersion: upFoundVersion,
+  downloadPct: upDownloadPct,
+  ensureSubscribed: upEnsureSubscribed,
+  refresh: refreshUpState,
+  check: upCheck,
+  download: upDownload,
+  quitAndInstall: upQuitAndInstall,
+} = useUpdater();
+
+/** 「重启安装」确认弹窗显隐（fixed 遮罩 + 居中 box，IN-F03 弹窗确认语义；面板局部态） */
 const upConfirming = ref(false);
-/** quitAndInstall 在途标记（确认安装按钮 busy） */
-const upInstalling = ref(false);
-/** 安装失败（6005）后本地回到 downloaded 可重试态（后端 fail 收敛为 idle，快照仅保留 latestVersion） */
-const upInstallRetry = ref(false);
-/** 检查完成且无新版本：版本行内显示「✓ 已是最新」徽标（按钮仍保留，可再次手动检查） */
-const upCheckedUpToDate = ref(false);
+// 状态离开 downloaded（如另一入口完成安装/检查重置）时收起确认条
+watch(
+  () => upSnapshot.value?.status,
+  (status) => {
+    if (status !== 'downloaded' && upConfirming.value) upConfirming.value = false;
+  },
+);
 
-/**
- * 快照落位 + 派生反应。
- * - 发现新版本（status=found）：toast.info 一次，同版本不重复（记忆在模块级，跨面板重开不重复）。
- * - 离开 downloaded 态收起确认条；新检查/下载周期开始清除安装重试标记。
- */
-function applyUpSnapshot(snap: UpdaterSnapshot | null | undefined): void {
-  if (!snap || typeof snap.status !== 'string') return;
-  upSnapshot.value = snap;
-  // 调试日志：每次状态快照落位（事件推送 / invoke 返回）记录迁移与错误文本
-  upLog(
-    `state=${snap.status} current=${snap.currentVersion} latest=${snap.latestVersion ?? '-'}` +
-      ` progress=${snap.downloadProgress ?? '-'}` +
-      (snap.error ? ` error=${snap.error}` : ''),
-  );
-  // 离开「已是最新」态：发现新版本 / 下载 / 失败（idle 带 latest 或 error）时清除徽标
-  if (snap.status !== 'idle' || snap.latestVersion !== null || snap.error !== null) {
-    upCheckedUpToDate.value = false;
-  }
-  if (snap.status !== 'idle' && snap.status !== 'installing') {
-    upInstallRetry.value = false;
-  }
-  if (snap.status !== 'downloaded' && upConfirming.value) {
-    upConfirming.value = false;
-  }
-  if (snap.status === 'found' && snap.latestVersion && snap.latestVersion !== lastNotifiedUpVersion) {
-    lastNotifiedUpVersion = snap.latestVersion;
-    toast.info(t('settings.update.foundVersion', { version: snap.latestVersion }));
-  }
-}
-
-/** 调试控制台（原型风格滚动日志）：展开可见，记录 updater 状态迁移 / 调用结果，用于排查更新链路 */
+/** 调试控制台（原型风格滚动日志）：展开可见；日志源为 useUpdater 模块级 logLines（状态迁移/调用结果） */
 const upDebugOn = ref(false);
-const upDebugLines = ref<string[]>([]);
 const upDebugScrollEl = ref<HTMLElement | null>(null);
-function upLog(line: string): void {
-  const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  upDebugLines.value.push(`[${ts}] ${line}`);
-  if (upDebugLines.value.length > 300) {
-    upDebugLines.value.splice(0, upDebugLines.value.length - 300);
-  }
-  // 新日志追加后自动滚到底，便于观察
-  void nextTick(() => {
-    const el = upDebugScrollEl.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  });
-}
+// 新日志追加后自动滚到底，便于观察
+watch(
+  () => upDebugLines.value.length,
+  () => {
+    void nextTick(() => {
+      const el = upDebugScrollEl.value;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  },
+);
 
 /** 复制全部调试日志到剪贴板（Electron 渲染进程下 navigator.clipboard 可用，失败回退 execCommand） */
 async function onCopyDebugLog(): Promise<void> {
@@ -416,9 +390,8 @@ async function onCopyDebugLog(): Promise<void> {
       document.execCommand('copy');
       document.body.removeChild(ta);
     }
-    upLog(`copyDebugLog → 已复制 ${upDebugLines.value.length} 行`);
-  } catch (e) {
-    upLog(`copyDebugLog → 失败 ${e instanceof Error ? e.message : String(e)}`);
+  } catch {
+    // 静默：复制失败无副作用
   }
 }
 
@@ -432,12 +405,6 @@ async function loadUpDebugEnabled(): Promise<void> {
     upDebugEnabled.value = false;
   }
 }
-
-/** 分区常驻的「发现新版本」信息（found 之后有值；下载/安装失败后端保留该值供重试） */
-const upFoundVersion = computed<string | null>(() => upSnapshot.value?.latestVersion ?? null);
-
-/** 下载进度百分比（原型：版本行下方进度条数据源） */
-const upDownloadPct = computed<number>(() => Math.round(upSnapshot.value?.downloadProgress ?? 0));
 
 /** 主按钮形态：检查更新 → 更新（下载中 busy，进度走进度条）→ 重启安装 → 安装中…（busy 禁点） */
 interface UpBtnView {
@@ -468,94 +435,25 @@ const upBtnView = computed<UpBtnView>(() => {
   return { action: 'check', label: t('settings.update.check'), busy: false };
 });
 
-/** 初始状态拉取（getState 快照还原；found 时按需补一次 toast） */
-async function refreshUpState(): Promise<void> {
-  try {
-    applyUpSnapshot(await call<UpdaterSnapshot>('updater/getState'));
-  } catch {
-    // 静默：快照缺失按未检查态展示
-  }
-}
-
-/** 检查更新（进入「关于」Tab 自动触发一次 + 按钮手动触发）；6003 静默回可重试态 */
-async function onCheckUpdates(): Promise<void> {
-  if (upChecking.value) return;
-  upChecking.value = true;
-  upLog('checkForUpdates → 发起检查');
-  try {
-    const res = await call<UpdaterSnapshot>('updater/checkForUpdates');
-    upLog(`checkForUpdates → 返回（state=${res.status}）`);
-    applyUpSnapshot(res);
-    // 检查完成且无新版本（idle 且无 error）→ 版本行显示「✓ 已是最新」徽标（按钮保留可重查）
-    upCheckedUpToDate.value = res.status === 'idle' && !res.latestVersion && !res.error;
-  } catch (e) {
-    // 检查失败（6003）：无打断性提示，分区保持可重试；失败原因入调试日志
-    upLog(`checkForUpdates → 失败 ${e instanceof Error ? e.message : String(e)}`);
-  } finally {
-    upChecking.value = false;
-  }
-}
-
-/** 下载更新；下载进度经 updater.stateChanged 事件推送，6004 静默回「发现新版本 + 更新」可重试态 */
-async function onDownloadUpdate(): Promise<void> {
-  upLog('downloadUpdate → 发起下载');
-  try {
-    const res = await call<UpdaterSnapshot>('updater/downloadUpdate');
-    upLog(`downloadUpdate → 返回（state=${res.status}）`);
-    applyUpSnapshot(res);
-  } catch (e) {
-    // 下载失败（6004）：静默，失败快照已经事件落位（latestVersion 保留）
-    upLog(`downloadUpdate → 失败 ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-/** 确认后执行安装重启：成功即退出（视觉不再返回）；6005 静默回到 downloaded 可重试态 */
-async function onQuitAndInstall(): Promise<void> {
-  if (upInstalling.value) return;
-  upInstalling.value = true;
-  upConfirming.value = false;
-  upLog('quitAndInstall → 确认安装');
-  try {
-    // 直用 invoke：需按 code 分流（call 会把非 0 信封压成 Error 丢字段）
-    const res = await window.forge.invoke('updater/quitAndInstall');
-    if (res.code === 0) {
-      applyUpSnapshot(res.data as UpdaterSnapshot | null);
-    } else {
-      upLog(`quitAndInstall → 返回 code ${res.code}（${res.message}）`);
-      upInstallRetry.value = true;
-    }
-  } catch (e) {
-    upLog(`quitAndInstall → 失败 ${e instanceof Error ? e.message : String(e)}`);
-    upInstallRetry.value = true;
-  } finally {
-    upInstalling.value = false;
-  }
-}
-
-/** 主按钮点击：按派生态分发 */
+/** 主按钮点击：按派生态分发（动作实现见 useUpdater） */
 function onUpBtnClick(): void {
   const action = upBtnView.value.action;
   if (action === 'check') {
-    void onCheckUpdates();
+    void upCheck();
   } else if (action === 'download') {
-    void onDownloadUpdate();
+    void upDownload();
   } else if (action === 'install') {
     upConfirming.value = true;
   }
 }
 
-/** updater.stateChanged：整体替换快照（含下载进度步进） */
-function onUpStateChanged(payload: unknown): void {
-  applyUpSnapshot(payload as UpdaterSnapshot | null);
+/** 确认安装：先收本面板确认条，再走全局动作（成功即退出应用） */
+function onQuitAndInstall(): void {
+  upConfirming.value = false;
+  void upQuitAndInstall();
 }
 
-// 进入「关于」Tab 自动检查一次（PRD §3.4：检查随分区打开自动触发）
-watch(activeTab, (tab) => {
-  if (tab === 'about') void onCheckUpdates();
-});
-
 let unsubProviders: (() => void) | null = null;
-let unsubUpdater: (() => void) | null = null;
 // Tab 按钮宽度变化（语言切换改文案、字体加载）时重贴滑块
 let thumbRo: ResizeObserver | null = null;
 
@@ -564,6 +462,7 @@ onMounted(() => {
   void loadModels();
   void loadPiInfo();
   void refreshUpState();
+  upEnsureSubscribed();
   void loadUpDebugEnabled();
   // 滑动选中块初始定位（含字体加载后宽度变化的一次校准）
   void nextTick(moveThumb);
@@ -575,12 +474,10 @@ onMounted(() => {
   unsubProviders = subscribe('model.providersChanged', () => {
     void loadProviders();
   });
-  unsubUpdater = subscribe('updater.stateChanged', onUpStateChanged);
 });
 
 onUnmounted(() => {
   unsubProviders?.();
-  unsubUpdater?.();
   if (deleteTimer) clearTimeout(deleteTimer);
   window.removeEventListener('resize', onResize);
   thumbRo?.disconnect();

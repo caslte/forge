@@ -68,6 +68,10 @@ export const zhSettings = {
   'settings.update.installTitle': '安装 forge {version}',
   'settings.update.installDesc': '关闭应用并安装更新，完成后自动重启。',
   'settings.update.confirmInstall': '确认安装',
+  'settings.update.entryFound': '新版本',
+  'settings.update.entryReady': '更新已就绪，点击安装',
+  'settings.update.entryDownloading': '正在下载更新',
+  'settings.update.entryInstalling': '正在安装，即将重启',
 } as const;
 
 export const enSettings: Record<string, string> = {
@@ -140,4 +144,8 @@ export const enSettings: Record<string, string> = {
   'settings.update.installTitle': 'Install forge {version}',
   'settings.update.installDesc': 'The app will quit and install the update, then restart automatically when done.',
   'settings.update.confirmInstall': 'Confirm install',
+  'settings.update.entryFound': 'New',
+  'settings.update.entryReady': 'Update ready — click to install',
+  'settings.update.entryDownloading': 'Downloading update',
+  'settings.update.entryInstalling': 'Installing — restarting soon',
 };

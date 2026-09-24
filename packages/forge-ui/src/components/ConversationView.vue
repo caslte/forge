@@ -138,8 +138,22 @@ function scrollToBottom(): void {
     if (scrollRef.value !== el) return;
     el.scrollTop = el.scrollHeight;
     el.style.scrollBehavior = prev;
+    updateConvFade();
   });
 }
+
+// 消息区滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩（同会话树口径）
+const convFadeTop = ref(false);
+const convFadeBottom = ref(false);
+
+function updateConvFade(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  convFadeTop.value = el.scrollTop > 1;
+  convFadeBottom.value = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+}
+
+let convFadeObserver: ResizeObserver | null = null;
 
 /** 发送消息：草稿态（未发首条消息）先真正创建会话再发送（状态机在 useSessionConversation） */
 /** 停止当前轮（CV-S09）：被清空的待发队列文本回填输入框（pi TUI ESC 同款） */
@@ -349,6 +363,7 @@ async function maybeExpandHistoryWindow(): Promise<void> {
 
 /** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 回看态停稳触底退出（原有信号） */
 function onMessagesScroll(): void {
+  updateConvFade();
   void maybeExpandHistoryWindow();
   if (!isReviewing.value) return;
   if (nearBottomTimer !== null) clearTimeout(nearBottomTimer);
@@ -464,6 +479,14 @@ watch(
 onMounted(() => {
   // 回看模式触底判定（scrollRef 元素常驻，仅 v-show 切换）
   scrollRef.value?.addEventListener('scroll', onMessagesScroll, { passive: true });
+  // 上下沿渐隐：观察容器与内容节点（流式增高/消息增删/折叠都会重算）
+  const el = scrollRef.value;
+  if (el) {
+    convFadeObserver = new ResizeObserver(updateConvFade);
+    convFadeObserver.observe(el);
+    if (el.firstElementChild) convFadeObserver.observe(el.firstElementChild);
+  }
+  updateConvFade();
 });
 
 onUnmounted(() => {
@@ -475,6 +498,8 @@ onUnmounted(() => {
     nearBottomTimer = null;
   }
   scrollRef.value?.removeEventListener('scroll', onMessagesScroll);
+  convFadeObserver?.disconnect();
+  convFadeObserver = null;
   clearLocateHighlight();
 });
 
@@ -615,7 +640,12 @@ onUnmounted(() => {
         @hover-end="onTimelineHoverEnd"
       />
       <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
-      <div ref="scrollRef" v-show="!showResultView" class="conv-messages">
+      <div
+        ref="scrollRef"
+        v-show="!showResultView"
+        class="conv-messages"
+        :class="{ 'fade-t': convFadeTop, 'fade-b': convFadeBottom }"
+      >
         <div class="conv-messages-inner">
           <!-- 加载态 -->
           <div v-if="loadingHistory" class="conv-loading">
@@ -833,6 +863,31 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 18px 38px;
   scroll-behavior: smooth;
+  --edge-fade: 28px;
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+}
+
+.conv-messages.fade-t {
+  --fade-top: var(--edge-fade);
+}
+
+.conv-messages.fade-b {
+  --fade-bottom: var(--edge-fade);
 }
 
 .conv-messages-inner {
