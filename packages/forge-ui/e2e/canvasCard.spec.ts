@@ -127,7 +127,7 @@ test('E-CA-003 @P0 @mock-backend：流式中途是骨架蒙版不是源码，闭
   health.assertHealthy();
 });
 
-test('E-CA-004 @P1 @mock-backend：围栏里不是 HTML → 降级代码块，不塞 iframe', async ({ page }) => {
+test('E-CA-004 @P1 @mock-backend：围栏里不是 HTML → 降级代码块，不塞 iframe，可放大', async ({ page }) => {
   await seedAndOpen(
     page,
     'sess-canvas-4',
@@ -138,7 +138,29 @@ test('E-CA-004 @P1 @mock-backend：围栏里不是 HTML → 降级代码块，�
   await expect(block.locator('.canvas-fallback')).toBeVisible();
   await expect(block.locator('.canvas-source')).toContainText('reduce');
   await expect(block.locator('iframe')).toHaveCount(0);
-  await expect(block).toContainText('内容不是 HTML 图示');
+  await expect(block).not.toContainText('内容不是 HTML 图示');
+
+  // 降级态右上角工具栏：放大浮层 + 内联拉高，均与 HTML 态同款
+  const tools = block.locator('.canvas-fallback .canvas-tools');
+  await expect(tools).toHaveCount(1);
+  await expect(tools.locator('.canvas-tool')).toHaveCount(2);
+
+  // 第二个按钮：不弹窗，直接在气泡里拉高看全文
+  const source = block.locator('.canvas-source');
+  await expect(source).toHaveCSS('max-height', '260px');
+  await tools.locator('.canvas-tool').nth(1).click({ force: true });
+  await expect(source).toHaveCSS('max-height', '560px');
+  await tools.locator('.canvas-tool').nth(1).click({ force: true });
+  await expect(source).toHaveCSS('max-height', '260px');
+
+  // 第一个按钮：放大浮层显示源码
+  await tools.locator('.canvas-tool').first().click({ force: true });
+  const lightbox = page.locator('body > .canvas-lightbox');
+  await expect(lightbox).toBeVisible();
+  await expect(lightbox.locator('.canvas-lightbox-source')).toContainText('reduce');
+  await expect(lightbox.locator('iframe')).toHaveCount(0);
+  await lightbox.locator('.canvas-lightbox-close').click();
+  await expect(lightbox).toHaveCount(0);
 });
 
 test('E-CA-005 @P1 @mock-backend：```html 围栏不被劫持（模型展示 HTML 代码示例是常态）', async ({ page }) => {

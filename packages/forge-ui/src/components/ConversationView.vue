@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call } from '../bridge';
 import type { ProjectItem, SessionItem, ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
+import SuggestionChips from './SuggestionChips.vue';
 import TodoPanel from './TodoPanel.vue';
 import AskUserQuestionPanel from './AskUserQuestionPanel.vue';
 import MessageListItem from './MessageListItem.vue';
@@ -69,6 +70,7 @@ const {
   todoSnapshot,
   isEmpty,
   displayItems,
+  turnSuggestion,
   windowedItems,
   historyWindowTruncated,
   expandHistoryWindow,
@@ -680,13 +682,19 @@ onUnmounted(() => {
               :project-path="props.session?.projectPath ?? ''"
               :show-diff="showDiff"
               @toggle-group="toggleGroup"
-              @send-suggestion="onSend"
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
             <div v-if="isStreaming" class="conv-thinking">
               <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
               <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
             </div>
+            <!-- 下一步建议芯片：锚定消息流末尾、仅当前轮（契约 I1 v2，key=该建议消息，换轮复位已点态） -->
+            <SuggestionChips
+              v-if="turnSuggestion"
+              :key="turnSuggestion.toolEventId ?? turnSuggestion.ts"
+              :msg="turnSuggestion"
+              @pick="onSend"
+            />
           </template>
 
           <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->

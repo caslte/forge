@@ -17,8 +17,6 @@ import { formatElapsed } from '../utils/formatElapsed';
 import MessageCard from './MessageCard.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import ChangedFilesCard from './ChangedFilesCard.vue';
-import SuggestionChips from './SuggestionChips.vue';
-import { SUGGEST_NEXT_STEPS_TOOL_NAME } from '../constants.ts';
 import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
@@ -64,7 +62,6 @@ const showDiffEff = computed(() => props.showDiff !== false);
 
 const emit = defineEmits<{
   (e: 'toggle-group', key: string, collapsed: boolean): void;
-  (e: 'send-suggestion', text: string): void;
 }>();
 
 /** 组内任一工具仍为 started → 组在跑，头部切「正在执行中 · Xs」并本地读秒 */
@@ -150,21 +147,11 @@ function toToolEvent(m: ConversationMessage): ToolEvent {
 function isToolMessage(m: ConversationMessage): boolean {
   return m.role === 'tool';
 }
-
-/** suggest_next_steps 的 tool 消息渲染为芯片行而非工具行（契约 I1/I3） */
-function isSuggestMessage(m: ConversationMessage): boolean {
-  return m.role === 'tool' && m.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME;
-}
 </script>
 
 <template>
   <template v-if="item.kind === 'message'">
-    <SuggestionChips
-      v-if="isSuggestMessage(item.msg)"
-      :msg="item.msg"
-      @pick="emit('send-suggestion', $event)"
-    />
-    <ToolCallCard v-else-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" :hide-diff="!showDiffEff" />
+    <ToolCallCard v-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" :hide-diff="!showDiffEff" />
     <MessageCard
       v-else
       :message="item.msg"

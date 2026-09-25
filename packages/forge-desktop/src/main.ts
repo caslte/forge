@@ -670,6 +670,11 @@ app.whenReady().then(async () => {
   // 产品上与终端 pi 的 ~/.pi/agent 隔离，落 forge userData，卸载即随目录清理。
   // 单一注入点——createForgeCore/预热/预装更新共用，内置 CLI 子进程经 PI_CODING_AGENT_DIR 同根。
   const forgeAgentDir = path.join(app.getPath('userData'), 'agent');
+  // pi-memory 钉根：该扩展记忆根只认 PI_MEMORY_DIR、不读 PI_CODING_AGENT_DIR，
+  // 不钉则记忆文件写回 ~/.pi/agent/memory、破坏上方与终端 pi 的隔离。in-process 扩展
+  // 直接读 process.env；内置 CLI 子进程经 buildPiCliEnv 展开 process.env 同源继承。
+  // ??= 保留维护者用外部 env 指向自定义记忆根的调试口子。
+  process.env.PI_MEMORY_DIR ??= path.join(forgeAgentDir, 'memory');
   // P3-D：Windows 下优先用 safeStorage（DPAPI）持久化密钥；不可用时回退环境变量适配器
   const keychain = new SafeStorageKeychainAdapter(
     path.join(app.getPath('userData'), 'forge-keyvault.json'),

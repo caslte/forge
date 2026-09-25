@@ -22,6 +22,12 @@ export interface UpdaterState {
   preinstallDone: boolean;
   /** 预装完成时间（ISO8601，观测用，无业务判断依赖） */
   preinstallDoneAt: string | null;
+  /**
+   * 已处理的推荐清单版本（RECOMMENDED_LIST_VERSION）：preinstallDone=true 且该值
+   * 追平包内版本才跳过预装，否则重跑一轮补缺——保证老用户升级后新推荐项必达。
+   * 字段缺失（v2 之前的状态文件）按 0 处理。
+   */
+  preinstallListVersion: number;
   /** 最近一次检查/执行组件更新时间（ISO8601，观测用） */
   lastUpdateCheckAt: string | null;
   /** 组件版本快照：{ 包名: 版本 }；每次组件更新成功后整体刷新 */
@@ -40,6 +46,7 @@ function defaultUpdaterState(): UpdaterState {
     lastRunForgeVersion: null,
     preinstallDone: false,
     preinstallDoneAt: null,
+    preinstallListVersion: 0,
     lastUpdateCheckAt: null,
     components: {},
   };
@@ -54,6 +61,8 @@ function isValidState(value: unknown): value is UpdaterState {
     (v.lastRunForgeVersion === null || typeof v.lastRunForgeVersion === 'string') &&
     typeof v.preinstallDone === 'boolean' &&
     (v.preinstallDoneAt === null || typeof v.preinstallDoneAt === 'string') &&
+    // 可选字段：v2 之前的老状态文件没有它，缺省不算损坏（读取时归 0）
+    (v.preinstallListVersion === undefined || typeof v.preinstallListVersion === 'number') &&
     (v.lastUpdateCheckAt === null || typeof v.lastUpdateCheckAt === 'string') &&
     typeof v.components === 'object' &&
     v.components !== null &&
@@ -75,6 +84,7 @@ export function readUpdaterState(statePath: string): UpdaterState {
       lastRunForgeVersion: parsed.lastRunForgeVersion,
       preinstallDone: parsed.preinstallDone,
       preinstallDoneAt: parsed.preinstallDoneAt,
+      preinstallListVersion: parsed.preinstallListVersion ?? 0,
       lastUpdateCheckAt: parsed.lastUpdateCheckAt,
       components: { ...parsed.components },
     };

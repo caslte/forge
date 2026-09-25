@@ -84,7 +84,7 @@ function onPick(step: string): void {
   border-radius: 9px;
   border: none;
   background: transparent;
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font-size: 13px;
   line-height: 1.5;
   text-align: left;

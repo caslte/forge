@@ -49,6 +49,10 @@ export function useSessionConversation(options: {
 
   /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
   const toolEventIndex = new Map<string, number>();
+  /** 工具行 started 到达时刻（ms）：给运行态一个最短可见停留，见 applyToolTerminal */
+  const toolStartedAt = new Map<string, number>();
+  /** 终态延迟落点定时器：会话重置/卸载时统一清掉 */
+  const toolDwellTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** 工具组折叠状态：key 为工具组稳定 id（首条工具 toolEventId/ts，聚组边界变化不漂移） */
   const toolGroupCollapsed = reactive(new Map<string, boolean>());
@@ -196,8 +200,7 @@ function dismissAskAnswered(): void {
         });
         i += 1;
       } else if (cur.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {
-        // 契约 I3：建议工具消息永不聚组，单独成项渲染为芯片行
-        out.push({ key: itemKey(cur), kind: 'message', msg: cur, idx: i });
+        // 契约 I1（v2）：建议工具消息不进消息流，由 turnSuggestion 提升到底部渲染
         i += 1;
       } else {
         const start = i;
@@ -240,6 +243,29 @@ function dismissAskAnswered(): void {
   function toggleGroup(key: string, currentCollapsed: boolean): void {
     toolGroupCollapsed.set(key, !currentCollapsed);
   }
+
+  /**
+   * 最新一轮的下一步建议（契约 I1 v2：锚定会话底部，不入流）。
+   * 口径：最后一条 user 消息**之后**最后出现的 suggest 工具消息且 status=completed；
+   * 用户发出新一轮后旧芯片自动消失（与成熟产品「建议只跟随当前轮」一致）。
+   */
+  const turnSuggestion = computed<ConversationMessage | null>(() => {
+    const msgs = messages.value;
+    let lastUser = -1;
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      if (msgs[i]!.role === 'user') {
+        lastUser = i;
+        break;
+      }
+    }
+    for (let i = msgs.length - 1; i > lastUser; i -= 1) {
+      const m = msgs[i]!;
+      if (m.role === 'tool' && m.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {
+        return m.status === 'completed' ? m : null;
+      }
+    }
+    return null;
+  });
 
   // ===== 历史窗口化（v3.74 首帧卡顿：点大会话 221 项全量挂载 ≈ 4.3s 冻结主线程） =====
   //
@@ -347,6 +373,9 @@ function dismissAskAnswered(): void {
   function resetForSession(): void {
     messages.value = [];
     toolEventIndex.clear();
+    toolStartedAt.clear();
+    for (const t of toolDwellTimers.values()) clearTimeout(t);
+    toolDwellTimers.clear();
     toolGroupCollapsed.clear();
     historyWindow.value = HISTORY_INITIAL_ITEMS;
     isStreaming.value = false;
@@ -584,6 +613,7 @@ function dismissAskAnswered(): void {
     if (toolEventIndex.has(p.toolEventId)) return;
     // 真实后端载荷为 tool:{name,input}（docs/api/04_tool.md §1），toolName 为 mock/旧格式兼容
     markTool(p.toolEventId, p.tool?.name ?? p.toolName ?? null);
+    toolStartedAt.set(p.toolEventId, Date.now());
     const msg: ConversationMessage = {
       role: 'tool',
       content: '',
@@ -596,6 +626,28 @@ function dismissAskAnswered(): void {
     messages.value.push(msg);
     toolEventIndex.set(p.toolEventId, messages.value.length - 1);
     scheduleScroll();
+  }
+
+  /** 「进行中」态最短可见停留（ms）：快工具 started/completed 可能同帧背靠背，spinner 还没来得及被看到就被终态顶掉 */
+  const TOOL_MIN_DWELL_MS = 300;
+
+  /** 终态（completed/error）落点：不足最短停留时间则延迟改状态；到点时按 id 重查，会话已切走/已重置则静默丢弃 */
+  function applyToolTerminal(toolEventId: string, mutate: (msg: ConversationMessage) => void): void {
+    const run = (): void => {
+      toolDwellTimers.delete(toolEventId);
+      const idx = toolEventIndex.get(toolEventId);
+      const msg = idx === undefined ? undefined : messages.value[idx];
+      if (!msg || msg.status !== 'started') return;
+      mutate(msg);
+    };
+    const startedAt = toolStartedAt.get(toolEventId);
+    const wait = startedAt === undefined ? 0 : TOOL_MIN_DWELL_MS - (Date.now() - startedAt);
+    toolStartedAt.delete(toolEventId);
+    if (wait > 0) {
+      toolDwellTimers.set(toolEventId, setTimeout(run, wait));
+      return;
+    }
+    run();
   }
 
   function onToolCompleted(payload: unknown): void {
@@ -629,15 +681,14 @@ function dismissAskAnswered(): void {
       const sid = options.getSessionId();
       if (sid !== null) askStore.applyCompletion(sid, p.result?.details);
     }
-    const idx = toolEventIndex.get(p.toolEventId);
-    if (idx === undefined) return;
+    if (!toolEventIndex.has(p.toolEventId)) return;
     markToolEnd(p.toolEventId);
-    const msg = messages.value[idx];
-    if (!msg) return;
-    msg.status = 'completed';
     // 真实后端为 result:{text}，summary 为 mock/旧格式兼容
     const text = p.result?.text ?? p.summary;
-    if (text) msg.content = text;
+    applyToolTerminal(p.toolEventId, (msg) => {
+      msg.status = 'completed';
+      if (text) msg.content = text;
+    });
   }
 
   function onToolError(payload: unknown): void {
@@ -649,15 +700,14 @@ function dismissAskAnswered(): void {
       message?: string;
     };
     if (p.sessionId !== undefined && p.sessionId !== options.getSessionId()) return;
-    const idx = toolEventIndex.get(p.toolEventId);
-    if (idx === undefined) return;
+    if (!toolEventIndex.has(p.toolEventId)) return;
     markToolEnd(p.toolEventId);
-    const msg = messages.value[idx];
-    if (!msg) return;
-    msg.status = 'error';
     // 真实后端为 error:{message}，summary/message 为 mock/旧格式兼容
     const text = p.error?.message ?? p.summary ?? p.message;
-    if (text) msg.content = text;
+    applyToolTerminal(p.toolEventId, (msg) => {
+      msg.status = 'error';
+      if (text) msg.content = text;
+    });
   }
 
   // ===== 子 Agent 处理 =====
@@ -799,6 +849,9 @@ function dismissAskAnswered(): void {
     unsubs.forEach((u) => u?.());
     unsubs = [];
     stopElapsed();
+    for (const t of toolDwellTimers.values()) clearTimeout(t);
+    toolDwellTimers.clear();
+    toolStartedAt.clear();
   });
 
   return {
@@ -816,6 +869,7 @@ function dismissAskAnswered(): void {
     errorMsg,
     isEmpty,
     displayItems,
+    turnSuggestion,
     windowedItems,
     historyWindowTruncated,
     expandHistoryWindow,

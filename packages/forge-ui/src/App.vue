@@ -1088,7 +1088,7 @@ onUnmounted(() => {
   touch-action: none;
 }
 
-/* 高亮取 demo 方案 B 形态（两端渐隐的柔光段，中心品牌青绿），但不自动流动：
+/* 高亮取 demo 方案 B 形态（两端渐隐的柔光段，中心前景色），但不自动流动：
    --seg-y 由 pointermove 写入视口 Y 坐标，鼠标停在哪光段就在哪；
    不做 top 过渡保证贴手；侧栏通顶且容器从 y=0 起，clientY 可直接用作 top */
 .sidebar-resizer::after {
@@ -1100,7 +1100,7 @@ onUnmounted(() => {
   width: 2px;
   transform: translateY(-50%);
   border-radius: 1px;
-  background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--brand-accent) 65%, transparent) 50%, transparent);
+  background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--foreground) 65%, transparent) 50%, transparent);
   opacity: 0;
   transition: opacity var(--transition-fast);
 }

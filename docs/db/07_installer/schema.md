@@ -23,20 +23,21 @@
 | lastRunForgeVersion | string | 是 | null | 上次运行时记录的 forge 版本；null = 首次运行。启动时与当前版本不等 → 触发组件联动更新（AC-IN-012）并回写 |
 | preinstallDone | boolean | 否 | false | 推荐组件预装是否已执行完成（AC-IN-006 幂等标志）；失败保持 false，下次启动重试 |
 | preinstallDoneAt | string(ISO8601) | 是 | null | 预装完成时间（观测用，无业务判断依赖） |
+| preinstallListVersion | number | 否 | 0 | 已处理的推荐清单版本（对应 `RECOMMENDED_LIST_VERSION`，包内常量）。v2 之前的老文档无此字段，读取归 0、不视为损坏；清单版本前进 → 老用户升级后重跑一轮补缺（新推荐项升级必达） |
 | lastUpdateCheckAt | string(ISO8601) | 是 | null | 最近一次检查应用更新时间（观测用；检查时机=启动+分区打开/手动，不做硬节流） |
 | components | object | 否 | {} | 组件版本快照：`{ "包名": "版本", … }`。每次组件更新成功后（手动/预装/联动）整体刷新；用于变更明细日志的「旧版本 → 新版本」差值与「只升不降」判别参考（原型确认 2026-09-08） |
 
 - 主键：单例文档，无主键概念
 - 索引：无
 - 关联：无（自包含）
-- seed 数据（首次创建时写入）：`{ "schemaVersion": 1, "lastRunForgeVersion": null, "preinstallDone": false, "preinstallDoneAt": null, "lastUpdateCheckAt": null, "components": {} }`
+- seed 数据（首次创建时写入）：`{ "schemaVersion": 1, "lastRunForgeVersion": null, "preinstallDone": false, "preinstallDoneAt": null, "preinstallListVersion": 0, "lastUpdateCheckAt": null, "components": {} }`
 - 状态：已确认
 
 ### 设计说明
 
-- `lastRunForgeVersion` 与 `preinstallDone` 是仅有的两个**业务判断**字段：
+- `lastRunForgeVersion`、`preinstallDone` 与 `preinstallListVersion` 是仅有的三个**业务判断**字段：
   - 联动更新判定：`lastRunForgeVersion !== 当前版本` → 后台静默组件更新 → 成功后回写当前版本；失败保留旧值下次重试（AC-IN-012/013）。
-  - 预装判定：`preinstallDone === false` 且首次启动 → 后台静默补缺 → 成功置 true；失败保持 false（AC-IN-004/006/007）。
+  - 预装判定：`preinstallDone === false` 或 `preinstallListVersion < 包内 RECOMMENDED_LIST_VERSION` → 后台静默补缺（只增不删）→ 全部成功置 preinstallDone=true 并追平清单版本；任一失败保持原样下次重试（AC-IN-004/006/007）。清单版本字段缺失（v2 前的老文件）按 0 处理，等价触发一轮补缺——新推荐项对升级用户必达（如 v2 的 pi-memory）。
 - 首次运行（`lastRunForgeVersion === null`）：同时满足预装触发；联动更新首次不触发（无「版本变化」语义），仅回写版本。
 - 刻意不存：更新包下载路径/进度（electron-updater 内存态）、用户跳过的版本（v1 无跳过功能，每次有新版都提示）。
 - 卸载重装：userData 保留则标志仍在（不重复预装，符合 PRD）；用户手动清 userData 则视为全新安装（重新预装，幂等安全）。

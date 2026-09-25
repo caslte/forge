@@ -207,7 +207,7 @@ export const ASK_ANSWERED_AUTO_CLOSE_MS = 1500;
  *
  * **为什么 0 条要禁用**：空 payload 在扩展侧落到 `DECLINE_MESSAGE`
  *（`User declined to answer questions` + `details.cancelled = true`），与用户点
- *「取消」给模型的信号**完全一致**。放行的话，用户以为「提交了一份只有备注的问卷」，
+ *「取消」给模型的信号**完全一致**。放行的话，用户以为「提交了一份什么都没填的问卷」，
  *模型收到的却是「用户拒绝作答」—— 禁用后，产出这条信号的唯一入口就是显式点「取消」。
  */
 export function canSubmitAnswers(answers: AskUserQuestionAnswer[]): boolean {
@@ -234,22 +234,20 @@ export function shouldAutoCloseAnswered(state: AskUserAnsweredState): boolean {
 // ===== 步骤导航（多题时的「上一题 / 下一题」）=====
 
 /**
- * 步骤序列 = 题目 `0..N-1` + 末位「备注」tab，共 `N+1` 步。
+ * 步骤序列 = 题目 `0..N-1`（备注屏已按用户反馈移除——「答了再写备注感觉重复」，
+ * 2026-09 起隐藏；`globalNote` 通道在契约与摘要渲染里保留，随时可接回）。
  *
- * 单题场景没有 tab 栏（备注卡片直接跟在选项下方），不存在步骤概念 → 返回 1，
- * 于是 `isLastStep(0, 1)` 为真、`canStepNext` 为假：只剩「提交答案」，与改造前一致。
- *
- * **为什么不把备注 tab 排除在步序外**：tab 栏本来就把它排在最右，用户心智里它
- * 就是最后一屏；把它算作末步顺带让「填完备注正好提交」，不用回头找按钮。
+ * 单题场景没有 tab 栏 → 返回 1，于是 `isLastStep(0, 1)` 为真、`canStepNext` 为假：
+ * 只剩「提交答案」，与改造前一致。
  */
 export function stepCount(questionCount: number): number {
-  return questionCount > 1 ? questionCount + 1 : 1;
+  return questionCount > 1 ? questionCount : 1;
 }
 
 /**
- * 是否处于最后一步 —— **只有末步渲染「提交答案」**（改造后的向导式语义）。
+ * 是否处于最后一步 —— **只有末步渲染「提交答案」**（向导式语义）。
  *
- * 代价是部分作答的用户要走到末步才能提交，收益是堵住「在中间某题误点提交 →
+ * 代价是部分作答的用户要走到末题才能提交，收益是堵住「在中间某题误点提交 →
  * 模型收到 DECLINE」这条歧义路径。
  */
 export function isLastStep(index: number, questionCount: number): boolean {

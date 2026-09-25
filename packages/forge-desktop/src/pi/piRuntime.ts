@@ -14,11 +14,10 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { stripJsonComments } from './piModelsFileAdapter.ts';
 
 const execFileAsync = promisify(execFile);
-const nodeRequire = createRequire(import.meta.url);
 
 /** 更新超时：npm 安装较慢（含网络），放宽到 10 分钟 */
 export const PI_UPDATE_TIMEOUT_MS = 10 * 60_000;
@@ -72,8 +71,16 @@ function readInstalledVersion(agentDir: string, name: string): string | null {
 /** 解析内置引擎 CLI（dist/bundle/cli.js）；缺失返回 null（打包裁剪等场景） */
 export function resolveBundledPiCli(): string | null {
   try {
-    const pkg = nodeRequire.resolve('@earendil-works/pi-coding-agent/package.json');
-    const cli = path.join(path.dirname(pkg), 'dist', 'bundle', 'cli.js');
+    // 引擎包 0.84.x 起 exports 只留 import 条件、且不暴露 ./package.json：
+    // require.resolve（CJS 解析）两条路都必抛 ERR_PACKAGE_PATH_NOT_EXPORTED，
+    // 旧实现据此返回 null → 预装/联动/手动更新全体静默失效。必须走 ESM 解析，
+    // 由主入口上溯包根再拼 dist/bundle/cli.js。
+    let dir = path.dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
+    const cliRel = path.join('dist', 'bundle', 'cli.js');
+    while (path.dirname(dir) !== dir && !fs.existsSync(path.join(dir, cliRel))) {
+      dir = path.dirname(dir);
+    }
+    const cli = path.join(dir, cliRel);
     return fs.existsSync(cli) ? cli : null;
   } catch {
     return null;

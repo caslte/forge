@@ -71,6 +71,8 @@ const isHtml = computed(() => looksLikeHtmlCanvas(source.value));
 /** 蒙版与终态同高：闭合瞬间不产生跳变，下方正文不会被顶动 */
 const height = ref(CANVAS_DEFAULT_HEIGHT);
 const expanded = ref(false);
+/** 降级代码块的内联拉高态：不想开浮层时直接在气泡里看全文 */
+const sourceExpanded = ref(false);
 const copied = ref(false);
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 const saveState = ref<'idle' | 'saving'>('idle');
@@ -82,6 +84,7 @@ watch(
   () => props.encoded,
   () => {
     height.value = CANVAS_DEFAULT_HEIGHT;
+    sourceExpanded.value = false;
   },
 );
 
@@ -164,8 +167,20 @@ onUnmounted(() => {
 
     <!-- 闭合且不是 HTML 图示：降级代码块（蒙版期间用户看不到内容，此处必须兜底） -->
     <div v-else-if="!isHtml" class="canvas-fallback">
-      <pre class="canvas-source"><code>{{ source }}</code></pre>
-      <div class="canvas-hint">{{ t('canvas.notHtml') }}</div>
+      <div class="canvas-tools">
+        <button class="canvas-tool" :title="t('canvas.expand')" @click="expanded = true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
+            <line x1="21" y1="3" x2="13" y2="11" /><line x1="3" y1="21" x2="11" y2="13" />
+          </svg>
+        </button>
+        <button class="canvas-tool" :title="sourceExpanded ? t('canvas.tallerReset') : t('canvas.taller')" @click="sourceExpanded = !sourceExpanded">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="7 10 12 5 17 10" /><polyline points="7 14 12 19 17 14" />
+          </svg>
+        </button>
+      </div>
+      <pre class="canvas-source" :style="sourceExpanded ? { maxHeight: `${CANVAS_TALL_HEIGHT}px` } : undefined"><code>{{ source }}</code></pre>
     </div>
 
     <!-- 正常态：沙箱 iframe -->
@@ -212,7 +227,8 @@ onUnmounted(() => {
           <button class="canvas-lightbox-close" @click="expanded = false">{{ t('canvas.close') }}</button>
         </div>
         <div class="canvas-lightbox-body">
-          <iframe :srcdoc="srcdoc" sandbox="" :title="t('canvas.generating')" />
+          <iframe v-if="isHtml" :srcdoc="srcdoc" sandbox="" :title="t('canvas.generating')" />
+          <pre v-else class="canvas-lightbox-source"><code>{{ source }}</code></pre>
         </div>
       </div>
     </Teleport>
@@ -325,6 +341,7 @@ onUnmounted(() => {
   min-height: 64px;
 }
 .canvas-fallback {
+  position: relative;
   min-width: 0;
 }
 .canvas-source {
@@ -339,11 +356,6 @@ onUnmounted(() => {
   background: color-mix(in oklab, var(--foreground) 3%, var(--background));
   white-space: pre-wrap;
   word-break: break-all;
-}
-.canvas-hint {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--muted-foreground);
 }
 
 /* ---------- 工具栏 ---------- */
@@ -364,7 +376,9 @@ onUnmounted(() => {
   transition: opacity var(--transition-fast), transform var(--transition-fast);
 }
 .canvas-frame:hover .canvas-tools,
-.canvas-frame:focus-within .canvas-tools {
+.canvas-frame:focus-within .canvas-tools,
+.canvas-fallback:hover .canvas-tools,
+.canvas-fallback:focus-within .canvas-tools {
   opacity: 1;
   transform: none;
 }
@@ -444,6 +458,17 @@ onUnmounted(() => {
   height: 100%;
   display: block;
   border: 0;
+}
+.canvas-lightbox-source {
+  height: 100%;
+  overflow: auto;
+  margin: 0;
+  padding: 16px 20px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 @keyframes canvas-fade {
   from { opacity: 0; }

@@ -1672,7 +1672,7 @@ watch(
   z-index: 2;
 }
 
-/* 与侧栏右缘同款「流光」：110px 两端渐隐柔光段压在边框线上，--seg-x 由
+/* 与侧栏右缘同款「流光」：110px 两端渐隐柔光段压在边框线上，中心前景色，--seg-x 由
    pointermove 写入鼠标 X，停哪亮哪，不自动流动 */
 .cb-resize::after {
   content: '';
@@ -1683,7 +1683,7 @@ watch(
   height: 2px;
   transform: translate(-50%, -50%);
   border-radius: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--brand-accent) 65%, transparent) 50%, transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--foreground) 65%, transparent) 50%, transparent);
   opacity: 0;
   transition: opacity var(--transition-fast);
   pointer-events: none;
