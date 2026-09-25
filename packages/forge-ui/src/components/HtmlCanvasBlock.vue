@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   CANVAS_DEFAULT_HEIGHT,
   CANVAS_TALL_HEIGHT,
@@ -92,6 +92,11 @@ function toggleHeight(): void {
   height.value = height.value === CANVAS_DEFAULT_HEIGHT ? CANVAS_TALL_HEIGHT : CANVAS_DEFAULT_HEIGHT;
 }
 
+/** ESC 关闭放大浮层：与 ImageLightbox 同款口径；浮层没开时不动别的 UI */
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && expanded.value) expanded.value = false;
+}
+
 function canvasName(): string {
   const d = new Date();
   const p = (n: number): string => String(n).padStart(2, '0');
@@ -141,7 +146,12 @@ async function copy(): Promise<void> {
   }
 }
 
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown);
+});
+
 onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown);
   if (copiedTimer) clearTimeout(copiedTimer);
   if (saveTimer) clearTimeout(saveTimer);
 });

@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe, getBootState } from './bridge';
 import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
 import { projectTagOf } from './utils/sessionView';
+import { dropDraft } from './utils/composerDrafts';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
 import { useI18n } from './i18n/index.ts';
@@ -251,31 +252,11 @@ const currentSession = computed(() =>
 );
 
 /**
- * 落地 hero 草稿直通（v3.77）：零项目落地页输入的文本，项目打开（LandingHero
- * 卸载）时经 carry-text 暂存于此；分支切换完成后的 post-flush 经
- * ConversationView.restoreDraft 回填项目视图的草稿输入框，随后立即清空——
- * 保证只对「落地 → 第一个项目」这一次挂载生效，设置页往返等重挂载不会复活旧文本。
+ * 草稿输入框的跨视图恢复由 InstructionInput 的模块级草稿仓库
+ * （utils/composerDrafts）统一承担：落地 hero 与项目视图的输入框同为草稿态
+ * key，hero 卸载 → ConversationView 挂载即自动衔接，无需事件接力。
  */
-const landingDraft = ref<string | null>(null);
 const convRef = ref<InstanceType<typeof ConversationView> | null>(null);
-
-function onLandingCarryText(text: string): void {
-  if (text.trim() !== '') landingDraft.value = text;
-}
-
-watch(
-  currentProjectPath,
-  async (path) => {
-    const carry = landingDraft.value;
-    landingDraft.value = null;
-    if (path === null || carry === null) return;
-    // post-flush 时点卸载钩子已跑完（carry 已落），但等下一 tick 确保新分支的
-    // ConversationView 完成挂载、convRef 就位后再回填
-    await nextTick();
-    convRef.value?.restoreDraft(carry);
-  },
-  { flush: 'post' },
-);
 
 const sessionError = ref<string | null>(null);
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -491,6 +472,7 @@ async function onSelectSession(id: string): Promise<void> {
 async function onDeleteSession(id: string): Promise<void> {
   try {
     await call('session/deleteSession', { sessionId: id });
+    dropDraft(id);
     if (currentSessionId.value === id) currentSessionId.value = null;
     await loadSessions();
   } catch (e) {
@@ -665,6 +647,7 @@ onMounted(() => {
   // 挂早了无副作用（放行后 loadSessions 等才真正出发）
   unsubSessionRemoved = subscribe('session.removed', (payload) => {
     const p = payload as { sessionId: string };
+    dropDraft(p.sessionId);
     if (p.sessionId === currentSessionId.value) currentSessionId.value = null;
     void loadSessions();
   });
@@ -982,7 +965,6 @@ onUnmounted(() => {
             @pick-project="onPickProject"
             @open-project-picker="openFolderPicker"
             @remove-project="onRemoveProject"
-            @carry-text="onLandingCarryText"
           />
         </template>
       </main>

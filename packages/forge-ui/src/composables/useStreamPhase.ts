@@ -35,6 +35,19 @@ function toolPhaseText(name: string | null): string {
     case 'ls':
     case 'glob':
       return i18n.t('chat.phaseToolSearch');
+    case 'ask_user_question':
+      return i18n.t('chat.phaseToolAskUser');
+    case 'todo':
+      return i18n.t('chat.phaseToolTodo');
+    // pi-subagents 注册的四个工具（见 SUBAGENT_TOOL_NAMES）
+    case 'agent':
+      return i18n.t('chat.phaseToolSpawnAgent');
+    case 'get_subagent_result':
+      return i18n.t('chat.phaseToolWaitAgent');
+    case 'steer_subagent':
+      return i18n.t('chat.phaseToolSteerAgent');
+    case 'subagentworkflow':
+      return i18n.t('chat.phaseToolWorkflow');
     default:
       return i18n.t('chat.phaseToolNamed', { name });
   }

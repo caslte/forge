@@ -23,7 +23,7 @@ import {
 } from '../src/utils/reviewMode.ts';
 
 /** 状态机公开事件面：不允许出现任何 delta 流入入口（review 期间 delta 不得影响状态） */
-const ALLOWED_METHODS = new Set(['getState', 'enter', 'exit', 'nearBottom', 'reset', 'showBackdownHint']);
+const ALLOWED_METHODS = new Set(['getState', 'enter', 'detach', 'exit', 'nearBottom', 'reset', 'showBackdownHint']);
 
 /** 断言状态字段全部良构：无 NaN/undefined 泄漏（U-CV-008 负向要求） */
 function assertWellFormed(s: ReviewModeState, where: string): void {
@@ -89,7 +89,7 @@ test('review 中重复 enter 同条目：状态不变（deepEqual，等价一次
 test('review 中 autoFollow 恒 false：状态机无 delta 事件入口，重复 enter/查询不放开跟随', () => {
   const ctrl = createReviewModeController();
   ctrl.enter(1);
-  // 事件面恰好为声明的六个方法：不存在 onDelta/applyDelta/delta 等流入入口
+  // 事件面恰好为声明的七个方法：不存在 onDelta/applyDelta/delta 等流入入口
   const methods = new Set(Object.keys(ctrl));
   assert.deepEqual([...methods].sort(), [...ALLOWED_METHODS].sort());
   // 任何后续交互（重复 enter / 查询）都不产生 autoFollow=true
@@ -173,6 +173,32 @@ test('负向：非法 index（NaN/负数/小数/Infinity）在 browse 与 review
   assert.deepEqual(ctrl.getState(), { mode: 'review', targetIndex: 3, autoFollow: false });
 });
 
+// ===== detach（流式期间用户手动上滚翻阅历史） =====
+
+test('browse 下 detach → review（targetIndex=null，autoFollow=false）；重复 detach 幂等', () => {
+  const ctrl = createReviewModeController();
+  const s1 = ctrl.detach();
+  assert.deepEqual(s1, { mode: 'review', targetIndex: null, autoFollow: false });
+  assert.equal(ctrl.showBackdownHint(), true);
+  assert.deepEqual(ctrl.detach(), s1);
+});
+
+test('review 下 detach 无副作用：不覆盖 enter 已设的定位目标', () => {
+  const ctrl = createReviewModeController();
+  ctrl.enter(4);
+  const before = ctrl.getState();
+  assert.deepEqual(ctrl.detach(), before);
+  assert.equal(ctrl.getState().targetIndex, 4);
+});
+
+test('detach 后触底 nearBottom → browse（autoFollow 恢复）；再 detach 可再次脱离', () => {
+  const ctrl = createReviewModeController();
+  ctrl.detach();
+  assert.deepEqual(ctrl.nearBottom(), { mode: 'browse', targetIndex: null, autoFollow: true });
+  assert.equal(ctrl.getState().autoFollow, true);
+  assert.equal(ctrl.detach().mode, 'review');
+});
+
 // ===== 状态字段良构（一系列操作后无 NaN/undefined 泄漏） =====
 
 test('全流程状态字段无 NaN/undefined 泄漏', () => {
@@ -183,6 +209,7 @@ test('全流程状态字段无 NaN/undefined 泄漏', () => {
     () => ctrl.enter(12),
     () => ctrl.nearBottom(),
     () => ctrl.exit(),
+    () => ctrl.detach(),
     () => ctrl.enter(Number.NaN),
     () => ctrl.reset(),
     () => ctrl.nearBottom(),

@@ -196,7 +196,9 @@ function dismissAskAnswered(): void {
           kind: 'message',
           msg: cur,
           idx: i,
-          ...(footer ? { showFooter: footer.showFooter, copyText: footer.copyText } : {}),
+          ...(footer
+            ? { showFooter: footer.showFooter, copyText: footer.copyText, firstOfTurn: footer.firstOfTurn }
+            : {}),
         });
         i += 1;
       } else if (cur.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {

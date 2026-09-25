@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted } from 'vue';
 import type { ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
 import logoMain from '../assets/logo-main.png';
@@ -12,9 +12,10 @@ import logoMain from '../assets/logo-main.png';
  * `{ mode:'draft', currentPath:null, currentName:'打开项目', items:[] }`，
  * 菜单里只有「打开项目…」入口。
  *
- * 草稿直通：发送（或选中项目）→ 上层弹目录选择器 → 项目打开后本组件卸载，
- * 卸载时把未发送文本经 carry-text 上抛；App 在分支切换后的 post-flush 把它
- * 回填进项目视图的草稿输入框（经 ConversationView.restoreDraft），用户无感衔接。
+ * 草稿直通：输入框是 InstructionInput（sessionId 恒空 → 草稿态统一 key），
+ * 文本实时落在模块级草稿仓库（utils/composerDrafts）里；发送后回填的文本
+ * 同样在仓。项目打开、本组件卸载后，项目视图的草稿输入框挂载即从同一 key
+ * 回填，用户无感衔接——不再需要 carry-text 事件接力。
  */
 const props = defineProps<{
   models: string[];
@@ -28,18 +29,13 @@ const emit = defineEmits<{
   (e: 'pick-project', path: string): void;
   (e: 'open-project-picker'): void;
   (e: 'remove-project', path: string): void;
-  /** 卸载时上抛未发送的输入文本（App 暂存，项目打开后回填草稿输入框） */
-  (e: 'carry-text', text: string): void;
 }>();
 
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
-/** 发送路径的文本暂存：onSend 会先清空输入框再 emit，目录选择取消时文本已回填 */
-let sentCarry = '';
 
 function onSend(text: string): void {
   if (props.projectPicker?.currentPath) return; // 落地态恒无项目；有值说明上层误用，丢弃
-  sentCarry = text;
-  // 视觉回填：目录选择取消时不丢字；选中则组件随即卸载，回填无副作用
+  // 视觉回填：目录选择取消时不丢字；选中则组件随即卸载，文本经草稿仓库直通
   inputRef.value?.restoreQueuedText([text]);
   emit('open-project-picker');
 }
@@ -55,12 +51,6 @@ function onPickProject(path: string): void {
 function onRemoveProject(path: string): void {
   emit('remove-project', path);
 }
-
-onBeforeUnmount(() => {
-  const current = inputRef.value?.getText() ?? '';
-  const carry = current.trim() !== '' ? current : sentCarry;
-  if (carry.trim() !== '') emit('carry-text', carry);
-});
 
 onMounted(() => {
   inputRef.value?.focus();

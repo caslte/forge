@@ -12,7 +12,7 @@ import {
 import { baseName, isImagePath } from '../attachmentText';
 import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
 import { shouldConvertPasteToFile } from '../utils/pasteText';
-import { computeSessionInputReset } from '../utils/sessionInputReset';
+import { draftKeyOf, loadDraft, saveDraft } from '../utils/composerDrafts';
 import { prependQueuedText } from '../utils/prependQueuedText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
@@ -1135,11 +1135,6 @@ function focus(): void {
   textareaRef.value?.focus();
 }
 
-/** 只读当前输入文本（落地 hero 卸载时取未发送草稿用，v3.77） */
-function getText(): string {
-  return text.value;
-}
-
 /** 点「新会话」时由上层显式调用：无输入内容且无附件才把拖高过的盒子/textarea 还原为自然高度 */
 function resetHeightIfEmpty(): void {
   if (text.value !== '' || attachments.value.length > 0) return;
@@ -1148,7 +1143,7 @@ function resetHeightIfEmpty(): void {
 }
 
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
-defineExpose({ focus, currentLevel, restoreQueuedText, getText, resetHeightIfEmpty });
+defineExpose({ focus, currentLevel, restoreQueuedText, resetHeightIfEmpty });
 
 /** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;
@@ -1213,20 +1208,33 @@ watch(
   },
 );
 
-// 切换会话：重载输入历史（不同会话的历史独立存储）；已激活会话切走前清空输入框（防跨会话串味），草稿态保留。
+// 草稿实时落仓（flush post：会话切换 watch 的 pre 回填先跑，本 watch 只会把
+// 回填值原样再存一次，无副作用）。↑↓ 翻历史时 text 里是历史条目不是草稿，
+// 落仓用进历史前暂存的 pendingDraft。
+watch(
+  [text, () => attachments.value],
+  () => {
+    saveDraft(draftKeyOf(props.sessionId), {
+      text: historyCursor.value >= 0 ? pendingDraft : text.value,
+      attachments: attachments.value,
+    });
+  },
+  { flush: 'post' },
+);
+
+// 切换会话：重载输入历史（不同会话的历史独立存储）；输入缓冲改为按会话从
+// 草稿仓库回填（不再清空——修「跨会话串味/草稿被带跑」，也覆盖设置页往返、
+// 多窗口聚焦层等一切卸载重挂：卸载时仓库已是最新，immediate 回填即恢复）。
 watch(
   () => props.sessionId,
   (sid) => {
-    const next = computeSessionInputReset({
-      currentText: text.value,
-      pendingDraft,
-      historyCursor: historyCursor.value,
-      isDraft: sid === undefined,
-    });
-    if (next.text !== text.value || next.pendingDraft !== pendingDraft || next.historyCursor !== historyCursor.value) {
-      text.value = next.text;
-      pendingDraft = next.pendingDraft;
-      historyCursor.value = next.historyCursor;
+    const d = loadDraft(draftKeyOf(sid));
+    const changed = d.text !== text.value || d.attachments.length !== attachments.value.length;
+    text.value = d.text;
+    attachments.value = d.attachments;
+    pendingDraft = '';
+    historyCursor.value = -1;
+    if (changed) {
       // 切到新会话：textarea 自然回落（autoGrow 已处理）+ 手动拖高过的 compose-box 也回到自然高度，
       // 否则下次打开会按上次拖的高度撑开。box-shadow / border 不用清，本身就没内联。
       nextTick(() => {

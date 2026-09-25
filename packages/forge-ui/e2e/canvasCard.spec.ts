@@ -161,6 +161,12 @@ test('E-CA-004 @P1 @mock-backend：围栏里不是 HTML → 降级代码块，�
   await expect(lightbox.locator('iframe')).toHaveCount(0);
   await lightbox.locator('.canvas-lightbox-close').click();
   await expect(lightbox).toHaveCount(0);
+
+  // ESC 也能关闭
+  await tools.locator('.canvas-tool').first().click({ force: true });
+  await expect(lightbox).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(lightbox).toHaveCount(0);
 });
 
 test('E-CA-005 @P1 @mock-backend：```html 围栏不被劫持（模型展示 HTML 代码示例是常态）', async ({ page }) => {

@@ -137,10 +137,12 @@ const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 /** 会话切换：重置共享状态机并清视图侧回看态 */
 function resetForSession(): void {
   resetConvForSession();
+  stoppedNotice.value = false;
   // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
   reviewCtrl.reset();
   syncReview();
   clearLocateHighlight();
+  beginSettlePin();
 }
 
 /** 滚动到底部：覆盖 smooth 做瞬时定位，下一帧再补一次；长内容快速到达最后一条回复 */
@@ -158,6 +160,39 @@ function scrollToBottom(): void {
   });
 }
 
+/**
+ * 会话切换后的「落位稳定期」。首帧钉底之后仍有两类延后变化会把视口留在底部上方：
+ * - 消息区**变矮**：子 Agent 标签栏（subagent/queryList 异步回填）/ Todo 面板在钉底后才挂载；
+ * - 内容**变高**：流式态经 getStatusHint 迟到恢复 → 末尾「正在执行…」指示行晚挂载。
+ * 两种情况浏览器都只保持 scrollTop 数值，不跟随补差。稳定期内任一尺寸变化重新钉底；
+ * 用户在此期间手动滚动即刻放弃（尊重用户位置，不与回看抢方向盘）。
+ */
+const SETTLE_PIN_MS = 800;
+let settlePinUntil = 0;
+
+function beginSettlePin(): void {
+  settlePinUntil = Date.now() + SETTLE_PIN_MS;
+}
+
+function cancelSettlePin(): void {
+  settlePinUntil = 0;
+}
+
+/** 消息区/内容尺寸变化：刷新上下沿渐隐 + 稳定期内补钉底 */
+function onConvResize(): void {
+  updateConvFade();
+  if (Date.now() >= settlePinUntil) return;
+  if (!autoFollow.value) {
+    // 稳定期内的回看态只可能是布局钳位被 onMessagesScroll 误判成「用户上滚」而 detach
+    // （detach 无定位目标）；真·手动滚动已由下面的输入事件结束稳定期，
+    // 而点了时间轴定位（有 targetIndex）是明确意图，不覆盖。
+    if (reviewTargetIndex.value !== null) return;
+    reviewCtrl.exit();
+    syncReview();
+  }
+  scrollToBottom();
+}
+
 // 消息区滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩（同会话树口径）
 const convFadeTop = ref(false);
 const convFadeBottom = ref(false);
@@ -173,10 +208,18 @@ let convFadeObserver: ResizeObserver | null = null;
 
 /** 发送消息：草稿态（未发首条消息）先真正创建会话再发送（状态机在 useSessionConversation） */
 /** 停止当前轮（CV-S09）：被清空的待发队列文本回填输入框（pi TUI ESC 同款） */
+/** 主动打断提示：停止按钮 / Esc×2 后置显，下一轮开始或切会话收起（内存态，不落库） */
+const stoppedNotice = ref(false);
+
 async function onCancelTurn(): Promise<void> {
   const cleared = await cancelTurn();
   if (cleared.length > 0) inputRef.value?.restoreQueuedText(cleared);
+  stoppedNotice.value = true;
 }
+
+watch(isStreaming, (streaming) => {
+  if (streaming) stoppedNotice.value = false;
+});
 
 async function onSend(text: string): Promise<void> {
   if (props.sessionId === null) {
@@ -211,17 +254,10 @@ async function onSend(text: string): Promise<void> {
       return;
     }
   }
+  // 主动发消息 = 要回到底部看新一轮回复：退出回看恢复自动跟随
+  reviewCtrl.exit();
+  syncReview();
   await sendTurn(text);
-}
-
-/**
- * 落地 hero 草稿直通（v3.77）：零项目落地页（LandingHero）输入的文本，在项目
- * 打开、本视图挂载后由上层（App post-flush）经此回填草稿输入框，用户无感衔接。
- * 仅草稿态（无会话）接受——带真实 sessionId 时是既有会话，回填会污染其输入框。
- */
-function restoreDraft(text: string): void {
-  if (props.sessionId !== null) return;
-  inputRef.value?.restoreQueuedText([text]);
 }
 
 /** 点「新会话」：输入框无内容时还原被手动拖高的高度（App 经此透传，草稿态重复点击 sessionId 不变、watch 不触发） */
@@ -229,7 +265,7 @@ function resetInputHeightIfEmpty(): void {
   inputRef.value?.resetHeightIfEmpty();
 }
 
-defineExpose({ restoreDraft, resetInputHeightIfEmpty });
+defineExpose({ resetInputHeightIfEmpty });
 
 function onModelChange(model: string): void {
   emit('model-change', model);
@@ -257,7 +293,9 @@ const hasTimeline = computed(() => messages.value.some((m) => m?.role === 'user'
 /**
  * 回看模式状态机（纯函数，utils/reviewMode）：
  * - 点击条目 enter(index) → review（autoFollow=false）：流式 delta/新消息不再强制滚底；
+ * - 流式/浏览期间用户手动上滚离开底部 → detach() → review（无定位目标）：同上不再滚底；
  * - 滚动触底（距底 <40px，去抖停稳判定）或点击"回到底部"提示条 → exit → browse（autoFollow=true）；
+ * - 用户发送新消息 → exit 回浏览（主动发消息 = 要看新一轮回复）；
  * - 会话切换 resetForSession → reset() 回浏览模式。
  */
 const reviewCtrl = createReviewModeController();
@@ -377,10 +415,27 @@ async function maybeExpandHistoryWindow(): Promise<void> {
   }
 }
 
-/** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 回看态停稳触底退出（原有信号） */
+/** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 手动上滚暂停跟随 + 回看态停稳触底退出 */
+/** 上次滚动位置（方向判定用）：用户上滚 vs 程序化滚底（扩窗锚定/定位/置底均为向下） */
+let lastScrollTop = 0;
+
 function onMessagesScroll(): void {
   updateConvFade();
   void maybeExpandHistoryWindow();
+  const elNow = scrollRef.value;
+  if (elNow) {
+    const scrolledUpBy = lastScrollTop - elNow.scrollTop;
+    lastScrollTop = elNow.scrollTop;
+    // 流式输出期间用户向上翻阅历史：脱离自动跟随（delta 不再强制滚底），
+    // 露出「回到底部」按钮；滚回距底 <NEAR_BOTTOM_PX 停稳后由下方触底判定恢复
+    if (
+      scrolledUpBy > 2 &&
+      elNow.scrollHeight - elNow.scrollTop - elNow.clientHeight > NEAR_BOTTOM_PX
+    ) {
+      reviewCtrl.detach();
+      syncReview();
+    }
+  }
   if (!isReviewing.value) return;
   if (nearBottomTimer !== null) clearTimeout(nearBottomTimer);
   nearBottomTimer = setTimeout(() => {
@@ -492,22 +547,65 @@ watch(
   },
 );
 
+/**
+ * 流式期间连按两次 Esc 停止当前轮（与停止按钮同走 onCancelTurn，含队列回填）。
+ * 仅流式时挂监听；会消费 ESC 的界面（历史浮窗 / ask 提问面板）开着时这次按键
+ * 归它们，双击计数清零，不与「Esc 关闭浮窗」抢同一次按键。
+ */
+const DOUBLE_ESC_MS = 500;
+let lastEscAt = 0;
+
+function onEscKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || e.repeat) return;
+  if (historyPopover.value.open || askRequest.value !== null) {
+    lastEscAt = 0;
+    return;
+  }
+  const now = Date.now();
+  if (now - lastEscAt > DOUBLE_ESC_MS) {
+    lastEscAt = now;
+    return;
+  }
+  lastEscAt = 0;
+  void onCancelTurn();
+}
+
+watch(
+  isStreaming,
+  (streaming) => {
+    lastEscAt = 0;
+    if (streaming) window.addEventListener('keydown', onEscKeydown);
+    else window.removeEventListener('keydown', onEscKeydown);
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   // 回看模式触底判定（scrollRef 元素常驻，仅 v-show 切换）
   scrollRef.value?.addEventListener('scroll', onMessagesScroll, { passive: true });
-  // 上下沿渐隐：观察容器与内容节点（流式增高/消息增删/折叠都会重算）
+  // 上下沿渐隐 + 切会话落位稳定期补钉底：观察容器与内容节点（流式增高/消息增删/折叠都会重算）
   const el = scrollRef.value;
   if (el) {
-    convFadeObserver = new ResizeObserver(updateConvFade);
+    convFadeObserver = new ResizeObserver(onConvResize);
     convFadeObserver.observe(el);
     if (el.firstElementChild) convFadeObserver.observe(el.firstElementChild);
+    // 用户手动滚动 = 明确的位置意图，立即结束稳定期
+    // （pointerdown 覆盖拖动滚动条，它既不触发 wheel 也不触发 touchstart）
+    el.addEventListener('wheel', cancelSettlePin, { passive: true });
+    el.addEventListener('touchstart', cancelSettlePin, { passive: true });
+    el.addEventListener('pointerdown', cancelSettlePin, { passive: true });
+    el.addEventListener('keydown', cancelSettlePin);
   }
+  // 挂载即带会话（多窗格/切窗口重挂）时同样走稳定期：本钩子晚于 composable 的
+  // onMounted（loadHistory/loadSubagents 已发起），此处开窗不会漏掉异步回填
+  if (props.sessionId !== null) beginSettlePin();
   updateConvFade();
 });
 
 onUnmounted(() => {
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
   window.removeEventListener('keydown', onPopoverKeydown);
+  window.removeEventListener('keydown', onEscKeydown);
   // 回看模式清理：触底判定去抖计时器 + 定位高亮
   if (nearBottomTimer !== null) {
     clearTimeout(nearBottomTimer);
@@ -695,6 +793,12 @@ onUnmounted(() => {
               :msg="turnSuggestion"
               @pick="onSend"
             />
+            <!-- 主动打断提示（同款分隔线横幅形态）：说明这一轮是手动停的，非模型/网络原因 -->
+            <div v-if="stoppedNotice" class="conv-switch-banner">
+              <span class="csb-line"></span>
+              <span class="csb-text">{{ t('chat.stoppedNotice') }}</span>
+              <span class="csb-line"></span>
+            </div>
           </template>
 
           <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->

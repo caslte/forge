@@ -13,6 +13,8 @@
  *      直到退出才恢复 true——「delta 不强制滚底」由状态机结构性保证；
  *   3. review 下 nearBottom()（滚动触底信号）或显式 exit() → browse（autoFollow=true）
  *      **恰好一次**：browse 下重复 exit()/nearBottom() 均无副作用；
+ *   3.5 detach()（流式期间用户手动上滚翻阅历史）：browse → review（targetIndex=null，
+ *      无定位目标）；review 下无副作用（重复上滚/与 enter 共存都不覆盖已有定位目标）；
  *   4. reset()（会话切换）→ browse 初始态（autoFollow=true、targetIndex=null）；
  *   5. enter 的 index 非法（非有限数/非整数/负数）→ 无副作用，不产生 NaN/undefined 泄漏。
  * - 派生：提示条可见性 showBackdownHint =（mode === 'review'）。
@@ -34,6 +36,8 @@ export interface ReviewModeController {
   getState(): ReviewModeState;
   /** 时间线条目点击：browse → review；review 中重复点击仅更新目标 */
   enter(index: number): ReviewModeState;
+  /** 流式期间用户手动向上滚动翻阅历史：browse → review（无定位目标，targetIndex=null）；review 下无副作用 */
+  detach(): ReviewModeState;
   /** 显式退出回看（"回到底部"提示条点击）：review → browse，恰好一次 */
   exit(): ReviewModeState;
   /** 滚动触底信号：与 exit 同一转移；browse 下无副作用 */
@@ -83,6 +87,12 @@ export function createReviewModeController(): ReviewModeController {
     },
 
     exit: exitInternal,
+
+    detach(): ReviewModeState {
+      if (state.mode !== 'browse') return state; // review 下重复上滚无副作用
+      state = { mode: 'review', targetIndex: null, autoFollow: false };
+      return state;
+    },
 
     nearBottom: exitInternal,
 

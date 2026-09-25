@@ -6,6 +6,8 @@ export interface TurnFooterInfo {
   showFooter: boolean;
   /** 整轮复制文本（末卡覆盖同轮全部 assistant 分片；非末卡为 undefined） */
   copyText?: string;
+  /** 是否为该轮首张 assistant 卡（后续分片卡不重播入场动画） */
+  firstOfTurn: boolean;
 }
 
 /**
@@ -31,13 +33,14 @@ export function computeTurnFooters(
       if (messages[i]?.role === 'assistant') assistants.push(i);
     }
     if (assistants.length === 0) return;
-    for (const idx of assistants) out.set(idx, { showFooter: false });
+    const first = assistants[0]!;
+    for (const idx of assistants) out.set(idx, { showFooter: false, firstOfTurn: idx === first });
     const last = assistants[assistants.length - 1]!;
     const copyText = assistants
       .map((i) => messages[i]!.content)
       .filter((c) => c.trim() !== '')
       .join('\n\n');
-    out.set(last, { showFooter: true, copyText });
+    out.set(last, { showFooter: true, copyText, firstOfTurn: last === first });
   };
   for (let i = 0; i < messages.length; i += 1) {
     if (messages[i]?.role === 'user') {

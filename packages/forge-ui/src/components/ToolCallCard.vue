@@ -40,6 +40,10 @@ const TOOL_LABELS: Record<string, MessageKey> = {
   webfetch: 'tool.webFetch',
   web_fetch: 'tool.webFetch',
   todo: 'tool.updateTodo',
+  agent: 'tool.spawnAgent',
+  get_subagent_result: 'tool.waitAgentResult',
+  steer_subagent: 'tool.steerAgent',
+  subagentworkflow: 'tool.runAgentWorkflow',
 };
 
 /** 展示用工具名：有中文映射用中文，否则回退原始工具名 */

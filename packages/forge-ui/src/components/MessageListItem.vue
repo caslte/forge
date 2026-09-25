@@ -10,7 +10,7 @@
  * 改为：父级只渲染一个组件列表（稳定唯一 key），形态分支隔离在本组件实例内，
  * 同一 key 的组件始终唯一，patch 不再跨列表位置错位。
  */
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import type { ConversationMessage, SessionStatus, ToolEvent } from '../types';
 import type { ChangedFileSummary } from '../composables/useChangedFiles';
 import { formatElapsed } from '../utils/formatElapsed';
@@ -32,6 +32,8 @@ export type DisplayItem =
       /** assistant 分片 footer 轮次控制（仅 assistant 消息需要） */
       showFooter?: boolean;
       copyText?: string;
+      /** 该轮首张 assistant 卡（false = 分片卡，不重播入场动画） */
+      firstOfTurn?: boolean;
     }
   | {
       key: string;
@@ -107,6 +109,18 @@ const tgScrollRef = ref<HTMLElement | null>(null);
 const tgAtTop = ref(true);
 const tgAtBottom = ref(true);
 
+/** 挂载即定位到最新行：切会话后消息重挂载，展开态视口若停在顶部会看不到最新工具；
+ *  且后续流式追加的贴底跟随（下方 watch）依赖初始位置在底部 */
+onMounted(() => {
+  const it = props.item;
+  if (it.kind !== 'tool-group' || it.collapsed) return;
+  void nextTick(() => {
+    const el = tgScrollRef.value;
+    if (el) el.scrollTop = el.scrollHeight;
+    updateTgFade();
+  });
+});
+
 function updateTgFade(): void {
   const el = tgScrollRef.value;
   if (!el) return;
@@ -158,6 +172,7 @@ function isToolMessage(m: ConversationMessage): boolean {
       :streaming="streaming"
       :show-footer="item.showFooter"
       :copy-text="item.copyText"
+      :first-of-turn="item.firstOfTurn"
     />
   </template>
 
