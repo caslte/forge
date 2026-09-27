@@ -1525,7 +1525,13 @@ onUnmounted(() => {
 }
 
 /* ===== CV-S06 回看模式"回到底部"提示条（AC-CV-016） =====
-   悬浮于消息流底部（absolute 不参与布局，回看切换零跳动），点击退出回看恢复自动滚底 */
+   悬浮于消息流底部（absolute 不参与布局，回看切换零跳动），点击退出回看恢复自动滚底。
+
+   ⚠️ 入场动画不能用全局 fadeIn（其关键帧只有 translateY，没有 translateX(-50%)，
+   跑动画时 transform 会被覆盖 → left:50% 没有抵消 → 按钮左缘钉在中线、整体偏右；
+   0.15s 后动画结束、静态 transform 回血、按钮"啪"左跳半宽）。这里用一个本地 keyframe
+   把 translateX(-50%) 显式写入 from/to，静态 transform 同步保留作 fallback（动画未
+   跑/被 reduced-motion 禁用时仍居中）。 */
 .review-backdown {
   position: absolute;
   bottom: 12px;
@@ -1544,7 +1550,14 @@ onUnmounted(() => {
   font-weight: 500;
   cursor: pointer;
   box-shadow: var(--shadow-lg);
-  animation: fadeIn 0.15s ease-out;
+  animation: review-backdown-in 0.15s ease-out;
+}
+
+/* CV-S06 本地入场 keyframe：translateX(-50%) 必须显式带上，否则会覆盖静态居中。
+   与下方 .bd-pop-enter-from / .bd-pop-leave-to 的 transform 写法保持一致。 */
+@keyframes review-backdown-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0);   }
 }
 
 .review-backdown svg {
