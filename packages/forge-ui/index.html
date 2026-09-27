@@ -3,6 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CV-TRUST-05 内容安全策略（纵深防线第二道）：渲染层已有 v-html 白名单 sanitize，
+         本 CSP 堵 sanitize 被绕过时的脚本执行与外传通道。口径：
+         - script-src 带 'unsafe-inline'：主题引导/splash 回执两段内联脚本必须同步执行
+           （meta CSP 无法用 nonce——vite 不经手）；禁止 eval/new Function 仍有效；
+         - connect-src 放行 http/https：用户可配置任意模型端点（含本地 http 服务）；
+           ws/wss 供 dev HMR（prod 下与 https: 等价地"已放行"），不构成额外外传面；
+         - object-src/base-uri/form-action 全关：插件、注入 base、表单外跳一律禁止；
+         - img/font 的 file: 供 prod loadFile（file://）相对路径资源。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data: blob:; font-src 'self' file: data:; connect-src 'self' http: https: ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
     <link rel="icon" href="/favicon.png" />
     <title>forge</title>
     <script>

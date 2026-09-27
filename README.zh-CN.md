@@ -6,8 +6,6 @@
 
 **forge，取「锻造」之意 —— 一个 coding 工作台，愿每一个好产品都从这里锻造而出。**
 
-基于 [pi](https://github.com/earendil-works/pi) 编码代理引擎构建。
-
 [English](README.md) | 简体中文
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)

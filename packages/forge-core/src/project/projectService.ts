@@ -105,11 +105,27 @@ export class ProjectService {
   private readonly store: ForgeStore;
   private readonly trust: TrustStorePort | null;
   private readonly sessions: ProjectSessionsPort | null;
+  /** trustOnce（本次信任）的会话内放行集合（CV-TRUST-01）：按项目唯一键记录，进程生命周期内有效 */
+  private readonly trustOnceKeys: Set<string> = new Set();
 
   constructor(store: ForgeStore, trust?: TrustStorePort, sessions?: ProjectSessionsPort) {
     this.store = store;
     this.trust = trust ?? null;
     this.sessions = sessions ?? null;
+  }
+
+  /**
+   * 执行链信任判定（CV-TRUST-01）：pi 资源加载（SettingsManager.projectTrusted）
+   * 的唯一权威口径。
+   * - 持久信任：pi 信任存储决策为 true（TrustAskDialog「信任」写入）
+   * - 会话内放行：用户点过「仅本次信任」（trustOnce，不落盘，本进程内有效；
+   *   重启后集合清空，下次打开重新询问——与状态机语义一致）
+   * 未注入信任端口的场景（历史测试兼容）按未信任处理（保守）。
+   */
+  isTrustedForExecution(projectPath: string): boolean {
+    const key = this.resolveProjectKey(projectPath);
+    if (this.trustOnceKeys.has(key)) return true;
+    return this.trust?.getDecision(projectPath) === true;
   }
 
   /** 判断目录是否含需要信任门禁的项目资源（注入权威端口时用它，否则本地 `.pi` 检测） */
@@ -325,11 +341,19 @@ export class ProjectService {
         } else if (decision === 'reject') {
           next = 'rejected';
         } else {
-          // trustOnce：本次信任，不持久状态，回到未信任（下次打开重新询问）
+          // trustOnce：本次信任，不持久状态，回到未信任（下次打开重新询问）。
+          // CV-TRUST-01：执行链放行走 trustOnceKeys 内存标记（进程内有效），
+          // 不写 pi 信任存储——持久语义只有「信任」一种。
           next = 'untrusted';
         }
         // 权威端口联动：trust/reject 写入 pi 信任决策（持久），trustOnce 不持久
         this.persistTrustDecision(key, decision === 'trust' ? true : decision === 'reject' ? false : null);
+        // trustOnce 内存放行集合维护：点「仅本次」入集合；随后改为 trust/reject 时出集合
+        if (decision === 'trustOnce') {
+          this.trustOnceKeys.add(key);
+        } else {
+          this.trustOnceKeys.delete(key);
+        }
         const updated = this.store.updateProject({ ...project, trustState: next });
         if (!updated.ok) {
           return { ok: false, code: 1002, message: updated.message };

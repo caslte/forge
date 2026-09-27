@@ -19,13 +19,20 @@
  *
  * 安全检查：
  *   - package.json 除 version 外存在其他在途改动 → 拒绝执行（防止误提交）。
- *   - commit 只包含 packages/forge-desktop/package.json，不碰工作区其他改动。
+ *   - commit 只包含 packages/forge-desktop/package.json 与自动生成的 release-notes.md，
+ *     不碰工作区其他改动。
  *   - 发布前校验版本号格式为 x.y.z（主版本不限位）。
+ *
+ * 自动更新说明（release-notes.mjs）：
+ *   - 发布时自动汇总上一 tag..HEAD 的提交（过滤 bump 等噪音、按类型分组排版），
+ *     写入 packages/forge-desktop/release-notes.md 随 bump commit 提交；
+ *     electron-builder 经 releaseNotesFile 配置把它作为 GitHub Release 描述。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { buildReleaseNotes, notesChangedVsHead, RELEASE_NOTES_REL } from './release-notes.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG_REL = 'packages/forge-desktop/package.json';
@@ -137,18 +144,29 @@ if (stableStringify(omitVersion(pkg)) !== stableStringify(omitVersion(headPkg)))
 const needCommit = targetVersion !== headPkg.version;
 const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { capture: true });
 
+// 自动生成更新说明：汇总上一 tag..HEAD 的有效提交（预演仅展示，正式发布写入文件）
+let notes;
+try {
+  notes = buildReleaseNotes({ targetTag, write: !dryRun });
+} catch (e) {
+  die(`生成更新说明失败：${e.message}`);
+}
+
 if (dryRun) {
   log('预演', '以下为将执行的步骤（未实际执行）：');
   console.log(`  1. 写 ${PKG_REL}  version: ${currentVersion} → ${targetVersion}`);
+  console.log(`  1b. 写 ${RELEASE_NOTES_REL}（基于 ${notes.prevTag ?? '—'}..HEAD 的 ${notes.count} 条有效提交）`);
   if (needCommit) {
-    console.log(`  2. git add ${PKG_REL}`);
+    console.log(`  2. git add ${PKG_REL} ${RELEASE_NOTES_REL}`);
     console.log(`  3. git commit -m "build: bump forge-desktop version to ${targetVersion}"`);
   } else {
-    console.log('  2-3. （版本号改动已在 HEAD，跳过 commit）');
+    console.log('  2-3. （版本号改动已在 HEAD，跳过 commit；release-notes.md 有变化则单独提交）');
   }
   console.log(`  4. git tag ${targetTag}`);
   console.log(`  5. git push origin ${branch}`);
   console.log(`  6. git push origin ${targetTag}`);
+  console.log('\n  ----- 更新说明预览 -----');
+  console.log(notes.markdown.split('\n').map((l) => `  | ${l}`).join('\n'));
   process.exit(0);
 }
 
@@ -156,14 +174,19 @@ if (dryRun) {
 const updated = { ...pkg, version: targetVersion };
 writeFileSync(PKG_PATH, `${JSON.stringify(updated, null, 2)}\n`, 'utf8');
 log('2/6', `${PKG_REL} version → ${targetVersion}`);
+log('2/6', `${RELEASE_NOTES_REL} 已更新（${notes.count} 条有效提交，自 ${notes.prevTag ?? '—'}）`);
 
-// 2. commit（仅这一个文件；版本号改动已在 HEAD 时跳过）
+// 2. commit（版本号 + 更新说明；版本号改动已在 HEAD 时更新说明单独提交）
 if (needCommit) {
-  git(['add', '--', PKG_REL]);
+  git(['add', '--', PKG_REL, RELEASE_NOTES_REL]);
   git(['commit', '-m', `build: bump forge-desktop version to ${targetVersion}`]);
-  log('3/6', `已提交 bump commit（仅 ${PKG_REL}）`);
+  log('3/6', `已提交 bump commit（${PKG_REL} + ${RELEASE_NOTES_REL}）`);
+} else if (notesChangedVsHead()) {
+  git(['add', '--', RELEASE_NOTES_REL]);
+  git(['commit', '-m', `docs: update release notes for v${targetVersion}`]);
+  log('3/6', '版本号改动已在 HEAD → 单独提交 release-notes.md');
 } else {
-  log('3/6', '版本号改动已在 HEAD，跳过 commit');
+  log('3/6', '版本号改动已在 HEAD，release-notes.md 与 HEAD 一致，跳过 commit');
 }
 
 // 3. 打 tag

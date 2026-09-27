@@ -489,3 +489,109 @@ test('reorderProjects：全量重排透传 store，queryProjectList 顺序变更
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ===== CV-TRUST-01：执行链信任判定（isTrustedForExecution）=====
+// forge-desktop 装配 pi 工厂时以此方法为唯一信任口径：
+// pi 持久决策 ∨ trustOnce 内存放行。三种决策路径在此逐一验证。
+
+/** 带内存信任决策 fake 端口的服务（模拟 PiTrustStoreAdapter：决策持久化到临时目录文件） */
+function makeTrustedService(tmp: string): {
+  service: ProjectService;
+  store: ForgeStore;
+  getDecision: (cwd: string) => boolean | null;
+} {
+  const store = new ForgeStore(path.join(tmp, 'forge-store.json'));
+  const decisionsPath = path.join(tmp, 'decisions.json');
+  const readMap = (): Map<string, boolean> => {
+    try {
+      return new Map(
+        Object.entries(JSON.parse(fs.readFileSync(decisionsPath, 'utf8')) as Record<string, boolean>),
+      );
+    } catch {
+      return new Map();
+    }
+  };
+  const trust = {
+    hasTrustRequiringResources: (cwd: string): boolean => fs.existsSync(path.join(cwd, '.pi')),
+    getDecision: (cwd: string): boolean | null => readMap().get(cwd) ?? null,
+    setDecision: (cwd: string, decision: boolean): void => {
+      const map = readMap();
+      map.set(cwd, decision);
+      fs.writeFileSync(decisionsPath, JSON.stringify(Object.fromEntries(map)), 'utf8');
+    },
+  };
+  return {
+    service: new ProjectService(store, trust),
+    store,
+    getDecision: (cwd: string) => readMap().get(cwd) ?? null,
+  };
+}
+
+test('isTrustedForExecution：trustOnce 会话内放行且不写 pi store，重启（重建服务）后不放行', () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, getDecision } = makeTrustedService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-once');
+    makePiResource(dir);
+    assert.ok(service.addProject(dir).ok);
+    // 打开含资源未决项目 → 1005 询问（asking）
+    const opened = service.openProject(dir);
+    assert.ok(!opened.ok && opened.code === 1005);
+    // 未决：不放行
+    assert.equal(service.isTrustedForExecution(dir), false);
+    // trustOnce：本次放行（内存），pi store 仍为 null
+    assert.ok(service.setTrust(dir, 'trustOnce').ok);
+    assert.equal(service.isTrustedForExecution(dir), true);
+    assert.equal(getDecision(dir), null);
+    // 重建服务（模拟重启）：内存集合清空，不放行
+    const { service: rebuilt } = makeTrustedService(tmp);
+    assert.equal(rebuilt.isTrustedForExecution(dir), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('isTrustedForExecution：trust 持久写入 pi store，重建服务仍放行；reject 不放行', () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, getDecision } = makeTrustedService(tmp);
+    const dirTrust = makeProjectDir(tmp, 'proj-exec-trust');
+    const dirReject = makeProjectDir(tmp, 'proj-exec-reject');
+    makePiResource(dirTrust);
+    makePiResource(dirReject);
+    assert.ok(service.addProject(dirTrust).ok);
+    assert.ok(service.addProject(dirReject).ok);
+
+    // trust：放行 + pi store true（持久）
+    assert.ok(!service.openProject(dirTrust).ok);
+    assert.ok(service.setTrust(dirTrust, 'trust').ok);
+    assert.equal(service.isTrustedForExecution(dirTrust), true);
+    assert.equal(getDecision(dirTrust), true);
+
+    // reject：不放行 + pi store false
+    assert.ok(!service.openProject(dirReject).ok);
+    assert.ok(service.setTrust(dirReject, 'reject').ok);
+    assert.equal(service.isTrustedForExecution(dirReject), false);
+    assert.equal(getDecision(dirReject), false);
+
+    // 重建服务：trust 的持久决策仍放行
+    const { service: rebuilt } = makeTrustedService(tmp);
+    assert.equal(rebuilt.isTrustedForExecution(dirTrust), true);
+    assert.equal(rebuilt.isTrustedForExecution(dirReject), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('isTrustedForExecution：未注入信任端口的旧场景一律不放行（保守默认）', () => {
+  const tmp = makeTempDir();
+  try {
+    const { service } = makeService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-noport');
+    makePiResource(dir);
+    assert.ok(service.addProject(dir).ok);
+    assert.equal(service.isTrustedForExecution(dir), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

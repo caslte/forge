@@ -37,7 +37,9 @@ export { isWslStubBash };
  */
 export function probePiShell(agentDir: string, cwd: string = process.cwd()): ShellProbeResult {
   const settingsPath = path.join(agentDir, 'settings.json');
-  const settingsManager = SettingsManager.create(cwd, agentDir);
+  // CV-TRUST-01：探测只读写全局 shellPath（以全局根口径为准，见上注释），
+  // 项目级 settings.json 一律不加载——未信任项目的项目设置不得进入任何读取路径
+  const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   const shellPath = settingsManager.getShellPath();
   try {
     const { shell } = getShellConfig(shellPath);
@@ -62,7 +64,8 @@ async function persistShellPath(agentDir: string, cwd: string, bashPath: string)
   // 落盘前规范化：候选可能来自 where 输出 / 注册表 / 用户手填（正斜杠、重复分隔符都合法）。
   // 不归一化就会写出 `D:////work////Git////bin////bash.exe` 这种值——Windows 会把它当合法
   // 路径（existsSync 通过、复探也过），但 spawn 时行为不稳，是最难查的一类坏配置。
-  const settingsManager = SettingsManager.create(cwd, agentDir);
+  // CV-TRUST-01：写的是全局 settings.json 的 shellPath，项目设置不参与，恒按未信任加载
+  const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   settingsManager.setShellPath(path.normalize(bashPath));
   await settingsManager.flush();
 }

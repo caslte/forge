@@ -197,7 +197,14 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // streaming」（照常 notifyMainTurnStart）。非 streaming 状态统一清理防标记泄漏到下一轮。
   const retryRestorePending = new Set<string>();
   const piAgentSessionFactory =
-    deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir, modelsPath: piModelsPath });
+    deps.piAgentSessionFactory ??
+    createPiAgentSessionFactory({
+      agentDir,
+      modelsPath: piModelsPath,
+      // CV-TRUST-01：执行链信任门——pi 持久决策 ∨ trustOnce 会话内放行，
+      // 由 ProjectService.isTrustedForExecution 统一口径（会话创建与预热共用）
+      projectTrustedFor: (cwd) => projectService.isTrustedForExecution(cwd),
+    });
   // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件
   // （agentDir/sessions/<encodeURIComponent(cwd)>/forge-<id>.jsonl，见 piSessionPaths）
   const resolveSessionFile = (sessionId: string): string | undefined => {
@@ -594,6 +601,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       const agentId = readStringParam(params, 'agentId');
       if (sessionId === null || agentId === null) {
         return failEnvelope(1001, '参数错误：sessionId/agentId 必须为非空字符串');
+      }
+      // CV-TRUST-04：agentId 直拼 tasks/${agentId}.output，../ 或分隔符可跳出 tmp 目录。
+      // 白名单放行扩展实际生成的 ID 形态（UUID/nanoid/sub-agent-N），路径分隔符不存在
+      // 即无从遍历。
+      if (!/^[A-Za-z0-9._-]+$/.test(agentId)) {
+        return failEnvelope(1001, '参数错误：agentId 含非法字符');
       }
       const session = store.getSession(sessionId);
       if (session === undefined) {

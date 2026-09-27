@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   createAgentSession,
   DefaultResourceLoader,
+  ProjectTrustStore,
   SessionManager,
   SettingsManager,
   type AgentSession,
@@ -30,6 +31,13 @@ export interface CreatePiAgentSessionFactoryOptions {
   agentDir?: string;
   /** pi models.json 路径（生产由 createForgeCore 注入 <agentDir>/models.json），用于模型字符串解析 */
   modelsPath?: string;
+  /**
+   * 项目信任判定（CV-TRUST-01）：会话创建 / 预热加载项目资源（.pi 扩展、项目 settings、
+   * 项目包）前的信任门。生产由 createForgeCore 注入组合判定
+   * （pi 持久决策 ∨ trustOnce 会话内放行）；未注入时缺省按 pi 信任存储判定
+   * （get(cwd) === true，未决/拒绝/异常一律视为未信任——安全默认）。
+   */
+  projectTrustedFor?: (cwd: string) => boolean;
   /**
    * 子 agent 扩展事件总线（pi-subagents 在 pi.events 上的生命周期事件）。
    * 注入时：所有会话共享同一总线，扩展可观察到全部会话。
@@ -84,6 +92,22 @@ function createDefaultSubagentEventBus(): SubagentEventBus {
 
 /** stop RPC 回复默认超时：10 秒（通道无响应时 reject，上层走重试→5000） */
 export const DEFAULT_STOP_RPC_TIMEOUT_MS = 10_000;
+
+/**
+ * pi 信任存储口径的项目信任判定（CV-TRUST-01 的缺省实现）。
+ * 决策来源 = pi ProjectTrustStore（agentDir 下 trust.json）——与 TrustAskDialog /
+ * project/setTrust 写入的是同一份权威存储，UI 决策即会话/预热资源加载的门。
+ * null（从未询问）、false（拒绝）、存储异常一律按未信任处理：加载项目资源前必须显式信任。
+ * 子目录继承由 ProjectTrustStore 自带（父目录信任后子目录放行）。
+ */
+export function resolveProjectTrustedForPi(cwd: string, agentDir?: string): boolean {
+  try {
+    const store = new ProjectTrustStore(resolvePiAgentDir(agentDir));
+    return store.get(cwd) === true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 构建 cross-extension-rpc 终止通道：
@@ -195,7 +219,13 @@ export function createPiAgentSessionFactory(
     // CV-S08：同时经 extensionFactories 装载命令上报扩展（slash-commands:reported
     // 与 subagents:* 同构，session_start 时上报三类斜杠命令清单）。
     const subagentEventBus: SubagentEventBus = options.eventBus ?? createDefaultSubagentEventBus();
-    const settingsManager = SettingsManager.create(cwd, agentDir);
+    // CV-TRUST-01：信任门禁接入执行链——未信任项目不加载项目资源（.pi/extensions
+    // 经 jiti 编译执行，等价于主进程任意代码）。决策来自 UI 信任询问（见上注释）。
+    const projectTrustedFor =
+      options.projectTrustedFor ?? ((c: string) => resolveProjectTrustedForPi(c, agentDir));
+    const settingsManager = SettingsManager.create(cwd, agentDir, {
+      projectTrusted: projectTrustedFor(cwd),
+    });
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir,
@@ -294,14 +324,29 @@ export function createPiAgentSessionFactory(
 const warmedCwds = new Set<string>();
 const warmingCwds = new Map<string, Promise<void>>();
 
-export function warmPiResourceLoader(cwd: string, agentDir?: string): Promise<void> {
+export function warmPiResourceLoader(
+  cwd: string,
+  agentDir?: string,
+  projectTrustedFor?: (cwd: string) => boolean,
+): Promise<void> {
   if (warmedCwds.has(cwd)) return Promise.resolve();
+  // CV-TRUST-01：未信任项目不预热——预热经 jiti 编译执行项目扩展，必须在信任决策
+  // 之后。boot 门闩前的预热（main.ts 用 store 最近项目触发）发生在任何信任询问之前，
+  // 此门是「打开过恶意仓库后每次启动都在信任窗前执行其代码」的堵点。
+  // 不进 warmedCwds：用户随后点「信任」后仍可正常触发预热。
+  // 已知取舍：trustOnce（会话内放行）用户若注入组合判定可预热；缺省 pi store 口径下
+  // 「仅本次信任」的项目跳过预热，仅首条消息冷启动慢（功能不受影响）。
+  const trusted = projectTrustedFor?.(cwd) ?? resolveProjectTrustedForPi(cwd, agentDir);
+  if (!trusted) {
+    console.log(`[warmup] 项目未信任，跳过扩展预热（cwd=${cwd}）`);
+    return Promise.resolve();
+  }
   const inFlight = warmingCwds.get(cwd);
   if (inFlight !== undefined) return inFlight;
   const run = (async () => {
     try {
       const dir = resolvePiAgentDir(agentDir);
-      const settingsManager = SettingsManager.create(cwd, dir);
+      const settingsManager = SettingsManager.create(cwd, dir, { projectTrusted: true });
       const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: dir, settingsManager });
       await resourceLoader.reload();
       warmedCwds.add(cwd);

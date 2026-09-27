@@ -6,8 +6,6 @@
 
 **forge, as in "forging" — a coding workbench where every great product takes shape.**
 
-Built on the [pi](https://github.com/earendil-works/pi) coding-agent engine.
-
 **English** | [简体中文](README.zh-CN.md)
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)

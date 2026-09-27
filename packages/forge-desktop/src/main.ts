@@ -492,9 +492,17 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
     }
     return res.filePaths;
   });
-  // 系统文件管理器打开目录（PM 侧栏右键“打开项目所在目录”）；成功 true，失败 false
+  // 系统文件管理器打开目录（PM 侧栏右键“打开项目所在目录”）；成功 true，失败 false。
+  // CV-TRUST-02：这条通道语义上只服务「打开目录」。Windows 上 shell.openPath 指向
+  // .exe/.bat/.lnk 即「打开=运行」，渲染层任意字符串不得直传（与 XSS 面组合成 RCE 链）
+  // ——恒校验目标必须是真实存在的目录，文件/不存在的路径一律拒绝。
   ipcMain.handle(IPC_SHELL_OPEN_PATH, (_e, p: unknown) => {
     if (typeof p !== 'string' || p === '') return false;
+    try {
+      if (!fs.statSync(p).isDirectory()) return false;
+    } catch {
+      return false;
+    }
     return shell.openPath(p).then((err) => err === '');
   });
   // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
@@ -513,6 +521,9 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
   // 画布卡片另存：原生保存对话框选位置，取消返回 null。
   // defaultPath 只取 basename——渲染进程给的是模型起的标题，含 ../ 会把对话框
   // 初始位置带出预期目录，这里一次性掐掉（用户仍可在对话框里自行改文件名）。
+  // CV-TRUST-03：对话框返回的路径记入 allowlist，IPC_FILE_WRITE_TEXT 仅放行
+  // 与之相等的路径——写盘通道与「用户亲手选定」绑定，渲染进程伪造的其他路径不生效。
+  let lastDialogSavePath: string | null = null;
   ipcMain.handle(IPC_DIALOG_SAVE_FILE, async (_e, name: unknown) => {
     const safeName = typeof name === 'string' && name !== '' ? path.basename(name) : 'canvas.html';
     const options = {
@@ -524,17 +535,22 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
       ? await dialog.showSaveDialog(mainWindow, options)
       : await dialog.showSaveDialog(options);
     if (res.canceled || !res.filePath) {
+      lastDialogSavePath = null;
       return null;
     }
+    lastDialogSavePath = res.filePath;
     return res.filePath;
   });
   // 写文本：仅服务「用户刚在保存对话框里亲手选定的路径」这一场景，故限定 .html/.htm；
-  // 不校验目录归属——路径由用户在原生对话框里挑，越权写盘不是这条通道的威胁模型。
+  // CV-TRUST-03：路径必须与最近一次保存对话框的实际返回相等（见 IPC_DIALOG_SAVE_FILE
+  // 处注释）——「对话框挑的」这个威胁模型由 allowlist 强制成立，渲染进程伪造的其他
+  // 路径（如启动目录投持久化）在此被拒。
   ipcMain.handle(IPC_FILE_WRITE_TEXT, (_e, args: unknown) => {
     const p = (args as { path?: unknown } | null)?.path;
     const text = (args as { text?: unknown } | null)?.text;
     if (typeof p !== 'string' || p === '' || typeof text !== 'string') return false;
     if (!/\.html?$/i.test(p)) return false;
+    if (p !== lastDialogSavePath) return false;
     try {
       fs.writeFileSync(p, text, 'utf8');
       return true;
