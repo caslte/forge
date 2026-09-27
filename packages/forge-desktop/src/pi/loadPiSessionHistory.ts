@@ -32,7 +32,11 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
   let entries;
   try {
     const manager = SessionManager.open(sessionFile, undefined, undefined);
-    entries = manager.buildContextEntries();
+    // 全量分支（叶子→根），**不**用 buildContextEntries()：后者是「已应用压缩」的模型
+    // 上下文视图，压缩点之前的条目会被摘要替换掉，界面历史会跟着整段消失。
+    // 压缩只影响喂给模型的内容，用户看到的对话必须完整保留，压缩点用一条
+    // compacted 标记隔开（压缩前的内容与模型上下文无关，纯展示用）。
+    entries = manager.getBranch();
   } catch (err) {
     // P2-D：损坏的 session JSONL 给出稳定可读错误（前端提示重建/删除），不抛原始堆栈
     const detail = err instanceof Error ? err.message : String(err);
@@ -62,6 +66,18 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
   }
 
   for (const entry of entries) {
+    // 压缩边界：不是消息，但要在界面上留下痕迹——压掉的部分已不进模型上下文，
+    // 却仍能被用户看到（正是用户要的效果），标记就是那条「从这里开始只剩摘要」的分界。
+    if (entry.type === 'compaction') {
+      const boundary = entry as { id?: string; timestamp: string; summary?: string };
+      messages.push({
+        role: 'system',
+        content: boundary.summary ?? '',
+        ts: boundary.timestamp,
+        compacted: true,
+      } as unknown as ConversationMessage);
+      continue;
+    }
     if (entry.type !== 'message') continue;
     const raw = entry as { id?: string; timestamp: string; message?: PiMessage };
     const message = raw.message;

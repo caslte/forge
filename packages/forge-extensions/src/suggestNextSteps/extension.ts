@@ -25,21 +25,30 @@ export const SUGGEST_PROMPT_GUIDELINES: readonly string[] = [
   'Call suggest_next_steps by DEFAULT at the end of every substantive reply, as your final action — skip it ONLY when the task is fully concluded with nothing meaningful left to do. Do not be shy: if you would otherwise write "如果需要我接下来做…", that IS a trigger.',
   `Each step is one complete instruction phrased in the user's voice (e.g. "落设计文档并评审", not "I will write the doc"), MAX ${MAX_STEP_LENGTH} CHARACTERS, 1-3 steps, most valuable first.`,
   'NEVER enumerate next steps or follow-up options as prose/bullets in the reply body, and never restate the suggestions after the call — the chips already show them. Clarifying questions go to ask_user_question, not this tool.',
-  'Call it as the LAST action of the turn; after it, output no further text or tool calls.',
+  'Call it as the LAST action of the turn; after it, output no further text or tool calls. Call it ALONE (never batched with another tool) — batching cancels the turn-ending signal.',
+  'NEVER start any of these steps yourself: this call ends the turn and hands the choice to the user. Wait for them to pick one; the pick comes back as their next message.',
 ];
 
 /** 工具详情页描述。 */
-export const SUGGEST_TOOL_DESCRIPTION = `Offer the user 1-3 short clickable next-step suggestions. The UI renders them as buttons under your reply; clicking one sends that exact text as the user's next message.
+export const SUGGEST_TOOL_DESCRIPTION = `Offer the user 1-3 short clickable next-step suggestions. The UI renders them as buttons under your reply; clicking one sends that exact text as the user's next message. This call ENDS your turn.
 
 Usage notes:
 - Call by DEFAULT when wrapping up a substantive reply; skip only when the task is fully concluded — do not instead list next steps as prose in the reply body.
 - Write each step as a complete instruction in the user's voice, self-contained (no "继续上面的" references), MAX ${MAX_STEP_LENGTH} characters.
-- At most one call per reply, made as your final action; do not restate the suggestions in text afterward.`;
+- At most one call per reply, made as your final action; do not restate the suggestions in text afterward and do not begin any of the steps yourself — wait for the user to choose.`;
 
-/** 工具返回值形态（与 pi 的 `AgentToolResult` 结构兼容）。 */
+/**
+ * 工具返回值形态（与 pi 的 `AgentToolResult` 结构兼容）。
+ *
+ * `terminate` 是 pi 的轮次收束信号（AC-SG-05）：同一批次**全部**结果都为 true 时，
+ * pi 跳过工具批次后的自动补跑 LLM 调用，本轮到此结束。缺了它，模型会在补跑里
+ * 拿着刚列出的建议自己开工第 1 条（用户观感：AI 不等人，闷头往下钻）。
+ */
 export interface SuggestToolResult {
   content: Array<{ type: 'text'; text: string }>;
   details: { steps: string[]; error?: string };
+  /** 仅成功路径置 true；拒参时保持缺省，让模型有机会改参重试 */
+  terminate?: boolean;
 }
 
 /** 二层校验结果。 */
@@ -75,6 +84,8 @@ export function suggestNextSteps(params: SuggestParams): SuggestToolResult {
   return {
     content: [{ type: 'text', text: 'Next-step suggestions displayed to the user.' }],
     details: { steps: validation.steps },
+    // 展示成功即收束本轮：建议之后不该再有模型的自发动作（改动只会由用户点选触发）
+    terminate: true,
   };
 }
 

@@ -30,7 +30,6 @@ export const zhApp = {
   'app.bootPhaseLoadEngine': '正在加载 AI 引擎',
   'app.bootPhaseSessionEngine': '正在准备会话引擎',
   'app.bootPhaseAlmostReady': '马上就好，可能还需几秒',
-  'app.bootLoading': '加载中',
 } as const;
 
 export const enApp: Record<string, string> = {
@@ -65,5 +64,4 @@ export const enApp: Record<string, string> = {
   'app.bootPhaseLoadEngine': 'Loading the AI engine',
   'app.bootPhaseSessionEngine': 'Preparing the session engine',
   'app.bootPhaseAlmostReady': 'Almost there, may take a few more seconds',
-  'app.bootLoading': 'Loading',
 };

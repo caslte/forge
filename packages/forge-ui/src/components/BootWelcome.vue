@@ -7,7 +7,8 @@
  * forge:invoke 请求（invoke handler 尚未注册）。样式与 App 底色 #f6f8fa 对齐。
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import logoMain from '../assets/logo-main.png';
+import logoWordmarkDark from '../assets/logo-wordmark-on-dark.png';
+import logoWordmarkLight from '../assets/logo-wordmark-on-light.png';
 import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
@@ -40,11 +41,10 @@ onUnmounted(() => {
 <template>
   <div class="boot-welcome">
     <div class="boot-logo" aria-hidden="true">
-      <img class="boot-logo-img" :src="logoMain" alt="" draggable="false" />
+      <img class="boot-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" draggable="false" />
+      <img class="boot-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" draggable="false" />
     </div>
-    <div class="boot-name">Forge</div>
-    <div class="boot-spinner" role="status" :aria-label="t('app.bootLoading')" />
-    <div class="boot-phase">{{ PHASES[phaseIndex] }}…</div>
+    <div class="boot-phase" role="status">{{ PHASES[phaseIndex] }}…</div>
   </div>
 </template>
 
@@ -63,36 +63,21 @@ onUnmounted(() => {
 .boot-logo {
   animation: boot-fade-in 0.4s ease-out;
 }
-.boot-logo-img {
-  display: block;
-  width: 64px;
-  height: 64px;
-  object-fit: contain;
+/* 启动页仅字标（纯黑白，深浅主题各一版），不再放图形 LOGO */
+.boot-wordmark {
+  display: none;
+  width: 300px;
+  height: auto;
   user-select: none;
 }
-.boot-name {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--foreground);
-  letter-spacing: 0.5px;
-}
-.boot-spinner {
-  width: 22px;
-  height: 22px;
-  border: 3px solid var(--border);
-  border-top-color: #2563eb;
-  border-radius: 50%;
-  animation: boot-spin 0.9s linear infinite;
+:root:not([data-theme='light']) .boot-wordmark.wm-dark,
+:root[data-theme='light'] .boot-wordmark.wm-light {
+  display: block;
 }
 .boot-phase {
   font-size: 13px;
   color: var(--muted-foreground);
   min-height: 1.4em; /* 文案轮换时高度稳定，不跳动 */
-}
-@keyframes boot-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 @keyframes boot-fade-in {
   from {

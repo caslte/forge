@@ -9,7 +9,7 @@ directories:
   output: release
   # 构建资源目录（默认值即 build，显式声明便于定位）：
   # 放 build/icon.png（≥1024×1024）后，electron-builder 自动派生 .ico / .icns / Linux 图标集。
-  # 当前仓库没有图标 → 三平台都会退回 Electron 默认图标（可构建，但不适合对外分发）。
+  # 当前图标为 2026-09 版品牌 LOGO（1024×1024 RGBA 圆角瓷片）。
   buildResources: build
 files:
   - dist/**/*

@@ -2,7 +2,8 @@
 import { ref, onMounted } from 'vue';
 import type { ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
-import logoMain from '../assets/logo-main.png';
+import logoWordmarkDark from '../assets/logo-wordmark-on-dark.png';
+import logoWordmarkLight from '../assets/logo-wordmark-on-light.png';
 
 /**
  * 落地 hero（v3.77）：零项目时的启动首屏，替换旧「选择项目」卡片。
@@ -59,7 +60,8 @@ onMounted(() => {
 
 <template>
   <div class="landing-hero">
-    <img class="landing-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
+    <img class="landing-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" aria-hidden="true" draggable="false" />
+    <img class="landing-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" aria-hidden="true" draggable="false" />
     <div class="landing-input">
       <InstructionInput
         ref="inputRef"
@@ -92,15 +94,18 @@ onMounted(() => {
   container-type: inline-size;
 }
 
-/* 巨型主视觉 LOGO（与 ConversationView .conv-hero-logo 同参数）；
-   老浏览器兜底固定 180px */
-.landing-logo {
-  display: block;
-  width: 180px;
-  width: min(28cqw, 220px);
+/* FORGE 字标主视觉（与会话内 conv-hero-wordmark 同参数），纯黑白不变灰 */
+.landing-wordmark {
+  display: none;
+  width: min(40cqw, 320px);
   height: auto;
   pointer-events: none;
   user-select: none;
+}
+
+:root:not([data-theme='light']) .landing-wordmark.wm-dark,
+:root[data-theme='light'] .landing-wordmark.wm-light {
+  display: block;
 }
 
 /* 同 hero-mode 的输入框宽度：min(640px, 容器宽) */

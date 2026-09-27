@@ -51,23 +51,19 @@
         height: 100%;
       }
 
-      /* 欢迎页配色（v3.78.5）——splash 侧镜像 BootWelcome.vue 消费的那四个设计令牌
-         （--background / --foreground / --muted-foreground / --border），写法是
+      /* 欢迎页配色（v3.78.5）——splash 侧镜像 BootWelcome.vue 消费的设计令牌
+         （--background / --muted-foreground），写法是
          「令牌 + 字面兜底」：splash 上屏时 design-tokens.css 还没注入，var(--background)
          解析不出来，兜底值顶上；模块链跑完令牌生效后，解析结果与兜底值**逐位相同**，
          故 CSS 到位前后不存在任何色变，也与 BootWelcome 由构造一致（不会漂移）。
          暗色档必须显式列出：兜底值分主题，而令牌要等模块链才有。 */
       :root {
         --welcome-bg: var(--background, oklch(1 0 0));
-        --welcome-fg: var(--foreground, #333333);
         --welcome-muted: var(--muted-foreground, oklch(0.552 0.016 285.938));
-        --welcome-ring: var(--border, oklch(0.92 0.004 286.32));
       }
       :root[data-theme='dark'] {
         --welcome-bg: var(--background, oklch(0.26 0.006 286.2));
-        --welcome-fg: var(--foreground, oklch(0.88 0.002 286.3));
         --welcome-muted: var(--muted-foreground, oklch(0.7 0.008 286.3));
-        --welcome-ring: var(--border, oklch(0.32 0.005 286.3));
       }
 
       #app-boot-splash {
@@ -81,44 +77,28 @@
         user-select: none;
         font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
       }
-      #app-boot-splash .splash-logo {
-        width: 64px;
-        height: 64px;
-        object-fit: contain;
+      #app-boot-splash .splash-word {
+        display: none;
+        width: 300px;
+        height: auto;
         user-select: none;
       }
-      #app-boot-splash .splash-name {
-        font-size: 22px;
-        font-weight: 700;
-        color: var(--welcome-fg);
-        letter-spacing: 0.5px;
-      }
-      #app-boot-splash .splash-spinner {
-        width: 22px;
-        height: 22px;
-        border: 3px solid var(--welcome-ring);
-        border-top-color: #2563eb;
-        border-radius: 50%;
-        animation: splash-spin 0.9s linear infinite;
+      :root:not([data-theme='light']) #app-boot-splash .splash-word.wm-dark,
+      :root[data-theme='light'] #app-boot-splash .splash-word.wm-light {
+        display: block;
       }
       #app-boot-splash .splash-phase {
         font-size: 13px;
         color: var(--welcome-muted);
         min-height: 1.4em;
       }
-      @keyframes splash-spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
     </style>
   </head>
   <body>
     <div id="app">
       <div id="app-boot-splash" role="status" aria-label="应用正在启动">
-        <img class="splash-logo" src="/logo-main.png" alt="" aria-hidden="true" draggable="false" />
-        <div class="splash-name">Forge</div>
-        <div class="splash-spinner"></div>
+        <img class="splash-word wm-dark" src="/logo-wordmark-on-dark.png" alt="FORGE" aria-hidden="true" draggable="false" />
+        <img class="splash-word wm-light" src="/logo-wordmark-on-light.png" alt="FORGE" aria-hidden="true" draggable="false" />
         <div class="splash-phase">正在准备运行环境…</div>
       </div>
     </div>

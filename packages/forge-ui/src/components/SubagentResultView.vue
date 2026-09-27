@@ -242,12 +242,6 @@ onUnmounted(() => {
         <div class="srv-error-msg">{{ subagent.error ?? t('panels.subagent.noError') }}</div>
       </div>
 
-      <!-- 终态：token 用量 -->
-      <div v-if="!isActive && subagent.usage" class="subagent-result-usage">
-        <span>{{ t('panels.subagent.usageInput', { tokens: subagent.usage.inputTokens.toLocaleString() }) }}</span>
-        <span class="srv-usage-sep">·</span>
-        <span>{{ t('panels.subagent.usageOutput', { tokens: subagent.usage.outputTokens.toLocaleString() }) }}</span>
-      </div>
     </div>
   </div>
 </template>
@@ -436,23 +430,6 @@ onUnmounted(() => {
   color: var(--muted-foreground);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.subagent-result-usage {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  align-self: flex-start;
-  padding: 4px 10px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
-.srv-usage-sep {
-  color: var(--border);
 }
 
 /* ===== 实时消息流（输出文件 JSONL → 正文 + 工具摘要行，无边框直接排版）===== */

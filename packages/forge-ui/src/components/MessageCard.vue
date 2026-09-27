@@ -50,6 +50,57 @@ async function copy(): Promise<void> {
   }
 }
 
+/** 收尾帧高度过渡时长（与 ConversationView 的思考行收拢保持一致，同帧启动同步完成） */
+const SETTLE_MS = 160;
+
+/**
+ * footer 挂载过渡（v3.85.0 底部跳动修复）：流式结束时 footer 随 !streaming 一帧挂载
+ * （实测高度 17px + margin-top 8px），与思考行摘除叠成收尾帧的一次性跳动。
+ * 从 0 高/0 透明/0 外边距展开到自然尺寸，结束后清掉内联样式交还 CSS（含基础 opacity 0.6）。
+ */
+function growFooter(el: Element, done: () => void): void {
+  const node = el as HTMLElement;
+  const cs = getComputedStyle(node);
+  const h = node.offsetHeight;
+  const mt = parseFloat(cs.marginTop) || 0;
+  const op = cs.opacity;
+  const reduce =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce || h === 0) {
+    done();
+    return;
+  }
+  const style = node.style;
+  style.overflow = 'hidden';
+  style.height = '0px';
+  style.opacity = '0';
+  style.marginTop = '0px';
+  void node.offsetHeight; // 强制回流，锁定起始状态
+  style.transition = `height ${SETTLE_MS}ms ease, opacity ${SETTLE_MS}ms ease, margin-top ${SETTLE_MS}ms ease`;
+  style.height = `${h}px`;
+  style.opacity = op;
+  style.marginTop = `${mt}px`;
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    node.removeEventListener('transitionend', onEnd);
+    style.transition = '';
+    style.height = '';
+    style.overflow = '';
+    style.marginTop = '';
+    style.opacity = '';
+    done();
+  };
+  // transitionend 会冒泡且每个过渡属性各触发一次：只认本元素事件，finished 去重
+  const onEnd = (e: TransitionEvent): void => {
+    if (e.target === node) finish();
+  };
+  node.addEventListener('transitionend', onEnd);
+  setTimeout(finish, SETTLE_MS + 80); // 兜底：transitionend 未触发时也要交还样式
+}
+
 /**
  * 附件解析（仅用户消息）：尾部路径行 + markdown 链接图片 → 图片出缩略图（不显示路径），
  * 非图片出文件占位 chip。pi 会话消息带独立 image part（msg.images）时，正文里的
@@ -452,19 +503,24 @@ const riseIn = computed(() => {
         </div>
       </div>
     </Teleport>
-    <div v-if="!streaming && showFooter !== false" class="msg-footer">
-      <button class="msg-copy" :title="copied ? t('chat.copied') : t('chat.copy')" @click="copy">
-        <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12" />
-        </svg>
-        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2" />
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-        </svg>
-        <span>{{ copied ? t('chat.copied') : '' }}</span>
-      </button>
-      <span class="msg-time">{{ timeLabel }}</span>
-    </div>
+    <!-- 收尾帧 footer 挂载过渡（v3.85.0 底部跳动修复）：随 !streaming 一帧挂载
+         （实测 17px 高 + 8px margin-top），与思考行摘除叠成收尾帧的一次性跳动；
+         JS 钩子把高度/透明度/外边距摊到 160ms，与思考行收拢同帧启动、同步完成 -->
+    <Transition :css="false" @enter="growFooter">
+      <div v-if="!streaming && showFooter !== false" class="msg-footer">
+        <button class="msg-copy" :title="copied ? t('chat.copied') : t('chat.copy')" @click="copy">
+          <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          <span>{{ copied ? t('chat.copied') : '' }}</span>
+        </button>
+        <span class="msg-time">{{ timeLabel }}</span>
+      </div>
+    </Transition>
   </div>
 </template>
 

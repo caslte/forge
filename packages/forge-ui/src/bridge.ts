@@ -108,10 +108,15 @@ export interface BootState {
  * shell 健康探测结果（与 @forge/desktop ipc-contract.ts ShellProbeResult 同构，本地声明惯例）。
  * 背景：pi 的 bash 三级兜底在 Windows 上可能命中 System32 的 WSL 占位（每条命令只回
  * 一句乱码的「未安装 Linux 子系统」），ok=false 时对话区渲染常驻横幅指引修复。
+ *
+ * autoFixed：主进程探测失败时会自动定位 Git Bash 写进 shellPath 再复探，成功即回
+ * ok=true + autoFixed=true——配置刚落盘，已存在的会话仍持旧解析结果，UI 据此提示重启
+ * （见 @forge/desktop pi/shellProbe.ts ensurePiShellPath）。
  */
 export type ShellProbeResult = {
   ok: true;
   shell: string;
+  autoFixed?: boolean;
 } | {
   ok: false;
   reason: 'wsl-stub' | 'no-shell';

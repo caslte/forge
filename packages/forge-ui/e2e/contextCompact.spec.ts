@@ -7,9 +7,13 @@
  * - 流式保护：streaming 期间压缩按钮禁用，避免静默截断正在生成的回答；
  * - 自动压缩：mock 发射 conversation.compacting/compacted → 输入锁定/解锁、
  *   重拉历史并显示持久横幅（自动压缩没有 RPC 入口，事件是 UI 感知它的唯一通道）；
- * - 压缩后百分比：压缩完成即显示压缩后的上下文占用百分比（不再"? tokens"）。
+ * - 压缩后百分比：压缩完成即显示压缩后的上下文占用百分比（不再"? tokens"）；
+ * - 压缩后历史不丢（2026-09-26 反馈）：压缩点**之前**的对话仍留在消息流里，
+ *   压缩点位置出现「上下文已压缩」分隔条 + 可展开摘要（CV-S07 口径修正）。
  *
  * 自动化等级：mock-backend（window.__forgeMock 种子 + emit 受控事件）。
+ * > 待办：本机未安装 Playwright 浏览器（无 ~/.cache/ms-playwright），本文件新增的
+ * > 「压缩后历史不丢」用例未经浏览器实跑，启动 Electron/浏览器后需补跑一次。
  */
 import { test, expect, type Page } from '@playwright/test';
 import { attachHealthGuards, waitForMock, seedSessions } from './helpers/index';
@@ -144,6 +148,53 @@ test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重�
   await expect(page.locator('.compose-input')).toBeEnabled();
   const calls = await page.evaluate(() => (window as unknown as { __qh: number }).__qh);
   expect(calls, '自动压缩后应重新拉取会话历史').toBeGreaterThan(0);
+  guard.assertHealthy();
+});
+
+// CV-S07 口径修正：压缩只替换喂给模型的上下文，用户看到的 transcript 必须完整，
+// 历史加载走 pi getBranch()（而非 buildContextEntries()），压缩点之上保留原文。
+test('压缩后历史不丢：压缩点之前消息仍在流里 +「上下文已压缩」分隔条 + 摘要可展开', async ({ page }) => {
+  const guard = attachHealthGuards(page);
+  await boot(page);
+
+  // 含 compression 标记的历史：压缩前 2 条 / 标记 / 压缩后 1 条
+  await page.evaluate((sid) => {
+    window.__forgeMock!.seed('conversation/queryHistory', () => ({
+      code: 0,
+      message: 'ok',
+      data: {
+        messages: [
+          { role: 'user', content: '压缩前提问', ts: '2026-09-26T10:00:00Z' },
+          { role: 'assistant', content: '压缩前回答', ts: '2026-09-26T10:00:01Z' },
+          { role: 'system', content: '自动压缩摘要全文（第二行验证展开）', ts: '2026-09-26T10:00:02Z', compacted: true },
+          { role: 'user', content: '压缩后提问', ts: '2026-09-26T10:00:03Z' },
+        ],
+      },
+    }));
+    // 真实链路：自动压缩完成 → UI 重拉历史
+    window.__forgeMock!.emit(sid, 'conversation.compacted', {
+      reason: 'auto',
+      tokensBefore: 88000,
+      tokensAfter: 9000,
+      summary: '自动压缩摘要全文（第二行验证展开）',
+    });
+  }, SESSION_ID);
+
+  // 压缩点之前的对话没有随上下文一起被抹掉
+  await expect(page.locator('.conv-messages')).toContainText('压缩前提问');
+  await expect(page.locator('.conv-messages')).toContainText('压缩前回答');
+
+  // 分隔条恰好 1 条，且排在压缩前后之间（分隔条之上的条目数 ≥2）
+  await expect(page.locator('.compact-divider')).toHaveCount(1);
+  await expect(page.locator('.compact-divider .cd-text')).toContainText('上下文已压缩');
+
+  // 摘要默认折叠（两行钳制），点击展开
+  const summary = page.locator('.cd-summary');
+  await expect(summary).toHaveCount(1);
+  await expect(summary).toContainText('自动压缩摘要全文');
+  await expect(summary).not.toHaveClass(/open/);
+  await summary.click();
+  await expect(summary).toHaveClass(/open/);
   guard.assertHealthy();
 });
 

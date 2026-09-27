@@ -46,6 +46,14 @@ export type DisplayItem =
       key: string;
       kind: 'files-summary';
       summary: ChangedFileSummary;
+    }
+  | {
+      key: string;
+      /** CV-S07 上下文压缩边界：loader 由 pi compaction 条目派生，非真实消息 */
+      kind: 'compaction-divider';
+      /** 压缩摘要（可能为空串） */
+      summary: string;
+      ts: string;
     };
 
 const props = defineProps<{
@@ -65,6 +73,9 @@ const showDiffEff = computed(() => props.showDiff !== false);
 const emit = defineEmits<{
   (e: 'toggle-group', key: string, collapsed: boolean): void;
 }>();
+
+/** 压缩摘要展开态（分隔条内默认收起为两行预览，点击看全文） */
+const summaryOpen = ref(false);
 
 /** 组内任一工具仍为 started → 组在跑，头部切「正在执行中 · Xs」并本地读秒 */
 const groupRunning = computed(() => {
@@ -182,6 +193,25 @@ function isToolMessage(m: ConversationMessage): boolean {
       :summary="item.summary"
       :project-path="projectPath"
     />
+  </template>
+
+  <template v-else-if="item.kind === 'compaction-divider'">
+    <div class="compact-divider">
+      <span class="cd-line"></span>
+      <span class="cd-text">{{ t('chat.contextCompacted') }}</span>
+      <span class="cd-line"></span>
+    </div>
+    <button
+      v-if="item.summary"
+      type="button"
+      class="cd-summary"
+      :class="{ open: summaryOpen }"
+      :title="summaryOpen ? t('chat.compactionSummaryCollapse') : t('chat.compactionSummaryExpand')"
+      @click="summaryOpen = !summaryOpen"
+    >
+      <svg class="cd-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18" /></svg>
+      <span class="cd-summary-text">{{ item.summary }}</span>
+    </button>
   </template>
 
   <div v-else class="tool-group" :class="{ open: !item.collapsed }">
@@ -336,5 +366,67 @@ function isToolMessage(m: ConversationMessage): boolean {
 .tg-head-enter-from,
 .tg-head-leave-to {
   opacity: 0;
+}
+/* CV-S07 上下文压缩分界条：与 .conv-switch-banner 同款 line+文案形态，
+   压缩前的对话照常显示在它上方（只有模型上下文被摘要替换） */
+.compact-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 2px;
+  color: var(--muted-foreground);
+  user-select: none;
+}
+.cd-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+}
+.cd-text {
+  flex-shrink: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* 摘要：折角箭头与工具组同规格，默认两行钳制，点击展开全文 */
+.cd-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.cd-summary:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+}
+.cd-chev {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  margin-top: 3px;
+  transition: transform var(--transition-base);
+}
+.cd-summary.open .cd-chev {
+  transform: rotate(90deg);
+}
+.cd-summary-text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.cd-summary.open .cd-summary-text {
+  -webkit-line-clamp: unset;
 }
 </style>

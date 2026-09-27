@@ -63,6 +63,39 @@
       "createdAt": "2026-09-10"
     },
     {
+      "id": "kb-2026-09-26-git-bash-autofix",
+      "title": "找不到 bash 时要自动识别 Git Bash 写配置，而不是让用户去改 settings.json",
+      "tags": [
+        "shell",
+        "bash",
+        "git",
+        "WSL 占位",
+        "shellPath",
+        "自动配置",
+        "启动链",
+        "环境探测"
+      ],
+      "source": "v3.83.0 shell 健康横幅自愈（用户反馈：自动识别 Git Bash 填进配置）",
+      "file": "git-bash-autofix.md",
+      "createdAt": "2026-09-26"
+    },
+    {
+      "id": "kb-2026-09-26-stream-end-bottom-jump",
+      "title": "「AI 输出完底部跳一下」实测：钉底是帧内同步的，位移来自收尾帧底部区块增删",
+      "tags": [
+        "vue",
+        "滚动钉底",
+        "ResizeObserver",
+        "布局跳动",
+        "流式输出",
+        "e2e 采样",
+        "误判"
+      ],
+      "source": "2026-09-26 用户反馈「AI 输出完了之后对话框底部会跳一下」排查（修复 1/3 实测无效已回退）",
+      "file": "stream-end-bottom-jump.md",
+      "createdAt": "2026-09-26"
+    },
+    {
       "id": "kb-2026-09-09-ipc-events-whitelist",
       "title": "新增 forge-core 事件必须同步 ipc-contract FORGE_EVENTS 转发白名单",
       "tags": [

@@ -94,6 +94,8 @@ export interface ConversationMessage {
   status?: 'started' | 'completed' | 'error';
   /** 工具入参（edit 类含 file_path/old_string/new_string） */
   input?: Record<string, unknown>;
+  /** 上下文压缩边界标记（role=system 时）：true = 这是一次压缩留下的分界，非真实消息 */
+  compacted?: boolean;
 }
 
 export interface ToolEvent {

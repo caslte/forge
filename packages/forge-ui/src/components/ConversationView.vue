@@ -17,7 +17,8 @@ import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
-import logoMain from '../assets/logo-main.png';
+import logoWordmarkDark from '../assets/logo-wordmark-on-dark.png';
+import logoWordmarkLight from '../assets/logo-wordmark-on-light.png';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 import { formatElapsed } from '../utils/formatElapsed.ts';
 import { useI18n } from '../i18n/index.ts';
@@ -121,10 +122,18 @@ const compactBanner = computed(() => getCompactBanner(props.sessionId));
 
 /**
  * shell 健康横幅（全局单例，非按会话隔离——shell 是机器属性）。
- * 主进程按 pi 同口径探测 bash；命中 System32 WSL 占位或三级落空时 broken 非空，
- * 底部常驻提示 + 一键打开配置文件所在目录（2026-09 dev 切根后 WSL 拦截事故）。
+ * 主进程按 pi 同口径探测 bash，且失败时会自动定位 Git Bash 写进 settings.json 再复探：
+ * - broken 非空＝本机确实没有可用 bash（或写配置失败）→ 常驻提示 + 重新检测 + 打开配置目录；
+ * - autoFixed 非空＝本次是自动写配置后恢复的，提示重启（已存在会话仍持旧解析结果）。
+ * 2026-09 dev 切根后 WSL 拦截事故的收尾：用户不再需要自己编辑 settings.json。
  */
-const { broken: shellBroken, ensureProbed: ensureShellProbed } = useShellHealth();
+const {
+  broken: shellBroken,
+  autoFixed: shellAutoFixed,
+  busy: shellProbing,
+  ensureProbed: ensureShellProbed,
+  reprobe: reprobeShell,
+} = useShellHealth();
 ensureShellProbed();
 /** 打开 settings.json 所在目录做修复（路径去掉末段文件名，win/posix 通用） */
 function openShellSettingsDir(): void {
@@ -178,19 +187,26 @@ function cancelSettlePin(): void {
   settlePinUntil = 0;
 }
 
-/** 消息区/内容尺寸变化：刷新上下沿渐隐 + 稳定期内补钉底 */
+/**
+ * 消息区/内容尺寸变化：先钉底再刷新上下沿渐隐。
+ * 流式 markdown 按 150ms 节流重渲染，而滚底挂在每个 delta 上（useSessionConversation.scheduleScroll），
+ * 两者不同帧：增长帧内容已变高、视口未跟上 → 底沿渐隐亮起，下个 delta 才跳回 → 底部周期性闪烁。
+ * ResizeObserver 回调在本帧绘制前，跟随态在此同帧钉底可关掉错位窗口；
+ * 渐隐改为钉底后再算，增长帧不会闪出遮罩。
+ */
 function onConvResize(): void {
-  updateConvFade();
-  if (Date.now() >= settlePinUntil) return;
-  if (!autoFollow.value) {
+  const settling = Date.now() < settlePinUntil;
+  if (settling && !autoFollow.value) {
     // 稳定期内的回看态只可能是布局钳位被 onMessagesScroll 误判成「用户上滚」而 detach
     // （detach 无定位目标）；真·手动滚动已由下面的输入事件结束稳定期，
     // 而点了时间轴定位（有 targetIndex）是明确意图，不覆盖。
-    if (reviewTargetIndex.value !== null) return;
-    reviewCtrl.exit();
-    syncReview();
+    if (reviewTargetIndex.value === null) {
+      reviewCtrl.exit();
+      syncReview();
+    }
   }
-  scrollToBottom();
+  if (settling || autoFollow.value) scrollToBottom();
+  updateConvFade();
 }
 
 // 消息区滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩（同会话树口径）
@@ -220,6 +236,72 @@ async function onCancelTurn(): Promise<void> {
 watch(isStreaming, (streaming) => {
   if (streaming) stoppedNotice.value = false;
 });
+
+/** 收尾帧高度过渡时长：把一次性布局跳变摊成可感知的平滑收拢（与 MessageCard footer 展开同步） */
+const SETTLE_MS = 160;
+
+/** 是否播放过渡：测试环境（无 matchMedia）与「减少动态效果」系统偏好下直接完成，不动画 */
+function canAnimate(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/**
+ * 思考指示行摘除过渡（v3.85.0 底部跳动修复）：流式结束该行随 v-if 卸载，
+ * 实测一帧内消失 ~55px（行高 39px + flex gap 16px），是收尾帧「跳一下」的主要来源。
+ * rAF 逐帧显式赋值驱动收拢。关键坑：该行有上下 padding 各 10px，
+ * box-sizing:border-box 下渲染高度不能低于 padding 之和（内容盒钳到 0 为下限），
+ * 只动 height 会卡死在 20px、残余在卸载帧一次性跳出（探针两次实测确认），
+ * 故 padding 必须与 height 同步收到 0。
+ * 父容器为 column flex + gap，元素卸载时上/下侧 gap 一并消失，
+ * 按有无相邻兄弟用负外边距等量抵消，保证动画结束后零残余。
+ */
+function collapseThinking(el: Element, done: () => void): void {
+  const node = el as HTMLElement;
+  const h = node.offsetHeight;
+  if (!canAnimate() || h === 0) {
+    done();
+    return;
+  }
+  const cs = getComputedStyle(node);
+  const pt = parseFloat(cs.paddingTop) || 0;
+  const pb = parseFloat(cs.paddingBottom) || 0;
+  const parent = node.parentElement;
+  const gap = parent ? parseFloat(getComputedStyle(parent).rowGap) || 0 : 0;
+  const topGap = node.previousElementSibling ? gap : 0;
+  const bottomGap = node.nextElementSibling ? gap : 0;
+  const style = node.style;
+  style.boxSizing = 'border-box';
+  style.overflow = 'hidden';
+  style.minHeight = '0px'; // 防 flex min-height:auto 钳制（overflow:hidden 理论上已归零，双保险）
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    done();
+  };
+  const start = performance.now();
+  const tick = (now: number): void => {
+    if (finished) return;
+    const p = Math.min((now - start) / SETTLE_MS, 1);
+    const e = 1 - Math.pow(1 - p, 3); // easeOutCubic：先快后慢，收尾更柔
+    style.height = `${(h * (1 - e)).toFixed(2)}px`;
+    style.paddingTop = `${(pt * (1 - e)).toFixed(2)}px`;
+    style.paddingBottom = `${(pb * (1 - e)).toFixed(2)}px`;
+    style.opacity = (1 - e).toFixed(3);
+    if (topGap > 0) style.marginTop = `-${(topGap * e).toFixed(2)}px`;
+    if (bottomGap > 0) style.marginBottom = `-${(bottomGap * e).toFixed(2)}px`;
+    if (p < 1) {
+      requestAnimationFrame(tick);
+      return;
+    }
+    finish(); // 末帧已写到 0 高/0 透明/-gap 边距，done 后由 Vue 卸载（此刻尺寸为零，无残余跳变）
+  };
+  requestAnimationFrame(tick);
+  setTimeout(finish, SETTLE_MS + 160); // 兜底：rAF 停摆（如切走窗口）时也要按时卸载
+}
 
 async function onSend(text: string): Promise<void> {
   if (props.sessionId === null) {
@@ -781,11 +863,15 @@ onUnmounted(() => {
               :show-diff="showDiff"
               @toggle-group="toggleGroup"
             />
-            <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
-            <div v-if="isStreaming" class="conv-thinking">
-              <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
-              <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
-            </div>
+            <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光。
+                 收尾帧随 v-if 卸载会连同所在 flex gap 一帧消失 ~55px（实测主要跳动来源），
+                 用 JS 钩子把高度/透明度渐变收拢、负外边距抵消将消失的 gap（v3.85.0） -->
+            <Transition :css="false" @leave="collapseThinking">
+              <div v-if="isStreaming" class="conv-thinking">
+                <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
+                <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
+              </div>
+            </Transition>
             <!-- 下一步建议芯片：锚定消息流末尾、仅当前轮（契约 I1 v2，key=该建议消息，换轮复位已点态） -->
             <SuggestionChips
               v-if="turnSuggestion"
@@ -822,13 +908,27 @@ onUnmounted(() => {
             <span class="csb-line"></span>
           </div>
 
-          <!-- shell 健康横幅（常驻）：bash 解析到 WSL 占位/未找到时说明原因并给修复入口 -->
+          <!-- shell 健康横幅（常驻）：自动定位 Git Bash 仍失败时说明原因并给修复入口 -->
           <div v-if="shellBroken" class="shell-banner">
             <span class="sb-line"></span>
             <div class="sb-body">
               <span class="sb-text">{{ shellBroken.reason === 'wsl-stub' ? t('chat.shellWslStub') : t('chat.shellNoShell') }}</span>
               <span class="sb-hint">{{ t('chat.shellFixHint', { path: shellBroken.settingsPath }) }}</span>
-              <button type="button" class="sb-fix" @click="openShellSettingsDir">{{ t('chat.shellOpenFolder') }}</button>
+              <span class="sb-actions">
+                <button type="button" class="sb-fix" :disabled="shellProbing" @click="reprobeShell">
+                  {{ shellProbing ? t('chat.shellReprobing') : t('chat.shellReprobe') }}
+                </button>
+                <button type="button" class="sb-fix" @click="openShellSettingsDir">{{ t('chat.shellOpenFolder') }}</button>
+              </span>
+            </div>
+            <span class="sb-line"></span>
+          </div>
+
+          <!-- 自动修复成功（config 刚落盘）：已存在会话仍持旧 shell，提示重启后生效 -->
+          <div v-else-if="shellAutoFixed" class="shell-banner">
+            <span class="sb-line"></span>
+            <div class="sb-body">
+              <span class="sb-text sb-ok">{{ t('chat.shellAutoFixed', { path: shellAutoFixed.shell }) }}</span>
             </div>
             <span class="sb-line"></span>
           </div>
@@ -914,7 +1014,8 @@ onUnmounted(() => {
            正常发送首条消息时 loadingHistory 为 false，过渡保留 -->
       <Transition name="conv-hero" :css="!loadingHistory">
         <div v-if="isEmpty" ref="heroRef" class="conv-hero" :aria-label="t('chat.heroAriaLabel')">
-          <img class="conv-hero-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
+          <img class="conv-hero-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" aria-hidden="true" draggable="false" />
+          <img class="conv-hero-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" aria-hidden="true" draggable="false" />
         </div>
       </Transition>
       <InstructionInput
@@ -1174,15 +1275,20 @@ onUnmounted(() => {
   user-select: none;
 }
 
-/* 巨型主视觉 LOGO（锤子与铁砧切图）：跟随可视宽度缩放，
-   老浏览器兜底固定 180px */
-.conv-hero-logo {
-  display: block;
-  width: 180px;
-  width: min(28cqw, 220px);
+/* FORGE 字标（设计稿切图，深浅主题各一版，按 data-theme 切换）。
+   首屏不再放图形 LOGO，字标即主视觉，纯黑白不变灰 */
+.conv-hero-wordmark {
+  display: none;
+  width: min(40cqw, 320px);
   height: auto;
+  margin-bottom: 28px;
   pointer-events: none;
   user-select: none;
+}
+
+:root:not([data-theme='light']) .conv-hero-wordmark.wm-dark,
+:root[data-theme='light'] .conv-hero-wordmark.wm-light {
+  display: block;
 }
 
 .conv-hero-enter-active,
@@ -1293,6 +1399,16 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
   user-select: text;
 }
+/* 自动修复成功态：同一横幅位置换成正常色，与错误态区分但不喧哗 */
+.sb-ok {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.sb-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .sb-fix {
   border: none;
   background: none;
@@ -1303,6 +1419,11 @@ onUnmounted(() => {
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+.sb-fix:disabled {
+  color: var(--muted-foreground);
+  cursor: default;
+  text-decoration: none;
 }
 
 /* 错误提示 */

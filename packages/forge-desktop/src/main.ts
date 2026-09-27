@@ -25,7 +25,7 @@ import {
   type AutoUpdaterLike,
 } from './pi/appUpdater.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
-import { probePiShell } from './pi/shellProbe.ts';
+import { ensurePiShellPath } from './pi/shellProbe.ts';
 import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 import { defaultUpdaterStatePath } from './pi/updaterState.ts';
 import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles } from './attachments.ts';
@@ -444,8 +444,9 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
   // core 组装完成后原地改写字段即可，无需重注册 handler
   ipcMain.handle(IPC_BOOT_STATE, () => bootState);
   // shell 健康探测（对话区横幅数据源）：与 pi 会话同口径解析 bash，命中 WSL 占位/
-  // 三级落空时返回异常，见 pi/shellProbe.ts
-  ipcMain.handle(IPC_SHELL_PROBE, () => probePiShell(agentDir));
+  // 三级落空时先自动定位 Git Bash 写配置再复探，只有本机确实没有可用 bash 才回异常，
+  // 见 pi/shellProbe.ts（横幅上的「重新检测」也走这条通道：装完 Git 点一下即自愈）
+  ipcMain.handle(IPC_SHELL_PROBE, () => ensurePiShellPath(agentDir));
   // splash 上屏回执（v3.78.7）：渲染进程报「已绘制并提交两帧」，主进程据此显示窗口。
   // 监听在这里注册（loadURL 之后、页面脚本执行之前），回执不会早于监听而丢失。
   ipcMain.on(IPC_BOOT_SPLASH_READY, () => notifySplashReady?.());
@@ -719,6 +720,15 @@ app.whenReady().then(async () => {
   // 与导航提交会一起被卡住，用户看到数秒纯底色白屏（实测 0.6s→4.7s，详见
   // waitForSplashPainted 注释）。此处让主线程先空转等 splash 提交并合成一帧。
   await waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS);
+
+  // ===== shell 自愈（2026-09）：把「用户自己去 settings.json 填 shellPath」变成自动动作 =====
+  // 时机选在这里的理由：splash 已上屏（spawn where/reg 的几十毫秒不会卡首帧），而
+  // createForgeCore 还没组装（首个 pi 会话尚未创建）——写进 settings.json 的 shellPath
+  // 对之后所有会话立即生效，用户全程无感。
+  // 成本可控：probePiShell 先读 settings.json，解析成功（绝大多数机器）直接返回；
+  // 只有真不可用才 spawn where git.exe / reg query 找 Git Bash。
+  // 失败（本机无 Git）不拦启动：异常留给对话区横幅，用户装完 Git 可点「重新检测」自愈。
+  await ensurePiShellPath(forgeAgentDir).catch(() => {});
 
   // eventBus 由 createForgeCore 返回，端口 emit 先以闭包晚绑定（跃迁都发生在组装完成之后）
   let coreEventBus: NodeJS.EventEmitter | null = null;

@@ -140,7 +140,7 @@ test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（
   await page.goto('/');
   await expect(page.locator('#app-boot-splash')).toBeVisible();
 
-  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-name');
+  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-phase');
 
   // 1) 全站 reset 尚未生效时，splash 必须自带最小 reset
   expect(s.marginTop, `body margin-top=${s.marginTop}`).toBe('0px');
@@ -160,7 +160,7 @@ test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（
   expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBe('dark');
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
   expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
-  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.6);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.5);
 });
 
 test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执行即已是暗色欢迎页', async ({
@@ -171,7 +171,7 @@ test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执�
   await page.goto('/');
   await expect(page.locator('#app-boot-splash')).toBeVisible();
 
-  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-name');
+  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-phase');
 
   // 机制断言：模块链被冻结（useTheme.ts 根本没跑）时 data-theme 已在 <html> 上
   // —— 证明 index.html 的同步引导脚本生效，而不是事后靠模块链补的
@@ -180,7 +180,7 @@ test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执�
   // 视觉断言：暗底 + 亮字，底色必须不透明（变量解析失败会是透明）
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
   expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
-  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.6);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.5);
 });
 
 test('BOOT-SPLASH-003 @P0 @mock-backend 门闩期间的 BootWelcome 同为暗色（接管不闪亮）', async ({
@@ -192,26 +192,26 @@ test('BOOT-SPLASH-003 @P0 @mock-backend 门闩期间的 BootWelcome 同为暗色
   await page.goto('/');
 
   await expect(page.locator('.boot-welcome')).toBeVisible({ timeout: 15_000 });
-  const s = await readWelcomeState(page, '.boot-welcome', '.boot-welcome .boot-name');
+  const s = await readWelcomeState(page, '.boot-welcome', '.boot-welcome .boot-phase');
 
   expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBe('dark');
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
   expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
-  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.6);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.5);
   health.assertHealthy();
 });
 
 /**
- * BOOT-SPLASH-004（v3.78.8）：splash 的**字与图标**必须在模块链执行前就在场。
+ * BOOT-SPLASH-004（v3.78.8）：splash 的**字标与文案**必须在模块链执行前就在场。
  *
  * 背景：v3.78.7 用户报「一开始没有字，只有白板」。像素统计口径（`bootFrame.ts`）能给出
  * 「这一帧有没有内容」，但它量的是真机窗口；这条用例从 DOM 侧把同一件事锁住——
- * 冻结模块链（= splash 整个展示窗口期的真实状态）后，splash 的文案/图标必须可见、
- * 有非零尺寸、且完整落在视口内。任何「容器高度塌成 0 / 文案被清空 / 元素被推出视口」
- * 都会在这里红，而不是等到用户看到白板。
+ * 冻结模块链（= splash 整个展示窗口期的真实状态）后，splash 的字标/文案必须
+ * 可见、有非零尺寸、且完整落在视口内。任何「容器高度塌成 0 / 文案被清空 / 元素被推出
+ * 视口」都会在这里红，而不是等到用户看到白板。
  * 与 001 的分工：001 管几何与配色（不溢出、不亮暗错档），本用例管**内容在场**。
  */
-test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与图标必须在场（不得只有白板）', async ({
+test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字标与文案必须在场（不得只有白板）', async ({
   page,
 }) => {
   const health = attachHealthGuards(page);
@@ -219,13 +219,13 @@ test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与�
   await page.goto('/');
   await expect(page.locator('#app-boot-splash')).toBeVisible();
 
-  // 文案与图标在场：`Forge` 字标 + 阶段文案 + 标志块 SVG
-  await expect(page.locator('#app-boot-splash .splash-name')).toHaveText('Forge');
+  // 内容在场：FORGE 字标（默认暗色档显示 wm-dark）+ 阶段文案
+  await expect(page.locator('#app-boot-splash .splash-word.wm-dark')).toBeVisible();
   const phase = (await page.locator('#app-boot-splash .splash-phase').textContent()) ?? '';
   expect(phase.trim().length, `阶段文案="${phase}" 不得为空`).toBeGreaterThan(0);
-  await expect(page.locator('#app-boot-splash svg')).toBeVisible();
+  await expect(page.locator('#app-boot-splash .splash-spinner')).toHaveCount(0);
 
-  // 几何：三者都必须有非零尺寸且完整落在视口内（原 bug 的表现是它们根本没上屏）
+  // 几何：两者都必须有非零尺寸且完整落在视口内（原 bug 的表现是它们根本没上屏）
   const geo = await page.evaluate(() => {
     const pick = (sel: string) => {
       const el = document.querySelector(sel);
@@ -234,18 +234,16 @@ test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与�
       return { top: r.top, left: r.left, width: r.width, height: r.height };
     };
     return {
-      name: pick('#app-boot-splash .splash-name'),
+      word: pick('#app-boot-splash .splash-word.wm-dark'),
       phase: pick('#app-boot-splash .splash-phase'),
-      icon: pick('#app-boot-splash svg'),
       viewportW: window.innerWidth,
       viewportH: window.innerHeight,
     };
   });
 
   const items = [
-    { label: 'Forge 字标', rect: geo.name },
+    { label: 'FORGE 字标', rect: geo.word },
     { label: '阶段文案', rect: geo.phase },
-    { label: '标志块', rect: geo.icon },
   ];
   for (const { label, rect } of items) {
     if (rect === null) throw new Error(`${label} 不在 DOM 中`);

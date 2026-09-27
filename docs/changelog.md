@@ -1,5 +1,54 @@
 # 变更日志
 
+## v3.85.0 (修复：流式收尾帧底部跳一下)
+
+> 来源：2026-09-26 用户反馈「AI 输出完了之后对话框底部会跳一下」。e2e 探针实测定位根因后按方案 A（高度过渡）修复。
+
+- **根因（实测，非推理）**：不是钉底失败——`onConvResize` 的补钉底在 ResizeObserver 回调里逐帧同步（`dScrollH == dScrollTop` 恒成立）。真凶是**收尾帧底部区块构成的一次性变化**：`.conv-thinking` 思考指示行随 `v-if` 卸载（实测 39px + flex gap 16px）、`.msg-footer` 消息底栏同帧挂载（实测 17px + margin-top 8px），净 **−30px 一帧完成**，滚动虽同帧跟随，视觉上就是整段对话内容「跳一下」。输入区全程不动；`scrollbar-gutter`、终态补落位稳定期两个方案经改前改后各 6 次实测均无对应缺陷（已回退，见知识库）。
+- **改动（方案 A：~160ms 高度过渡）**：
+  - `packages/forge-ui/src/components/ConversationView.vue`：`.conv-thinking` 包 `Transition :css="false" @leave`，**rAF 逐帧显式赋值**收拢 height/padding/opacity，按有无相邻兄弟用负外边距等量抵消将消失的 flex gap，末帧零尺寸后才 `done()` 卸载。
+  - `packages/forge-ui/src/components/MessageCard.vue`：`.msg-footer` 包 `Transition :css="false" @enter`，从 0 高/0 透明/0 外边距展开到自然尺寸，结束后清内联样式交还 CSS（基础 opacity 0.6）。两处 `SETTLE_MS=160` 保持同帧启动、同步完成。
+  - `prefers-reduced-motion` 与无 `matchMedia` 环境（单测）直接完成不动画。
+- **关键坑（探针两次实测才发现）**：`.conv-thinking` 有上下 padding 各 10px，**box-sizing:border-box 下渲染高度不能低于 padding 之和**（内容盒钳到 0 为下限）——只动 `height` 必卡死在 20px，残余 19px 在卸载帧一次性跳出；CSS transition 版与 rAF 版冻在同一 20px，证明是布局钳制而非动画引擎问题。修法：padding 与 height 同比例收拢。
+- **验证**：探针 `e2e/__repro-stream-end-jump.spec.ts --grep "repro L"` 实跑 2 次：`think` 39px→0 连续收拢、footer 0→17px 同步展开、卸载帧位移 ≈0、单帧最大 ≈11px（easeOutCubic 起步，修复前单帧 −30px）；`@forge/ui` typecheck 0 错、单测 **294 过 / 0 挂**。
+- **文档**：PRD 03 CV-S02 业务规则补「收尾帧过渡」+ 新增 **AC-CV-054**；测试文档同步 **E-CV-030**（`docs/test/03_conversation/{coverage-matrix,e2e}.md`）；知识库 `docs/knowledge/stream-end-bottom-jump.md` 追加修复记录与两个布局坑；本条目。
+- **待办**：真实 pi 会话复测（合成场景未覆盖 SuggestionChips / 压缩横幅 / 工具卡收起等同帧挂载的叠加来源）；截图证据补录。
+
+## v3.84.0 (修复：下一步建议抢占一轮 + 压缩后历史丢失)
+
+> 来源：2026-09-26 用户反馈两条——①「AI 输出完了之后会拼命的选择第一个继续下探，而不是让我看」；
+> ②「压缩完了之后之前的历史消息没了」（附压缩后的会话截图）。两条都是 forge 侧口径问题，pi 不动。
+
+- **修复 1 · 下一步建议不再抢占一轮（suggest_next_steps）**：
+  - 根因：`suggestNextSteps()` 只返回 `content/details`，缺 pi 的**轮次收束信号**。pi 在**每个工具批次后默认补跑一次 LLM 调用**，模型手里只剩自己刚列出的建议、又没有新用户输入，于是顺势开工第 1 条——观感就是「不等人，闷头往下钻」，还多花一轮 token。
+  - 改动（`packages/forge-extensions/src/suggestNextSteps/extension.ts`）：成功路径返回 `terminate: true`（pi 见此跳过补跑，本轮结束改由用户点选驱动）；**拒参路径不带**，保留模型改参重试的空间。guidelines 4→5 条（新增末条「NEVER start any of these steps yourself」），tool description 补「This call ENDS your turn」。
+  - 易错点：`terminate` 只在**同批次全部 finalize 结果都 terminating** 时生效，所以「作为最后一个动作**单独**调用、不与其他工具并批」必须保留（一并写入第 4 条 guideline），否则信号被同批非终止结果吃掉。
+  - 验证：`@forge/extensions` **65 过 / 0 挂**（新增 3 例：合法→terminate / 非法→不带 / execute 透传口径一致，guidelines 计数锁 5）。
+- **修复 2 · 压缩不再抹掉界面历史（CV-S07 口径修正）**：
+  - 根因：`loadPiSessionHistory` 用 `manager.buildContextEntries()`——那是**已应用压缩的模型上下文视图**，压缩点之前的条目被换成摘要；再加上主循环 `entry.type !== 'message'` 又把 `compaction` 条目本身跳过，结果**旧消息和摘要同时消失**（"历史没了"是用户侧的实感）。磁盘 JSONL 里条目一条没删（压缩只是 append 一条 compaction），丢的是读法。
+  - 口径（写进 PRD）：**压缩只替换喂给模型的上下文，用户看到的 transcript 必须完整**，压缩点用一条分隔条标记。
+  - 改动：
+    - `packages/forge-desktop/src/pi/loadPiSessionHistory.ts`：改走 `getBranch()`（叶子→根全量分支）；`compaction` 条目落成 `{ role:'system', content:摘要, ts, compacted:true }` 插入原位。探针实测两 API 差异：`getBranch = m1|m2|compaction|m3|m4`，`buildContextEntries = compaction|m2|m3|m4`（m1 被抹）。
+    - `packages/forge-ui`：`types.ts` 加 `compacted?`；`useSessionConversation` 展示项新增 `compaction-divider`（位于压缩前后之间）；`MessageListItem` 渲染 line+文案分界条与**可展开摘要**（两行钳制，点击展开）；i18n 新增 `chat.compactionSummaryExpand/Collapse`（zh+en）。
+  - 验证：`@forge/desktop` **314 过 / 0 挂**（新增 3 例：压缩前消息仍在 / 标记恰好 1 条且带摘要与位置 / 未压缩会话无标记）；`@forge/ui` **294 过 / 0 挂**；desktop+extensions+ui 三包 typecheck **0 错**。
+  - 文档：`docs/prd/03_conversation.md` CV-S07 新增「历史口径」业务规则 + 改写自动压缩的反馈条 + 新增 **AC-CV-052/053**；`docs/api/03_conversation.md` queryHistory 补「压缩分隔标记」字段说明、重写 `conversation.compacted` 的 UI 契约；测试文档同步 **U-CV-026 / E-CV-029**（`docs/test/03_conversation/{coverage-matrix,e2e}.md`）；本条目。
+  - **待办**：新增 e2e `E-CV-029`（`e2e/contextCompact.spec.ts`）本机未安装 Playwright 浏览器（无 `~/.cache/ms-playwright`）**未实跑**；改动涉及主进程读取路径，`Electron 真机验收`压缩后的历史完整性与分隔条观感后再收口。
+
+## v3.83.0 (功能：Git Bash 自动识别与 shellPath 自愈)
+
+> 来源：2026-09-26 用户反馈——shell 横幅直接报「Shell 不可用」并要求用户自己去 `settings.json` 填 `shellPath`，问「自动识别 Git Bash 可以做到吗，然后填到配置中，而不是要用户自己做配置这件事」。承接 v3.78.x shell 健康探测（从"告诉用户哪里坏了"到"主进程自己修好"）。
+
+- **主进程（forge-desktop）**：
+  - 新增 `src/pi/gitBashResolver.ts`：零 pi 依赖的 Git Bash 候选链（纯 fs + child_process，单测可直接跑）。按 ① `where git.exe` **反推安装根**（对每个 git.exe 逐级上溯试 `<dir>\bin\bash.exe`、`<dir>\usr\bin\bash.exe`，三级覆盖 `cmd\git.exe` 与 `mingw64\bin\git.exe` 两种形态，不依赖目录名约定）→ ② 注册表 `HKLM|HKCU\SOFTWARE\GitForWindows` 的 `InstallPath` → ③ 常见位置（`ProgramFiles` / `x86` / `LOCALAPPDATA\Programs` / scoop）→ ④ `where bash.exe` 的顺序解析；每级都过 `usable()` = 文件真实存在 **且** 非 WSL 占位（`isWslStubBash` 判定扩到 SysWOW64），PATH 上「占位在前、真 bash 在后」时逐个过滤取真 bash。全部候选来源可注入（`platform/env/exists/findOnPath/registryInstallPath`）。
+  - `src/pi/shellProbe.ts` 新增 `ensurePiShellPath()`：探测失败 → 解析 Git Bash → 经 pi `SettingsManager.setShellPath()` + `await flush()` 写进 `<agentDir>/settings.json`（合并写，`packages`/`models` 等既有字段不丢）→ **复探确认**后才回 `ok=true + autoFixed=true`；解析不到或写失败一律返回原异常（不谎报修复成功）。`probePiShell` 保持纯探测不变。
+  - `main.ts` 启动链：`splash 上屏之后、createForgeCore 之前` await 一次自愈——修好的 shellPath 在首个 pi 会话创建前就落盘，用户全程无感（横幅根本不出现）；失败不拦启动。成本可控：`probePiShell` 先读 settings.json，正常机器直接返回，只有真不可用才 spawn。`IPC_SHELL_PROBE` 改走 `ensurePiShellPath`（运行期兜底：装完 Git 点「重新检测」即可自愈）。
+  - `ipc-contract.ts`：`ShellProbeResult` 的 ok 分支加 `autoFixed?: boolean`（＝本次是自动写配置后复探恢复的，配置刚落盘、已存在会话仍持旧解析结果）。
+- **前端（forge-ui）**：`useShellHealth` 增加 `autoFixed` / `busy` / `reprobe()`（重测绕过首挂载幂等闸门，探测中禁按钮）；对话区横幅三态——**自动修复成功**（`autoFixed`，muted 色提示「已自动识别 Git Bash（路径）并写入配置，重启应用后新会话生效」）、**仍不可用**（原错误色 + 「重新检测」+「打开配置文件所在目录」双入口）、正常（无横幅）；i18n 新增 `chat.shellReprobe/Reprobing/AutoFixed` 并改写 `chat.shellFixHint`（中英全键，`sb-actions`/`sb-ok`/`.sb-fix:disabled` 样式同源）。
+- **文档**：新增 `docs/knowledge/git-bash-autofix.md`（+ index.json 登记）记录候选链、时机纪律与五个易错点；本条目。
+- **真机验证（本机 Windows + Git 装 `D:\work\tools\Git`，PATH 只有 `<root>\cmd`）**：确认旧链路三级全落空的根因（PATH 里没有 `bin\bash.exe`），新链路由 `where git.exe` 反推出 `D:\work\tools\Git\bin\bash.exe` 并成功合并写进 `<userData>/agent/settings.json`（`packages` 7 项原样保留），复探 `ok=true`。
+  - 过程中踩到并加固：**落盘前 `path.normalize`**。候选若带重复分隔符（如 `D:////work////Git////bin////bash.exe`），Windows 视作合法路径（`existsSync` 通过、连复探也通过），但 spawn 行为不稳——属于「看起来修好了、实际还是坏的」一类最难查的配置；补单测锁住。
+- **验证**：新增 `test/pi/gitBashResolver.test.ts` 10 例（候选链全部依赖注入驱动，不依赖测试机装没装 Git）+ `shellProbe.test.ts` 追加 5 例（已可用零副作用 / 解析不到不动配置 / 修复成功且 packages 不丢 / 候选路径形态不规范须规范化 / 候选不可用不谎报）；`@forge/desktop` 311 过·0 挂·1 skip，`@forge/ui` 294 过·0 挂，两包 typecheck 0 错。
+
 ## v3.82.0 (功能：模块 11 Git 提交与推送)
 
 > PRD：docs/prd/11_git_commit_push.md（2026-09-23「开工」，视觉/交互严格对齐 prototypes/terminal-git-prototype.html 定稿 demo）。

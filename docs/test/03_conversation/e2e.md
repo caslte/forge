@@ -179,6 +179,38 @@
   （历史已重拉，避免界面仍显示压缩前的旧内容）；无 console error / pageerror
 - **证据**：screenshot
 
+## E-CV-029 压缩后历史不丢（AC-CV-053）
+
+- **关联 AC**：AC-CV-053 | **优先级**：P0 | **自动化等级**：mock-backend（seed + emit）
+- **背景**：历史加载改用 pi 全量分支（`getBranch()`）后，压缩点之前的对话保留在界面上，
+  压缩点位置渲染一条分界（旧口径用 `buildContextEntries()`，压缩点之前的消息会整段消失）
+- **前置**：会话已选中；种子 `conversation/queryHistory` 返回「压缩前 2 条 + `{role:'system', compacted:true}` + 压缩后 1 条」
+- **操作**：`emit(sid,'conversation.compacted',{reason:'auto',…})` 触发重拉；观察消息流与分隔条；点击摘要
+- **断言**：
+  - 压缩点之前的 user/assistant 消息仍在流里（不是只剩摘要）；
+  - `.compact-divider` 恰好 1 条、文案「上下文已压缩」，位于压缩前后之间；
+  - 摘要默认折叠，`click` 后展开；
+  - 无 console error / pageerror
+- **证据**：screenshot（待补，本机未装 Playwright 浏览器）
+
+## E-CV-030 流式收尾帧无布局跳变（AC-CV-054）
+
+- **关联 AC**：AC-CV-054 | **优先级**：P1 | **自动化等级**：mock-backend（布局后逐帧探针）
+- **背景**：用户反馈「AI 输出完了之后对话框底部会跳一下」。实测根因不是钉底失败，而是收尾帧
+  `.conv-thinking` 摘除（39px+gap）与 `.msg-footer` 挂载（17px+margin）同帧硬切换，净 −30px。
+  v3.85.0 以两处 `Transition :css="false"` JS 钩子做 ~160ms 同步过渡（详见
+  `docs/knowledge/stream-end-bottom-jump.md`）
+- **前置**：会话贴底（autoFollow=true）；mock 流式回复发送中
+- **操作**：`npx playwright test e2e/__repro-stream-end-jump.spec.ts --grep "repro L"`（可加 `--repeat-each` 做稳定性统计）；
+  逐帧采样 `.conv-thinking` 高度、`.msg-footer` 高度与消息区 `scrollHeight/scrollTop`
+- **断言**：
+  - `think` 高度从 39px 连续收拢到 0（**不得卡在 20px**——border-box 渲染高度不能低于 padding 之和，
+    padding 必须与 height 同步收）；footer 0→17px 同步展开；
+  - 全过程 `dScrollH == dScrollTop`（钉底逐帧跟随），卸载帧位移 ≈0；单帧最大位移 ≤12px（修复前一帧 −30px）；
+  - 回看态（已上滚）下同样过渡但不出现强制滚底（AC-CV-016 不被破坏）；
+  - 无 console error / pageerror
+- **证据**：已实跑 2 次通过（2026-09-27，本机 Edge）；截图待补
+
 ## E-CV-014 斜杠命令浮窗：触发/美化/过滤/空态（AC-CV-026/027/028）
 
 - **关联 AC**：AC-CV-026/027/028 | **优先级**：P0 | **自动化等级**：mock-backend

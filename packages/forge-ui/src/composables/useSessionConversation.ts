@@ -187,6 +187,18 @@ function dismissAskAnswered(): void {
     let i = 0;
     while (i < msgs.length) {
       const cur = msgs[i]!;
+      // CV-S07 压缩分隔条：compacted 标记不是消息，渲染成分界条——既保留压缩痕迹，
+      // 又不会挤占消息卡的位置
+      if (cur.compacted) {
+        out.push({
+          key: `compact-${cur.ts}-${i}`,
+          kind: 'compaction-divider',
+          summary: cur.content,
+          ts: cur.ts,
+        });
+        i += 1;
+        continue;
+      }
       if (cur.role !== 'tool') {
         // 轮末插入点：上一轮的汇总卡片排在下一条 user 消息之前
         if (cur.role === 'user') pushFilesSummary(i);
@@ -373,6 +385,9 @@ function dismissAskAnswered(): void {
    * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09）；
    * todoSnapshots 不清：按 sessionId 隔离，切回历史会话还原上次的 todo 视图（CV-S11 修正） */
   function resetForSession(): void {
+    // 平滑缓冲按会话隔离，切走后旧会话缓冲作废（权威内容以历史/最终消息为准）
+    smoothPending.clear();
+    stopSmoothTimer();
     messages.value = [];
     toolEventIndex.clear();
     toolStartedAt.clear();
@@ -462,8 +477,10 @@ function dismissAskAnswered(): void {
       scheduleScroll();
       return;
     }
-    // 流式阶段已通过 delta 构建了 assistant 占位消息，最终 message 到达时以其为权威内容覆盖，
-    // 避免"delta 累积 + 完整消息再推一条"成双
+    // 流式阶段已通过 delta（平滑缓冲）构建了 assistant 占位消息，最终 message 到达时
+    // 以其为权威内容覆盖，避免"delta 累积 + 完整消息再推一条"成双；
+    // 覆盖前丢掉未放完的平滑缓冲（权威内容已含全部文本，继续放字反而画蛇添足）
+    dropSmoothText(p.sessionId);
     const last = messages.value[messages.value.length - 1];
     if (last && last.role === 'assistant') {
       last.content = p.message.content;
@@ -475,12 +492,28 @@ function dismissAskAnswered(): void {
     scheduleScroll();
   }
 
-  function onDelta(payload: unknown): void {
-    // 契约：delta 为 { text, kind: 'text' }（docs/api/03_conversation.md §3）
-    const p = payload as { sessionId: string; delta: { text?: string } | string };
-    if (p.sessionId !== options.getSessionId()) return;
-    const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
-    if (text !== '') markOutputting();
+  // ===== 流式平滑输出（打字机）=====
+  // delta 不直接上屏：先入按 sessionId 隔离的缓冲，再按帧匀速放出。放字速度随积压
+  // 自适应（积压越多追越快），稳态落后约 1/3 秒，观感柔和又不至于越落越远。
+  // 缓冲按 sessionId 隔离：终态 flush 补齐尾字，会话切换/重置时丢弃（权威内容以
+  // 最终 message 事件与历史记录为准，缓冲只是展示节奏）。
+  const SMOOTH_TICK_MS = 16;
+  const SMOOTH_MIN_CHARS = 1; // 每 tick 保底输出字符数（最慢速度下限）
+  const SMOOTH_MAX_CHARS = 24; // 每 tick 输出上限（积压大时不一次跳一大段）
+  const SMOOTH_CATCHUP_DIVISOR = 20; // 放字速度 = 积压 / 该值（自平衡系数）
+
+  const smoothPending = new Map<string, string>();
+  let smoothTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopSmoothTimer(): void {
+    if (smoothTimer !== null) {
+      clearInterval(smoothTimer);
+      smoothTimer = null;
+    }
+  }
+
+  /** delta 文本真正落到消息流（原 onDelta 的追加逻辑） */
+  function applyDeltaText(text: string): void {
     // 流式追加到最后一条 assistant 消息；无则新建
     const last = messages.value[messages.value.length - 1];
     if (last && last.role === 'assistant') {
@@ -489,6 +522,60 @@ function dismissAskAnswered(): void {
       messages.value.push({ role: 'assistant', content: text, ts: new Date().toISOString() });
     }
     scheduleScroll();
+  }
+
+  function drainSmooth(): void {
+    const sid = options.getSessionId();
+    if (sid === null) {
+      stopSmoothTimer();
+      return;
+    }
+    const pending = smoothPending.get(sid);
+    if (pending === undefined || pending === '') {
+      smoothPending.delete(sid);
+      stopSmoothTimer();
+      return;
+    }
+    const take = Math.min(
+      pending.length,
+      Math.min(
+        SMOOTH_MAX_CHARS,
+        Math.max(SMOOTH_MIN_CHARS, Math.ceil(pending.length / SMOOTH_CATCHUP_DIVISOR)),
+      ),
+    );
+    smoothPending.set(sid, pending.slice(take));
+    applyDeltaText(pending.slice(0, take));
+  }
+
+  function enqueueSmoothText(sid: string, text: string): void {
+    smoothPending.set(sid, (smoothPending.get(sid) ?? '') + text);
+    if (smoothTimer === null) smoothTimer = setInterval(drainSmooth, SMOOTH_TICK_MS);
+  }
+
+  /** 轮次终态：把缓冲里剩下的字一次补齐上屏（取消/出错也不丢已生成内容） */
+  function flushSmoothText(sid: string): void {
+    const pending = smoothPending.get(sid);
+    smoothPending.delete(sid);
+    if (pending !== undefined && pending !== '' && sid === options.getSessionId()) {
+      applyDeltaText(pending);
+    }
+    if (smoothPending.size === 0) stopSmoothTimer();
+  }
+
+  /** 权威内容到达（最终 message）/ 会话重置：缓冲作废（权威内容覆盖展示缓冲） */
+  function dropSmoothText(sid: string): void {
+    smoothPending.delete(sid);
+    if (smoothPending.size === 0) stopSmoothTimer();
+  }
+
+  function onDelta(payload: unknown): void {
+    // 契约：delta 为 { text, kind: 'text' }（docs/api/03_conversation.md §3）
+    const p = payload as { sessionId: string; delta: { text?: string } | string };
+    if (p.sessionId !== options.getSessionId()) return;
+    const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
+    if (text === '') return;
+    markOutputting();
+    enqueueSmoothText(p.sessionId, text);
   }
 
   function onStatus(payload: unknown): void {
@@ -501,6 +588,8 @@ function dismissAskAnswered(): void {
       startElapsed(p.sessionId);
       resetStreamPhase();
     } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
+      // 轮次终态：缓冲里剩余的文本一次补齐上屏（取消/出错也不丢已生成内容）
+      flushSmoothText(p.sessionId);
       turnStartAt.delete(p.sessionId);
       stopElapsed();
       isStreaming.value = false;
@@ -851,6 +940,8 @@ function dismissAskAnswered(): void {
     unsubs.forEach((u) => u?.());
     unsubs = [];
     stopElapsed();
+    smoothPending.clear();
+    stopSmoothTimer();
     for (const t of toolDwellTimers.values()) clearTimeout(t);
     toolDwellTimers.clear();
     toolStartedAt.clear();

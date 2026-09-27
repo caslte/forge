@@ -26,7 +26,7 @@ test('E-PM-LANDING-001 @mock-backend 零项目落地 hero：水印 + 居中输�
   await gotoLanding(page);
 
   await expect(page.locator('.landing-hero')).toBeVisible();
-  await expect(page.locator('.landing-wordmark')).toBeVisible();
+  await expect(page.locator('.landing-wordmark.wm-dark')).toBeVisible();
   const input = page.locator('.landing-hero .compose-input');
   await expect(input).toBeVisible();
   await expect(input).toBeEnabled();

@@ -141,7 +141,10 @@ export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
  */
 export const IPC_SHELL_OPEN_EXTERNAL = 'forge:shell:openExternal';
 
-/** preload ↔ main shell 通道：pi bash 解析健康探测（渲染层启动横幅数据源） */
+/**
+ * preload ↔ main shell 通道：pi bash 解析健康探测 + 自愈（渲染层启动横幅数据源）。
+ * 探测到不可用时主进程会自动定位 Git Bash 并写入 settings.json，再复探一次。
+ */
 export const IPC_SHELL_PROBE = 'forge:shell:probe';
 
 /**
@@ -152,16 +155,26 @@ export const IPC_SHELL_PROBE = 'forge:shell:probe';
  * 每条命令只返回一句 UTF-16 乱码的「未安装 Linux 子系统」，模型侧表现为
  * 「bash 工具被 WSL 拦截、彻底不可用」（2026-09 dev 切根事故）。forge 启动时用同一
  * 口径探测一次，异常则在对话区横幅给出可操作指引。
+ *
+ * 自愈（2026-09 追加）：探测异常时主进程会按 where git.exe 反推 / 注册表 / 常见安装
+ * 路径 / PATH 的顺序找真 bash 并写进 shellPath（见 pi/gitBashResolver.ts），用户不需要
+ * 自己编辑配置。只有本机确实没有可用 bash 时才把异常交给横幅。
  */
 export type ShellProbeResult =
-  | { ok: true; /** 解析到的 shell 绝对路径 */ shell: string }
+  | {
+      ok: true;
+      /** 解析到的 shell 绝对路径 */
+      shell: string;
+      /** true=本次结果是「自动写入 shellPath 后复探」得到的（配置刚落盘，重启后全会话生效） */
+      autoFixed?: boolean;
+    }
   | {
       ok: false;
       /** wsl-stub=PATH 兜底命中 System32 WSL 占位；no-shell=三级全落空（getShellConfig 抛错） */
       reason: 'wsl-stub' | 'no-shell';
       /** 探测到的可疑/缺失 shell 路径；no-shell 时为 null */
       shell: string | null;
-      /** 修复目标：forge agent 根下 settings.json（可不存在，用户可新建） */
+      /** 修复目标：forge agent 根下 settings.json（自动修复也失败时，用户可在此手工兜底） */
       settingsPath: string;
     };
 
