@@ -1,5 +1,35 @@
 # 变更日志
 
+## v3.85.2 (修复：启动 FORGE 字样「闪一下」+ 接管新会话时「跳一下」)
+
+> 来源：2026-09-27 用户反馈两条——①「app 加载页的 FORGE 字样会闪一下」；②「加载完成跳到新会话时，forge 字样会调整一下高度，这个调整过程用户能明显感知，就是跳了一下」。
+
+- **根因（四处，全部在启动三段接管 splash → BootWelcome → 正式 UI 的接缝上）**：
+  1. **入场动画重放**：`BootWelcome.vue` 的 `.boot-logo` 带 `boot-fade-in 0.4s`（opacity 0→1 + 下移 6px），而 splash 上的字标是**静态在场**的——Vue 挂载替换 `#app` 的瞬间，屏上已有的 FORGE 消失并从零淡入 = 「闪一下」。违反 index.html 写死的不变量「视觉必须与 BootWelcome 完全一致，接管无缝」。
+  2. **两份不同的字标 URL**：splash 引用 `public/logo-wordmark-on-*.png`（且为绝对路径 `/logo-…`），BootWelcome/LandingHero/ConversationView `import` 的是 `src/assets/` 下**另一份同名文件**——交接时新 URL 重新拉取解码，`height:auto` 下解码前盒子塌 0。附带：prod 是 `base:'./'` + `loadFile`（file://），绝对路径在打包版 splash 直接裂图只剩 alt。
+  3. **boot 期假 LandingHero 闪现**：门闩放行时 `projects` 恒为空数组（`loadProjects` 是放行后才发的异步 IPC），**有项目的用户每次启动都会先挂载零项目落地页**（字标几何 A），project 落地后换成会话空态 hero（几何 B）——同一枚字标 ~300ms 内被摆到两个位置，即「调整了一下高度，跳了一下」。
+  4. **字标尺寸三处不一致**：splash/BootWelcome `300px` vs LandingHero/conv-hero `min(40cqw,320px)`（常规窗口恒 320），交接时尺寸还会变一次。
+- **修复（均在 `packages/forge-ui`）**：
+  - `index.html`：字标改相对路径 `./logo-wordmark-on-*.png`（修 prod 裂图）+ 显式 `width=320 height=42`（PNG 357×47 等比，杜绝解码塌高）；`splashReady` 回执前必须等两张字标 `img.decode()`（300ms 兜底超时，与主进程 2500ms show 超时两层互不替代）——主进程 show 出的第一帧必带 FORGE。回执时落 `window.__forgeSplashNotified` 观测位。
+  - `BootWelcome.vue`：删 `boot-fade-in` 动画与 keyframes；字标改 `BASE_URL + 'logo-wordmark-on-*.png'`（dev '/'、prod './' 与 splash 解析到同一资源）；宽度统一 320。
+  - `App.vue`：新增 `projectsLoaded`（`loadProjects` **finally** 置位，报错/零项目同样放行，不成死门）；正式 UI 挂载条件收紧为 `formalUiReady = bootReady ∧ projectsLoaded`（首拉含 openProject 落地，ConversationView 首帧即终态，boot 期不再闪现落地页）；放行后 BootWelcome 改 fixed veil **淡出 200ms** 再卸载（400ms 超时兜底卸载，reduced-motion 直落），把切页硬切变成连续过渡。
+  - `ConversationView.vue` / `LandingHero.vue`：字标切同一 public URL + 显式宽高；hero lift 的 ResizeObserver 增观测 `inputWrapRef`（models 异步回填等推动输入框长高时字标随重测，不再漂移）。
+  - `src/assets/logo-wordmark-on-*.png` 副本**保留**（6 个原型页直接引用该路径，删则破坏原型同步）。
+- **验证（红→绿，非推断）**：RED 基线先在旧代码实测复现——HANDOFF-001 抓到 boot 期 `.landing-hero` 闪现、HANDOFF-002 抓到 `boot-fade-in` 在场、SPLASH-005 抓到无 decode 门。新增 `e2e/bootHandoff.spec.ts` 4 条（假落地页不复活 / BootWelcome 无动画且字标 320 = hero 档 / 接管后 veil 必卸载且屏上只剩一份字标）+ `bootSplash.spec.ts` 扩 BOOT-SPLASH-005（回执在解码后 + 相对路径 + 显式占位）。回归：boot 相关 5 个 spec **16/16**、forge-ui 单测 **294/294**、`vue-tsc` 0 错；`vite build` 产物复核 `dist/index.html` 字标为相对路径 + 显式宽高、bundle 内三处 `BASE_URL` 字标引用在场。全量 e2e **122 passed / 13 failed**：boot 相关 16 条全绿；13 条失败逐条归属核对，全部落在本期未触碰的面——branchBadge ×2 / mw-restore ×2 / queue（QC-001 队列项渲染、QC-003 停止回填）/ session 树排序 / todoPanel 009b 遮挡 / conversationHistoryLocate / subagent 结果用量 ×2，即 v3.84.x 条目记录的**存量挂清单**（HEAD 干净基线对照验证过）叠加当前在途改动（InstructionInput 队列态、压缩横幅删除、msg-brand 字标接管、D 档底色）；`__repro-dark-d`、`__repro-subagent-bar` 为在途采样的 repro 草稿。剥离复跑（仅这 7 个 spec 单独跑）失败集合逐条一致，非负载抖动。真机 dev/打包各启动一次由用户目检。
+
+## v3.85.1 (修复：压缩完成后底部横幅残留)
+
+> 来源：2026-09-27 用户反馈两条——①自动压缩后「上下文已压缩（减少 81%）」横幅在输出期间一直残留在消息流底部；②「压缩了多少不需要显示，因为上面还有一个上下文已压缩的横幅（内联分隔条）」。
+
+- **结论**：底部常驻完成横幅与两处反馈重复——压缩点位置已有内联「上下文已压缩」分隔条（v3.84.0 CV-S07 口径），减少百分比与 token 变化已在瞬时 toast 里（PRD 交互口径本就是 4~5s 瞬时提示）。故**删除完成态常驻横幅**，仅保留压缩中的「正在压缩上下文…」进度条。
+- **改动（均在 `packages/forge-ui`）**：
+  - `composables/useCompactBanner.ts`：状态收敛为「压缩中」布尔 Map（`sessionId → true`），删 `markDone`/`getBanner`/`CompactBannerState`，新增 `isCompacting`；`compactReductionPct` 保留（toast 文案仍在用）。
+  - `components/ConversationView.vue`：横幅只在压缩中渲染（`compactingNow`），完成即卸载；样式选择器同步收敛。
+  - `components/InstructionInput.vue`：手动压缩成功路径与 `conversation.compacted` 事件改为 `clearCompactBanner` 收尾（原 `markDone`）。
+  - `i18n/domains/chat.ts`：删无引用的 `chat.contextCompactedReduction`（zh+en）。
+  - `e2e/contextCompact.spec.ts`：手动/自动压缩两例改断言「完成后 `.compact-banner` 计数为 0」，头部注释同步口径。
+- **验证**：`@forge/ui` typecheck 0 错、单测 294 过 / 0 挂。e2e 需 Playwright 浏览器补跑（同 v3.84.0 待办）。
+
 ## v3.85.0 (修复：流式收尾帧底部跳一下)
 
 > 来源：2026-09-26 用户反馈「AI 输出完了之后对话框底部会跳一下」。e2e 探针实测定位根因后按方案 A（高度过渡）修复。

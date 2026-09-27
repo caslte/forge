@@ -2,8 +2,10 @@
 import { ref, onMounted } from 'vue';
 import type { ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
-import logoWordmarkDark from '../assets/logo-wordmark-on-dark.png';
-import logoWordmarkLight from '../assets/logo-wordmark-on-light.png';
+
+// v3.85.2：字标与 splash/BootWelcome/conv-hero 同一 URL、同一档尺寸（320px）
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
 
 /**
  * 落地 hero（v3.77）：零项目时的启动首屏，替换旧「选择项目」卡片。
@@ -60,8 +62,8 @@ onMounted(() => {
 
 <template>
   <div class="landing-hero">
-    <img class="landing-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" aria-hidden="true" draggable="false" />
-    <img class="landing-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" aria-hidden="true" draggable="false" />
+    <img class="landing-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
+    <img class="landing-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
     <div class="landing-input">
       <InstructionInput
         ref="inputRef"
@@ -99,6 +101,7 @@ onMounted(() => {
   display: none;
   width: min(40cqw, 320px);
   height: auto;
+  margin-bottom: 16px;
   pointer-events: none;
   user-select: none;
 }
@@ -106,6 +109,11 @@ onMounted(() => {
 :root:not([data-theme='light']) .landing-wordmark.wm-dark,
 :root[data-theme='light'] .landing-wordmark.wm-light {
   display: block;
+}
+
+/* 浅色主题下纯黑字标对比过强，降透明度柔化 */
+:root[data-theme='light'] .landing-wordmark.wm-light {
+  opacity: 0.8;
 }
 
 /* 同 hero-mode 的输入框宽度：min(640px, 容器宽) */

@@ -185,6 +185,9 @@ let slashLoadGen = 0;
 const { success: toastSuccess, error: toastError } = useToast();
 const { t } = useI18n();
 
+/** 粘贴快捷键文案：mac 显示 ⌘V，其他平台 Ctrl+V（输入框占位用） */
+const pasteKey = window.forge?.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
+
 /** git 徽标/提交入口的忙态（2026-09-23 用户口径修正）：只看当前会话自身是否 streaming，
  *  同项目其他会话执行中不锁本会话的提交/切分支（不同会话可以提交不同的代码） */
 const gitBusy = computed(() => props.sessionStatus === 'streaming');
@@ -207,7 +210,7 @@ watch(
   },
   { immediate: true },
 );
-const { markCompacting, markDone, clear: clearCompactBanner } = useCompactBanner();
+const { markCompacting, clear: clearCompactBanner } = useCompactBanner();
 
 // ===== MP-S05：思考级别切换器（模型选择旁紧凑下拉；非推理模型隐藏入口） =====
 /** 当前模型可用级别（来自 model/getModelThinkingLevels；仅 ["off"] 时隐藏切换器） */
@@ -328,7 +331,7 @@ async function refreshUsage(): Promise<void> {
   }
 }
 
-/** 手动压缩（P3-A）：压缩中锁定输入 + 持久横幅；结果走全局 toast（同切换模型款式） */
+/** 手动压缩（P3-A）：压缩中锁定输入 + 压缩中横幅；结果走全局 toast（同切换模型款式） */
 async function onCompact(): Promise<void> {
   if (!props.sessionId || compacting.value || autoCompacting.value || isStreaming.value) return;
   compacting.value = true;
@@ -359,7 +362,7 @@ async function onCompact(): Promise<void> {
       };
     }
     toastSuccess(formatCompactToast(r));
-    markDone(props.sessionId, r.tokensBefore ?? null, r.tokensAfter ?? null);
+    clearCompactBanner(props.sessionId);
   } catch (e) {
     toastError(e instanceof Error ? e.message : t('input.compact.failed'));
     clearCompactBanner(props.sessionId);
@@ -818,7 +821,7 @@ async function pickAttachments(): Promise<void> {
   }
 }
 
-// ===== 截图/文件 粘贴（Ctrl+V）+ 拖拽：统一收集路径 =====
+// ===== 截图/文件 粘贴（Ctrl+V / ⌘V）+ 拖拽：统一收集路径 =====
 
 /** 待发图片预览弹窗（点击缩略图打开，null = 关闭） */
 const lightboxSrc = ref<string | null>(null);
@@ -1077,7 +1080,7 @@ function toggleLevelMenu(): void {
   levelMenuOpen.value = !levelMenuOpen.value;
 }
 
-/** 触发输入框 max 动画（仅 MAX 浮现→停留→淡出，全程约 2.8s 后自移除，重入时重启动画） */
+/** 触发输入框 max 动画（"M A X" 在级别胶囊正上方浮现→停留→淡出，全程约 2.8s 后自移除，重入时重启动画） */
 function triggerShimmer(): void {
   if (shimmerTimer) clearTimeout(shimmerTimer);
   shimmerOn.value = false;
@@ -1163,7 +1166,7 @@ onMounted(() => {
     commands.value = [];
   });
   // 自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，只能靠事件感知：
-  // compacting → 锁定输入 + 持久横幅；compacted → 解锁 + 刷新用量 + 横幅收尾
+  // compacting → 锁定输入 + 压缩中横幅；compacted → 解锁 + 刷新用量 + 收掉横幅
   unsubCompacting = subscribe('conversation.compacting', (payload) => {
     const p = payload as { sessionId?: string };
     if (p.sessionId !== props.sessionId) return;
@@ -1171,16 +1174,13 @@ onMounted(() => {
     if (props.sessionId) markCompacting(props.sessionId);
   });
   unsubCompacted = subscribe('conversation.compacted', (payload) => {
-    const p = payload as {
-      sessionId?: string;
-      tokensBefore?: number | null;
-      tokensAfter?: number | null;
-    };
+    const p = payload as { sessionId?: string };
     if (p.sessionId !== props.sessionId) return;
     autoCompacting.value = false;
     void refreshUsage();
-    // 自动压缩的横幅收尾在此统一处理（手动压缩 RPC 返回时也会再标记一次，幂等）
-    if (props.sessionId) markDone(props.sessionId, p.tokensBefore ?? null, p.tokensAfter ?? null);
+    // 压缩结束的反馈由内联分隔条 + toast 承担，横幅随事件收掉
+    // （手动压缩 RPC 返回时也会清一次，幂等）
+    if (props.sessionId) clearCompactBanner(props.sessionId);
   });
 });
 
@@ -1297,10 +1297,6 @@ watch(
       @pointerup="onResizeUp"
     ></div>
     <!-- 进行中：实线边框 + 呼吸效果（CSS 动画） -->
-    <!-- max 思考级别动画（仅 "M A X" 底部浮现 → 停留 → 淡出；纯视觉层 pointer-events:none 不阻塞输入） -->
-    <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
-      <span class="max-text">M A X</span>
-    </div>
     <!-- 附件待发区（统一给路径）：图片 = 64px 缩略图（点击放大）；其他 = 胶囊 chip（icon+文件名）；可移除 -->
     <div ref="attachRowRef" class="attach-row">
       <template v-for="(att, i) in attachments" :key="att.path + i">
@@ -1351,7 +1347,7 @@ watch(
         ? t('input.placeholder.streaming', { frame: spinnerFrame })
         : compacting || autoCompacting
           ? t('input.placeholder.compacting')
-          : t('input.placeholder.default')"
+          : t('input.placeholder.default', { pasteKey })"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"
@@ -1478,6 +1474,9 @@ watch(
           >
             <span>{{ displayLevel ?? 'off' }}</span>
           </button>
+          <!-- max 思考级别动画（方案 A）："M A X" 从胶囊顶边后方浮出、停在胶囊正上方 → 停留 → 淡出；
+               锚定触发源本身，与模型名长度/框宽无关，永不与工具条重叠；纯视觉层 pointer-events:none 不阻塞交互 -->
+          <span v-if="shimmerOn" class="max-shimmer" aria-hidden="true">M A X</span>
           <div v-if="levelMenuOpen" class="level-menu">
             <button
               v-for="lv in availableLevels"
@@ -1965,6 +1964,11 @@ watch(
   flex-shrink: 0;
 }
 
+/* 窄窗格（多窗口分屏）下禁止逐字换行：固定文案整体不折行，项目名见下方 ellipsis 截断 */
+.meta-link span {
+  white-space: nowrap;
+}
+
 /* 提交或推送入口 busy 禁用态：与 BranchBadge .git-pill.is-busy 同款 */
 .push-pill.is-busy {
   opacity: 0.6;
@@ -2053,10 +2057,28 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* 允许在状态行内收缩，项目名超长时走 ellipsis 而不是挤压右侧按钮 */
+  min-width: 0;
 }
 
 .proj-pill {
   font-weight: 600;
+  min-width: 0;
+}
+
+/* 项目名可收缩截断（完整名见 data-tooltip）；「提交或推送」标签恒不收缩。
+   line-height: min-content 让行盒按字体包围盒撑开——否则会继承 .meta-link 的
+   line-height:1，overflow:hidden 把英文字上下缘裁掉 */
+.proj-pill span {
+  display: block;
+  min-width: 0;
+  line-height: min-content;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.push-pill {
+  flex-shrink: 0;
 }
 
 /* 会话中归属只读：不弹浮窗、去除可点反馈 */
@@ -2379,21 +2401,13 @@ watch(
   color: var(--logo-gradient-accent);
 }
 
-/* max 动画：仅 "M A X" 文字浮现→停留→淡出；容器只负责裁剪与隔离 */
+/* max 动画（方案 A）："M A X" 锚定级别胶囊正上方，从胶囊顶边后方浮出 → 停留 → 淡出。
+   LOGO 同款金色渐变流动 + 金色光晕（等宽字体贴近 cli 终端质感） */
 .max-shimmer {
   position: absolute;
-  inset: 0;
-  border-radius: 16px;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 3;
-}
-
-/* "M A X" 文字：底部居中浮现，LOGO 同款金色渐变流动 + 金色光晕（等宽字体贴近 cli 终端质感） */
-.max-text {
-  position: absolute;
   left: 50%;
-  bottom: 15px;
+  bottom: 100%;
+  margin-bottom: 2px;
   transform: translateX(-50%);
   font-family: var(--font-mono);
   font-size: 13px;
@@ -2411,6 +2425,8 @@ watch(
   color: transparent;
   -webkit-text-fill-color: transparent;
   white-space: nowrap;
+  pointer-events: none;
+  z-index: 4;
   filter: drop-shadow(0 0 12px color-mix(in srgb, var(--logo-gradient-accent) 45%, transparent));
   animation: max-text-flow 2.4s linear infinite, max-in 0.45s ease-out 0.1s both, max-out 0.6s ease 2.2s both;
 }
@@ -2419,7 +2435,7 @@ watch(
   100% { background-position: 200% 0%; }
 }
 @keyframes max-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 @keyframes max-out {

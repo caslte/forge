@@ -17,11 +17,14 @@ import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
-import logoWordmarkDark from '../assets/logo-wordmark-on-dark.png';
-import logoWordmarkLight from '../assets/logo-wordmark-on-light.png';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 import { formatElapsed } from '../utils/formatElapsed.ts';
 import { useI18n } from '../i18n/index.ts';
+
+// v3.85.2：字标与 splash/BootWelcome 同一 URL（public 资产，dev '/'、prod './' 均可解析）——
+// 全链路共享同一次加载/解码，接管时不再有「新图解码前塌高」的闪动
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
 
 /**
  * 对话主视图。
@@ -111,14 +114,15 @@ const {
 });
 
 /**
- * 上下文压缩横幅（内存持久，按 sessionId 隔离）：压缩中「正在压缩上下文…」，
- * 完成「上下文已压缩（减少 x%）」。切换会话再回来仍保留；重启 App 丢失。
+ * 上下文压缩横幅（内存态，按 sessionId 隔离）：仅覆盖压缩中区间
+ * （「正在压缩上下文…」）。完成后不再常驻——压缩点由消息流内联
+ * 「上下文已压缩」分隔条标记，结果由瞬时 toast 反馈（2026-09-27 用户反馈）。
  * 状态由 InstructionInput 的事件订阅 / 压缩点击统一维护，视图只读渲染。
  */
-const { getBanner: getCompactBanner } = useCompactBanner();
+const { isCompacting } = useCompactBanner();
 /** 个性化：对话框 diff 展示开关（设置页个性化 Tab，localStorage 持久） */
 const { showDiff } = usePreferences();
-const compactBanner = computed(() => getCompactBanner(props.sessionId));
+const compactingNow = computed(() => isCompacting(props.sessionId));
 
 /**
  * shell 健康横幅（全局单例，非按会话隔离——shell 是机器属性）。
@@ -302,6 +306,20 @@ function collapseThinking(el: Element, done: () => void): void {
   requestAnimationFrame(tick);
   setTimeout(finish, SETTLE_MS + 160); // 兜底：rAF 停摆（如切走窗口）时也要按时卸载
 }
+
+/**
+ * 流式 FORGE 字标：轮次开始（思考/工具阶段、尚无 assistant 卡）时显示在思考行头部；
+ * 本轮首张 assistant 卡一旦出现，字标由卡片头部接管（见 MessageCard .msg-brand）。
+ */
+const turnHasAssistantCard = computed(() => {
+  const msgs = messages.value;
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    const m = msgs[i]!;
+    if (m.role === 'user') return false;
+    if (m.role === 'assistant' && m.content.trim() !== '' && !m.compacted) return true;
+  }
+  return false;
+});
 
 async function onSend(text: string): Promise<void> {
   if (props.sessionId === null) {
@@ -812,6 +830,9 @@ onMounted(() => {
       if (isEmpty.value) measureHeroLift();
     });
     liftResizeObs.observe(viewRef.value);
+    // v3.85.2：wrap 自身高度也会被 models 异步回填/状态行内容推动，而 hero 锚在
+    // wrap 顶（bottom:100%）——只观测 view 会漏掉这类「输入框长高 → 字标漂移」的重测
+    if (inputWrapRef.value) liftResizeObs.observe(inputWrapRef.value);
   }
 });
 
@@ -865,11 +886,15 @@ onUnmounted(() => {
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光。
                  收尾帧随 v-if 卸载会连同所在 flex gap 一帧消失 ~55px（实测主要跳动来源），
-                 用 JS 钩子把高度/透明度渐变收拢、负外边距抵消将消失的 gap（v3.85.0） -->
+                 用 JS 钩子把高度/透明度渐变收拢、负外边距抵消将消失的 gap（v3.85.0）。
+                 外层包装块同帧卸载：字标与思考行一起被 collapseThinking 收拢，无残余跳动 -->
             <Transition :css="false" @leave="collapseThinking">
-              <div v-if="isStreaming" class="conv-thinking">
-                <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
-                <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
+              <div v-if="isStreaming" class="conv-streaming-head">
+                <div v-if="!turnHasAssistantCard" class="msg-brand">FORGE</div>
+                <div class="conv-thinking">
+                  <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
+                  <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
+                </div>
               </div>
             </Transition>
             <!-- 下一步建议芯片：锚定消息流末尾、仅当前轮（契约 I1 v2，key=该建议消息，换轮复位已点态） -->
@@ -887,17 +912,10 @@ onUnmounted(() => {
             </div>
           </template>
 
-          <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->
-          <div
-            v-if="compactBanner"
-            class="compact-banner"
-            :class="{ working: compactBanner.phase === 'compacting' }"
-          >
+          <!-- 上下文压缩横幅（仅压缩中）：警示色微光提示，完成后收掉 -->
+          <div v-if="compactingNow" class="compact-banner working">
             <span class="cb-line"></span>
-            <span
-              class="cb-text"
-              :class="{ 'thinking-shimmer': compactBanner.phase === 'compacting' }"
-            >{{ compactBanner.phase === 'compacting' ? t('chat.compactingContext') : compactBanner.text }}</span>
+            <span class="cb-text thinking-shimmer">{{ t('chat.compactingContext') }}</span>
             <span class="cb-line"></span>
           </div>
 
@@ -1014,8 +1032,8 @@ onUnmounted(() => {
            正常发送首条消息时 loadingHistory 为 false，过渡保留 -->
       <Transition name="conv-hero" :css="!loadingHistory">
         <div v-if="isEmpty" ref="heroRef" class="conv-hero" :aria-label="t('chat.heroAriaLabel')">
-          <img class="conv-hero-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" aria-hidden="true" draggable="false" />
-          <img class="conv-hero-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" aria-hidden="true" draggable="false" />
+          <img class="conv-hero-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
+          <img class="conv-hero-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
         </div>
       </Transition>
       <InstructionInput
@@ -1169,6 +1187,24 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
+/* 流式头部包装：字标 + 思考行同挂收起过渡（collapseThinking 测的是本块整体高度） */
+.conv-streaming-head {
+  display: flex;
+  flex-direction: column;
+}
+
+/* FORGE 轮次字标（流式阶段，与 MessageCard .msg-brand 同口径）；
+   左右 14px 抵消 .conv-thinking 内边距，使字标与正文左缘对齐 */
+.msg-brand {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  margin: 4px 14px -4px;
+  user-select: none;
+}
+
 .loading-dot,
 .thinking-dot {
   width: 7px;
@@ -1281,7 +1317,7 @@ onUnmounted(() => {
   display: none;
   width: min(40cqw, 320px);
   height: auto;
-  margin-bottom: 28px;
+  margin-bottom: 44px;
   pointer-events: none;
   user-select: none;
 }
@@ -1289,6 +1325,11 @@ onUnmounted(() => {
 :root:not([data-theme='light']) .conv-hero-wordmark.wm-dark,
 :root[data-theme='light'] .conv-hero-wordmark.wm-light {
   display: block;
+}
+
+/* 浅色主题下纯黑字标对比过强，降透明度柔化（与 landing 首屏同参数） */
+:root[data-theme='light'] .conv-hero-wordmark.wm-light {
+  opacity: 0.8;
 }
 
 .conv-hero-enter-active,

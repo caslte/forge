@@ -33,6 +33,35 @@ const { t, activeLocale } = useI18n();
  */
 const bootReady = ref(false);
 
+/**
+ * 项目首拉是否落地（v3.85.2）：门闩放行时 projects 恒为空数组（loadProjects 是放行后
+ * 才发的异步 IPC），正式 UI 若同 tick 挂载，有项目的用户也会先闪现一帧「零项目落地页」
+ * LandingHero（字标几何 A），project 落地后换成会话空态 hero（几何 B）——即用户报的
+ * 「跳到新会话时 FORGE 字样调整了一下高度，跳了一下」。BootWelcome 多驻留到首拉落地，
+ * 正式 UI 首帧即终态。loadProjects 的 finally 置位（报错/零项目同样放行，不成死门）。
+ */
+const projectsLoaded = ref(false);
+/** 正式 UI 可挂载 = core 就绪 ∧ 项目首拉落地 */
+const formalUiReady = computed(() => bootReady.value && projectsLoaded.value);
+
+/**
+ * 接管 veil（v3.85.2）：formalUiReady 后 BootWelcome 不再同 tick 硬卸载，而是留在
+ * fixed 覆盖层上淡出 200ms 再卸载，把「切页硬切」变成连续过渡（字标两侧同尺寸 320，
+ * 淡出即无闪跳）。卸载走 400ms 超时兜底：prefers-reduced-motion 下 transition 被禁用、
+ * transitionend 不会来，只等事件就会 veil 常驻挡交互。
+ */
+const bootVeilLeaving = ref(false);
+const bootVeilGone = ref(false);
+watch(formalUiReady, (ready) => {
+  if (!ready) return;
+  requestAnimationFrame(() => {
+    bootVeilLeaving.value = true;
+  });
+  setTimeout(() => {
+    bootVeilGone.value = true;
+  }, 400);
+});
+
 // 项目/会话
 const projects = ref<ProjectItem[]>([]);
 const sessions = ref<SessionItem[]>([]);
@@ -281,6 +310,10 @@ async function loadProjects(): Promise<void> {
     }
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    // v3.85.2：首拉落地（含报错/零项目）才允许正式 UI 挂载——openProject 在 try 内
+    // await，置位时 currentProject 已就绪，ConversationView 首帧即终态
+    projectsLoaded.value = true;
   }
 }
 
@@ -700,10 +733,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit -->
-  <BootWelcome v-if="!bootReady" />
+  <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit。
+       v3.85.2：放行条件收紧为 formalUiReady（core ∧ 项目首拉），且欢迎页改 veil 淡出接管 -->
+  <BootWelcome
+    v-if="!bootVeilGone"
+    class="boot-veil"
+    :class="{ 'boot-veil-leaving': bootVeilLeaving }"
+  />
   <div
-    v-else
+    v-if="formalUiReady"
     class="app-container"
     :class="{ 'sidebar-collapsed': sidebarCollapsed, 'sidebar-resizing': sidebarResizing }"
     :style="{ '--sidebar-w': `${sidebarWidth}px` }"
@@ -717,7 +755,6 @@ onUnmounted(() => {
         class="shell-toggle"
         :class="{ 'shell-toggle-mac': isMac }"
         :aria-label="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
-        :data-tooltip="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
         @click="sidebarCollapsed = !sidebarCollapsed"
       >
         <!-- 默认显品牌 LOGO（切图），hover 交叉淡入为面板图标，箭头方向随折叠态翻转 -->
@@ -997,6 +1034,26 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* v3.85.2 启动接管 veil（见 script 的 bootVeilLeaving 注释）。门闩期间它就是启动页本体
+   （fixed 全屏自带底色，行为与原 100vh 布局等值）；放行后 opacity 淡出 200ms，把
+   BootWelcome→正式 UI 的硬切变成连续过渡。z 档高于应用内一切浮层（dialog/toast 3000）。 */
+.boot-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  opacity: 1;
+  transition: opacity 200ms ease-out;
+}
+.boot-veil-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-veil {
+    transition: none;
+  }
+}
+
 .app-container {
   height: 100vh;
   width: 100vw;
@@ -1041,8 +1098,13 @@ onUnmounted(() => {
   background: linear-gradient(180deg, transparent 4%, var(--border) 18%, var(--border) 82%, transparent 96%);
 }
 
+/* 暗色（D 档）：底色已深（oklch 0.166），不再压黑（压黑会沉到光场剖面之下）；
+   改为自带一层竖向微光（+1~+3 电平，原型 D 档同款）——侧栏是略高于同位置主区的独立面 */
 :root[data-theme='dark'] .sidebar {
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.22) 0%, rgba(0, 0, 0, 0.07) 72%, transparent 100%);
+  background: linear-gradient(180deg,
+    rgba(205, 218, 235, 0.004) 0%,
+    rgba(205, 218, 235, 0.016) 50%,
+    rgba(205, 218, 235, 0.023) 100%);
 }
 
 .sidebar.collapsed {
@@ -1215,10 +1277,19 @@ onUnmounted(() => {
     radial-gradient(80% 55% at 105% 108%, rgba(255, 255, 255, 0.3) 0%, transparent 60%);
 }
 
+/* 暗色：D 档光场（原型 bg-tone-options-demo.html v6，213.4° 对角线性光场 + 底部反光）。
+   与设计稿一致的整窗剖面：右上最亮（+0.096 白）向左下线性衰减、构造上无热点；
+   盖顶而非沉底——面板保持不透明也被同一光场覆盖，整窗剖面连续。 */
 :root[data-theme='dark'] .shell-sheen {
   background:
-    radial-gradient(120% 62% at 26% -12%, rgba(255, 255, 255, 0.062) 0%, transparent 58%),
-    radial-gradient(80% 55% at 105% 108%, rgba(255, 255, 255, 0.03) 0%, transparent 60%);
+    linear-gradient(213.4deg,
+      rgba(205, 218, 235, 0.096) 0%,
+      rgba(205, 218, 235, 0.050) 28%,
+      rgba(205, 218, 235, 0.024) 47%,
+      rgba(205, 218, 235, 0.019) 60%,
+      rgba(205, 218, 235, 0.010) 72%,
+      rgba(205, 218, 235, 0.000) 82%),
+    linear-gradient(0deg, rgba(205, 218, 235, 0.005) 0%, rgba(205, 218, 235, 0) 14%);
 }
 
 .tree-panel {
@@ -1300,7 +1371,9 @@ onUnmounted(() => {
   gap: 4px;
 }
 
-/* 收起全部/展开全部（仅项目视角）：无 边框 ghost 按钮（SM-S06） */
+/* 收起全部/展开全部（仅项目视角）：无 边框 ghost 按钮（SM-S06）。
+   默认隐藏，悬停侧栏顶部区/按钮自身或键盘聚焦时淡入（visibility 占位逻辑见模板注释，
+   opacity 只负责显隐动画，两者叠加互不冲突） */
 .fold-all-btn {
   width: 30px;
   height: 30px;
@@ -1313,7 +1386,17 @@ onUnmounted(() => {
   border: 0;
   color: var(--muted-foreground);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  opacity: 0;
+  pointer-events: none;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.sidebar-top:hover .fold-all-btn,
+.fold-all-btn:hover,
+.fold-all-btn:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .fold-all-btn:hover {
@@ -1380,6 +1463,12 @@ onUnmounted(() => {
   padding: 8px 16px;
   background: color-mix(in oklab, var(--muted) 8%, var(--background));
   flex-shrink: 0;
+}
+
+/* 暗色（D 档）：工具栏去不透明底。设计稿顶部与光场是一体的（实测 27.7 连续），
+   近不透明底会把对角光场切成「顶部亮带 + 下方暗区」的硬边界 */
+:root[data-theme='dark'] .app-toolbar {
+  background: transparent;
 }
 
 .app-toolbar-btn {

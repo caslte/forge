@@ -93,10 +93,18 @@
   --motion-head-swap: 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* 暗色主题：底色/光场复刻设计稿（原型 bg-tone-options-demo.html D 档，v6 定稿）。
+   结构 = 深底（--background 平涂）+ 对角线性光场（global.css / App.vue 的 sheen 层），
+   光场不加磨砂颗粒。D 档底色来自像素采样：右上最亮 rgb(31 34 41) ← 13 + 光场 0.096，
+   左下最暗 rgb(13 15 19)。oklch 写法经 theme.test.ts 同款矩阵验证与 rgb 目标逐位一致：
+   - oklch(0.166 0.009 263.6) = rgb(13 15 19) = #0d0f13（--background，与 theme.ts 逐位锁定）
+   - oklch(0.189 0.011 268.2) = rgb(18 20 25) = #121419（--card）
+   - oklch(0.207 0.012 271)   = rgb(22 24 30) = #16181e（--muted/--secondary/--accent）
+   --border 改半透明白：面板边线融入光场，不随底色形成第二套灰阶。 */
 :root[data-theme='dark'] {
-  --background: oklch(0.26 0.006 286.2);
-  --foreground: oklch(0.88 0.002 286.3);
-  --card: oklch(0.26 0.006 286.2);
+  --background: oklch(0.166 0.009 263.6);
+  --foreground: oklch(0.85 0.004 262);
+  --card: oklch(0.189 0.011 268.2);
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
@@ -105,12 +113,12 @@
   --primary-hover: color-mix(in oklab, var(--primary) 84%, white);
   --primary-foreground: oklch(0.21 0.01 286.2);
 
-  --secondary: oklch(0.3 0.005 286.2);
+  --secondary: oklch(0.207 0.012 271);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(0.3 0.005 286.2);
-  --muted-foreground: oklch(0.7 0.008 286.3);
+  --muted: oklch(0.207 0.012 271);
+  --muted-foreground: oklch(0.62 0.008 262);
 
-  --accent: oklch(0.32 0.005 286.2);
+  --accent: oklch(0.207 0.012 271);
   --accent-foreground: var(--foreground);
   --brand: oklch(0.88 0.008 286.3);
   --brand-hover: color-mix(in oklab, var(--brand) 85%, white);
@@ -122,8 +130,8 @@
   --warning: oklch(0.8 0.14 85);
   --info: oklch(0.76 0.01 286.3);
 
-  --border: oklch(0.32 0.005 286.3);
-  --input: oklch(0.32 0.005 286.3);
+  --border: rgba(255, 255, 255, 0.085);
+  --input: rgba(255, 255, 255, 0.085);
   --ring: oklch(0.78 0.02 286.3);
 
   --overlay: color-mix(in oklab, black 46%, transparent);

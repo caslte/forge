@@ -30,6 +30,22 @@ body {
   user-select: none;
 }
 
+/* 暗色 body：D 档光场（原型 bg-tone-options-demo.html，213.4° 对角线性光场 + 底部反光）。
+   通常被 .app-container 盖住不可见，这里保持同款是为了多窗口画布等透出 body 的场景
+   不出现第二套底色。光场本体画在 App.vue 的 .shell-sheen（盖顶层），此处仅兜底。 */
+:root[data-theme='dark'] body {
+  background:
+    linear-gradient(213.4deg,
+      rgba(205, 218, 235, 0.096) 0%,
+      rgba(205, 218, 235, 0.050) 28%,
+      rgba(205, 218, 235, 0.024) 47%,
+      rgba(205, 218, 235, 0.019) 60%,
+      rgba(205, 218, 235, 0.010) 72%,
+      rgba(205, 218, 235, 0.000) 82%),
+    linear-gradient(0deg, rgba(205, 218, 235, 0.005) 0%, rgba(205, 218, 235, 0) 14%),
+    var(--background);
+}
+
 button,
 input,
 textarea,

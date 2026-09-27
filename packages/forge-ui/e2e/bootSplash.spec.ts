@@ -256,3 +256,52 @@ test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字标�
   }
   health.assertHealthy();
 });
+
+/**
+ * BOOT-SPLASH-005（v3.85.2）：字标**解码前不得回执 splashReady**，且字标自带占位几何。
+ *
+ * 背景：v3.78.7 的回执只数了两帧 rAF，若 PNG 尚未解码，主进程 show 出来的第一帧
+ * 就没有 FORGE（用户报「加载页 FORGE 字样会闪一下」的第一段）。同时 prod 是
+ * `base:'./'` + loadFile（file://），splash 的绝对路径 `/logo-…` 在打包版直接裂图；
+ * `height:auto` 无 width/height 属性时解码前盒子塌 0，BootWelcome 交接再放大一次。
+ * 断言口径：冻结模块链（无 preload 桥）下回执脚本仍会落 `window.__forgeSplashNotified`
+ * 观测位——wordLoaded 必为 true；src 为相对路径；img 带显式 width/height 属性。
+ */
+test('BOOT-SPLASH-005 @P0 @mock-backend splash 回执必在字标解码后，且字标为相对路径 + 显式占位', async ({
+  page,
+}) => {
+  const health = attachHealthGuards(page);
+  await freezeBeforeModuleChain(page);
+  await page.goto('/');
+
+  // 回执发生（幂等观测位出现）——超时即说明 decode 门把回执卡死（新死门）
+  await page.waitForFunction(
+    () => (window as unknown as { __forgeSplashNotified?: unknown }).__forgeSplashNotified !== undefined,
+    undefined,
+    { timeout: 10_000 },
+  );
+  const info = await page.evaluate(() => {
+    const marks = [...document.querySelectorAll<HTMLImageElement>('#app-boot-splash .splash-word')];
+    return {
+      notified: (window as unknown as { __forgeSplashNotified: { wordLoaded: boolean } })
+        .__forgeSplashNotified,
+      srcs: marks.map((im) => im.getAttribute('src') ?? ''),
+      dims: marks.map((im) => ({
+        w: im.getAttribute('width'),
+        h: im.getAttribute('height'),
+        natural: im.naturalWidth,
+      })),
+    };
+  });
+
+  expect(info.notified.wordLoaded, '回执时字标尚未 complete/解码').toBe(true);
+  for (const src of info.srcs) {
+    expect(src, `字标 src="${src}" 必须是相对路径（prod file:// 下绝对路径裂图）`).not.toMatch(/^\//);
+  }
+  for (const d of info.dims) {
+    expect(d.w, '字标缺显式 width 属性（解码期盒子塌 0）').toBe('320');
+    expect(d.h, '字标缺显式 height 属性').toBe('42');
+    expect(d.natural, '字标 PNG 未加载成功').toBeGreaterThan(0);
+  }
+  health.assertHealthy();
+});

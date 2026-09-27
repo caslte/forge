@@ -393,6 +393,8 @@ const riseIn = computed(() => {
 
 <template>
   <div :class="['msg', `msg-${message.role}`, { streaming, 'rise-in': riseIn }]">
+    <!-- 轮次品牌字标：仅该轮首张 assistant 卡头部显示（分片卡不重复） -->
+    <div v-if="isAssistant && firstOfTurn !== false" class="msg-brand">FORGE</div>
     <!-- 附件图片缩略图（统一给路径：图片不显示路径，点击放大）：渲染在气泡上方 -->
     <div
       v-if="userParsed.images.some((img) => userThumbs[img])"
@@ -620,6 +622,17 @@ const riseIn = computed(() => {
 
 .msg-assistant {
   max-width: 94%;
+}
+
+/* 轮次头部 FORGE 字标：小号、宽字距、弱化色（设计稿口径） */
+.msg-brand {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+  user-select: none;
 }
 
 .msg-system {

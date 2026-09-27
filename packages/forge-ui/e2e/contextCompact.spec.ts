@@ -2,11 +2,12 @@
  * 上下文压缩 E2E（P3-A）。
  *
  * - 手动压缩：点击「压缩」按钮 → 全局 toast 反馈（同切换模型款式，含 token 变化
- *   与减少百分比）+ 对话流底部持久横幅（压缩中 → 已压缩，App 关闭前保持）；
+ *   与减少百分比）；压缩中显示底部横幅、完成即收掉（2026-09-27 用户反馈：
+ *   常驻「减少 x%」横幅与消息流内联分隔条重复，删除）；
  *   压缩失败显示失败原因；全程无 pageerror（dev 预览走 mock-bridge）；
  * - 流式保护：streaming 期间压缩按钮禁用，避免静默截断正在生成的回答；
  * - 自动压缩：mock 发射 conversation.compacting/compacted → 输入锁定/解锁、
- *   重拉历史并显示持久横幅（自动压缩没有 RPC 入口，事件是 UI 感知它的唯一通道）；
+ *   重拉历史、横幅随完成收掉（自动压缩没有 RPC 入口，事件是 UI 感知它的唯一通道）；
  * - 压缩后百分比：压缩完成即显示压缩后的上下文占用百分比（不再"? tokens"）；
  * - 压缩后历史不丢（2026-09-26 反馈）：压缩点**之前**的对话仍留在消息流里，
  *   压缩点位置出现「上下文已压缩」分隔条 + 可展开摘要（CV-S07 口径修正）。
@@ -50,7 +51,7 @@ async function clickCompact(page: Page): Promise<void> {
   await page.locator('.ctx-cmp').evaluate((el) => (el as HTMLElement).click());
 }
 
-test('手动压缩：mock 默认实现可用（点击不报错），toast + 持久横幅反馈', async ({ page }) => {
+test('手动压缩：mock 默认实现可用（点击不报错），toast 反馈 + 横幅随完成收掉', async ({ page }) => {
   const guard = attachHealthGuards(page);
   await boot(page);
   // 不注入 seed：走 mock-bridge 的 conversation/compact 默认实现
@@ -59,9 +60,9 @@ test('手动压缩：mock 默认实现可用（点击不报错），toast + 持�
 
   // toast（同切换模型的浮窗款式）：mock 默认 4200 → 1680（减少 60%）
   await expect(page.locator('.toast')).toContainText('压缩完成');
-  // 持久横幅：完成后常驻（不自动消失）
-  await expect(page.locator('.compact-banner')).toContainText('已压缩');
-  await expect(page.locator('.compact-banner')).toContainText('60%');
+  // 2026-09-27 用户反馈：完成后不再常驻「上下文已压缩（减少 x%）」横幅，
+  // 压缩点由消息流内联分隔条标记，结果由 toast 承担
+  await expect(page.locator('.compact-banner')).toHaveCount(0);
   guard.assertHealthy();
 });
 
@@ -114,7 +115,7 @@ test('流式回答期间压缩按钮禁用（避免静默截断当前轮）', as
   guard.assertHealthy();
 });
 
-test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重拉历史并保持完成横幅', async ({ page }) => {
+test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重拉历史并收掉横幅', async ({ page }) => {
   const guard = attachHealthGuards(page);
   await boot(page);
   await page.evaluate(() => {
@@ -132,7 +133,7 @@ test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重�
   await expect(page.locator('.compact-banner.working')).toContainText('正在压缩上下文');
   await expect(page.locator('.compose-input')).toBeDisabled();
 
-  // 压缩完成：横幅替换为已完成（含减少百分比），输入解锁，历史重拉
+  // 压缩完成：横幅收掉（不再有常驻提示），输入解锁，历史重拉
   await page.evaluate((sid) => {
     window.__forgeMock!.emit(sid, 'conversation.compacted', {
       reason: 'auto',
@@ -142,9 +143,7 @@ test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重�
     });
   }, SESSION_ID);
 
-  await expect(page.locator('.compact-banner')).toContainText('已压缩');
-  await expect(page.locator('.compact-banner')).toContainText('90%');
-  await expect(page.locator('.compact-banner')).not.toHaveClass(/working/);
+  await expect(page.locator('.compact-banner')).toHaveCount(0);
   await expect(page.locator('.compose-input')).toBeEnabled();
   const calls = await page.evaluate(() => (window as unknown as { __qh: number }).__qh);
   expect(calls, '自动压缩后应重新拉取会话历史').toBeGreaterThan(0);

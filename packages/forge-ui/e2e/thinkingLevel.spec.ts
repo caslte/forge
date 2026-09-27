@@ -303,7 +303,7 @@ test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现金色流光�
 
   // 合成器友好（附加断言）：MAX 动画仅作用于 transform/opacity——动画名 max-text-flow（渐变流动，不触发布局/绘制）
   const animInfo = await page.evaluate(() => {
-    const el = document.querySelector('.max-shimmer .max-text');
+    const el = document.querySelector('.max-shimmer');
     if (!el) return null;
     const cs = getComputedStyle(el);
     return { animationName: cs.animationName, transform: cs.transform };

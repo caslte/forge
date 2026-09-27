@@ -4,14 +4,24 @@
  *
  * 硬约束：本组件在主进程 forge-core（含 pi SDK）组装完成期间显示，此时渲染进程
  * 主线程是唯一空闲资源——严禁在此 import renderMarkdown/hljs 等重模块或发任何
- * forge:invoke 请求（invoke handler 尚未注册）。样式与 App 底色 #f6f8fa 对齐。
+ * forge:invoke 请求（invoke handler 尚未注册）。底色走 --background 设计令牌
+ * （与 index.html splash、正式 UI 三处同源，v3.78.5/v3.78.6）。
+ *
+ * v3.85.2 接管无缝铁律（用户报「加载页 FORGE 字样闪一下」的两处根因都在这）：
+ * 1) 字标必须**静态在场**——曾有 0.4s 入场动画，在 splash（静态）被替换的瞬间重放
+ *    = 字消失再淡入；不得再加任何 enter 动画。
+ * 2) 字标必须与 splash 用**同一 URL**——曾有 src/assets 下的第二份同名文件，交接时
+ *    新 URL 重新拉取解码，盒子先塌 0 再弹出。经 BASE_URL 拼 public 相对路径
+ *    （dev '/'、prod './' 与 index.html 的 './logo-…' 解析到同一资源）。
+ * 3) 尺寸与 LandingHero/conv-hero 同档（320px），全链路字标只有一个宽度。
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import logoWordmarkDark from '../assets/logo-wordmark-on-dark.png';
-import logoWordmarkLight from '../assets/logo-wordmark-on-light.png';
 import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
+
+const wmDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
+const wmLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
 
 /**
  * 轮换文案：纯前端节奏，与主进程进度无关联（避免虚假进度条）。
@@ -40,10 +50,8 @@ onUnmounted(() => {
 
 <template>
   <div class="boot-welcome">
-    <div class="boot-logo" aria-hidden="true">
-      <img class="boot-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" draggable="false" />
-      <img class="boot-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" draggable="false" />
-    </div>
+    <img class="boot-wordmark wm-dark" :src="wmDark" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
+    <img class="boot-wordmark wm-light" :src="wmLight" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
     <div class="boot-phase" role="status">{{ PHASES[phaseIndex] }}…</div>
   </div>
 </template>
@@ -60,13 +68,11 @@ onUnmounted(() => {
   background: var(--background);
   user-select: none;
 }
-.boot-logo {
-  animation: boot-fade-in 0.4s ease-out;
-}
-/* 启动页仅字标（纯黑白，深浅主题各一版），不再放图形 LOGO */
+/* 启动页仅字标（纯黑白，深浅主题各一版），不再放图形 LOGO。
+   320px = LandingHero/conv-hero 同档（v3.85.2），接管零尺寸变化；无入场动画 */
 .boot-wordmark {
   display: none;
-  width: 300px;
+  width: 320px;
   height: auto;
   user-select: none;
 }
@@ -74,19 +80,13 @@ onUnmounted(() => {
 :root[data-theme='light'] .boot-wordmark.wm-light {
   display: block;
 }
+/* 浅色主题下纯黑字标对比过强，降透明度柔化（与首屏同参数） */
+:root[data-theme='light'] .boot-wordmark.wm-light {
+  opacity: 0.8;
+}
 .boot-phase {
   font-size: 13px;
   color: var(--muted-foreground);
   min-height: 1.4em; /* 文案轮换时高度稳定，不跳动 */
-}
-@keyframes boot-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 </style>
