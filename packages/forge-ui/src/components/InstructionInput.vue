@@ -2064,15 +2064,19 @@ watch(
 .proj-pill {
   font-weight: 600;
   min-width: 0;
+  /* 覆盖 .meta-link 的 line-height: 1：按钮内 SVG(13×13) > 1×font-size(12)，
+     否则 flex 容器会被父级 line-height 约束导致 icon 顶部与英文 ascender 一起被切 */
+  line-height: min-content;
 }
 
 /* 项目名可收缩截断（完整名见 data-tooltip）；「提交或推送」标签恒不收缩。
-   line-height: min-content 让行盒按字体包围盒撑开——否则会继承 .meta-link 的
-   line-height:1，overflow:hidden 把英文字上下缘裁掉 */
+   必须显式 line-height: normal——否则会继承 .meta-link 的 line-height:1，
+   12px 行盒装不下字体包围盒，overflow:hidden 把英文字下缘（如 y 的降部）裁掉。
+   注意：line-height 不接受 min-content 这类内在尺寸关键字，写了会被整条丢弃 */
 .proj-pill span {
   display: block;
   min-width: 0;
-  line-height: min-content;
+  line-height: normal;
   overflow: hidden;
   text-overflow: ellipsis;
 }
