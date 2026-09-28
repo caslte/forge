@@ -765,6 +765,14 @@ const heroLiftReady = ref(false);
  * hero 是 wrap 的 absolute 子元素，会随 wrap 一起被 transform 带走，
  * 所以要把当前已生效的位移减回去，才是未位移的原始几何。
  *
+ * 关键：hero 与 wrap 共用同一个 translateY（hero 是 wrap 的子元素），
+ * 因此「组中心」受变换污染的幅度恰好等于 hero 高度的一半——
+ * 用 view 的偏移量把 wrap 还原成未位移布局位（offsetTop 不含祖先 transform），
+ * 再补回这半个 hero，即可精确还原原始几何。
+ * 若直接拿变换后的 rect 相减（旧算法 rawTop 减 wr.top 时污染抵消不掉），
+ * 拖拽/缩放窗口时 ResizeObserver 会在 transform 过渡中途重测，误差按
+ * 「1 + hero高/输入框高」倍自我放大，表现为字标漂移、顶部被裁切。
+ *
  * 注意：必须在 hero 已挂载且父级 flex 布局完成（首帧绘制后）再测。
  * 否则会测到 hero 未就位 / 父级高度为 0，算出超大负位移把输入框顶到顶部
  * （连续切换多窗口导致 ConversationView 反复挂载时最易触发，表现为“输入框被提到上面”）。
@@ -778,12 +786,21 @@ function measureHeroLift(): boolean {
   if (isEmpty.value && !heroRef.value) return false;
   const vr = view.getBoundingClientRect();
   if (vr.height === 0) return false;
-  const wr = wrap.getBoundingClientRect();
-  const hr = heroRef.value?.getBoundingClientRect();
-  const rawTop = hr ? Math.min(hr.top, wr.top) : wr.top;
-  const rawBottom = hr ? Math.max(hr.bottom, wr.bottom) : wr.bottom;
-  const groupCenter = (rawTop + rawBottom) / 2 - heroLift.value;
-  heroLift.value = Math.round(vr.top + vr.height / 2 - groupCenter);
+  // offset* 系列不受任何祖先 transform 影响，是纯布局几何
+  const wrapTop = wrap.offsetTop;
+  const wrapH = wrap.offsetHeight;
+  const viewH = view.offsetHeight;
+  let heroH = 0;
+  if (heroRef.value) {
+    // offsetHeight 不含祖先 transform；enter 过渡的 opacity 会推动内层字标高度，
+    // 故 rect 高度更贴合当前渲染态——仅当它不小于布局高度时采用
+    const layoutH = heroRef.value.offsetHeight;
+    const renderedH = heroRef.value.getBoundingClientRect().height;
+    heroH = Math.max(layoutH, Math.round(renderedH));
+  }
+  // 未位移时组中心 = wrap 顶 - hero 高 + (hero 高 + wrap 高)/2
+  const groupCenter = wrapTop - heroH / 2 + wrapH / 2;
+  heroLift.value = Math.round(viewH / 2 - groupCenter);
   return true;
 }
 
