@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="forge logo"/>
+<img src="docs/assets/logo.png" width="128" alt="Forge logo"/>
 
-# forge
+# Forge
 
-**forge, as in "forging" — a coding workbench where every great product takes shape.**
+**Forge, as in "forging" — a coding workbench where every great product takes shape.**
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -14,7 +14,7 @@
 
 </div>
 
-![forge welcome screen](docs/assets/hero.png)
+![Forge welcome screen](docs/assets/hero.png)
 
 ## 🪟 Multi-Window Mode
 
@@ -24,7 +24,7 @@ Open each session as its own little window and spread them across the screen lik
 - Default **quad-grid** layout, one-click auto-arrange, one-click close-all
 - Sessions from **different projects** can share the same canvas — project A on the left, project B on the right, watch whichever moves
 
-![forge multi-window mode](docs/assets/multi-window.png)
+![Forge multi-window mode](docs/assets/multi-window.png)
 
 ## ✨ Features
 
@@ -50,4 +50,4 @@ Open each session as its own little window and spread them across the screen lik
 
 ## Acknowledgements
 
-forge is built on the [pi](https://github.com/earendil-works/pi) coding-agent engine.
+Forge is built on the [pi](https://github.com/earendil-works/pi) coding-agent engine.

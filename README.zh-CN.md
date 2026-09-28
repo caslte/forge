@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="forge logo"/>
+<img src="docs/assets/logo.png" width="128" alt="Forge logo"/>
 
-# forge
+# Forge
 
-**forge，取「锻造」之意 —— 一个 coding 工作台，愿每一个好产品都从这里锻造而出。**
+**Forge，取「锻造」之意 —— 一个 coding 工作台，愿每一个好产品都从这里锻造而出。**
 
 [English](README.md) | 简体中文
 
@@ -14,7 +14,7 @@
 
 </div>
 
-![forge 主界面](docs/assets/hero.png)
+![Forge 主界面](docs/assets/hero.png)
 
 ## 🪟 多窗口模式
 
@@ -24,7 +24,7 @@
 - 默认**四宫格**布局，一键自动排布，一键全部关闭
 - **跨项目**的会话也能摆上同一块画布——左边跑 A 项目，右边跑 B 项目，哪边有动静看哪边
 
-![forge 多窗口模式](docs/assets/multi-window.png)
+![Forge 多窗口模式](docs/assets/multi-window.png)
 
 ## ✨ 特性一览
 
@@ -50,4 +50,4 @@
 
 ## 致谢
 
-forge 基于 [pi](https://github.com/earendil-works/pi) 编码代理引擎构建。
+Forge 基于 [pi](https://github.com/earendil-works/pi) 编码代理引擎构建。
