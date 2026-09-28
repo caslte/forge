@@ -218,9 +218,9 @@ const availableLevels = ref<ThinkingLevel[]>([]);
 /** 会话当前生效思考级别（来自 model/getSessionThinkingLevel） */
 const currentLevel = ref<ThinkingLevel | null>(null);
 const levelMenuOpen = ref(false);
-/** max 金色流光动画开关（纯视觉，不影响输入） */
-const shimmerOn = ref(false);
-let shimmerTimer: ReturnType<typeof setTimeout> | null = null;
+/** max 金色扫光动画开关（纯视觉，不影响输入）：见 flashMaxCell */
+const maxSweepOn = ref(false);
+let maxSweepTimer: ReturnType<typeof setTimeout> | null = null;
 /** 会话/模型切换竞态代际编号：只应用最新一次查询响应，避免交错覆盖 */
 let tlGen = 0;
 
@@ -1026,7 +1026,7 @@ function selectModel(m: string): void {
  * 草稿态（新会话未创建，sessionId 缺省）同样渲染切换器：级别列表只依赖模型
  * （草稿用全局默认模型）；级别回显传空参查全局默认（新会话继承全局，TD-MP-05）。
  * 仅当 currentModel 不存在时回退空态。
- * 金色流光动画仅在用户主动选择切到 max 时触发（见 selectLevel）；
+ * 金色扫光动画仅在用户主动选择切到 max 时触发（见 selectLevel）；
  * 加载/重载（包括切换会话、切换模型）落出 max 不触发，避免每次进会话都闪一次。
  */
 async function loadThinkingState(): Promise<void> {
@@ -1078,29 +1078,113 @@ const displayLevel = computed<ThinkingLevel | null>(() => {
 
 function toggleLevelMenu(): void {
   levelMenuOpen.value = !levelMenuOpen.value;
+  if (levelMenuOpen.value) {
+    // 展开：重置方向基准，下一帧无动画贴到当前级别（浮窗已有入场动画，不再叠一次水滴），
+    // 并把焦点交给分段条
+    levelPillFrom = null;
+    void nextTick(() => {
+      moveLevelPill(false);
+      watchLevelSegSize();
+      levelSegEl.value?.focus({ preventScroll: true });
+    });
+  }
 }
 
-/** 触发输入框 max 动画（"M A X" 在级别胶囊正上方浮现→停留→淡出，全程约 2.8s 后自移除，重入时重启动画） */
-function triggerShimmer(): void {
-  if (shimmerTimer) clearTimeout(shimmerTimer);
-  shimmerOn.value = false;
-  // 同一帧后再挂载，确保 CSS 动画能重新启动
-  requestAnimationFrame(() => {
-    shimmerOn.value = true;
-    shimmerTimer = setTimeout(() => {
-      shimmerOn.value = false;
-    }, 2900);
+/** 级别/挡位集在浮窗开着时变化（点击、键盘、会话重载、模型切换）→ 高亮块滑到新位置（带水滴）。
+    展开时（levelMenuOpen 变 true）不参与：首贴由 toggleLevelMenu 里的无动画分支处理。 */
+watch([displayLevel, () => availableLevels.value.length], () => {
+  if (!levelMenuOpen.value) return;
+  void nextTick(() => moveLevelPill(true));
+});
+
+/* 分段滑条浮窗（MP-S05 方案 D）：浮窗里是横向分段滑条，高亮块用「左右两条边分别动画」的水滴果冻
+   机制（与 App.vue 项目/任务切换同款），几何由 --pill-l / --pill-r 给出：
+   向前进方向那条边先行（带回弹），另一条边延迟 70ms 追随，途中被拉长成水滴。 */
+const levelSegEl = ref<HTMLElement | null>(null);
+/** 触发器（Esc 收起后归还焦点） */
+const levelTriggerEl = ref<HTMLButtonElement | null>(null);
+/** 上一次高亮块左边界（null = 本次展开的首贴，不判方向） */
+let levelPillFrom: number | null = null;
+
+/** 按 active 按钮实测几何贴高亮块；animate=false 用于首贴/重建（不播水滴） */
+function moveLevelPill(animate: boolean): void {
+  const seg = levelSegEl.value;
+  if (!seg) return;
+  const btn = seg.querySelector<HTMLElement>('.level-item.on');
+  if (!btn || btn.offsetWidth === 0) return;
+  const l = btn.offsetLeft;
+  const r = seg.clientWidth - l - btn.offsetWidth;
+  if (!animate) seg.classList.add('no-anim');
+  // 方向决定谁先动：向右滑 → 右边先行（fwd）；向左滑 → 回到基态（左边先行）
+  seg.classList.remove('fwd');
+  if (levelPillFrom !== null && l > levelPillFrom) {
+    void seg.offsetWidth; // 强制回流：让方向类变更重新触发 transition
+    seg.classList.add('fwd');
+  }
+  seg.style.setProperty('--pill-l', `${l}px`);
+  seg.style.setProperty('--pill-r', `${r}px`);
+  levelPillFrom = l;
+  if (!animate) requestAnimationFrame(() => seg.classList.remove('no-anim'));
+}
+
+/** 分段条键盘操作：←/→ 换挡、Home/End 首末档、Esc 收起并把焦点还给触发器 */
+function onLevelSegKey(e: KeyboardEvent): void {
+  const ls = availableLevels.value;
+  if (ls.length === 0) return;
+  const cur = displayLevel.value;
+  let idx = ls.indexOf(cur ?? 'off');
+  if (idx < 0) idx = 0;
+  const go = (n: number) => {
+    const lv = ls[Math.max(0, Math.min(ls.length - 1, n))];
+    if (lv) selectLevel(lv);
+  };
+  switch (e.key) {
+    case 'ArrowRight':
+    case 'ArrowUp':
+      go(idx + 1);
+      break;
+    case 'ArrowLeft':
+    case 'ArrowDown':
+      go(idx - 1);
+      break;
+    case 'Home':
+      go(0);
+      break;
+    case 'End':
+      go(ls.length - 1);
+      break;
+    case 'Escape':
+      levelMenuOpen.value = false;
+      levelTriggerEl.value?.focus();
+      return;
+    default:
+      return;
+  }
+  e.preventDefault();
+}
+
+/** max 反馈动画（方案 A，替代原悬浮「M A X」文字）：在 max 档位自身就地做一次
+ *  金色流光扫过 + 格子轻弹，高亮块同步金色描边脉冲；全程锚在分段条内部，
+ *  不产生任何浮层（不再侵入输入正文区），重入时先清 class 再回流重启。 */
+function flashMaxCell(): void {
+  if (maxSweepTimer) clearTimeout(maxSweepTimer);
+  maxSweepOn.value = false;
+  void nextTick(() => {
+    maxSweepOn.value = true;
+    maxSweepTimer = setTimeout(() => {
+      maxSweepOn.value = false;
+    }, 1250);
   });
 }
 
 /** 选择思考级别：乐观更新本地 + 写当前会话（同步全局默认由后端处理）；
- *  草稿态（无 sessionId）仅本地记录，随会话创建由 ConversationView 落库（见其草稿发送分支）；切换 max 触发金色流光动画 */
+ *  草稿态（无 sessionId）仅本地记录，随会话创建由 ConversationView 落库（见其草稿发送分支）；
+ *  切到 max 触发就地金色扫光。浮窗保持展开（方便连续换挡、看清水滴滑动） */
 function selectLevel(level: ThinkingLevel): void {
-  levelMenuOpen.value = false;
   const prev = currentLevel.value;
   if (level === prev) return;
   currentLevel.value = level; // 乐观更新，不弹 toast
-  if (level === 'max') triggerShimmer();
+  if (level === 'max') flashMaxCell();
   if (!props.sessionId) return; // 草稿态：无会话可写，留给发送时随会话创建落库
   call('model/setSessionThinkingLevel', { sessionId: props.sessionId, level }).catch((e) => {
     console.warn('[thinkingLevel] 切换思考级别失败（静默降级）', e);
@@ -1184,14 +1268,35 @@ onMounted(() => {
   });
 });
 
+/** 浮窗开合时观察分段条尺寸：等宽字体异步加载 / 窗口缩放会改档位宽窄，
+ *  高亮块几何是从实测值写入的 CSS 变量，尺寸一变就得重贴（无动画，避免打断正在播的水滴）。
+ * 只在浮窗展开时挂在窗口上。 */
+let levelSegRO: ResizeObserver | null = null;
+function watchLevelSegSize(): void {
+  levelSegRO?.disconnect();
+  levelSegRO = null;
+  const seg = levelSegEl.value;
+  if (!seg || typeof ResizeObserver === 'undefined') return;
+  levelSegRO = new ResizeObserver(() => moveLevelPill(false));
+  levelSegRO.observe(seg);
+}
+
+watch(levelMenuOpen, (open) => {
+  if (!open) {
+    levelSegRO?.disconnect();
+    levelSegRO = null;
+  }
+});
+
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   unsubCompacted?.();
   unsubCompacting?.();
   unsubSlash?.();
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
-  if (shimmerTimer) clearTimeout(shimmerTimer);
+  if (maxSweepTimer) clearTimeout(maxSweepTimer);
   if (spinnerTimer) clearInterval(spinnerTimer);
+  levelSegRO?.disconnect();
 });
 
 // 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）。
@@ -1463,29 +1568,45 @@ watch(
         <!-- 思考级别：模型选择旁紧凑切换器
         显示条件：含任一非 off 挡位即显示（非推理模型 levels=["off"] 隐藏；
         推理模型即使只剩单个挡位如 ["max"] 也显示，MP-S07） -->
-        <div v-if="availableLevels.some((l) => l !== 'off')" class="level-wrap">
+        <div v-if="availableLevels.some((l) => l !== 'off')" class="level-wrap" :class="{ 'is-max': displayLevel === 'max', 'is-open': levelMenuOpen }">
           <button
+            ref="levelTriggerEl"
             class="meta-link"
             :class="{ 'is-max': displayLevel === 'max' }"
             type="button"
+            :aria-expanded="levelMenuOpen"
+            aria-haspopup="true"
             @click.stop="toggleLevelMenu"
           >
             <span>{{ displayLevel ?? 'off' }}</span>
+            <svg class="level-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
           </button>
-          <!-- max 思考级别动画（方案 A）："M A X" 从胶囊顶边后方浮出、停在胶囊正上方 → 停留 → 淡出；
-               锚定触发源本身，与模型名长度/框宽无关，永不与工具条重叠；纯视觉层 pointer-events:none 不阻塞交互 -->
-          <span v-if="shimmerOn" class="max-shimmer" aria-hidden="true">M A X</span>
-          <div v-if="levelMenuOpen" class="level-menu">
-            <button
-              v-for="lv in availableLevels"
-              :key="lv"
-              class="menu-item"
-              :class="{ active: lv === displayLevel }"
-              type="button"
-              @click="selectLevel(lv)"
+          <!-- max 反馈动画（方案 A）：金色流光扫过 max 档位自身 + 高亮块脉冲，见 flashMaxCell -->
+          <!-- 浮窗：横向分段滑条（方案 D）。高亮块为水滴果冻块（左右两条边分别动画，同 App.vue 项目/任务切换），
+               JS 按 active 按钮实测几何写 --pill-l/--pill-r；几何在事件回调里直接写，不进响应式系统。 -->
+          <div v-if="levelMenuOpen" class="level-pop">
+            <div
+              ref="levelSegEl"
+              class="level-seg no-anim"
+              role="radiogroup"
+              tabindex="0"
+              :aria-label="t('input.level.aria', { level: displayLevel ?? 'off' })"
+              @keydown="onLevelSegKey"
             >
-              {{ lv }}
-            </button>
+              <span class="level-pill" :class="{ 'max-sweep': maxSweepOn }" aria-hidden="true"></span>
+              <button
+                v-for="lv in availableLevels"
+                :key="lv"
+                class="level-item"
+                :class="{ on: lv === displayLevel, 'off-only': lv === 'off', 'lv-max': lv === 'max', sweep: lv === 'max' && maxSweepOn }"
+                type="button"
+                role="radio"
+                :aria-checked="lv === displayLevel"
+                @click="selectLevel(lv)"
+              >
+                <span class="level-t">{{ lv }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2380,68 +2501,205 @@ watch(
   position: relative;
 }
 
-.level-menu {
+/* 思考级别浮窗（MP-S05 方案 D）：向上弹出，只包一层皮，内容是横向分段滑条 */
+.level-pop {
   position: absolute;
   left: 0;
   bottom: calc(100% + 10px);
-  min-width: 150px;
+  min-width: 190px;
   background: var(--popover);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: var(--shadow-lg);
-  padding: 4px;
+  padding: 5px;
   z-index: 700;
   animation: menu-rise 0.15s ease both;
 }
 
-/* 思考级别胶囊：默认前景色（黑）；当前级别为 max 时金黄色，与 MAX 动画文字同色，提示已启用最强推理 */
+/* 分段滑条：档位等分，高亮块绝对定位覆盖在 active 档位上 */
+.level-seg {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+}
+
+.level-seg:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* 水滴果冻高亮块（与 App.vue .view-seg::before 同机制）：不做整体平移，而是左右两条边各自动画——
+   先行边带轻微回弹，另一条边延迟 70ms 追随，途中被拉长成水滴，落位时两头先后回弹。
+   几何由 JS 实测 active 按钮后写入 --pill-l / --pill-r。 */
+.level-pill {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--pill-l, 3px);
+  right: var(--pill-r, calc(100% - 3px));
+  border-radius: 7px;
+  background: var(--surface-active);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+  transition:
+    left 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 滑向右 → 右边先行；滑向左 → 回到基态（左边先行） */
+.level-seg.fwd .level-pill {
+  transition:
+    right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 首贴 / 挡位集重建：不播水滴动画 */
+.level-seg.no-anim .level-pill {
+  transition: none;
+}
+
+.level-item {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 34px;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.level-item:hover {
+  color: var(--foreground);
+  background: transparent;
+  border-color: transparent;
+}
+
+.level-item.on {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+/* 档位自身不出焦点环：当前位置已由水滴高亮块表达 */
+.level-item:focus,
+.level-item:focus-visible {
+  outline: none;
+}
+
+/* 最高思考级别：金色描边 / 金色文字（--gold 系，与扫光同一套金） */
+.level-wrap.is-max .level-pill {
+  box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in oklab, var(--gold-deep) 42%, transparent);
+}
+
+.level-wrap.is-max .level-item.on {
+  color: var(--gold);
+}
+
+/* 思考级别胶囊：默认前景色（黑）；当前级别为 max 时金黄色，与扫光同色，提示已启用最强推理 */
 .level-wrap .meta-link {
   color: var(--foreground);
 }
 .level-wrap .meta-link.is-max {
-  color: var(--logo-gradient-accent);
+  color: var(--gold);
 }
 
-/* max 动画（方案 A）："M A X" 锚定级别胶囊正上方，从胶囊顶边后方浮出 → 停留 → 淡出。
-   LOGO 同款金色渐变流动 + 金色光晕（等宽字体贴近 cli 终端质感） */
-.max-shimmer {
-  position: absolute;
-  left: 50%;
-  bottom: 100%;
-  margin-bottom: 2px;
-  transform: translateX(-50%);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  background: linear-gradient(90deg,
-    var(--logo-gradient-base) 0%,
-    var(--logo-gradient-accent) 30%,
-    color-mix(in srgb, var(--logo-gradient-accent) 55%, white) 50%,
-    var(--logo-gradient-accent) 70%,
-    var(--logo-gradient-base) 100%);
+/* 展开指示三角：随浮窗开合旋转（纯提示，不占位） */
+.level-chev {
+  width: 9px;
+  height: 9px;
+  opacity: 0.55;
+  transition: transform var(--transition-fast);
+}
+.level-wrap.is-open .level-chev {
+  transform: rotate(180deg);
+}
+
+/* 档位文字的内层 span：扫光渐变挂在它身上而不是整个按钮——按钮比「max」三个字母宽 2 倍多，
+   渐变若铺在按钮上会得到一条比字形宽得多的宽带（看着不像「这几个字被点亮」）。 */
+.level-t {
+  display: inline-block;
+}
+
+/* max 反馈（方案 A，同 prototypes/thinking-level-max-shimmer-demo.html）：选到 max 时
+   在 max 档位自身就地做一次金色流光扫过 + 轻弹，高亮块同步金色描边脉冲。
+   全部锚在分段条内部——不新增浮层、不侵入输入正文区，
+   也不依赖浮窗高度测量（原悬浮「M A X」文字方案已下线）。 */
+
+/* max 格未选中时也常驻金色渐变（原型 .goldtext）：展开浮窗即提示这是最高挡位 */
+.level-seg .level-item.lv-max .level-t {
+  background-image: linear-gradient(90deg,
+    var(--gold-fade) 0%,
+    var(--gold) 30%,
+    color-mix(in srgb, var(--gold) 55%, white) 50%,
+    var(--gold) 70%,
+    var(--gold-fade) 100%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 4;
-  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--logo-gradient-accent) 45%, transparent));
-  animation: max-text-flow 2.4s linear infinite, max-in 0.45s ease-out 0.1s both, max-out 0.6s ease 2.2s both;
 }
-@keyframes max-text-flow {
-  0% { background-position: 0% 0%; }
-  100% { background-position: 200% 0%; }
+
+.level-item.on.sweep {
+  animation: level-cell-pop 0.32s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
-@keyframes max-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* 扫光态：流动的是下方静止态的「深灰 → 亮金 → 深灰」三段渐变
+   （background-position 0% → 200%，亮金带完整穿过「max」三个字母，深灰尾色在暗底上
+   隐没、反差最大——原型 demo 的可见效果即此写法）。这里只挂 animation：
+   若再声明 background-image，会与下方等权重静止态规则互相顶掉。 */
+.level-wrap .level-item.on.sweep .level-t {
+  animation: level-max-flow 1.15s linear;
 }
-@keyframes max-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
+
+/* 扫光结束后停在 LOGO 同款三段渐变上，而非突然变回素色 */
+.level-wrap.is-max .level-item.on .level-t {
+  background-image: linear-gradient(90deg,
+    var(--gold-fade) 0%,
+    var(--gold) 50%,
+    var(--gold-fade) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 高亮块金环脉冲 ×2（方案 A 的「落位」信号，与原型 pillpulse 同参数） */
+.level-pill.max-sweep {
+  animation: level-pill-pulse 0.45s ease-out 2;
+}
+
+@keyframes level-max-flow {
+  0% { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes level-cell-pop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+
+@keyframes level-pill-pulse {
+  0%, 100% {
+    box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in oklab, var(--gold-deep) 42%, transparent);
+  }
+  40% {
+    box-shadow:
+      var(--shadow-sm),
+      0 0 0 3px color-mix(in oklab, var(--gold) 55%, transparent),
+      0 0 14px color-mix(in oklab, var(--gold) 40%, transparent);
+  }
 }
 
 .compose-actions {

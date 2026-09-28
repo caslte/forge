@@ -4,13 +4,12 @@
 
 # Forge
 
-**Forge, as in "forging" — a coding workbench where every great product takes shape.**
+**Forge, as in "forging" — where every great product takes shape.**
 
 **English** | [简体中文](README.zh-CN.md)
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6)
 ![Engine](https://img.shields.io/badge/Built%20on-pi-F5A623)
-![i18n](https://img.shields.io/badge/UI-English%20%2F%20%E4%B8%AD%E6%96%87-4CAF50)
 
 </div>
 
@@ -18,35 +17,40 @@
 
 ## 🪟 Multi-Window Mode
 
-Open each session as its own little window and spread them across the screen like sticky notes.
+Every session gets its own little window — spread them across your screen like sticky notes.
 
-- **Drag sessions out** of the sidebar to open a window — resize freely, push to an edge and it snaps into place
-- Default **quad-grid** layout, one-click auto-arrange, one-click close-all
-- Sessions from **different projects** can share the same canvas — project A on the left, project B on the right, watch whichever moves
+Drag one out of the sidebar and it opens as a window. Resize it freely, push it toward an edge and it snaps neatly into place. It starts you off in a quad grid, one click re-arranges, one click clears them all. Sessions from different projects sit happily side by side — project A on the left, project B on the right, watch whichever one moves.
 
 ![Forge multi-window mode](docs/assets/multi-window.png)
 
-## ✨ Features
+## ✨ What You Can Do With It
 
-**🧠 Memory** — A built-in memory module that learns your habits and preferences — the longer you use it, the better it works. No re-introducing yourself every time.
+**🖼️ Canvas · when words won't do, it draws**
+How a flow works, how a system is shaped, what actually changed between old and new — the AI emits a live HTML diagram and renders it right in the reply. Sandboxed, expandable, savable, and it follows your theme.
 
-**📁 Project Management** — Add a local folder as a project and start working. The current branch is always visible, and switching branches never leaves your chat.
+**🧠 Memory · no need to introduce yourself again**
+Your habits and preferences get quietly noted down, so every session picks up where the last one left off.
 
-**💬 Parallel Sessions** — Run multiple sessions on the same project at once — refactor here, fix a bug there, no interference.
+**📁 Project Management · add a local folder and go**
+Which branch you're on is always on screen, and switching branches never takes you out of the conversation.
 
-**👀 Visible Execution** — Which tool was called, which file was read, which lines changed — tool cards and side-by-side diffs make every step transparent and reviewable.
+**💬 Parallel Sessions · several at once, none in the way**
+Open a few sessions on the same project — refactoring here, a bug fix there.
 
-**🤖 Sub-Agent Monitoring** — Background tasks each get their own tab; check progress anytime, stop one, or stop them all at once.
+**👀 Visible Execution · every step, laid out**
+Which tool it called, which file it read, which lines it touched — tool cards next to diffs, all of it there to look back on.
 
-**🔌 Bring Your Own Models** — Connect any model provider you like; keys are stored in the OS keychain. Adjustable thinking level, up to 1M-token context.
+**🤖 Sub-Agent Monitoring · the background work stays visible**
+Sub-agents you send off each get their own tab. Check in whenever you like, stop one, or stop them all at once.
 
-**⌨️ Slash Commands & Skills** — Type `/` to open the command palette with commands and skills from the pi ecosystem; import or create your own Skills.
+**🔌 Bring Your Own Models · use the one you like**
+Any provider connects here, keys kept in your system keychain. Set the thinking level yourself, with contexts up to 1M tokens.
 
-**🌿 Git Commit & Push** — Commit and push right from the conversation, with AI-written commit messages.
+**🌿 Git Commit & Push · committing fits right in**
+Commit and push from the conversation, with the AI writing up the message for you.
 
-**📸 Attach Anything** — Paste screenshots, drag in files — the path is attached automatically and the AI reads it for you.
-
-**🌍 Bilingual UI** — Switch the interface between English and 简体中文 anytime.
+**📸 Attach Anything · screenshots just go in**
+Paste them, drag files in — the rest is handled.
 
 ## Acknowledgements
 

@@ -22,6 +22,7 @@ import {
   IPC_SHELL_PROBE,
   IPC_SHELL_OPEN_PATH,
   IPC_THEME_SET,
+  IPC_LOCALE_SET,
   IPC_ATTACHMENT_SCAN,
   IPC_CLIPBOARD_SAVE_IMAGE,
   IPC_CLIPBOARD_SAVE_TEXT,
@@ -123,6 +124,16 @@ const themeControl = {
   },
 };
 
+/**
+ * window.forge.locale 生效语言回报：与主题通道同构（localStorage 唯一事实来源）。
+ * 主进程持镜像仅为系统通知小窗（notifyToast.ts）标题文案取词；fire-and-forget。
+ */
+const localeControl = {
+  set(mode: 'zh-CN' | 'en'): void {
+    ipcRenderer.send(IPC_LOCALE_SET, mode);
+  },
+};
+
 /** forge:event 多路复用：单条 ipcRenderer 监听分发到多类 ForgeEvent */
 const eventListeners = new Map<ForgeEvent, Set<(payload: unknown) => void>>();
 let ipcEventListening = false;
@@ -210,6 +221,7 @@ const forgeBridge = {
   dialog: dialogControl,
   shell: shellControl,
   theme: themeControl,
+  locale: localeControl,
   file: fileControl,
 };
 

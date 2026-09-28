@@ -19,10 +19,10 @@
 | 数据一致性 | 适用 | 配置持久化；重启保留；会话覆盖/思考级别只影响该会话；全局默认同步 | P0 |
 | 幂等重复 | 适用 | 重复保存覆盖更新幂等；contextWindow 勾选/取消各幂等 | P1 |
 | 查询组合 | 适用 | provider 列表/模型列表/思考级别列表查询（从 pi 读取） | P2 |
-| 前端反馈 | 适用 | 保存成功/校验失败标红；思考级别切换器渲染与隐藏；max 金色流光动画 | P1 |
+| 前端反馈 | 适用 | 保存成功/校验失败标红；思考级别切换器渲染与隐藏；max 金色扫光 | P1 |
 | 跨模块影响 | 适用 | 会话使用模型与思考级别（模块 02）；输入框切换器（模块 03）；pi 上下文窗口 | P0 |
 | 状态渲染（B1，前端） | 适用 | 输入框切换器：推理模型渲染、非推理隐藏、加载/错误降级态 | P0 |
-| 内容正确性（B1，前端） | 适用 | max 金色流光动画触发与时长；切换无多余 toast | P0 |
+| 内容正确性（B1，前端） | 适用 | max 金色扫光触发与时长；切换无多余 toast | P0 |
 | 页面健康（B3） | 适用 | 输入框视图加载冒烟：无 console error/pageerror/requestfailed | P0 |
 | 契约完整性（B2，后端） | 适用 | getModelThinkingLevels/setSessionThinkingLevel/saveProvider(contextWindow) 响应结构与错误码 | P0 |
 | 集成完整性（B2，后端） | 适用 | pi `getSupportedThinkingLevels`/`clampThinkingLevel`/会话级 `setThinkingLevel` 真实应用（不得全 mock） | P0 |
@@ -48,7 +48,8 @@
 | AC-MP-011 | MP-S05 思考级别 | 状态 | 正常：切换后下一轮生效、不中断 | P0 | 是 | - | A-MP-014 | E-MP-007 | 下一轮按新级别发送；进行中回复不被中断 | |
 | AC-MP-012 | MP-S05 思考级别 | 状态/一致性 | 正常：新会话继承全局；已存在会话互不影响 | P0 | 是 | U-MP-007 | A-MP-013/014 | E-MP-007 | 快照继承；多会话各自保持 | |
 | AC-MP-013 | MP-S05 思考级别 | 状态 | 边界：越界级别 clamp 收敛 | P1 | 是 | U-MP-003 | - | - | max 请求在仅至 high 模型上收敛 high | 集成见 PIC-005 |
-| AC-MP-014 | MP-S05 思考级别 | 交互 | 正常：max 金色流光动画 | P0 | 是 | U-MP-008 | - | E-MP-008 | 切 max 触发约 2-3s 金色流光；其他级别无动画无 toast | visual |
+| AC-MP-014 | MP-S05 思考级别 | 交互 | 正常：max 金色扫光 | P0 | 是 | U-MP-008 | - | E-MP-008 | 切 max 触发约 1s 金色扫光；其他级别无动画无 toast | visual |
+| AC-MP-010 | MP-S05 思考级别 | 交互 | 正常：分段滑条浮窗换挡（水滴高亮 / 键盘 / Esc） | P1 | 是 | - | - | E-MP-009 | 高亮块几何贴合 active 档位（误差≤1px）、滑行中被拉成水滴（拉伸比>1.15）；←/→ 与 Home/End 换挡；Esc 收起并归还焦点 | visual |
 | AC-MP-015 | MP-S06 上下文 1M | 持久化 | 正常：勾选写 contextWindow | P0 | 是 | - | A-MP-009 | E-MP-005 | models.json 出现 contextWindow=1000000 | 需本地 pi 配置 |
 | AC-MP-016 | MP-S06 上下文 1M | 持久化 | 正常：取消移除字段 | P0 | 是 | - | A-MP-010 | E-MP-005 | models.json 移除 contextWindow | 需本地 pi 配置 |
 | AC-MP-017 | MP-S06 上下文 1M | 一致性 | 边界：存量非 1M 覆盖语义 | P1 | 是 | U-MP-004 | A-MP-010 | - | 非 1M(200000) 未勾选保存 → 移除字段 | 一律按勾选覆盖 |
@@ -79,7 +80,7 @@
 | U-MP-005 | AC-MP-018 | contextWindow 等值回显 | 状态 | 模型 contextWindow 分别为 1000000/200000/缺失 | queryProviderList | 读取 | 仅 1000000 呈现勾选态；其他为未勾选 | 非等值不误判为勾选 |
 | U-MP-006 | AC-MP-010 | 非推理模型判定 | 字段边界 | getSupportedThinkingLevels 返回仅 ["off"] | 查询级别 | 判定 | 判定为非推理 → 切换器隐藏 | reasoning=false 时不返回非 off 级别 |
 | U-MP-007 | AC-MP-012 | setSessionThinkingLevel 校验与一致性 | 数据一致性 | 会话 1/2 已存在 | 非法/合法 level | 写入 | 非法级别 1001；合法写会话 1 + 同步全局默认；会话 2 不变 | 其他会话与全局无串扰 |
-| U-MP-008 | AC-MP-014 | max 动画触发判定 | 交互 | 切换器选中 max | 选中 | 状态切换 | 触发 max 金色流光动画状态（约 2-3s） | 非 max 级别不触发、不发 toast |
+| U-MP-008 | AC-MP-014 | max 动画触发判定 | 交互 | 切换器选中 max | 选中 | 状态切换 | 触发 max 金色扫光状态（约 1s） | 非 max 级别不触发、不发 toast |
 | U-MP-006v | AC-MP-020 | saveProvider vision 透传与校验 | 字段边界 | - | vision=true/false/非法值/缺省 | 保存 | true/false 透传记录；非法值 1001 不写；缺省不携带字段 | 非法值不写文件；缺省不覆盖原值 |
 | U-MP-007v | AC-MP-021 | input 字段落盘与回显 | 持久化 | models.json 已有/无 input | writeProviders vision=true/false | 读写 | true 写 input:["text","image"] 且保留其他字段；false 移除 input；回显 vision 与 input 含 image 一致 | 仅含 video 不判为支持图片 |
 | U-MP-009 | AC-MP-023/026 | saveProvider reasoning/thinkingLevels 透传与校验 | 字段边界 | - | reasoning=true/false/非法、thinkingLevels=合法/非法/重复/null/缺省 | 保存 | 合法透传记录；非法 1001 不写；null 透传移除；缺省不携带字段 | 非法值不写文件；缺省不覆盖原值 |
@@ -123,6 +124,6 @@
 | E-MP-005 | AC-MP-015/016/019 | 设置页 | 已配模型 | 勾选/取消 1M | mock（写真实 models.json 文件） | 勾选→保存；取消→保存；新建会话 | contextWindow=1000000 写入；取消后字段移除；编辑回显一致；新会话上下文按 1M 显示 |
 | E-MP-006 | AC-MP-010 | 对话输入框 | 推理/非推理模型各一 | - | mock | 打开会话查看切换器 | 推理模型显示切换器且选项与接口返回一致；非推理不显示；页面无 console error/pageerror/requestfailed（B3 冒烟） |
 | E-MP-007 | AC-MP-011/012 | 对话输入框 | 多会话 | 会话1切 high + 新建会话 | mock | 会话1切级别→下一轮对话；新建会话（草稿态显示切换器并回显全局默认）→发送 | 会话1下一轮按 high 发送且进行中回复不被中断；草稿态回显全局默认且随会话创建写入；新会话继承全局默认；会话2 不受影响；无多余 toast |
-| E-MP-008 | AC-MP-014 | 对话输入框 | 模型支持 max | 切 max / 切 high | visual | 切 max → 观察输入框；切回 high | 金色流光动画约 2-3s 出现并消失；其他级别无动画、无 toast；关键元素可见（B1 内容正确性） |
+| E-MP-008 | AC-MP-014 | 对话输入框 | 模型支持 max | 切 max / 切 high | visual | 切 max → 观察输入框；切回 high | 金色扫光约 1s 出现并消失（扫光锚在 max 档位内，不越出浮窗、不侵入输入正文区）；其他级别无动画、无 toast；关键元素可见（B1 内容正确性） |
 | E-MP-006v | AC-MP-020/021/022 | 设置页 | 已配模型 | 勾选/取消「支持图片输入」 | mock（写真实 models.json 文件） | 勾选→保存；取消→保存；编辑回显；列表标签 | 保存后 models.json 首模型 input:["text","image"]；取消后字段移除；回显勾选一致；列表显示「多模态」；页面无 console error（B3 冒烟） |
 | E-MP-009 | AC-MP-023/024/025/027 | 设置页+对话输入框 | 已配推理模型 | 勾选/取消思考强度；勾选 off/high/max | mock（写真实 models.json 文件） | 勾选→保存；取消→保存；编辑回显；打开对话框切换器 | 保存后 models.json 首模型 reasoning:true + thinkingLevelMap（选中=级别名，未选=null）；取消后 reasoning:false 且 map 移除；回显一致；对话框切换器可选挡位与白名单一致（未选挡位不出现）；页面无 console error（B3 冒烟） |

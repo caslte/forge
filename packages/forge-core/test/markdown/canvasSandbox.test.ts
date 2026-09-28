@@ -18,6 +18,7 @@ import {
   buildCanvasDocument,
   buildCanvasStandaloneFile,
   clearRenderCache,
+  looksLikeAsciiArt,
   looksLikeHtmlCanvas,
   renderMarkdown,
 } from '../../src/markdown/renderMarkdown.ts';
@@ -90,6 +91,41 @@ test('looksLikeHtmlCanvas：完整与残缺 HTML 都判 true（残缺交给浏�
   assert.equal(looksLikeHtmlCanvas('<div>ok</div>'), true);
   assert.equal(looksLikeHtmlCanvas('<div style="color:red">写到一半'), true);
   assert.equal(looksLikeHtmlCanvas('<table><tr><td>a'), true);
+});
+
+test('looksLikeHtmlCanvas：薄 HTML 壳包 ASCII 字符画判 false（进 iframe 会被空白规则压毁）', () => {
+  const art = [
+    '<div style="font:13px sans-serif">',
+    '| off |   | low |   | high |',
+    '|___更牙___|___|___| 【A: Codex 共分镜清单】',
+    '| 排查 | 原因 | 处置 |',
+    '|__|__|__| 【B】 放桌 —— 上方原值展开',
+    '</div>',
+  ].join('\n');
+  assert.equal(looksLikeHtmlCanvas(art), false);
+  // 无壳的纯字符画同理
+  assert.equal(looksLikeHtmlCanvas(art.replace('<div style="font:13px sans-serif">\n', '').replace('</div>', '')), false);
+});
+
+test('looksLikeHtmlCanvas：真 HTML 卡片即使文本里带少量管道也不误降级', () => {
+  assert.equal(
+    looksLikeHtmlCanvas('<div class="row"><div>方案A | 高对比</div><div>方案B</div><div>方案C</div></div>'),
+    true,
+  );
+  // 标签间排版缩进不被当内容（剥标签前先吃掉标签间空白）
+  assert.equal(
+    looksLikeHtmlCanvas('<div>\n  <div>标题</div>\n  <div>内容说明文字</div>\n</div>'),
+    true,
+  );
+});
+
+test('looksLikeAsciiArt：正文段落级判定（minArt=2），普通硬换行散文不受影响', () => {
+  // 两行密集分栏：命中
+  assert.equal(looksLikeAsciiArt('| a |  | b |\n| c || d |', 2), true);
+  // 制表字符命中
+  assert.equal(looksLikeAsciiArt('┌─┐\n│x│\n└─┘', 2), true);
+  // 单管道散文、尾随双空格硬换行：不命中
+  assert.equal(looksLikeAsciiArt('选项 off | low | high\n第二行普通文字  ', 2), false);
 });
 
 test('沙箱文档：预注入语义变量 + 卡片源码原样进 body', () => {

@@ -200,6 +200,26 @@ export const IPC_FILE_WRITE_TEXT = 'forge:file:writeText';
  */
 export const IPC_THEME_SET = 'forge:theme:set';
 
+/**
+ * preload ↔ main 界面语言通道：渲染进程把生效语言同步给主进程。
+ * 与主题通道同构（localStorage 唯一事实来源，主进程只持镜像）：语言存 localStorage
+ * ['forge.locale']，主进程读不到——而系统通知小窗（notifyToast.ts）的标题文案
+ * 「回复已完成 / Reply completed」需要按当前语言取词。单向 fire-and-forget。
+ */
+export const IPC_LOCALE_SET = 'forge:locale:set';
+
+/** 生效语言（与 forge-ui i18n 的 ActiveLocale 同构，本地声明惯例） */
+export type ToastLocale = 'zh-CN' | 'en';
+
+/**
+ * 通知小窗（notifyToast.ts）↔ 页面通道：每条通知一个 data: URL 页面 +
+ * notifyToastPreload 暴露的 window.notifyToast 三动作（ready/close/activate）。
+ * ready 携带页面实测的通知卡片高度（主进程据此调整窗口尺寸再 showInactive）。
+ */
+export const IPC_NOTIFY_TOAST_READY = 'forge:notifyToast:ready';
+export const IPC_NOTIFY_TOAST_CLOSE = 'forge:notifyToast:close';
+export const IPC_NOTIFY_TOAST_ACTIVATE = 'forge:notifyToast:activate';
+
 /** preload ↔ main 附件通道（统一给路径：嗅探 + 截图落盘 + 缩略图读取） */
 export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';
 export const IPC_CLIPBOARD_SAVE_IMAGE = 'forge:clipboard:saveImage';
@@ -235,7 +255,10 @@ export type ForgeEvent =
   // v3.76 启动门闩：forge-core 组装完成后由 main 手动 send 一次。
   // 注意：不进 FORGE_EVENTS 数组（那是 eventBus 转发注册表，core 未就绪时 eventBus
   // 不存在、注册不了）；渲染端通过 forge:boot-state 拉取兜底防错过。
-  | 'boot.ready';
+  | 'boot.ready'
+  // 系统通知点击跳转（notifyToast.ts）：主进程直发（不经 core eventBus），
+  // payload { sessionId }——渲染端收到后切换到该会话（App.vue onSelectSession）
+  | 'notify.focusSession';
 
 /** 全部事件名运行时数组（主进程遍历注册转发，避免遗漏事件） */
 export const FORGE_EVENTS: readonly ForgeEvent[] = [

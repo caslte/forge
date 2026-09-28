@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 
 import { renderMarkdown, looksLikeMermaid, hasOpenFence, renderCacheSize, clearRenderCache } from '../../src/markdown/renderMarkdown.ts';
 
+test('字符画段落整体转 <pre class="md-ascii">，等宽保对齐', () => {
+  clearRenderCache();
+  const art = '| off |   | low |   | high |\n|___更牙___|___|___|\n| 排查 | 原因 | 处置 |';
+  const html = renderMarkdown(`标题行\n\n${art}\n\n收尾说明`);
+  assert.match(html, /<pre class="md-ascii">/);
+  assert.match(html, /\| off \|   \| low \|/);
+  assert.ok(!html.includes('<p>| off |'));
+});
+
+test('普通硬换行散文不受字符画判定影响，仍渲染为段落', () => {
+  clearRenderCache();
+  const html = renderMarkdown('第一行普通文字\n第二行 off | low | high 单管道分隔\n第三行收尾  ');
+  assert.match(html, /<p>第一行普通文字<br \/>/);
+  assert.ok(!html.includes('md-ascii'));
+});
+
 test('常见 Markdown 结构正确渲染', () => {
   const html = renderMarkdown('# 标题\n\n**加粗** *斜体* `行内码`\n\n- 列表项\n- 第二项\n\n> 引用');
   assert.match(html, /<h1[^>]*>标题<\/h1>/);
@@ -139,10 +155,31 @@ test('hasOpenFence：围栏闭合检测（流式 mermaid 展示源码的依据�
   assert.ok(!hasOpenFence(''));
   assert.ok(!hasOpenFence('```js\nconst a = 1;\n```'));
   assert.ok(hasOpenFence('```mermaid\ngraph TD\n  A --> B'));
-  // 前块已闭合 + 末块未闭合 → 5 个 ```，奇数 → 未闭合
+  // 前块已闭合 + 末块未闭合 → 按行扫描第二个围栏未闭合
   assert.ok(hasOpenFence('```js\na;\n```\n\n```mermaid\ngraph TD'));
-  // 两个已闭合块 → 偶数 → 全闭合
+  // 两个已闭合块 → 全闭合
   assert.ok(!hasOpenFence('```js\na;\n```\n\n```py\nb;\n```'));
+});
+
+test('hasOpenFence：正文行中提到 ```canvas 等词不算围栏（终态骨架不假转圈）', () => {
+  // 曾按全局 ``` 计数：正文 1 次 + 真围栏 2 次 = 3 → 误判未闭合，
+  // 消息结束后 canvas 骨架蒙版永远不撤。行中三反引号不是围栏行。
+  assert.ok(!hasOpenFence(
+    '但回复正文里没有任何 ```canvas 围栏——界面只能看到文字。\n\n```canvas\n<div>x</div>\n```\n',
+  ));
+  assert.ok(!hasOpenFence('正文里 ```canvas 和 ```mermaid 都是行内提及，不是围栏'));
+});
+
+test('hasOpenFence：GFM 围栏细则（四反引号外壳 / 波浪线 / 闭栏行尾）', () => {
+  // 四反引号外壳包三反引号：内层行长度不足，不是闭栏（全局计数会把这里数错）
+  assert.ok(!hasOpenFence('````md\n```js\nx\n````\n'));
+  // 波浪线围栏与反引号围栏互不闭合
+  assert.ok(hasOpenFence('~~~\ncontent'));
+  assert.ok(!hasOpenFence('~~~\ncontent\n~~~'));
+  assert.ok(hasOpenFence('```js\na;\n~~~'));
+  // 闭栏行允许尾随空白，不允许带别的字符
+  assert.ok(!hasOpenFence('```js\na;\n```   \n'));
+  assert.ok(hasOpenFence('```js\na;\n```js'));
 });
 
 test('XSS：非 hljs/md 前缀的 class 被剥离', () => {

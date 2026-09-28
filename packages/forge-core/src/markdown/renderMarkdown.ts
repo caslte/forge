@@ -26,7 +26,7 @@ import { Marked } from 'marked';
 import { hljs } from './hljsCore.ts';
 import sanitizeHtml from 'sanitize-html';
 
-import { CANVAS_LANGUAGE } from './canvasSandbox.ts';
+import { CANVAS_LANGUAGE, looksLikeAsciiArt } from './canvasSandbox.ts';
 
 /** marked 实例：gfm + 换行即 <br>（对齐消息正文既有行为） */
 const marked = new Marked({ gfm: true, breaks: true });
@@ -36,6 +36,7 @@ export {
   CANVAS_DEFAULT_HEIGHT,
   CANVAS_TALL_HEIGHT,
   looksLikeHtmlCanvas,
+  looksLikeAsciiArt,
   buildCanvasDocument,
   buildCanvasStandaloneFile,
   type CanvasTokens,
@@ -172,6 +173,17 @@ marked.use({
     codespan(token) {
       return `<code class="md-inline-code">${htmlEscape(token.text)}</code>`;
     },
+    // 字符画段落兜底：模型常不用任何围栏、直接在正文里画 ASCII 图。breaks 只保住
+    // 换行，连续空格仍会被浏览器折叠，对齐照样全毁。呈字符画形态的段落整体转
+    // <pre>（等宽 + pre 空白），用户看到的是完整可读的图而不是一坨管道符。
+    // 返回 false 走 marked 默认段落渲染，普通正文零影响。
+    paragraph(token) {
+      const raw = token.text ?? '';
+      if (looksLikeAsciiArt(raw, 2)) {
+        return `<pre class="md-ascii">${htmlEscape(raw)}</pre>`;
+      }
+      return false;
+    },
   },
 });
 
@@ -281,10 +293,28 @@ export function looksLikeMermaid(source: string): boolean {
 }
 
 /**
- * 围栏是否未闭合（``` 计数为奇数）：未闭合围栏会吞到文末，故末块必是未闭合的那个。
- * 流式期间用于：末尾 mermaid 块先按源码展示，闭合后再渲染图表，避免半截源码反复渲染失败。
- * ponytail: 按计数奇偶判断，正文里出现行内三反引号（非围栏）会误判，聊天场景罕见，可接受。
+ * 围栏是否未闭合（按行扫描 GFM 围栏语法）。
+ *
+ * 为什么按行而不是全局数 ```：正文里行中提到「```canvas」这类词（模型解释自己为
+ * 什么没出图，是常态）会把全局奇偶计数带偏——围栏明明闭合却判未闭合，终态下
+ * canvas 骨架蒙版永远不撤（不会再有后续 token 来"闭合"它），界面假转圈。
+ *
+ * GFM 规则：开栏行 = 行首 ≤3 空格 + ≥3 个同字符（` 或 ~），可带信息串；闭栏行 =
+ * 同字符、长度不小于开栏长度、行尾除空白外无别的。四反引号外壳包三反引号示例时，
+ * 内层行因长度不足不会被误判为闭栏。
+ *
+ * 已知取舍：列表内缩进 ≥4 空格的围栏不参与判定（与缩进代码块无法行级区分），
+ * 聊天场景围栏几乎都在顶层，可接受。
  */
 export function hasOpenFence(source: string): boolean {
-  return ((source ?? '').match(/```/g)?.length ?? 0) % 2 === 1;
+  let open: { ch: string; len: number } | null = null;
+  for (const line of (source ?? '').split(/\r?\n/)) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (open === null) {
+      if (m) open = { ch: m[1]![0]!, len: m[1]!.length };
+    } else if (m && m[1]![0] === open.ch && m[1]!.length >= open.len && m[2]!.trim() === '') {
+      open = null;
+    }
+  }
+  return open !== null;
 }

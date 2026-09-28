@@ -23,6 +23,17 @@ import logoMain from './assets/logo-main.png';
 
 const { t, activeLocale } = useI18n();
 
+// 生效语言回报主进程（系统通知标题文案取词用；与 useTheme 的主题回报同构——
+// localStorage 是唯一事实来源，主进程只持镜像）。locale 可选：浏览器 mock / 旧 preload
+// 无此方法，可选链跳过。
+watch(
+  activeLocale,
+  (locale) => {
+    window.forge?.locale?.set(locale);
+  },
+  { immediate: true },
+);
+
 /**
  * 启动门闩（v3.76）：false 期间整个正式 UI 不挂载，只显示 BootWelcome。
  *
@@ -627,6 +638,7 @@ let unsubSessionUpdated: (() => void) | null = null;
 let unsubSessionStatus: (() => void) | null = null;
 let unsubProjectRemoved: (() => void) | null = null;
 let unsubProvidersChanged: (() => void) | null = null;
+let unsubNotifyFocus: (() => void) | null = null;
 
 // 会话切换时加载该会话生效模型；无会话（含草稿态）时展示全局默认模型
 watch(currentSessionId, (sid) => {
@@ -700,6 +712,12 @@ onMounted(() => {
     void loadModels();
     if (currentSessionId.value !== null) void loadSessionModel(currentSessionId.value);
   });
+  // 系统通知点击跳转（主进程 notifyToast 直发）：主窗口已被通知聚焦，切到对应会话。
+  // 复用会话树同一切换逻辑（含 attachSessionWindow），语义与手动点击会话完全一致
+  unsubNotifyFocus = subscribe('notify.focusSession', (payload) => {
+    const p = payload as { sessionId?: unknown };
+    if (typeof p?.sessionId === 'string' && p.sessionId !== '') void onSelectSession(p.sessionId);
+  });
 
   // 启动门闩（v3.76）：先拉 bootState 兜底（热重载/事件早于订阅的场景），
   // 未就绪再等 boot.ready 推送。ready=true 的拉取直接放行，欢迎页一帧即过。
@@ -728,6 +746,7 @@ onUnmounted(() => {
   unsubSessionStatus?.();
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
+  unsubNotifyFocus?.();
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
 </script>
