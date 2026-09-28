@@ -16,6 +16,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { stripJsonComments } from './piModelsFileAdapter.ts';
+import { buildPiCliArgv, ensureConsoleHidePreload } from './consoleHidePreload.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -110,9 +111,12 @@ export async function updatePiExtensions(agentDir: string): Promise<PiUpdateResu
     return { ok: false, output: '内置引擎 CLI 不存在，无法更新插件' };
   }
   try {
+    // 预加载注入 windowsHide 缺省值：引擎 spawnCommand 未传 windowsHide，其孙进程
+    // （cross-spawn → cmd.exe → npm）会弹可见控制台（外层 windowsHide 管不到孙进程）。
+    const preload = ensureConsoleHidePreload(agentDir);
     const { stdout } = await execFileAsync(
       process.execPath,
-      [cli, 'update', '--extensions', '--no-approve'],
+      buildPiCliArgv(cli, ['update', '--extensions', '--no-approve'], preload),
       {
         windowsHide: true,
         timeout: PI_UPDATE_TIMEOUT_MS,

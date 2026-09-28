@@ -3,7 +3,7 @@
 # 注意：publish.owner/repo 决定安装包内 app-update.yml 内嵌的更新 feed（electron-updater 运行时读取）。
 #       仓库必须 public（或另建公开的 release 仓库只放安装包），私有仓库用户无法自动下载更新。
 appId: dev.forge.desktop
-productName: forge
+productName: Forge
 directories:
   # 默认输出目录是 dist，会与 tsc 产物 dist/ 冲突，改为 release/
   output: release
@@ -33,7 +33,7 @@ win:
   # v1 不做代码签名（未配置 signtoolOptions/certificateSubjectName）
 nsis:
   # 安装向导模式（oneClick:false）+ 可选安装目录：首装/手动重装显示标准向导，
-  # 「选择安装位置」页预填默认 per-user 目录（%LOCALAPPDATA%\Programs\@forgedesktop），
+  # 「选择安装位置」页预填默认 per-user 目录（%LOCALAPPDATA%\Programs\Forge），
   # 用户可直接安装或点「更改」自定义 —— 首装必须给用户选择安装位置的机会。
   # 自动更新体验（可见进度 + 零点击 + 装完自动重开）由 build/installer.nsh 补齐：
   #   - electron-updater 更新恒传 --updated --force-run（非静默，见 main.ts
@@ -49,19 +49,19 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   include: build/installer.nsh
-  # 首装/重装的结束页显示「运行 forge」勾选（更新路径不进结束页，见上方 customInstall）
+  # 首装/重装的结束页显示「运行 Forge」勾选（更新路径不进结束页，见上方 customInstall）
   runAfterFinish: true
   # 快捷方式：开始菜单必建，桌面快捷方式默认创建
   createStartMenuShortcut: true
   createDesktopShortcut: true
-  shortcutName: forge
+  shortcutName: Forge
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
 
 # ===== macOS =====
 # 注意：dmg 给用户手动安装；zip 是 electron-updater 在 macOS 上的自动更新载体，
 #       两者都要出，缺 zip 则 mac 端无法走应用内更新。
 # identity: null 显式关闭签名（v1 无 Apple Developer 账号）。后果：
-#   1) 用户首次打开需「右键 → 打开」或 `xattr -cr /Applications/forge.app`；
+#   1) 用户首次打开需「右键 → 打开」或 `xattr -cr /Applications/Forge.app`；
 #   2) Squirrel.Mac 要求已签名，未签名时 mac 端自动更新不可用（只能手动装 dmg）。
 #   拿到 Developer ID 证书后删掉 identity，并补 notarize 配置即可解锁两者。
 mac:

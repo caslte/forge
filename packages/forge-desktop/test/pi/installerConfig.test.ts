@@ -101,15 +101,15 @@ test('更新零点击：installer.nsh 跳过安装模式页，并在 --updated �
   assert.match(raw, /!ifndef BUILD_UNINSTALLER/, '全部钩子必须在 !ifndef BUILD_UNINSTALLER 内');
 });
 
-test('目录页文案：官方默认文案 + 「自动补 forge 子目录」提示（2026-09-19 反馈）', () => {
+test('目录页文案：官方默认文案 + 「自动补 Forge 子目录」提示（2026-09-19 反馈）', () => {
   const raw = fs.readFileSync(path.join(desktopRoot, 'build', 'installer.nsh'), 'utf8');
   // 机制：MUI2 官方扩展点 MUI_DIRECTORYPAGE_TEXT_TOP（Directory.nsh 的 MUI_DEFAULT 兜底、
   // DirText 透传、页生成后 !undef），本文件被前置 include 到模板最顶部故生效。
   assert.match(raw, /!define MUI_DIRECTORYPAGE_TEXT_TOP/, '必须用官方 TEXT_TOP 钩子定制目录页文案');
   // 保留默认文案语义（Setup 将安装 / 浏览指引），并追加自动补子目录提示
-  assert.match(raw, /!define MUI_DIRECTORYPAGE_TEXT_TOP "[^"]*将安装 forge 在下列文件夹/, '文案必须保留「安装到下列文件夹」指引');
+  assert.match(raw, /!define MUI_DIRECTORYPAGE_TEXT_TOP "[^"]*将安装 Forge 在下列文件夹/, '文案必须保留「安装到下列文件夹」指引');
   assert.match(raw, /!define MUI_DIRECTORYPAGE_TEXT_TOP "[^"]*浏览\(B\)/, '文案必须保留「浏览」指引');
-  assert.match(raw, /!define MUI_DIRECTORYPAGE_TEXT_TOP "[^"]*自动安装到其下的 forge 子目录/, '文案必须说明自动补子目录行为');
+  assert.match(raw, /!define MUI_DIRECTORYPAGE_TEXT_TOP "[^"]*自动安装到其下的 Forge 子目录/, '文案必须说明自动补子目录行为');
   // 反向约束：SHOW 回调路线已被真机证伪（NSIS 3.0.4.1 内建 directory 页运行时不派发 SHOW），
   // 不得回到该死路；也不得残留诊断代码（MessageBox/FileOpen）
   assert.doesNotMatch(raw, /MUI_PAGE_CUSTOMFUNCTION_SHOW/, 'SHOW 回调路线已证伪，禁止回退');

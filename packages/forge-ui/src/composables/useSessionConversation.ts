@@ -184,6 +184,14 @@ function dismissAskAnswered(): void {
       const summary = turnFiles.get(pos);
       if (summary) out.push({ key: summary.key, kind: 'files-summary', summary });
     };
+    // 轮次品牌字标：挂在该轮 user 消息之后首个 assistant/tool 展示项头部；
+    // user 消息重新置位（每轮一次），压缩分隔条与 suggest 建议消息不消耗
+    let brandPending = true;
+    const takeBrand = (): boolean => {
+      if (!brandPending) return false;
+      brandPending = false;
+      return true;
+    };
     let i = 0;
     while (i < msgs.length) {
       const cur = msgs[i]!;
@@ -203,15 +211,18 @@ function dismissAskAnswered(): void {
         // 轮末插入点：上一轮的汇总卡片排在下一条 user 消息之前
         if (cur.role === 'user') pushFilesSummary(i);
         const footer = footers.get(i);
+        const turnBrand = cur.role === 'assistant' && takeBrand();
         out.push({
           key: itemKey(cur),
           kind: 'message',
           msg: cur,
           idx: i,
+          ...(turnBrand ? { turnBrand: true } : {}),
           ...(footer
             ? { showFooter: footer.showFooter, copyText: footer.copyText, firstOfTurn: footer.firstOfTurn }
             : {}),
         });
+        if (cur.role === 'user') brandPending = true;
         i += 1;
       } else if (cur.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {
         // 契约 I1（v2）：建议工具消息不进消息流，由 turnSuggestion 提升到底部渲染
@@ -233,17 +244,20 @@ function dismissAskAnswered(): void {
           // 尾部组 = 正在执行的组：默认展开；其后有新消息到达即视为历史组，默认折叠。
           // 用户手动开合过（Map 有记录）则只跟随用户操作。
           const collapsed = toolGroupCollapsed.get(groupKey) ?? !(i === msgs.length);
+          const turnBrand = takeBrand();
           out.push({
             key: groupKey,
             kind: 'tool-group',
             tools,
             totalCount: tools.length,
             collapsed,
+            ...(turnBrand ? { turnBrand: true } : {}),
           });
         } else {
           for (let j = 0; j < tools.length; j += 1) {
             const tm = tools[j]!;
-            out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: start + j });
+            const turnBrand = takeBrand();
+            out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: start + j, ...(turnBrand ? { turnBrand: true } : {}) });
           }
         }
       }
@@ -512,6 +526,9 @@ function dismissAskAnswered(): void {
     }
   }
 
+  /** 流式占位消息的稳定 id 序号（口径见 applyDeltaText） */
+  let streamMsgSeq = 0;
+
   /** delta 文本真正落到消息流（原 onDelta 的追加逻辑） */
   function applyDeltaText(text: string): void {
     // 流式追加到最后一条 assistant 消息；无则新建
@@ -519,7 +536,16 @@ function dismissAskAnswered(): void {
     if (last && last.role === 'assistant') {
       last.content += text;
     } else {
-      messages.value.push({ role: 'assistant', content: text, ts: new Date().toISOString() });
+      // 占位必须带稳定 id：终态 message 事件会用「消息完成时刻」覆盖 ts，而列表 key
+      // 取 `ts-role`，key 一变 Vue 就重挂整张卡（入场动画重播 + hljs/mermaid/画布
+      // iframe 子树重建），观感即「回复完成时刷一下」。有 id 后 key 与 ts 解耦。
+      streamMsgSeq += 1;
+      messages.value.push({
+        role: 'assistant',
+        content: text,
+        ts: new Date().toISOString(),
+        id: `stream-${streamMsgSeq}`,
+      });
     }
     scheduleScroll();
   }

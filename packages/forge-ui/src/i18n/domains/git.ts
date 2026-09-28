@@ -4,7 +4,6 @@
  */
 export const zhGit = {
   'git.entryLabel': '提交或推送',
-  'git.entryTooltip': '提交或推送当前项目变更',
   'git.branchEntry': '提交或推送…',
   'git.title': '提交或推送',
   'git.subPre': '提交 ',
@@ -29,7 +28,6 @@ export const zhGit = {
 
 export const enGit: Record<string, string> = {
   'git.entryLabel': 'Commit or Push',
-  'git.entryTooltip': 'Commit or push current project changes',
   'git.branchEntry': 'Commit or Push…',
   'git.title': 'Commit or Push',
   'git.subPre': 'Commit changes in ',

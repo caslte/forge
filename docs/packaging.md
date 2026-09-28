@@ -6,8 +6,8 @@
 ## 本地打包
 
 ```bash
-npm run dist -w @forge/desktop      # 完整安装包：forge-<版本>-x64-setup.exe + latest.yml + app-update.yml
-npm run dist:dir -w @forge/desktop  # 免安装目录版：release/win-unpacked/forge.exe
+npm run dist -w @forge/desktop      # 完整安装包：Forge-<版本>-x64-setup.exe + latest.yml + app-update.yml
+npm run dist:dir -w @forge/desktop  # 免安装目录版：release/win-unpacked/Forge.exe
 ```
 
 产物位于 `packages/forge-desktop/release/`。本地构建带 `--publish never`（脚本已内置），不会误传 GitHub。

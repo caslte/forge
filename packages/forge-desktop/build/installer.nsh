@@ -36,7 +36,7 @@
   # 备注：目录页 SHOW 回调路线已证伪 —— NSIS 3.0.4.1 对内建 directory 页编译期消费
   #   页级 CUSTOMFUNCTION SHOW define、但运行时不派发（2026-09-19 真机弹窗/日志双
   #   重探针验证均无触发），故改用上述编译期文案方案。
-  !define MUI_DIRECTORYPAGE_TEXT_TOP "Setup 将安装 forge 在下列文件夹。$\r$\n$\r$\n要安装到不同文件夹，单击 [浏览(B)...] 并选择其他的文件夹。$\r$\n$\r$\n提示：若所选路径不以 forge 结尾，点击「安装」后将自动安装到其下的 forge 子目录（例如选择 D:\软件 将安装到 D:\软件\forge）。"
+  !define MUI_DIRECTORYPAGE_TEXT_TOP "Setup 将安装 Forge 在下列文件夹。$\r$\n$\r$\n要安装到不同文件夹，单击 [浏览(B)...] 并选择其他的文件夹。$\r$\n$\r$\n提示：若所选路径不以 Forge 结尾，点击「安装」后将自动安装到其下的 Forge 子目录（例如选择 D:\软件 将安装到 D:\软件\Forge）。"
 
   !macro customInstallMode
     ; 强制 per-user 并跳过「安装模式」页（multiUserUi PRE 见 $isForceCurrentInstall=="1" 即 Abort）

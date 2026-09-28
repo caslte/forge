@@ -308,15 +308,17 @@ function collapseThinking(el: Element, done: () => void): void {
 }
 
 /**
- * 流式 FORGE 字标：轮次开始（思考/工具阶段、尚无 assistant 卡）时显示在思考行头部；
- * 本轮首张 assistant 卡一旦出现，字标由卡片头部接管（见 MessageCard .msg-brand）。
+ * 流式 FORGE 字标：轮次开始（思考阶段、本轮尚无 assistant/tool 展示项）时显示在思考行头部；
+ * 本轮首个展示项（工具组或 assistant 卡）一旦出现，字标由该项头部接管
+ * （见 useSessionConversation displayItems turnBrand + MessageListItem .msg-brand）。
  */
-const turnHasAssistantCard = computed(() => {
+const turnBrandRendered = computed(() => {
   const msgs = messages.value;
   for (let i = msgs.length - 1; i >= 0; i -= 1) {
     const m = msgs[i]!;
     if (m.role === 'user') return false;
-    if (m.role === 'assistant' && m.content.trim() !== '' && !m.compacted) return true;
+    if (m.compacted) continue;
+    if (m.role === 'assistant' || m.role === 'tool') return true;
   }
   return false;
 });
@@ -907,7 +909,7 @@ onUnmounted(() => {
                  外层包装块同帧卸载：字标与思考行一起被 collapseThinking 收拢，无残余跳动 -->
             <Transition :css="false" @leave="collapseThinking">
               <div v-if="isStreaming" class="conv-streaming-head">
-                <div v-if="!turnHasAssistantCard" class="msg-brand">FORGE</div>
+                <div v-if="!turnBrandRendered" class="msg-brand">FORGE</div>
                 <div class="conv-thinking">
                   <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
                   <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
@@ -1210,7 +1212,7 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-/* FORGE 轮次字标（流式阶段，与 MessageCard .msg-brand 同口径）；
+/* FORGE 轮次字标（流式阶段，与 MessageListItem .msg-brand 同口径）；
    左右 14px 抵消 .conv-thinking 内边距，使字标与正文左缘对齐 */
 .msg-brand {
   font-size: 11px;

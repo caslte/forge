@@ -167,7 +167,6 @@ async function doSwitch(branch: string): Promise<void> {
       type="button"
       class="meta-link git-pill"
       :class="{ 'is-busy': busy }"
-      :data-tooltip="busy ? t('project.sessionBusy') : t('project.switchBranch')"
       :aria-disabled="busy"
       @click="togglePanel"
     >

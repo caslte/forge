@@ -1441,7 +1441,6 @@ watch(
           <button
             class="meta-link"
             type="button"
-            :data-tooltip="t('input.model.tooltip')"
             @click.stop="toggleModelMenu"
           >
             <span>{{ currentModel ?? t('input.model.select') }}</span>
@@ -1469,7 +1468,6 @@ watch(
             class="meta-link"
             :class="{ 'is-max': displayLevel === 'max' }"
             type="button"
-            :data-tooltip="t('input.level.tooltip')"
             @click.stop="toggleLevelMenu"
           >
             <span>{{ displayLevel ?? 'off' }}</span>
@@ -1615,7 +1613,6 @@ watch(
         type="button"
         class="meta-link push-pill"
         :class="{ 'is-busy': gitBusy }"
-        :data-tooltip="gitBusy ? t('project.sessionBusy') : t('git.entryTooltip')"
         :aria-disabled="gitBusy"
         @click="openCommitDialog"
       >

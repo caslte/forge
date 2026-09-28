@@ -1,6 +1,6 @@
 export const zhDialogs = {
   'dialogs.exitConfirm.title': '确认退出',
-  'dialogs.exitConfirm.message': '是否关闭 forge 窗口？',
+  'dialogs.exitConfirm.message': '是否关闭 Forge 窗口？',
   'dialogs.exitConfirm.exit': '退出',
   'dialogs.trustAsk.title': '信任此项目？',
   'dialogs.trustAsk.desc':
@@ -31,7 +31,7 @@ export const zhDialogs = {
 
 export const enDialogs: Record<string, string> = {
   'dialogs.exitConfirm.title': 'Confirm Exit',
-  'dialogs.exitConfirm.message': 'Close the forge window?',
+  'dialogs.exitConfirm.message': 'Close the Forge window?',
   'dialogs.exitConfirm.exit': 'Exit',
   'dialogs.trustAsk.title': 'Trust this project?',
   'dialogs.trustAsk.desc':

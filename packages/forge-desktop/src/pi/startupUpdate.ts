@@ -26,6 +26,7 @@ import {
   updatePiExtensions,
 } from './piRuntime.ts';
 import { missingRecommended, RECOMMENDED_LIST_VERSION } from './recommendedPlugins.ts';
+import { buildPiCliArgv, ensureConsoleHidePreload } from './consoleHidePreload.ts';
 import { readUpdaterState, updateComponents, writeUpdaterState } from './updaterState.ts';
 
 const execFileAsync = promisify(execFile);
@@ -67,12 +68,19 @@ async function defaultRunCli(args: string[], agentDir: string): Promise<{ ok: bo
     return { ok: false, output: '内置引擎 CLI 不存在，无法执行组件命令' };
   }
   try {
-    const { stdout } = await execFileAsync(process.execPath, [cli, ...args], {
-      windowsHide: true,
-      timeout: PI_UPDATE_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
-      env: buildPiCliEnv(agentDir),
-    });
+    // 预加载注入 windowsHide 缺省值：引擎 spawnCommand 未传 windowsHide，其孙进程
+    // （cross-spawn → cmd.exe → npm）会弹可见控制台（外层 windowsHide 管不到孙进程）。
+    const preload = ensureConsoleHidePreload(agentDir);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      buildPiCliArgv(cli, args, preload),
+      {
+        windowsHide: true,
+        timeout: PI_UPDATE_TIMEOUT_MS,
+        maxBuffer: 4 * 1024 * 1024,
+        env: buildPiCliEnv(agentDir),
+      },
+    );
     return { ok: true, output: tail(stdout) };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };

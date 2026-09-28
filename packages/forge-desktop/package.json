@@ -2,7 +2,7 @@
   "name": "@forge/desktop",
   "version": "0.1.15",
   "private": true,
-  "description": "forge",
+  "description": "Forge",
   "homepage": "https://github.com/caslte/forge",
   "author": "caslte <caslte@users.noreply.github.com>",
   "type": "module",

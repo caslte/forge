@@ -154,7 +154,7 @@ test('E-IN-002 @P0 下载进度→侧栏就绪→确认弹窗→捕获 quitAndIn
   // 关于页确认弹窗：弹出 → 取消（不触发安装）
   await page.mouse.move(10, 10);
   await page.locator('.up-btn').click();
-  await expect(page.locator('.up-confirm-title')).toContainText('安装 forge 0.2.0');
+  await expect(page.locator('.up-confirm-title')).toContainText('安装 Forge 0.2.0');
   await expect(page.locator('.up-confirm-desc')).toContainText('自动重启');
   await page.locator('.up-confirm-actions').getByText('取消').click();
   await expect(page.locator('.up-confirm')).toHaveCount(0);
@@ -163,7 +163,7 @@ test('E-IN-002 @P0 下载进度→侧栏就绪→确认弹窗→捕获 quitAndIn
 
   // 侧栏入口确认弹窗：点击 ready 图标 → 独立确认框 → 确认安装 → quitAndInstall 被调
   await page.locator('.up-entry').click();
-  await expect(page.locator('.up-entry-confirm .uec-title')).toContainText('安装 forge 0.2.0');
+  await expect(page.locator('.up-entry-confirm .uec-title')).toContainText('安装 Forge 0.2.0');
   await page.locator('.uec-actions').getByText('确认安装').click();
   await expect(page.locator('.up-entry-confirm')).toHaveCount(0);
   await page.waitForFunction(() => (window as unknown as { __upInstallCalled: boolean }).__upInstallCalled === true);

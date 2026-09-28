@@ -34,6 +34,8 @@ export type DisplayItem =
       copyText?: string;
       /** 该轮首张 assistant 卡（false = 分片卡，不重播入场动画） */
       firstOfTurn?: boolean;
+      /** 轮次 FORGE 字标挂载点（该轮首个 assistant/tool 展示项） */
+      turnBrand?: boolean;
     }
   | {
       key: string;
@@ -41,6 +43,8 @@ export type DisplayItem =
       tools: ConversationMessage[];
       totalCount: number;
       collapsed: boolean;
+      /** 轮次 FORGE 字标挂载点（该轮首个展示项即工具组） */
+      turnBrand?: boolean;
     }
   | {
       key: string;
@@ -115,6 +119,18 @@ const groupHeadText = computed(() => {
     : t('chat.toolGroupCount', { count: it.totalCount });
 });
 
+/** 计数形态拆成「数字前文案 + 滚动数字 + 数字后文案」，数字递增只滚数字、不闪整行 */
+const countParts = computed(() => {
+  const parts = t('chat.toolGroupCount', { count: '\u0000' }).split('\u0000');
+  return [parts[0] ?? '', parts[1] ?? t('chat.toolGroupCountMid')];
+});
+
+const countDigits = computed(() => {
+  const it = props.item;
+  if (it.kind !== 'tool-group') return [];
+  return String(it.totalCount).split('').map(Number);
+});
+
 /** 组内滚动视口：限高 + 上下边缘虚化（mask 随滚动状态切换，见 .tg-scroll 样式） */
 const tgScrollRef = ref<HTMLElement | null>(null);
 const tgAtTop = ref(true);
@@ -176,6 +192,7 @@ function isToolMessage(m: ConversationMessage): boolean {
 
 <template>
   <template v-if="item.kind === 'message'">
+    <div v-if="item.turnBrand" class="msg-brand">FORGE</div>
     <ToolCallCard v-if="isToolMessage(item.msg)" :event="toToolEvent(item.msg)" :hide-diff="!showDiffEff" />
     <MessageCard
       v-else
@@ -214,12 +231,25 @@ function isToolMessage(m: ConversationMessage): boolean {
     </button>
   </template>
 
-  <div v-else class="tool-group" :class="{ open: !item.collapsed }">
+  <template v-else>
+    <div v-if="item.turnBrand" class="msg-brand">FORGE</div>
+    <div class="tool-group" :class="{ open: !item.collapsed }">
     <button class="tool-group-head" @click="emit('toggle-group', item.key, item.collapsed)">
       <svg class="tg-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="10 8 14 12 10 16" /></svg>
       <span class="tg-title">
         <Transition name="tg-head" mode="out-in">
-          <span :key="groupRunning ? 'run' : 'count'" class="tg-head-text">{{ groupHeadText }}</span>
+          <span v-if="groupRunning" key="run" class="tg-head-text">{{ groupHeadText }}</span>
+          <span v-else key="count" class="tg-head-text tg-count">
+            <span class="tg-count-text">{{ countParts[0] }}</span>
+            <span v-for="(d, i) in countDigits" :key="`${i}-${item.totalCount}`" class="tg-digit">
+              <!-- 换计数时重挂载整位数字：仅改 CSS 变量不会重播动画，数字只会瞬间跳格不会滚 -->
+              <span class="tg-digit-col" :style="{ '--tg-digit-shift': `-${d * 10}%` }">
+                <span v-for="n in 10" :key="n">{{ n - 1 }}</span>
+              </span>
+              <span class="tg-digit-base">&#8203;</span>
+            </span>
+            <span class="tg-count-text">{{ countParts[1] }}</span>
+          </span>
         </Transition>
       </span>
     </button>
@@ -232,10 +262,22 @@ function isToolMessage(m: ConversationMessage): boolean {
         </div>
       </div>
     </div>
-  </div>
+    </div>
+  </template>
 </template>
 
 <style scoped>
+/* 轮次头部 FORGE 字标：小号、宽字距、弱化色（设计稿口径，与原 MessageCard .msg-brand 同）。
+   字标与后续内容是消息流 flex 的兄弟项（gap 16px），负边距把实际间距收回原 6px 口径 */
+.msg-brand {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  margin-bottom: -10px;
+  user-select: none;
+}
 /* 工具组（连续 ≥2 的 tool 聚为一组）：扁平无卡底，头部一句话 + 圆形 chevron */
 .tool-group {
   display: flex;
@@ -355,7 +397,8 @@ function isToolMessage(m: ConversationMessage): boolean {
 .tg-row-move {
   transition: transform var(--motion-row-move);
 }
-/* 组头「正在执行中 · Xs」↔「执行工具 N 次」按 groupRunning 换 key 做 out-in 淡切（220ms×2） */
+/* 组头「正在执行中 · Xs」↔「执行工具 N 次」按 groupRunning 换 key 做 out-in 淡切（220ms×2）；
+   计数递增不换 key、不淡切，只滚数字 */
 .tg-head-text {
   display: inline-block;
 }
@@ -366,6 +409,36 @@ function isToolMessage(m: ConversationMessage): boolean {
 .tg-head-enter-from,
 .tg-head-leave-to {
   opacity: 0;
+}
+/* 滚动数字：每位一列 0-9（grid 强制竖排，普通块级 shrink-to-fit 会排成一行），
+   窗口高 1em + overflow 裁切，行高锁 1em 让位移百分比与行高严格对应；
+   .tg-digit-base 是零宽空格，把 inline-block 的基线拉回与周围文案对齐 */
+.tg-count {
+  font-variant-numeric: tabular-nums;
+}
+.tg-digit {
+  display: inline-block;
+  height: 1em;
+  overflow: hidden;
+  line-height: 1em;
+}
+.tg-digit-col {
+  display: grid;
+  grid-auto-rows: 1em;
+  line-height: 1em;
+  will-change: transform;
+  animation: tg-digit-roll 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.tg-digit-col span {
+  display: block;
+}
+@keyframes tg-digit-roll {
+  from {
+    transform: translateY(calc(var(--tg-digit-shift) - 10%));
+  }
+  to {
+    transform: translateY(var(--tg-digit-shift));
+  }
 }
 /* CV-S07 上下文压缩分界条：与 .conv-switch-banner 同款 line+文案形态，
    压缩前的对话照常显示在它上方（只有模型上下文被摘要替换） */
