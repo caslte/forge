@@ -498,12 +498,15 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
   // ——恒校验目标必须是真实存在的目录，文件/不存在的路径一律拒绝。
   ipcMain.handle(IPC_SHELL_OPEN_PATH, (_e, p: unknown) => {
     if (typeof p !== 'string' || p === '') return false;
+    // 渲染层拼接的路径可能残留 . / .. 中间段（工具入参 ./x 常见）：statSync 能解析，
+    // 但 ShellExecuteEx 不归一中间段会弹「Windows 找不到文件」——先词法归一再校验/打开。
+    const normalized = path.normalize(p);
     try {
-      if (!fs.statSync(p).isDirectory()) return false;
+      if (!fs.statSync(normalized).isDirectory()) return false;
     } catch {
       return false;
     }
-    return shell.openPath(p).then((err) => err === '');
+    return shell.openPath(normalized).then((err) => err === '');
   });
   // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
   // URL，其余协议一律拒绝——这条通道绝不能转交 openPath（.exe 会被“打开”=运行）。

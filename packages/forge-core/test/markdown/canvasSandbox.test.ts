@@ -66,6 +66,8 @@ test('```html 围栏不被劫持，仍走高亮展示源码', () => {
   const out = renderMarkdown('```html\n<div>x</div>\n```');
   assert.ok(!out.includes('data-md-canvas'));
   assert.match(out, /<pre class="md-code-block"><code class="language-html"/);
+  // ```html 是「给项目写示例」的常态，同样要有复制入口
+  assert.match(out, /<button[^>]*class="md-code-copy"/);
 });
 
 test('mermaid 与 canvas 共存时互不干扰', () => {

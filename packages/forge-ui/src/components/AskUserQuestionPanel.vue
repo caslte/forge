@@ -59,7 +59,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { renderMarkdown } from '@forge/core/markdown';
-import { onMarkdownContentClick } from '../utils/markdownLinks';
+import { onMarkdownContentClick, decorateMarkdownHtml } from '../utils/markdownLinks';
 import { useI18n } from '../i18n/index.ts';
 import type {
   AskUserQuestionAnswer,
@@ -629,7 +629,7 @@ onBeforeUnmount(() => {
                   <div class="ask-preview-caption">{{ previewOption ? displayLabel(previewOption.label) : '' }}</div>
                   <div
                     class="ask-preview-body"
-                    v-html="renderMarkdown(previewOption?.preview ?? '')"
+                    v-html="decorateMarkdownHtml(renderMarkdown(previewOption?.preview ?? ''))"
                     @click="onMarkdownContentClick"
                   />
                 </div>
@@ -1022,6 +1022,7 @@ onBeforeUnmount(() => {
 }
 .ask-preview-body :deep(pre) {
   margin: 0;
+  padding-right: 34px; /* 右侧让位给代码块复制按钮 */
   white-space: pre-wrap;
   word-break: break-word;
 }

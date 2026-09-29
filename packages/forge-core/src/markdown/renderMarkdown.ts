@@ -18,6 +18,8 @@
  *   不可劫持——画布围栏只用 canvas 这一个语言名。
  * - 统一渲染：流式与结束后均用本函数完整渲染，保证两种状态样式一致
  *   （曾用流式简化渲染导致紧凑/正常样式跳变，已移除）。
+ * - 代码块复制：每个 ``` 围栏套一层 `.md-code-wrap`，内含一枚空的 `.md-code-copy`
+ *   按钮（图标与点击都在渲染层）；按钮是 pre 的兄弟——pre 里的多余空白会变成代码首行。
  *
  * 纯 Node 模块：不 import Electron / Vue / pi，可在 node:test 下直接回归（含 XSS 用例）。
  */
@@ -46,6 +48,8 @@ const ALLOWED_TAGS = [
   'p', 'br', 'hr', 'strong', 'em', 'del', 'code', 'pre', 'blockquote',
   'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span', 'div',
+  // 代码块右上角的复制按钮（点击行为在渲染层委托，见 forge-ui markdownLinks）
+  'button',
 ];
 
 /** hljs 行内 span 的 class 需放行（hljs-keyword 等） */
@@ -58,6 +62,7 @@ const ALLOWED_ATTRIBUTES = {
   div: ['class'],
   th: ['align'],
   td: ['align'],
+  button: ['class', 'type', 'tabindex'],
 };
 
 /**
@@ -124,7 +129,8 @@ function codeRenderer(lang: string | undefined, text: string): string {
     highlighted = htmlEscape(trimmed);
   }
   const cls = language !== undefined ? ` class="language-${htmlEscape(language)}"` : '';
-  return `<pre class="md-code-block"><code${cls}>${highlighted}</code></pre>`;
+  // 复制按钮是 pre 的兄弟而非子节点：pre 内任何多余空白都会渲染成代码首行
+  return `<div class="md-code-wrap"><button type="button" class="md-code-copy" tabindex="0"></button><pre class="md-code-block"><code${cls}>${highlighted}</code></pre></div>`;
 }
 
 /** 转义 HTML 特殊字符 */
@@ -230,6 +236,13 @@ export function renderMarkdown(source: string, cacheable = true): string {
           delete next['class'];
         }
         return { tagName, attribs: next } as never;
+      },
+      // 复制按钮只认本渲染器生成的那一个类：其余 button（用户手写的 HTML）降级为
+      // span，且不带任何属性——渲染层只按 .md-code-copy 委托点击，认不得别的
+      button: (tagName, attribs) => {
+        const cls = sanitizeClass(attribs['class']);
+        if (cls !== 'md-code-copy') return { tagName: 'span', attribs: {} } as never;
+        return { tagName, attribs: { class: cls, type: 'button', tabindex: '0' } } as never;
       },
       // 链接白名单前移到标签转换：http/https/mailto 保留为 <a>（点击交渲染层拦截
       // → openExternal），其余（相对路径、#锚点、//协议相对、javascript: 等）整体

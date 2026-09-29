@@ -30,6 +30,28 @@ test('未知语言代码块不崩溃并保留原文', () => {
   assert.match(html, /raw/);
 });
 
+test('代码块自带复制按钮（渲染层按 .md-code-copy 委托点击）', () => {
+  const html = renderMarkdown('```bash\nfor f in *.tar; do echo "$f"; done\n```');
+  assert.match(html, /<div class="md-code-wrap">/);
+  assert.match(html, /<button[^>]*class="md-code-copy"/);
+  // 按钮是 pre 的兄弟：pre 内的空白会渲染成代码首行的空行
+  assert.match(html, /<\/button><pre class="md-code-block"><code/);
+});
+
+test('mermaid / canvas 围栏不套复制按钮（各自有渲染形态）', () => {
+  clearRenderCache();
+  assert.doesNotMatch(renderMarkdown('```mermaid\ngraph TD\n  A --> B\n```'), /md-code-copy/);
+  clearRenderCache();
+  assert.doesNotMatch(renderMarkdown('```canvas\n<div>x</div>\n```'), /md-code-copy/);
+});
+
+test('XSS：用户手写的 button 降级为 span，不带属性', () => {
+  const html = renderMarkdown('<button onclick="alert(1)" class="evil">点我</button>');
+  assert.doesNotMatch(html, /<button/i);
+  assert.doesNotMatch(html, /onclick/i);
+  assert.doesNotMatch(html, /md-code-copy/);
+});
+
 test('XSS：script 标签被移除', () => {
   const html = renderMarkdown('前文\n\n<script>alert(1)</script>\n\n后文');
   assert.doesNotMatch(html, /<script/i);

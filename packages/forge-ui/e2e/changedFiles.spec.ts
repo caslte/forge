@@ -1,5 +1,5 @@
 /**
- * 改动文件汇总卡片 E2E（E-CV-FILES-001~004，mock-backend）。
+ * 改动文件汇总卡片 E2E（E-CV-FILES-001~007，mock-backend）。
  *
  * 覆盖：历史回显（折叠默认/头部展开/行点击行内 diff/行级与总统计/相对路径）、
  * pi 真实入参形状的工具卡 diff 恢复渲染（多 hunk 逐块 + 旧形状兼容）、
@@ -299,6 +299,116 @@ test('E-CV-FILES-005 @P1 @mock-backend：文件行右键菜单「打开所在目
   await expect(menu).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
+
+  health.assertHealthy();
+});
+
+test('E-CV-FILES-006 @P1 @mock-backend：diff 内容支持鼠标框选，行号不进选区', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-cf-6', 'diff 框选')]);
+  await seedHistory(page, 'sess-cf-6', [
+    { id: 'm1', role: 'user', content: '改代码', ts: '2026-09-08T06:00:00.000Z' },
+    {
+      id: 't1', role: 'tool', content: 'Edited', ts: '2026-09-08T06:00:05.000Z',
+      toolEventId: 'te-1', toolName: 'edit', status: 'completed',
+      input: {
+        path: `${PROJECT}/src/sel.ts`,
+        edits: [{ oldText: 'alpha\nbeta', newText: 'gamma\nbeta' }],
+      },
+    },
+    { id: 'm2', role: 'assistant', content: '完成', ts: '2026-09-08T06:00:10.000Z' },
+  ]);
+  await page.reload();
+  await openSeededSession(page, 'diff 框选');
+
+  const card = page.locator('.changed-files');
+  await card.locator('.cf-head').click();
+  await expect.poll(shellHeight.bind(null, card.locator('.cf-body-shell'))).toBeGreaterThan(20);
+  const row = card.locator('.cf-row', { hasText: 'sel.ts' });
+  await row.click();
+  const wrap = card.locator('.cf-diff-wrap');
+  await expect(wrap).toBeVisible();
+
+  // 选择性是 CSS 行为，单测证不了：diff 单元格放开（text），行号列保持禁选（none）
+  const cellSelect = await wrap.locator('.diff-cell').first().evaluate((el) => getComputedStyle(el).userSelect);
+  const numSelect = await wrap.locator('.diff-num').first().evaluate((el) => getComputedStyle(el).userSelect);
+  expect(cellSelect).toBe('text');
+  expect(numSelect).toBe('none');
+
+  // 真鼠标拖选——单行内从行首拖到行尾：选区正好是该行文本（复制一行代码的典型操作）
+  const c1 = await wrap.locator('.diff-row').nth(0).locator('.diff-cell').first().boundingBox();
+  expect(c1).toBeTruthy();
+  await page.mouse.move(c1!.x + 10, c1!.y + c1!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(c1!.x + c1!.width - 10, c1!.y + c1!.height / 2, { steps: 6 });
+  await page.mouse.up();
+  let sel = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(sel.replace(/\r\n/g, '\n')).toBe('alpha');
+
+  // 跨行纵向框选左列：两行代码都进选区；行号列（'1'/'2'）不得作为独立行混入选区。
+  // 先清掉上一轮选区：mousedown 落在既有选区内会触发「拖动已选文本」而非重新框选。
+  // 起止点对齐到文本首尾（cell 左 padding 10px），避免切进字符中间
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  const c2 = await wrap.locator('.diff-row').nth(1).locator('.diff-cell').first().boundingBox();
+  expect(c2).toBeTruthy();
+  await page.mouse.move(c1!.x + 11, c1!.y + c1!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(c2!.x + c2!.width - 10, c2!.y + c2!.height / 2, { steps: 8 });
+  await page.mouse.up();
+  sel = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(sel).toContain('alpha');
+  expect(sel).toContain('beta');
+  expect(sel).not.toMatch(/(^|\n)\d+(\n|$)/);
+
+  health.assertHealthy();
+});
+
+test('E-CV-FILES-007 @P1 @mock-backend：工具入参带 ./ 前缀时「打开所在目录」折叠中间 . 段', async ({ page }) => {
+  // 实际 bug：入参 ./x 与项目根拼接后残留 /./ 段，ShellExecuteEx 不归一中间段
+  // 会弹「Windows 找不到文件」——openPath 收到的必须是折叠后的包含目录
+  const health = attachHealthGuards(page);
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-cf-7', '前缀折叠')]);
+  await seedHistory(page, 'sess-cf-7', [
+    { id: 'm1', role: 'user', content: '改个文件', ts: '2026-09-08T07:00:00.000Z' },
+    {
+      id: 't1', role: 'tool', content: 'Edited', ts: '2026-09-08T07:00:05.000Z',
+      toolEventId: 'te-1', toolName: 'edit', status: 'completed',
+      input: {
+        path: './packages/forge-ui/src/a.ts',
+        edits: [{ oldText: 'a', newText: 'b' }],
+      },
+    },
+    { id: 'm2', role: 'assistant', content: '完成', ts: '2026-09-08T07:00:10.000Z' },
+  ]);
+  await page.reload();
+  await waitForMock(page);
+  await page.evaluate(() => {
+    const w = window as unknown as { __openPathCalls: string[] };
+    w.__openPathCalls = [];
+    const orig = window.forge.shell.openPath.bind(window.forge.shell);
+    window.forge.shell.openPath = (p: string) => {
+      w.__openPathCalls.push(p);
+      return orig(p);
+    };
+  });
+  await openSeededSession(page, '前缀折叠');
+
+  const card = page.locator('.changed-files');
+  await card.locator('.cf-head').click();
+  const row = card.locator('.cf-row', { hasText: 'a.ts' });
+  await expect(row).toBeVisible();
+
+  await row.click({ button: 'right' });
+  const menu = page.locator('.cf-context-menu');
+  await expect(menu).toBeVisible();
+
+  await menu.locator('.cf-context-menu-item').click();
+  const calls = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
+  expect(calls).toEqual([`${PROJECT}/packages/forge-ui/src`]);
 
   health.assertHealthy();
 });

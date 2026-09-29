@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { call } from '../bridge';
 import { parseSubagentStream, stripDanglingFence, groupStreamNodes } from '../utils/subagentStream';
 import { renderMarkdown } from '@forge/core/markdown';
+import { decorateMarkdownHtml, onMarkdownContentClick } from '../utils/markdownLinks';
 import { formatElapsed } from '../utils/formatElapsed.ts';
 import { useI18n } from '../i18n/index.ts';
 import type { Subagent } from '../types';
@@ -182,7 +183,8 @@ onUnmounted(() => {
           <div
             v-if="node.kind === 'text'"
             class="srv-stream-text"
-            v-html="renderMarkdown(node.text)"
+            v-html="decorateMarkdownHtml(renderMarkdown(node.text))"
+            @click="onMarkdownContentClick"
           ></div>
           <div v-else-if="node.kind === 'tool-group'" class="srv-tool-group">
             <button class="stg-head" @click="toggleGroup(node.start)">
@@ -227,7 +229,7 @@ onUnmounted(() => {
 
       <!-- 无过程数据兑底：completed 用 result 全文（同源 markdown 渲染，与过程视图一致） -->
       <template v-else>
-        <div v-if="subagent.result" class="srv-stream-text" v-html="renderMarkdown(stripDanglingFence(subagent.result))"></div>
+        <div v-if="subagent.result" class="srv-stream-text" v-html="decorateMarkdownHtml(renderMarkdown(stripDanglingFence(subagent.result)))" @click="onMarkdownContentClick"></div>
         <div v-else-if="subagent.status === 'completed'" class="subagent-result-empty">{{ t('panels.subagent.noResult') }}</div>
       </template>
 
@@ -447,7 +449,7 @@ onUnmounted(() => {
   background: color-mix(in oklab, var(--muted) 12%, var(--card));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: 8px 34px 8px 10px; /* 右侧让位给代码块复制按钮 */
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12px;

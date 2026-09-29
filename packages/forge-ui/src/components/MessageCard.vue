@@ -3,7 +3,7 @@ import { ref, computed, watch, onUnmounted, nextTick } from 'vue';
 import type { ConversationMessage } from '../types';
 import { renderMarkdown, hasOpenFence } from '@forge/core/markdown';
 import { parseUserContent, baseName, isImagePath } from '../attachmentText';
-import { onMarkdownContentClick } from '../utils/markdownLinks';
+import { onMarkdownContentClick, decorateMarkdownHtml } from '../utils/markdownLinks';
 import {
   extractCommandFromMessage,
   formatCommandLabel,
@@ -319,8 +319,10 @@ const bodyHtml = computed(() => {
   // 末围栏未闭合时保留最后一个占位 pre（含转义源码，按普通代码块展示），其余照常摘除
   const keepLast = renderedOpenFence.value;
   const lastIdx = keepLast ? html.lastIndexOf('<pre class="md-mermaid-wrap">') : -1;
-  return html.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, (match, offset: number) =>
-    keepLast && offset === lastIdx ? match : '',
+  return decorateMarkdownHtml(
+    html.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, (match, offset: number) =>
+      keepLast && offset === lastIdx ? match : '',
+    ),
   );
 });
 
@@ -809,6 +811,7 @@ const riseIn = computed(() => {
 .msg-content :deep(blockquote),
 .msg-content :deep(hr),
 .msg-content :deep(pre),
+.msg-content :deep(.md-code-wrap),
 .msg-content :deep(ul),
 .msg-content :deep(ol),
 .msg-content :deep(table) {
@@ -816,12 +819,14 @@ const riseIn = computed(() => {
   margin-block-end: 12px;
 }
 
+/* 块间距挂在 wrap 上：msg-content 的直接子元素现在是 wrap，pre 已退居其内，
+   首块去顶距 / 末块去底距的 :first-child / :last-child 规则只认得到 wrap */
 .msg-content :deep(.md-code-block) {
+  margin: 0; /* 块间距归 wrap，pre 自身不再参与（否则与 wrap 的 12px 叠成 24px） */
   background: color-mix(in oklab, var(--foreground) 8%, var(--background));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
-  margin: 12px 0;
+  padding: 10px 40px 10px 12px; /* 右侧留复制按钮的家，长代码行不至于压在它底下 */
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;

@@ -100,6 +100,32 @@ const arg = computed<{ text: string; plain: boolean } | null>(() => {
   return null;
 });
 
+/** 文件类型小图标：扩展名 → 品牌色单字标（Seti 风格，如 TS 蓝 / Vue 绿）；色值是品牌色不随主题变 */
+const FILE_TYPE_ICONS: Record<string, { label: string; cls: string }> = {
+  ts: { label: 'TS', cls: 'ft-ts' },
+  tsx: { label: 'TS', cls: 'ft-ts' },
+  mts: { label: 'TS', cls: 'ft-ts' },
+  cts: { label: 'TS', cls: 'ft-ts' },
+  js: { label: 'JS', cls: 'ft-js' },
+  jsx: { label: 'JS', cls: 'ft-js' },
+  mjs: { label: 'JS', cls: 'ft-js' },
+  cjs: { label: 'JS', cls: 'ft-js' },
+  vue: { label: 'VUE', cls: 'ft-vue' },
+  json: { label: '{}', cls: 'ft-json' },
+  md: { label: 'MD', cls: 'ft-md' },
+  css: { label: '#', cls: 'ft-css' },
+  scss: { label: '#', cls: 'ft-scss' },
+  html: { label: '<>', cls: 'ft-html' },
+  py: { label: 'PY', cls: 'ft-py' },
+};
+
+/** 文件名 pill 的类型图标：取 basename 末段扩展名（.spec.ts → TS）；仅文件类参数，命令/搜索 pill 不显示 */
+const fileIcon = computed(() => {
+  if (!arg.value || arg.value.plain) return null;
+  const m = /\.([a-z0-9]+)$/i.exec(arg.value.text);
+  return m ? (FILE_TYPE_ICONS[m[1]!.toLowerCase()] ?? null) : null;
+});
+
 /** 展开正文的结果文本：问卷回包英文前缀换成本地化文案，其余原样展示 */
 const displaySummary = computed(() => {
   const s = props.event.summary;
@@ -157,7 +183,10 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
         ><circle cx="12" cy="12" r="9" /><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6" /></svg>
       </span>
       <span class="lbl">{{ displayName }}</span>
-      <span v-if="arg" :class="['arg', { plain: arg.plain }]">{{ arg.text }}</span>
+      <span v-if="arg" :class="['arg', { plain: arg.plain }]">
+        <span v-if="fileIcon" :class="['ft-ico', fileIcon.cls]" aria-hidden="true">{{ fileIcon.label }}</span>
+        <span class="arg-text">{{ arg.text }}</span>
+      </span>
     </button>
     <div class="trow-shell">
       <div class="trow-inner">
@@ -298,6 +327,9 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
 }
 
 .arg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--foreground);
@@ -306,10 +338,42 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
   border-radius: 7px;
   padding: 1px 8px 2px;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.arg-text {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
+
+/* 文件类型小标：Seti 式品牌色圆角方标 + 单字标（TS 蓝 / JS 黄 / Vue 绿…）；色值是品牌色，不随明暗主题变 */
+.ft-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 3.5px;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.3px;
+  color: #fff;
+  user-select: none;
+}
+
+.ft-ts { background: #3178c6; }
+.ft-js { background: #f0db4f; color: #323302; }
+.ft-vue { background: #42b883; }
+.ft-json { background: #cbcb41; color: #4d4d00; }
+.ft-md { background: #519aba; }
+.ft-css { background: #519aba; }
+.ft-scss { background: #cd6799; }
+.ft-html { background: #e37933; }
+.ft-py { background: #3572a5; }
 
 /* 命令/搜索类参数：等宽但无底，避免整行都是灰块 */
 .arg.plain {

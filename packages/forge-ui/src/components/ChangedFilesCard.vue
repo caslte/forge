@@ -9,6 +9,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { ChangedFileEntry, ChangedFileSummary } from '../composables/useChangedFiles';
 import { useI18n } from '../i18n/index.ts';
+import { collapseDotSegments } from '../utils/pathSegments.ts';
 import DiffView from './DiffView.vue';
 
 const { t } = useI18n();
@@ -40,12 +41,13 @@ function relPath(path: string): string {
 }
 
 /** 把工具入参 path 规整为绝对路径：相对路径则拼项目根前缀；空 / 已是绝对 → 原样返回。
- *  已 normalize 为正斜杠（useChangedFiles.parseFileToolInput），无需再替换 \\ */
+ *  已 normalize 为正斜杠（useChangedFiles.parseFileToolInput），无需再替换 \\；
+ *  折叠 . / .. 中间段——工具入参 ./x 常见，ShellExecuteEx 不归一这种段（见 pathSegments.ts） */
 function absoluteFilePath(p: string): string {
   const looksAbsolute = p.startsWith('/') || /^[a-zA-Z]:\//.test(p);
-  if (looksAbsolute) return p;
+  if (looksAbsolute) return collapseDotSegments(p);
   const root = props.projectPath?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
-  return root !== '' ? `${root}/${p}` : p;
+  return root !== '' ? collapseDotSegments(`${root}/${p}`) : p;
 }
 
 /** 取正斜杠路径的目录部分；根目录 / 单段名原样返回（让 openPath 自己失败即可） */

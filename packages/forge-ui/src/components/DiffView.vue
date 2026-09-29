@@ -80,6 +80,8 @@ const highlightedRows = computed(() =>
 .diff-view {
   border-radius: 8px;
   overflow: hidden;
+  /* body 全局禁选，diff 内容单独放开（与 .msg-content 同理）：支持鼠标框选复制 */
+  user-select: text;
 }
 
 .diff-file {
@@ -156,6 +158,7 @@ const highlightedRows = computed(() =>
   border-top: 1px solid var(--border);
   background: var(--muted);
   cursor: pointer;
+  user-select: none;
 }
 
 .diff-expand:hover {
