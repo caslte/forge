@@ -25,6 +25,7 @@ import {
   looksLikeCodeCanvas,
   looksLikeHtmlCanvas,
   looksLikeProseCanvas,
+  remapDarkBackgrounds,
   renderMarkdown,
   stripCanvasProse,
 } from '../../src/markdown/renderMarkdown.ts';
@@ -328,6 +329,60 @@ test('stripCanvasProse：行首排版缩进剥掉（防 renderMarkdown 顶成代
   assert.equal(out, '第一段有缩进\n\n第二段也有');
   // 实体解码后不会复活成真标签（先剥标签后解码的顺序契约）
   assert.equal(stripCanvasProse('<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>'), '<script>alert(1)</script>');
+});
+
+test('judgeCanvasSource：HTML <canvas> 元素判 code（2026-09-29 真机——模型把「画布卡片」直译成 <canvas>）', () => {
+  // 沙箱禁脚本，<canvas> 必然是死的；回退文本按 HTML 渲染会丢等宽对齐。
+  // 改前：命中 HAS_TAG_RE → 无布局信号 → 每行 <80 字 → 判 html 进 iframe，白底死图
+  const deadCanvas =
+    '<canvas width="640" height="150" style="background:#fff;font:13px/1.5 system-ui">\n' +
+    "localStorage 'forge:content-width'   生效值\n" +
+    '─────────────────────────────────────────────\n' +
+    '(缺失 / 非法)  ────────► standard 920px 居中   ← 改后默认\n' +
+    "'standard'    ────────► standard 920px 居中\n" +
+    '</canvas>';
+  assert.equal(judgeCanvasSource(deadCanvas), 'code');
+  // 流式中途半截 <canvas（标签没写完）：不得判 prose 提前撤骨架，
+  // 落 html 分支由 blocked 撑住骨架等闭合
+  assert.equal(looksLikeProseCanvas(deadCanvas), false);
+  assert.equal(looksLikeProseCanvas('<canvas width="640" style="background:#fff">生效值 ────► 920px'), false);
+  // 正文里提到 canvas 一词不受牵连（无标签长文照旧 prose）
+  assert.equal(judgeCanvasSource('这段说明里提到了 canvas 围栏这个词，但是没有任何标签，长度也足够判出是散文，应当照常降级成正文流渲染。'), 'prose');
+});
+
+test('remapDarkBackgrounds：暗色下写死的浅色背景换成 --c-surface，前景色与彩色不动', () => {
+  const dark = { ...TOKENS, bg: '#ffffff' };
+  const light = TOKENS; // bg 是深色 oklch
+  assert.equal(
+    remapDarkBackgrounds('<div style="background:#fff">a</div>', dark),
+    '<div style="background:var(--c-surface)">a</div>',
+  );
+  assert.equal(
+    remapDarkBackgrounds('<div style="BACKGROUND: WHITE">a</div>', dark),
+    '<div style="BACKGROUND: var(--c-surface)">a</div>',
+  );
+  assert.equal(
+    remapDarkBackgrounds('<div style="background-color:rgb(255, 255, 255)">a</div>', dark),
+    '<div style="background-color:var(--c-surface)">a</div>',
+  );
+  // 前景色 white 不动：暗色下白字是常见正确写法，全局换掉会把字洗没
+  assert.equal(remapDarkBackgrounds('<div style="color:#fff">a</div>', dark), '<div style="color:#fff">a</div>');
+  // 非近白色不动：#ff0000 曾被 \b 边界误伤成 #fff 前缀
+  assert.equal(remapDarkBackgrounds('<div style="background:#ff0000">a</div>', dark), '<div style="background:#ff0000">a</div>');
+  assert.equal(remapDarkBackgrounds('<div style="background:#fefefe">a</div>', dark), '<div style="background:#fefefe">a</div>');
+  // 令牌写法原样穿过
+  assert.equal(
+    remapDarkBackgrounds('<div style="background:var(--c-surface)">a</div>', dark),
+    '<div style="background:var(--c-surface)">a</div>',
+  );
+  // 亮色主题：整体原样（白背景本来就对，不做多余改写）
+  assert.equal(remapDarkBackgrounds('<div style="background:#fff">a</div>', light), '<div style="background:#fff">a</div>');
+});
+
+test('沙箱文档：暗色下拼装时套用背景重映射', () => {
+  const doc = buildCanvasDocument('<div style="background:#fff">内容</div>', { ...TOKENS, bg: '#ffffff' });
+  assert.ok(doc.includes('background:var(--c-surface)'));
+  assert.ok(!doc.includes('background:#fff'));
 });
 
 test('沙箱文档：预注入语义变量 + 卡片源码原样进 body', () => {

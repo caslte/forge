@@ -249,6 +249,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 列宽跟随个性化「内容宽度」偏好（--conv-col 由 .conv-view 定义），
+   与 SubagentTabBar 同款配方：本视图是 .conv-view 直接子项，不限宽会在
+   标准宽度下铺满视口，与已收拢的 Tab 栏/输入框左右错开。
+   width:100% 必须显式写：margin-inline:auto 会取消 flex stretch，
+   单写 max-width 时列会塌成 fit-content。 */
 .subagent-result-view {
   display: flex;
   flex-direction: column;
@@ -256,6 +261,17 @@ onUnmounted(() => {
   min-height: 0;
   background: var(--background);
   padding: 0;
+  width: 100%;
+  max-width: var(--conv-col, 100%);
+  margin-inline: auto;
+  box-sizing: border-box;
+  transition: max-width var(--transition-decelerate);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-result-view {
+    transition: none;
+  }
 }
 
 .srv-header {

@@ -28,6 +28,24 @@ test('意图判定：中文显式出图请求命中（图的具体体裁 / 画�
   assert.equal(looksLikeDiagramRequest('把这张表可视化一下'), true);
 });
 
+test('意图判定：「画+图」动词变体正则命中（2026-09-29 真机漏网：「你画一个图」差一个字没进字面表）', () => {
+  assert.equal(looksLikeDiagramRequest('你画一个图'), true);
+  assert.equal(looksLikeDiagramRequest('画一个图'), true);
+  assert.equal(looksLikeDiagramRequest('画幅图看看'), true);
+  assert.equal(looksLikeDiagramRequest('给我画张图'), true);
+  assert.equal(looksLikeDiagramRequest('画个图看看'), true); // 「画下这个流程」无「图」字，不在本表射程（体裁词才接得住）
+  assert.equal(looksLikeDiagramRequest('整张图出来'), true); // 「整」锚行首
+  assert.equal(looksLikeDiagramRequest('绘一张图'), true);
+});
+
+test('意图判定：含「画」「图」但不成画图短语的中文不误伤（正则枚举而非通配的钉法）', () => {
+  assert.equal(looksLikeDiagramRequest('画龙点睛'), false);
+  assert.equal(looksLikeDiagramRequest('图纸在哪'), false);
+  assert.equal(looksLikeDiagramRequest('这个画布图的边框太粗'), false); // 「画布图」曾被 .{0,3} 方案误命中
+  assert.equal(looksLikeDiagramRequest('把这张图发我'), false);
+  assert.equal(looksLikeDiagramRequest('帮我整理一下这张图的说明'), false);
+});
+
 test('意图判定：泛主题词不再命中（旧版命中的正是这批，收窄记录在案）', () => {
   assert.equal(looksLikeDiagramRequest('帮我把这套鉴权机制讲清楚'), false);
   assert.equal(looksLikeDiagramRequest('这两个方案的优劣对比一下'), false);
@@ -62,6 +80,11 @@ test('两段式：未命中只追加常驻段，不含输出契约', () => {
   assert.ok(out.includes(CANVAS_STANZA));
   assert.ok(!out.includes('## Diagram output contract'));
   assert.ok(!out.includes('Hard rules'));
+});
+
+test('常驻段自带最小画法：漏网轮也不许把围栏体幻觉成 mermaid（2026-09-29 真机）', () => {
+  assert.ok(CANVAS_STANZA.includes('self-contained HTML+CSS fragment'));
+  assert.ok(CANVAS_STANZA.includes('not mermaid syntax'));
 });
 
 test('两段式：命中时追加完整契约', () => {

@@ -193,6 +193,86 @@ test('内容宽度：子 Agent Tab 栏跟随列宽（标准模式不铺满） @r
   health.assertHealthy();
 });
 
+test('内容宽度：子 Agent 结果视图跟随列宽（标准模式不铺满） @regression', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto('/');
+  await seedSessions(page, [
+    {
+      sessionId: 'sess-cw-srv',
+      projectPath: 'D:/work/aiwork/forge',
+      alias: '会话CWS',
+      status: 'idle',
+      lastActiveAt: new Date().toISOString(),
+    },
+  ]);
+  await page.reload();
+  await expect(page.locator('.tree-panel')).toBeVisible();
+  await page.locator('.tree-session', { hasText: '会话CWS' }).click();
+  await expect(page.locator('.compose-box')).toBeVisible();
+  await page.locator('.compose-input').fill('让子代理出一份架构报告');
+  await page.locator('.compose-input').press('Enter');
+  await expect(page.locator('.conv-messages-inner .msg').first()).toBeVisible();
+
+  // mock：派发一个子 agent 并点开其 Tab → 结果视图激活
+  const spawnAndOpen = async () => {
+    await page.evaluate((sid) => {
+      window.__forgeMock!.setSubagents(sid, []);
+      window.__forgeMock!.emit(sid, 'subagent.updated', {
+        sessionId: sid,
+        subagent: {
+          agentId: 'a1',
+          agentType: 'Explore',
+          description: '梳理架构',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+          result: null,
+          error: null,
+          usage: { inputTokens: 0, outputTokens: 0 },
+        },
+      });
+    }, 'sess-cw-srv');
+    await expect(page.locator('.subagent-tab', { hasText: '梳理架构' })).toBeVisible({ timeout: 5_000 });
+    await page.locator('.subagent-tab', { hasText: '梳理架构' }).click();
+    await expect(page.locator('.subagent-result-view')).toBeVisible();
+    await page.waitForTimeout(700); // 等宽度过渡结束再量
+  };
+  await spawnAndOpen();
+
+  const srv = await page.evaluate(() => {
+    const el = document.querySelector('.subagent-result-view') as HTMLElement;
+    const box = document.querySelector('.compose-box') as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const view = (document.querySelector('.conv-view') as HTMLElement).getBoundingClientRect();
+    return {
+      width: Math.round(r.width),
+      left: Math.round(r.left),
+      boxLeft: Math.round(box.getBoundingClientRect().left),
+      leftGap: Math.round(r.left - view.left),
+      rightGap: Math.round(view.right - (r.left + r.width)),
+    };
+  });
+  expect(srv.width, '标准模式结果视图 = 内容列宽').toBe(920);
+  expect(Math.abs(srv.left - srv.boxLeft), '结果视图左缘与输入框对齐').toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(srv.leftGap - srv.rightGap),
+    `结果视图居中：左留白 ${srv.leftGap} / 右留白 ${srv.rightGap}`,
+  ).toBeLessThanOrEqual(2);
+
+  await setContentWidth(page, '宽');
+  // 设置页会卸载 ConversationView（subagents 为组件级状态），点回会话重新派发再量
+  await page.locator('.tree-session', { hasText: '会话CWS' }).click();
+  await expect(page.locator('.compose-box')).toBeVisible();
+  await spawnAndOpen();
+  const wideW = await page.evaluate(
+    () => Math.round((document.querySelector('.subagent-result-view') as HTMLElement).getBoundingClientRect().width)
+  );
+  expect(wideW, '宽模式结果视图铺满').toBeGreaterThan(1000);
+
+  health.assertHealthy();
+});
+
 test('内容宽度：标准模式在窄窗格退化为满宽 @regression', async ({ page }) => {
   const health = attachHealthGuards(page);
   await page.setViewportSize({ width: 820, height: 800 });

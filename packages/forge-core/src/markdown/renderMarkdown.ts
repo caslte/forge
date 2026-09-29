@@ -45,6 +45,7 @@ export {
   stripCanvasProse,
   judgeCanvasSource,
   decodeCanvasSource,
+  remapDarkBackgrounds,
   type CanvasVerdict,
   buildCanvasDocument,
   buildCanvasStandaloneFile,

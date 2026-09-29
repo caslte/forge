@@ -1,5 +1,14 @@
 # 变更日志
 
+## v3.88.0 (新增：CV-S13 选区复制浮窗——消息内拖选文字松开鼠标即弹「复制文本」)
+
+> 来源：2026-09-29 用户需求「参考图例，选中文本释放鼠标弹浮窗，只要复制文本」。参考图里的三动作（复制文本/添加到任务/在侧边任务中提问）被用户砍到只剩复制。形态先经 `prototypes/selection-copy-demo.html` 出 A（深色卡片浮层）/ B（tooltip 反色）两变体，用户拍板 **B**。
+
+- **前端（`packages/forge-ui`）**：新增 `src/selectionPopover.ts` 全局单例（`main.ts` 引入即生效，与 `tooltip.ts` 同款模式：document 级 `mouseup` + fixed/transform 视口定位，免疫滚动容器偏移）。行为口径：① 仅选区锚点落在 `.msg`（消息卡片根）内才弹——侧栏/设置/终端（xterm 自带选区复制）/画布 iframe（事件不回传）天然不触发；② 浮窗出现在选区上方 8px，贴顶翻下方，水平夹紧视口（GAP/EDGE 与 tooltip 同款）；③ 点按钮 → `navigator.clipboard.writeText`（失败回退 `execCommand`，与设置页复制日志同款兜底）→ 「已复制」打勾 1.4s → 收起并清空选区；④ 任意滚动（capture）/ 浮窗外 mousedown / Escape（连选区一起清）即隐。样式进 `global.css`（`.selection-pop`）：反色底抄全局 tooltip（`--foreground` 底 / `--background` 字）+ `--shadow-md` + `--radius-lg`，图标复用 footer 复制按钮 SVG；z-index 9998 压在 tooltip 之下。i18n 新增 `chat.copySelection`（复制文本/Copy text），「已复制」复用 `chat.copied`；浮窗常驻期间切语言由 `watch(i18n.activeLocale)` 即时跟随。
+- **不做的**：「添加到任务」「在侧边任务中提问」（用户裁定）；键盘划选（shift+方向键）不触发（需求口径=鼠标释放）；不动 footer 既有整条复制按钮。
+- **验证**：forge-ui 单测 318/318、vue-tsc 0 错；vite dev 页（51731）浏览器实测全链路——消息区选中文本弹出（反色逐值 `oklch(0.85…)` 底/`oklch(0.166…)` 字核对）、点复制翻「已复制」→ 1.4s 收起清选区、非消息区选区不弹、Escape 收起。⚠️ 隐藏页环境 `Selection.toString()` 恒空（不重绘副作用），测试驱动用临时 `getSelection` 补丁验证模块逻辑，产品代码未加任何兜底。
+- **文档**：PRD `docs/prd/03_conversation.md` 新增 CV-S13 节 + AC-CV-052/053/054 + 自检报告一行。
+
 ## v3.87.0 (新增：CV-S09 队列编辑——每条待发消息可删除 / ⚡立即发送（打断当前轮并直发）)
 
 > 来源：2026-09-29 用户需求「排队消息不能只是干等，要能删、能插队」。交互先经 `docs/demos/queue-demo.html` 定稿；初版 ⚡ 采用 pi 原生 `steer`（等当前轮结束在边界插入），用户复核后明确要**真打断**（「AI 分析好长时间我不还是要等很久」），终版改为摘出条目 → abort 当前轮 → 立即直发。pi 原生无按条操作 API，按条编辑用 `clearQueue + 重建` 实现（`clearQueue/followUp` 内部均为同步 push，clear 与回灌之间无事件循环空窗，agent 循环观察不到中间空队列态）。

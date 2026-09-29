@@ -6,8 +6,9 @@
  * ——它们要在 node:test 下回归，不能碰 DOM。
  *
  * 安全口径（不可放宽）：卡片源码不过 sanitize-html 白名单（白名单不含 style，会把
- * 卡片样式剥光），而是 base64 内嵌 → 前端解码 → iframe srcdoc。安全边界完全由
- * iframe 的 `sandbox=""` 承担：不给 allow-scripts，也不给 allow-same-origin。
+ * 卡片样式剥光），而是 base64 内嵌 → 前端解码 → iframe srcdoc（暗色下仅做背景色
+ * 重映射，见 remapDarkBackgrounds）。安全边界完全由 iframe 的 `sandbox=""` 承担：
+ * 不给 allow-scripts，也不给 allow-same-origin。
  * 因此 srcdoc 是独立 origin —— 主文档读不到它的内容、它拿不到 window.forge，
  * 模型 HTML 里的 <script> 与 on* 事件属性一律不执行。
  */
@@ -51,6 +52,16 @@ export function looksLikeHtmlCanvas(source: string): boolean {
 
 /** 任意标签形态（<div>、<!DOCTYPE、<!-- 注释…）：卡片是 HTML 的最低要求。 */
 const HAS_TAG_RE = /<[a-zA-Z!/][^>]*>/;
+
+/**
+ * HTML `<canvas>` 元素（真标签，非 canvas 围栏这个词）。
+ *
+ * 模型会把「画布卡片」直译成 <canvas>（2026-09-29 真机：MiniMax 交回
+ * `<canvas style="background:#fff">` 包一段字符画回退文本）。沙箱禁脚本，
+ * <canvas> 永远画不出东西，浏览器只显示回退内容——按普通 HTML 排版，等宽
+ * 没了、对齐全毁。判 code 降级进等宽代码块是这种内容唯一不丢信息的落点。
+ */
+const CANVAS_ELEMENT_RE = /<canvas[\s>]/i;
 
 /** 取标签外的可见文本。先吃掉「标签间纯空白」（模型的排版缩进），缩进不是内容。 */
 function stripTagsToText(s: string): string {
@@ -152,9 +163,11 @@ export type CanvasVerdict = 'empty' | 'html' | 'prose' | 'code' | 'undecided';
  *
  * 顺序即优先级：
  * 1. 空 → 空态文案；
- * 2. 有标签 → 是 HTML 图示候选，再由 looksLikeProseCanvas 挑出「标签只是排版壳」
+ * 2. 含 <canvas> 元素 → 判 code——沙箱禁脚本它必然是死的（见 CANVAS_ELEMENT_RE），
+ *    排在标签分派之前，不让它走 html 进 iframe；
+ * 3. 有标签 → 是 HTML 图示候选，再由 looksLikeProseCanvas 挑出「标签只是排版壳」
  *    的那部分降级成正文（带布局信号的仍留在 iframe）；
- * 3. 无标签 → 不是 HTML。字符画与源码都按代码块降级（等宽保对齐/着色），其余
+ * 4. 无标签 → 不是 HTML。字符画与源码都按代码块降级（等宽保对齐/着色），其余
  *    按 prose 降级成正文流——模型把纯文字说明塞进围栏是高频行为，出代码框是噪声。
  *
  * 'undecided'：无标签且文本还没到 PROSE_MIN_TEXT。此时既可能是散文开头，也可能是
@@ -164,6 +177,7 @@ export type CanvasVerdict = 'empty' | 'html' | 'prose' | 'code' | 'undecided';
 export function judgeCanvasSource(source: string): CanvasVerdict {
   const s = source ?? '';
   if (s.trim() === '') return 'empty';
+  if (CANVAS_ELEMENT_RE.test(s)) return 'code';
   if (HAS_TAG_RE.test(s)) {
     return looksLikeProseCanvas(s) ? 'prose' : 'html';
   }
@@ -200,6 +214,9 @@ export function looksLikeProseCanvas(source: string): boolean {
     if (looksLikeAsciiArt(s, 2)) return false;
     return !looksLikeCodeCanvas(s);
   }
+  // <canvas 开头（含流式中途没写完的半截标签）：终态归 judgeCanvasSource 的
+  // code 分支，这里只否决 prose——否则开头几十字会被判成正文、提前撤掉骨架。
+  if (/<canvas/i.test(s)) return false;
   if (!looksLikeHtmlCanvas(s)) return false;
   if (GRAPHIC_RE.test(s)) return false;
   const text = stripTagsToText(s).trim();
@@ -334,16 +351,57 @@ body{
 </style>`;
 }
 
-/** 拼出完整的沙箱文档。卡片源码原样进 body，不做任何改写。 */
+/**
+ * 暗色主题下把写死的浅色「背景」重映射到 --c-surface 令牌。
+ *
+ * 契约第 4 条要求模型只用 --c-* 变量，但它经常不听（2026-09-29 真机：
+ * `<canvas style="background:#fff">` 在暗色卡片里糊出一大块白）。这里做
+ * 宿主兜底：只替换 background/background-color 属性值里的浅色字面量
+ * （white / 近白 3·6 位 hex / 高亮 rgb·hsl），前景色 color、border 等一概
+ * 不动——暗色下白字是常见且正确的写法，全局换 white 会把字洗没。
+ * 亮色主题原样返回（白背景本来就对，不做不可逆的多余改写）。
+ */
+export function remapDarkBackgrounds(body: string, tokens: CanvasTokens): string {
+  if (!isLightColor(tokens.bg)) return body;
+  return (body ?? '').replace(
+    /(background(?:-color)?\s*:\s*)(white|#(?:f{3,6}|fff[a-f0-9]{3})(?![\da-f])|rgb(?:a)?\(\s*25[0-5]\s*,\s*25[0-5]\s*,\s*25[0-5]\s*\)|hsl\(0\s*,\s*0%\s*,\s*100%\))/gi,
+    `$1var(--c-surface)`,
+  );
+}
+
+/** 颜色字面量是否「接近纯白」：只吃确定性的写法，不做通用色彩解析。 */
+function isLightColor(color: string): boolean {
+  const c = (color ?? '').trim().toLowerCase();
+  if (c === 'white') return true;
+  const hex = c.match(/^#([\da-f]{3}|[\da-f]{6})$/);
+  if (hex) {
+    const digits = hex[1]!;
+    const bytes = digits.length === 3
+      ? [...digits].map((h) => parseInt(h + h, 16))
+      : [0, 2, 4].map((i) => parseInt(digits.slice(i, i + 2), 16));
+    return bytes.every((b) => b >= 240);
+  }
+  const rgb = c.match(/^rgb(?:a)?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgb) return Number(rgb[1]) >= 240 && Number(rgb[2]) >= 240 && Number(rgb[3]) >= 240;
+  const hsl = c.match(/^hsl\(\s*[\d.]+\s*,\s*[\d.]+%\s*,\s*([\d.]+)%/);
+  if (hsl) return Number(hsl[1]) >= 94;
+  return false;
+}
+
+/**
+ * 拼出完整的沙箱文档。卡片源码只经 remapDarkBackgrounds（暗色下换写死的浅色
+ * 背景）后进 body，其余不做任何改写。
+ */
 export function buildCanvasDocument(body: string, tokens: CanvasTokens): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8">${buildCanvasPreflight(tokens)}</head><body>${body}</body></html>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${buildCanvasPreflight(tokens)}</head><body>${remapDarkBackgrounds(body, tokens)}</body></html>`;
 }
 
 /**
  * 另存的独立 HTML 文档（脱离 forge 也能看）。
  *
  * 与 buildCanvasDocument 分开是因为语义不同：另存件要能作为独立文件被浏览器打开，
- * 所以带 <title>；沙箱件只活在 iframe 里，标题无意义。
+ * 所以带 <title>；沙箱件只活在 iframe 里，标题无意义。背景重映射两边共用
+ * （另存件带走的正是当前主题下应有的观感）。
  */
 export function buildCanvasStandaloneFile(body: string, tokens: CanvasTokens, title: string): string {
   return `<!DOCTYPE html>
@@ -354,7 +412,7 @@ export function buildCanvasStandaloneFile(body: string, tokens: CanvasTokens, ti
 <title>${escapeHtmlText(title)}</title>
 ${buildCanvasPreflight(tokens)}
 </head>
-<body>${body}</body>
+<body>${remapDarkBackgrounds(body, tokens)}</body>
 </html>
 `;
 }

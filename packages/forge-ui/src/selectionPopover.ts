@@ -1,0 +1,144 @@
+// 选区复制浮窗（CV-S13）：消息气泡内拖选文字、松开鼠标后在选区上方弹出「复制文本」小浮窗。
+//
+// 与 tooltip.ts 同款全局单例模式（main.ts 引入即生效）：
+// - fixed + transform 视口坐标定位，免疫滚动容器偏移（同 tooltip.ts 头注的坐标系问题）；
+// - 样式在 global.css（.selection-pop），反色底抄全局 tooltip（--foreground 底 / --background 字）；
+// - 任意滚动即隐（fixed 留原地会盖住内容，同款口径）。
+//
+// 行为定稿（prototypes/selection-copy-demo.html，2026-09-29 用户选变体 B）：
+// - 仅消息区触发：选区锚点须落在 .msg 内（终端选区有 xterm 自己的 Ctrl+C/右键复制，画布 iframe 事件不回传，均天然不冲突）；
+// - 复制 → 「已复制」打勾 1.4s → 收起并清空选区；
+// - 重新按下鼠标 / Escape / 滚动 → 立即收起。
+import { watch } from 'vue';
+import { i18n } from './i18n/index.ts';
+
+const GAP = 8;
+const EDGE = 8;
+const COPIED_FEEDBACK_MS = 1400;
+
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>';
+const ICON_DONE =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="20 6 9 17 4 12" /></svg>';
+
+const pop = document.createElement('div');
+pop.className = 'selection-pop';
+pop.setAttribute('aria-hidden', 'true');
+const btn = document.createElement('button');
+btn.type = 'button';
+btn.className = 'selection-pop-btn';
+btn.innerHTML = `${ICON_COPY}${ICON_DONE}<span></span>`;
+pop.appendChild(btn);
+document.body.appendChild(pop);
+
+const labelEl = btn.querySelector('span') as HTMLSpanElement;
+const iconCopy = btn.querySelector('svg') as SVGElement;
+const iconDone = btn.querySelectorAll('svg')[1] as SVGElement;
+
+let selectedText = '';
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function resetLabel(): void {
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedTimer = null;
+  labelEl.textContent = i18n.t('chat.copySelection');
+  iconCopy.style.display = '';
+  iconDone.style.display = 'none';
+}
+
+function hide(): void {
+  pop.classList.remove('is-visible');
+  pop.setAttribute('aria-hidden', 'true');
+  resetLabel();
+}
+
+/** 当前选区的视口矩形；无选区/塌陷/零尺寸返回 null */
+function selectionRect(): DOMRect | null {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  return rect.width === 0 && rect.height === 0 ? null : rect;
+}
+
+function place(rect: DOMRect): void {
+  const w = pop.offsetWidth;
+  const h = pop.offsetHeight;
+  // 上方放不下（贴近视口顶部）时翻到选区下方；水平居中于选区并夹紧在视口内
+  const below = rect.top - GAP - h < EDGE;
+  const top = below ? rect.bottom + GAP : rect.top - GAP - h;
+  const center = rect.left + rect.width / 2;
+  const left = Math.min(Math.max(center, w / 2 + EDGE), window.innerWidth - w / 2 - EDGE);
+  pop.style.transform = `translate(${left - w / 2}px, ${top}px)`;
+}
+
+document.addEventListener('mouseup', () => {
+  // mouseup 时 Chrome 选区已稳定，setTimeout 只是兜住个别引擎的收尾时序
+  setTimeout(() => {
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : '';
+    if (!text) {
+      hide();
+      return;
+    }
+    const anchor = sel?.anchorNode;
+    const anchorEl = anchor
+      ? anchor.nodeType === 1
+        ? (anchor as Element)
+        : anchor.parentElement
+      : null;
+    if (!anchorEl?.closest('.msg')) {
+      hide();
+      return;
+    }
+    const rect = selectionRect();
+    if (!rect) {
+      hide();
+      return;
+    }
+    selectedText = text;
+    resetLabel();
+    place(rect);
+    pop.classList.add('is-visible');
+    pop.setAttribute('aria-hidden', 'false');
+  }, 0);
+});
+
+btn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  try {
+    await navigator.clipboard.writeText(selectedText);
+  } catch {
+    // 剪贴板 API 失败（焦点丢失/权限）回退 execCommand，与 SettingsPanel 复制日志同款兜底
+    const ta = document.createElement('textarea');
+    ta.value = selectedText;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  labelEl.textContent = i18n.t('chat.copied');
+  iconCopy.style.display = 'none';
+  iconDone.style.display = '';
+  copiedTimer = setTimeout(() => {
+    hide();
+    window.getSelection()?.removeAllRanges();
+  }, COPIED_FEEDBACK_MS);
+});
+
+document.addEventListener('scroll', hide, true);
+document.addEventListener('mousedown', (e) => {
+  if (!pop.contains(e.target as Node)) hide();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    hide();
+    window.getSelection()?.removeAllRanges();
+  }
+});
+
+// 浮窗常驻期间切语言：文案跟着走（已复制反馈态不覆盖，1.4s 后自然复位）
+watch(i18n.activeLocale, () => {
+  if (pop.classList.contains('is-visible') && !copiedTimer) {
+    labelEl.textContent = i18n.t('chat.copySelection');
+  }
+});

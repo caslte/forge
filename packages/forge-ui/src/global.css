@@ -196,6 +196,52 @@ textarea:focus {
   opacity: 1;
 }
 
+/* 选区复制浮窗（CV-S13，逻辑在 src/selectionPopover.ts 全局单例）。
+   反色底与全局 tooltip 完全同款（--foreground 底 / --background 字），只是可点击；
+   z-index 压在 tooltip（99999）之下：hover 浮窗按钮时 tooltip 仍能盖在它上面。 */
+.selection-pop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9998;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+
+.selection-pop.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.selection-pop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--foreground);
+  color: var(--background);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+
+.selection-pop-btn:hover {
+  opacity: 0.9;
+}
+
+.selection-pop-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 /* Markdown 代码块复制按钮（markup 由 forge-core renderMarkdown 输出，v-html 注入）。
    图标用 CSS mask + 内联 SVG，不走 <svg> 标签：sanitize 白名单里没有 svg，
    为一个小图标放开 svg/path/rect 不值得扩大 XSS 面。
