@@ -32,6 +32,13 @@ export type {
   GitResult,
   SwitchBranchData,
   SwitchResult,
+  GitStatusInfo,
+  CommitData,
+  CommitResult,
+  PushData,
+  PushResult,
+  CommitDiffContext,
+  GitWriteResult,
 } from './git/gitService.ts';
 
 // Git RPC 方法层（wu-01-project-git-core）
@@ -80,6 +87,16 @@ export type {
 
 // 对话与消息 RPC 方法层（wu-03-rpc）
 export { ConversationApi, createConversationApi } from './rpc/conversationMethods.ts';
+export type { ConversationErrorPayload, ConversationRetryInfo } from './rpc/conversationMethods.ts';
+
+// 对话错误分类（CV-ERR-01）
+export { classifyError } from './errors/errorClassifier.ts';
+export type {
+  ClassifiedError,
+  ClassifyErrorContext,
+  ForgeErrorCategory,
+  ForgeErrorSource,
+} from './errors/errorClassifier.ts';
 
 // 工具事件服务（wu-04-tool-service）
 export { ToolEventService } from './tool/toolService.ts';

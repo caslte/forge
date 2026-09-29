@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { SessionItem } from '../types';
 import MultiWindowConversation from './MultiWindowConversation.vue';
-import { isProjectBusy } from '../utils/branchBadge';
+import { useI18n } from '../i18n/index.ts';
 import {
   detectSnapZone,
   snapRectFor,
@@ -38,6 +38,8 @@ const emit = defineEmits<{
   (e: 'focus-session', sessionId: string): void;
   (e: 'opened-change', sessionIds: string[]): void;
 }>();
+
+const { t } = useI18n();
 
 interface Win {
   id: string; // = sessionId
@@ -157,7 +159,7 @@ function sessionOf(id: string): SessionItem | undefined {
 }
 
 function displayName(s: SessionItem): string {
-  return s.alias || '会话 ' + s.sessionId.slice(-6);
+  return s.alias || t('panels.multiwin.session', { id: s.sessionId.slice(-6) });
 }
 
 function projectNameOf(s: SessionItem): string {
@@ -457,18 +459,13 @@ onUnmounted(() => {
   resizeObserver?.disconnect();
   resizeObserver = null;
 });
+
+// 顶部工具栏「自动布局 / 全部关闭」按钮通过 ref 调用
+defineExpose({ arrangeAuto, clearAll });
 </script>
 
 <template>
   <div class="mw-view">
-    <div class="mw-toolbar">
-      <button class="mw-btn" @click="arrangeAuto">自动布局</button>
-      <button class="mw-btn danger" @click="clearAll">
-        全部关闭
-      </button>
-      <span class="mw-hints">从左侧会话拖到画布开窗 · 拖标题栏贴边吸附 · 点标题进会话</span>
-    </div>
-
     <div
       ref="canvasRef"
       class="mw-canvas"
@@ -476,7 +473,7 @@ onUnmounted(() => {
       @drop="onCanvasDrop"
     >
       <div class="mw-hint" v-if="wins.length === 0">
-        把左侧会话拖到画布开窗，多个会话可并排观察。
+        {{ t('panels.multiwin.canvasHint') }}
       </div>
       <div ref="snapPreview" class="snap-preview"></div>
 
@@ -489,13 +486,13 @@ onUnmounted(() => {
       >
         <div class="mw-bar" @mousedown.stop="onBarMouseDown($event, w)">
           <div class="mw-title">
-            <b>{{ sessionOf(w.sessionId) ? displayName(sessionOf(w.sessionId)!) : '会话' }}</b>
+            <b>{{ sessionOf(w.sessionId) ? displayName(sessionOf(w.sessionId)!) : t('panels.multiwin.sessionFallback') }}</b>
             <span v-if="sessionOf(w.sessionId)" class="mw-proj">{{ projectNameOf(sessionOf(w.sessionId)!) }}</span>
           </div>
           <button
             class="mw-icon-btn"
-            title="在单视图打开"
-            data-tooltip="在单视图打开"
+            :title="t('panels.multiwin.openInSingle')"
+            :data-tooltip="t('panels.multiwin.openInSingle')"
             @click.stop="goSession(w)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -503,7 +500,7 @@ onUnmounted(() => {
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
-          <button class="mw-close" title="关闭窗口" data-tooltip="关闭窗口" @click.stop="closeWindow(w.id)">
+          <button class="mw-close" :title="t('panels.multiwin.closeWindow')" :data-tooltip="t('panels.multiwin.closeWindow')" @click.stop="closeWindow(w.id)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>
@@ -514,7 +511,6 @@ onUnmounted(() => {
             :session-id="w.sessionId"
             :session="sessionOf(w.sessionId) ?? null"
             :models="models"
-            :git-busy="isProjectBusy(props.sessions, sessionOf(w.sessionId)?.projectPath ?? '')"
           />
         </div>
       </div>
@@ -530,37 +526,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
   padding: 16px;
-}
-
-.mw-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-.mw-btn {
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  background: var(--muted);
-  border: 1px solid var(--border);
-  color: var(--foreground);
-}
-.mw-btn:hover {
-  border-color: var(--brand);
-  color: var(--brand);
-}
-.mw-btn.danger {
-  background: color-mix(in oklab, var(--destructive) 8%, var(--background));
-  border-color: color-mix(in oklab, var(--destructive) 24%, var(--border));
-  color: var(--destructive);
-}
-.mw-hints {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--muted-foreground);
 }
 
 .mw-canvas {
@@ -672,6 +637,12 @@ onUnmounted(() => {
 .mw-icon-btn:hover {
   background: var(--muted);
   color: var(--brand);
+}
+
+/* 暗色 --brand 接近纯白，图标瞬间变纯白太亮；保留 hover 反馈但降到 70% mix。
+   light 不动。ponytail: 想再亮改 80、再压改 60。 */
+:root[data-theme='dark'] .mw-icon-btn:hover {
+  color: color-mix(in oklab, var(--brand) 70%, transparent);
 }
 .mw-icon-btn svg {
   width: 13px;

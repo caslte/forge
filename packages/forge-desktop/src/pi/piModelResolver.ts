@@ -85,7 +85,7 @@ function getConfiguredProviderIds(modelsPath: string): Set<string> {
  * 查找顺序：models.json 用户配置的 provider 优先（撞名时保端点/凭据一致），
  * 未命中再遍历全部 provider（含内置 catalog）。
  * @param model forge 模型 ID（models.json 中 providers[].models[].id）
- * @param modelsPath pi models.json 路径（默认 ~/.pi/agent/models.json）
+ * @param modelsPath pi models.json 路径（生产由调用方注入 agent 目录下路径；缺省回退 defaultPiModelsPath，仅 dev/测试）
  * @returns pi Model 对象
  * @throws Error 模型在任何 provider 下都不存在时抛出稳定错误
  */
@@ -118,7 +118,7 @@ export async function resolvePiModel(
  * 查询模型的可用思考级别列表（TP-MP-04：消费 pi SDK `getSupportedThinkingLevels`，
  * forge 不复制 reasoning/thinkingLevelMap 过滤规则；TD-MP-04）。
  * @param model forge 模型 ID
- * @param modelsPath pi models.json 路径（默认 ~/.pi/agent/models.json）
+ * @param modelsPath pi models.json 路径（生产由调用方注入 agent 目录下路径；缺省回退 defaultPiModelsPath，仅 dev/测试）
  * @returns 可用级别数组（如 ["off","minimal",...]；非推理模型仅 ["off"]）；
  *          模型解析失败返回 null（上层映射为 1004「模型未配置」）
  */
@@ -139,7 +139,7 @@ export async function getPiSupportedThinkingLevels(
  * （TD-MP-04；如仅至 high 的模型请求 max -> 收敛 high）。
  * @param model forge 模型 ID
  * @param level 请求级别（off/minimal/low/medium/high/xhigh/max）
- * @param modelsPath pi models.json 路径（默认 ~/.pi/agent/models.json）
+ * @param modelsPath pi models.json 路径（生产由调用方注入 agent 目录下路径；缺省回退 defaultPiModelsPath，仅 dev/测试）
  * @returns 收敛后的可用级别；模型解析失败返回 level 原值（上层兜底）
  */
 export async function clampPiThinkingLevel(

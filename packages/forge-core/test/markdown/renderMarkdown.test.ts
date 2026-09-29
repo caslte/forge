@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 
 import { renderMarkdown, looksLikeMermaid, hasOpenFence, renderCacheSize, clearRenderCache } from '../../src/markdown/renderMarkdown.ts';
 
+test('字符画段落整体转 <pre class="md-ascii">，等宽保对齐', () => {
+  clearRenderCache();
+  const art = '| off |   | low |   | high |\n|___更牙___|___|___|\n| 排查 | 原因 | 处置 |';
+  const html = renderMarkdown(`标题行\n\n${art}\n\n收尾说明`);
+  assert.match(html, /<pre class="md-ascii">/);
+  assert.match(html, /\| off \|   \| low \|/);
+  assert.ok(!html.includes('<p>| off |'));
+});
+
+test('普通硬换行散文不受字符画判定影响，仍渲染为段落', () => {
+  clearRenderCache();
+  const html = renderMarkdown('第一行普通文字\n第二行 off | low | high 单管道分隔\n第三行收尾  ');
+  assert.match(html, /<p>第一行普通文字<br \/>/);
+  assert.ok(!html.includes('md-ascii'));
+});
+
 test('常见 Markdown 结构正确渲染', () => {
   const html = renderMarkdown('# 标题\n\n**加粗** *斜体* `行内码`\n\n- 列表项\n- 第二项\n\n> 引用');
   assert.match(html, /<h1[^>]*>标题<\/h1>/);
@@ -30,6 +46,28 @@ test('未知语言代码块不崩溃并保留原文', () => {
   assert.match(html, /raw/);
 });
 
+test('代码块自带复制按钮（渲染层按 .md-code-copy 委托点击）', () => {
+  const html = renderMarkdown('```bash\nfor f in *.tar; do echo "$f"; done\n```');
+  assert.match(html, /<div class="md-code-wrap">/);
+  assert.match(html, /<button[^>]*class="md-code-copy"/);
+  // 按钮是 pre 的兄弟：pre 内的空白会渲染成代码首行的空行
+  assert.match(html, /<\/button><pre class="md-code-block"><code/);
+});
+
+test('mermaid / canvas 围栏不套复制按钮（各自有渲染形态）', () => {
+  clearRenderCache();
+  assert.doesNotMatch(renderMarkdown('```mermaid\ngraph TD\n  A --> B\n```'), /md-code-copy/);
+  clearRenderCache();
+  assert.doesNotMatch(renderMarkdown('```canvas\n<div>x</div>\n```'), /md-code-copy/);
+});
+
+test('XSS：用户手写的 button 降级为 span，不带属性', () => {
+  const html = renderMarkdown('<button onclick="alert(1)" class="evil">点我</button>');
+  assert.doesNotMatch(html, /<button/i);
+  assert.doesNotMatch(html, /onclick/i);
+  assert.doesNotMatch(html, /md-code-copy/);
+});
+
 test('XSS：script 标签被移除', () => {
   const html = renderMarkdown('前文\n\n<script>alert(1)</script>\n\n后文');
   assert.doesNotMatch(html, /<script/i);
@@ -44,13 +82,43 @@ test('XSS：事件属性被移除', () => {
 test('XSS：javascript: 链接被清除', () => {
   const html = renderMarkdown('[点我](javascript:alert(1))');
   assert.doesNotMatch(html, /javascript:/i);
-  // 链接本身被降级为无 href 的文本（sanitize-html 去掉危险 href）
-  assert.match(html, /<a[^>]*>点我<\/a>/);
+  // 非白名单协议整体降级为 span：连 <a> 外壳都不保留（防无 href 的伪链接形态）
+  assert.doesNotMatch(html, /<a[\s>]/);
+  assert.match(html, /<span[^>]*>点我<\/span>|点我/);
 });
 
 test('XSS：data: 链接被清除', () => {
   const html = renderMarkdown('[bad](data:text/html,<script>alert(1)</script>)');
   assert.doesNotMatch(html, /data:/i);
+});
+
+test('相对路径链接降级为纯文本（模型写的文档入口死链不成链接）', () => {
+  const html = renderMarkdown('[`docs/overview.md`](docs/overview.md)');
+  assert.doesNotMatch(html, /<a[\s>]/);
+  assert.doesNotMatch(html, /href=/);
+  // 行内代码胶囊保留，下划线来源（a）消失
+  assert.match(html, /<code class="md-inline-code">docs\/overview\.md<\/code>/);
+});
+
+test('协议相对链接（//evil）降级为纯文本', () => {
+  const html = renderMarkdown('[x](//evil.example.com/a)');
+  assert.doesNotMatch(html, /<a[\s>]/);
+  assert.doesNotMatch(html, /evil\.example\.com/);
+});
+
+test('锚点链接降级为纯文本', () => {
+  const html = renderMarkdown('[跳转](#section-1)');
+  assert.doesNotMatch(html, /<a[\s>]/);
+});
+
+test('合法 https 链接保留', () => {
+  const html = renderMarkdown('[官方](https://pi.earendil.dev)');
+  assert.match(html, /href="https:\/\/pi\.earendil\.dev"/);
+});
+
+test('mailto 链接保留', () => {
+  const html = renderMarkdown('[邮件](mailto:someone@example.com)');
+  assert.match(html, /href="mailto:someone@example\.com"/);
 });
 
 test('XSS：链接 text 中夹带 HTML 被转义', () => {
@@ -109,10 +177,31 @@ test('hasOpenFence：围栏闭合检测（流式 mermaid 展示源码的依据�
   assert.ok(!hasOpenFence(''));
   assert.ok(!hasOpenFence('```js\nconst a = 1;\n```'));
   assert.ok(hasOpenFence('```mermaid\ngraph TD\n  A --> B'));
-  // 前块已闭合 + 末块未闭合 → 5 个 ```，奇数 → 未闭合
+  // 前块已闭合 + 末块未闭合 → 按行扫描第二个围栏未闭合
   assert.ok(hasOpenFence('```js\na;\n```\n\n```mermaid\ngraph TD'));
-  // 两个已闭合块 → 偶数 → 全闭合
+  // 两个已闭合块 → 全闭合
   assert.ok(!hasOpenFence('```js\na;\n```\n\n```py\nb;\n```'));
+});
+
+test('hasOpenFence：正文行中提到 ```canvas 等词不算围栏（终态骨架不假转圈）', () => {
+  // 曾按全局 ``` 计数：正文 1 次 + 真围栏 2 次 = 3 → 误判未闭合，
+  // 消息结束后 canvas 骨架蒙版永远不撤。行中三反引号不是围栏行。
+  assert.ok(!hasOpenFence(
+    '但回复正文里没有任何 ```canvas 围栏——界面只能看到文字。\n\n```canvas\n<div>x</div>\n```\n',
+  ));
+  assert.ok(!hasOpenFence('正文里 ```canvas 和 ```mermaid 都是行内提及，不是围栏'));
+});
+
+test('hasOpenFence：GFM 围栏细则（四反引号外壳 / 波浪线 / 闭栏行尾）', () => {
+  // 四反引号外壳包三反引号：内层行长度不足，不是闭栏（全局计数会把这里数错）
+  assert.ok(!hasOpenFence('````md\n```js\nx\n````\n'));
+  // 波浪线围栏与反引号围栏互不闭合
+  assert.ok(hasOpenFence('~~~\ncontent'));
+  assert.ok(!hasOpenFence('~~~\ncontent\n~~~'));
+  assert.ok(hasOpenFence('```js\na;\n~~~'));
+  // 闭栏行允许尾随空白，不允许带别的字符
+  assert.ok(!hasOpenFence('```js\na;\n```   \n'));
+  assert.ok(hasOpenFence('```js\na;\n```js'));
 });
 
 test('XSS：非 hljs/md 前缀的 class 被剥离', () => {

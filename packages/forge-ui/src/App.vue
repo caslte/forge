@@ -3,9 +3,10 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe, getBootState } from './bridge';
 import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
 import { projectTagOf } from './utils/sessionView';
-import { isProjectBusy } from './utils/branchBadge';
+import { dropDraft } from './utils/composerDrafts';
 import { useTheme } from './composables/useTheme';
 import { useToast } from './composables/useToast';
+import { useI18n } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
 import ProjectTree from './components/ProjectTree.vue';
 import ConversationView from './components/ConversationView.vue';
@@ -15,7 +16,23 @@ import SettingsPanel from './components/SettingsPanel.vue';
 import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
+import GitCommitDialog from './components/GitCommitDialog.vue';
+import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
+import logoMain from './assets/logo-main.png';
+
+const { t, activeLocale } = useI18n();
+
+// 生效语言回报主进程（系统通知标题文案取词用；与 useTheme 的主题回报同构——
+// localStorage 是唯一事实来源，主进程只持镜像）。locale 可选：浏览器 mock / 旧 preload
+// 无此方法，可选链跳过。
+watch(
+  activeLocale,
+  (locale) => {
+    window.forge?.locale?.set(locale);
+  },
+  { immediate: true },
+);
 
 /**
  * 启动门闩（v3.76）：false 期间整个正式 UI 不挂载，只显示 BootWelcome。
@@ -26,6 +43,35 @@ import BootWelcome from './components/BootWelcome.vue';
  * 放行信号：boot.ready 事件（推）或 getBootState().ready（拉），任一先到即可。
  */
 const bootReady = ref(false);
+
+/**
+ * 项目首拉是否落地（v3.85.2）：门闩放行时 projects 恒为空数组（loadProjects 是放行后
+ * 才发的异步 IPC），正式 UI 若同 tick 挂载，有项目的用户也会先闪现一帧「零项目落地页」
+ * LandingHero（字标几何 A），project 落地后换成会话空态 hero（几何 B）——即用户报的
+ * 「跳到新会话时 FORGE 字样调整了一下高度，跳了一下」。BootWelcome 多驻留到首拉落地，
+ * 正式 UI 首帧即终态。loadProjects 的 finally 置位（报错/零项目同样放行，不成死门）。
+ */
+const projectsLoaded = ref(false);
+/** 正式 UI 可挂载 = core 就绪 ∧ 项目首拉落地 */
+const formalUiReady = computed(() => bootReady.value && projectsLoaded.value);
+
+/**
+ * 接管 veil（v3.85.2）：formalUiReady 后 BootWelcome 不再同 tick 硬卸载，而是留在
+ * fixed 覆盖层上淡出 200ms 再卸载，把「切页硬切」变成连续过渡（字标两侧同尺寸 320，
+ * 淡出即无闪跳）。卸载走 400ms 超时兜底：prefers-reduced-motion 下 transition 被禁用、
+ * transitionend 不会来，只等事件就会 veil 常驻挡交互。
+ */
+const bootVeilLeaving = ref(false);
+const bootVeilGone = ref(false);
+watch(formalUiReady, (ready) => {
+  if (!ready) return;
+  requestAnimationFrame(() => {
+    bootVeilLeaving.value = true;
+  });
+  setTimeout(() => {
+    bootVeilGone.value = true;
+  }, 400);
+});
 
 // 项目/会话
 const projects = ref<ProjectItem[]>([]);
@@ -43,12 +89,67 @@ const draftMode = ref(false);
 type View = 'sessions' | 'settings';
 const activeView = ref<View>('sessions');
 const sidebarCollapsed = ref(false);
+
+/* 侧栏宽度可拖拽调整：限制在 [220, 440]，记忆在 localStorage。
+   宽度经 CSS 变量 --sidebar-w 驱动侧栏 / shell-topstrip / 折叠态标题栏让位，三处同源 */
+const SIDEBAR_W_KEY = 'forge:sidebar:width';
+const SIDEBAR_MIN = 220;
+const SIDEBAR_MAX = 440;
+const SIDEBAR_DEFAULT = 292;
+const sidebarWidth = ref(readSidebarWidth());
+const sidebarResizing = ref(false);
+let resizeStartX = 0;
+let resizeStartW = 0;
+
+function readSidebarWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(SIDEBAR_W_KEY));
+    return Number.isFinite(raw) && raw >= SIDEBAR_MIN && raw <= SIDEBAR_MAX ? raw : SIDEBAR_DEFAULT;
+  } catch {
+    return SIDEBAR_DEFAULT;
+  }
+}
+
+function onSidebarResizeStart(e: PointerEvent): void {
+  if (e.button !== 0) return;
+  resizeStartX = e.clientX;
+  resizeStartW = sidebarWidth.value;
+  sidebarResizing.value = true;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  document.body.classList.add('sidebar-resizing');
+  e.preventDefault();
+}
+
+function onSidebarResizeMove(e: PointerEvent): void {
+  (e.currentTarget as HTMLElement).style.setProperty('--seg-y', `${e.clientY}px`);
+  if (!sidebarResizing.value) return;
+  const next = resizeStartW + (e.clientX - resizeStartX);
+  sidebarWidth.value = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, next));
+}
+
+function onSidebarResizeEnd(e: PointerEvent): void {
+  if (!sidebarResizing.value) return;
+  sidebarResizing.value = false;
+  const el = e.currentTarget as HTMLElement;
+  if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  document.body.classList.remove('sidebar-resizing');
+  try {
+    localStorage.setItem(SIDEBAR_W_KEY, String(sidebarWidth.value));
+  } catch {
+    // 存储失败忽略（不影响运行）
+  }
+}
+
+/** mac：traffic lights 画在窗口左上角（12,12），悬浮 toggle 需右移让位（见主进程 trafficLightPosition） */
+const isMac = window.forge?.platform === 'darwin';
 const showExitDialog = ref(false);
 /** 待信任确认的项目（1005 弹窗） */
 const trustAskPath = ref<string | null>(null);
 const trustAskName = ref('');
 /** 多窗口画布模式（单会话视图 ↔ 多窗口画布 切换） */
 const multiWindow = ref(false);
+/** 多窗口画布组件实例：顶部工具栏「自动布局 / 全部关闭」调用其方法 */
+const mwCanvasRef = ref<InstanceType<typeof MultiWindowCanvas> | null>(null);
 /** 已在多窗口画布上打开的会话 id 列表（供会话池标记灰态） */
 const openedSessionIds = ref<string[]>([]);
 /** 多窗口模式下聚焦查看的会话 id（非空时在画布上方叠加单会话视图，布局保留） */
@@ -77,8 +178,24 @@ watch(treeView, (v) => {
   }
 });
 
-/** 切项目/任务视角：等同直接赋值，但提供切入口用于后续重启滑动胶囊过渡。
- *  当前 CSS 仅依赖 is-task class 切换即可触发过渡，无需额外触发器；
+/* 滑动指示胶囊 JS 定位：CSS 50% 几何假设两键等宽，英文长词（Projects/Tasks）下
+   内容收缩容器无剩余空间可分配、flex:1 也无法等分，改为按 active 按钮实测宽贴 */
+const viewSegEl = ref<HTMLElement | null>(null);
+
+function moveViewPill(): void {
+  const seg = viewSegEl.value;
+  if (!seg) return;
+  const btn = seg.querySelector<HTMLElement>('.view-seg-btn.active');
+  if (!btn || btn.offsetWidth === 0) return; // 侧栏折叠隐藏时跳过，展开后重贴
+  seg.style.setProperty('--pill-l', `${btn.offsetLeft}px`);
+  seg.style.setProperty('--pill-r', `${seg.clientWidth - btn.offsetLeft - btn.offsetWidth}px`);
+}
+
+watch([treeView, sidebarCollapsed, activeLocale], () => {
+  void nextTick(moveViewPill);
+});
+
+/** 切项目/任务视角：等同直接赋值，胶囊几何由上方 watch 在 nextTick 重贴。
  *  保留函数是为和模板里已存在的 @click="switchTreeView(...)" 对齐。 */
 function switchTreeView(v: 'project' | 'task'): void {
   if (treeView.value === v) return;
@@ -142,7 +259,7 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
     // 零项目（落地 hero，v3.77）：没有可归属项目，项目区只提供「打开项目…」入口。
     // currentPath:null 是类型既有的「未选归属」草稿语义；此时会话分支不渲染，
     // 该描述只被 LandingHero 消费，不影响其他使用点。
-    return { mode: 'draft', currentPath: null, currentName: '打开项目', items: [] };
+    return { mode: 'draft', currentPath: null, currentName: t('app.openProject'), items: [] };
   }
   const s = currentSession.value;
   const inSession = s !== null && !draftMode.value;
@@ -161,7 +278,7 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 
 // 设置
 const { themeMode, setTheme } = useTheme();
-const { message: toastMessage, type: toastType, show: showToast, clear: clearToast } = useToast();
+const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
 
 // 模型列表与会话模型（ConversationView 消费）
 const models = ref<string[]>([]);
@@ -175,34 +292,11 @@ const currentSession = computed(() =>
 );
 
 /**
- * 落地 hero 草稿直通（v3.77）：零项目落地页输入的文本，项目打开（LandingHero
- * 卸载）时经 carry-text 暂存于此；分支切换完成后的 post-flush 经
- * ConversationView.restoreDraft 回填项目视图的草稿输入框，随后立即清空——
- * 保证只对「落地 → 第一个项目」这一次挂载生效，设置页往返等重挂载不会复活旧文本。
+ * 草稿输入框的跨视图恢复由 InstructionInput 的模块级草稿仓库
+ * （utils/composerDrafts）统一承担：落地 hero 与项目视图的输入框同为草稿态
+ * key，hero 卸载 → ConversationView 挂载即自动衔接，无需事件接力。
  */
-const landingDraft = ref<string | null>(null);
 const convRef = ref<InstanceType<typeof ConversationView> | null>(null);
-
-function onLandingCarryText(text: string): void {
-  if (text.trim() !== '') landingDraft.value = text;
-}
-
-watch(
-  currentProjectPath,
-  async (path) => {
-    const carry = landingDraft.value;
-    landingDraft.value = null;
-    if (path === null || carry === null) return;
-    // post-flush 时点卸载钩子已跑完（carry 已落），但等下一 tick 确保新分支的
-    // ConversationView 完成挂载、convRef 就位后再回填
-    await nextTick();
-    convRef.value?.restoreDraft(carry);
-  },
-  { flush: 'post' },
-);
-
-/** 项目忙（PM-S05 AC-PM-016）：当前项目任一会话 streaming 时分支徽标禁用 */
-const projectBusy = computed(() => isProjectBusy(sessions.value, currentProjectPath.value ?? ''));
 
 const sessionError = ref<string | null>(null);
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -227,6 +321,10 @@ async function loadProjects(): Promise<void> {
     }
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    // v3.85.2：首拉落地（含报错/零项目）才允许正式 UI 挂载——openProject 在 try 内
+    // await，置位时 currentProject 已就绪，ConversationView 首帧即终态
+    projectsLoaded.value = true;
   }
 }
 
@@ -279,9 +377,13 @@ async function onTrustDecide(decision: 'trust' | 'reject' | 'trustOnce'): Promis
   if (!path) return;
   try {
     await call('project/setTrust', { path, decision });
-    const label =
-      decision === 'trust' ? '已信任' : decision === 'reject' ? '已拒绝' : '本次已信任';
-    showToast(`${label}：${basename(path)}`, decision === 'reject' ? 'info' : 'success');
+    const toast =
+      decision === 'trust'
+        ? t('app.trustedToast', { name: basename(path) })
+        : decision === 'reject'
+          ? t('app.rejectedToast', { name: basename(path) })
+          : t('app.trustedOnceToast', { name: basename(path) });
+    showToast(toast, decision === 'reject' ? 'info' : 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -317,7 +419,7 @@ async function onAddProject(path: string): Promise<void> {
     // 新建即选中：归属切到新项目（v3.48 用户反馈：排第一但未选中）；
     // 走 onPickProject 语义——草稿保留，与下拉选中一致
     await onPickProject(path);
-    showToast('项目已添加', 'success');
+    showToast(t('app.projectAdded'), 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -344,7 +446,7 @@ async function onRemoveProject(path: string): Promise<void> {
     }
     await loadProjects();
     await loadSessions();
-    showToast(res.removedSessions > 0 ? `项目已移除，连同 ${res.removedSessions} 个会话一并删除` : '项目已移除', 'success');
+    showToast(res.removedSessions > 0 ? t('app.projectRemovedWithSessions', { count: res.removedSessions }) : t('app.projectRemoved'), 'success');
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -354,6 +456,22 @@ async function onRenameProject(path: string, alias: string): Promise<void> {
   try {
     await call('project/updateProjectAlias', { path, alias });
     await loadProjects();
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** 清理项目下所有会话（保留项目）；当前会话被清时退出选中态（session.removed 订阅兜底） */
+async function onClearProjectSessions(path: string): Promise<void> {
+  try {
+    const res = await call<{ removedSessions: number }>('project/clearSessions', { path });
+    await loadSessions();
+    showToast(
+      res.removedSessions > 0
+        ? t('app.projectSessionsCleared', { count: res.removedSessions })
+        : t('app.projectSessionsAlreadyEmpty'),
+      'success',
+    );
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -383,6 +501,8 @@ function onCreateSession(sessionProjectPath?: string): void {
   if (target !== null && target !== currentProjectPath.value) void selectProject(target);
   currentSessionId.value = null;
   draftMode.value = true;
+  // 新会话且输入为空：还原被手动拖高的输入框（等本 tick 会话切换 watch 清完文本再判定）
+  nextTick(() => convRef.value?.resetInputHeightIfEmpty());
 }
 
 /**
@@ -412,6 +532,7 @@ async function onSelectSession(id: string): Promise<void> {
 async function onDeleteSession(id: string): Promise<void> {
   try {
     await call('session/deleteSession', { sessionId: id });
+    dropDraft(id);
     if (currentSessionId.value === id) currentSessionId.value = null;
     await loadSessions();
   } catch (e) {
@@ -462,7 +583,7 @@ async function onModelChange(model: string): Promise<void> {
   // 草稿态（会话尚未创建）：仅本地回显预览；所选模型在创建会话时由
   // ConversationView 写入会话覆盖（见其草稿发送分支），发送即生效
   if (currentSessionId.value === null) {
-    // 不弹顶部 toast：模型选择器本身已回显所选模型，避免遮挡会话区
+    // 不弹 toast：模型选择器本身已回显所选模型，右下角提示此处无增量信息
     return;
   }
   try {
@@ -533,6 +654,7 @@ let unsubSessionUpdated: (() => void) | null = null;
 let unsubSessionStatus: (() => void) | null = null;
 let unsubProjectRemoved: (() => void) | null = null;
 let unsubProvidersChanged: (() => void) | null = null;
+let unsubNotifyFocus: (() => void) | null = null;
 
 // 会话切换时加载该会话生效模型；无会话（含草稿态）时展示全局默认模型
 watch(currentSessionId, (sid) => {
@@ -580,10 +702,13 @@ function startPostBootInit(): void {
 }
 
 onMounted(() => {
+  // 指示胶囊初始定位（含字体加载后的一次校准由语言/视角 watch 兜底）
+  void nextTick(moveViewPill);
   // 事件订阅先挂：订阅本身不发请求，core 未就绪期间主进程也不会推业务事件，
   // 挂早了无副作用（放行后 loadSessions 等才真正出发）
   unsubSessionRemoved = subscribe('session.removed', (payload) => {
     const p = payload as { sessionId: string };
+    dropDraft(p.sessionId);
     if (p.sessionId === currentSessionId.value) currentSessionId.value = null;
     void loadSessions();
   });
@@ -602,6 +727,12 @@ onMounted(() => {
   unsubProvidersChanged = subscribe('model.providersChanged', () => {
     void loadModels();
     if (currentSessionId.value !== null) void loadSessionModel(currentSessionId.value);
+  });
+  // 系统通知点击跳转（主进程 notifyToast 直发）：主窗口已被通知聚焦，切到对应会话。
+  // 复用会话树同一切换逻辑（含 attachSessionWindow），语义与手动点击会话完全一致
+  unsubNotifyFocus = subscribe('notify.focusSession', (payload) => {
+    const p = payload as { sessionId?: unknown };
+    if (typeof p?.sessionId === 'string' && p.sessionId !== '') void onSelectSession(p.sessionId);
   });
 
   // 启动门闩（v3.76）：先拉 bootState 兜底（热重载/事件早于订阅的场景），
@@ -631,38 +762,75 @@ onUnmounted(() => {
   unsubSessionStatus?.();
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
+  unsubNotifyFocus?.();
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
 </script>
 
 <template>
-  <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit -->
-  <BootWelcome v-if="!bootReady" />
-  <div v-else class="app-container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <TitleBar
-      :sidebar-collapsed="sidebarCollapsed"
-      @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed"
-      @request-exit="requestExit"
-    />
+  <!-- v3.76 启动门闩：core 就绪前只渲染欢迎页；正式 UI 的启动请求在 startPostBootInit。
+       v3.85.2：放行条件收紧为 formalUiReady（core ∧ 项目首拉），且欢迎页改 veil 淡出接管 -->
+  <BootWelcome
+    v-if="!bootVeilGone"
+    class="boot-veil"
+    :class="{ 'boot-veil-leaving': bootVeilLeaving }"
+  />
+  <div
+    v-if="formalUiReady"
+    class="app-container"
+    :class="{ 'sidebar-collapsed': sidebarCollapsed, 'sidebar-resizing': sidebarResizing }"
+    :style="{ '--sidebar-w': `${sidebarWidth}px` }"
+  >
+    <!-- 一体化壳层（prototypes/unified-shell-full.html）：侧栏列通顶、标题栏只盖右列、
+         toggle 悬浮钉死窗口左上角——折叠时侧栏从按钮底下抽走，按钮零位移不跳动。
+         toggle 必须包在窗口级拖拽条内做 no-drag 后代：Electron 的 drag 区只认后代挖洞，
+         同级悬浮会被原生拖拽吞掉 hover/click（旧版 TitleBar 内按钮可用的原因相同） -->
+    <div class="shell-topstrip">
+      <button
+        class="shell-toggle"
+        :class="{ 'shell-toggle-mac': isMac }"
+        :aria-label="sidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <!-- 默认显品牌 LOGO（切图），hover 交叉淡入为面板图标，箭头方向随折叠态翻转 -->
+        <img class="tb-logo" :src="logoMain" alt="" aria-hidden="true" draggable="false" />
+        <span class="tb-panel" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <template v-if="sidebarCollapsed">
+              <rect x="3" y="4" width="18" height="16" rx="2.5" />
+              <path d="M15 4v16" />
+              <path d="m8 15 3-3-3-3" />
+            </template>
+            <template v-else>
+              <rect x="3" y="4" width="18" height="16" rx="2.5" />
+              <path d="M9 4v16" />
+              <path d="m16 15-3-3 3-3" />
+            </template>
+          </svg>
+        </span>
+      </button>
+    </div>
+    <!-- 整窗反光层（伪玻璃）：纯视觉，pointer-events:none -->
+    <div class="shell-sheen" aria-hidden="true"></div>
 
     <section class="main-layout">
       <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <header class="workspace-header"></header>
         <div class="tree-panel">
           <div class="sidebar-top">
-            <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" role="tablist" aria-label="会话列表视角">
+            <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" ref="viewSegEl" role="tablist" :aria-label="t('app.sessionListPerspective')">
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'project' }"
                 @click="switchTreeView('project')"
-              >项目</button>
+              >{{ t('app.viewProject') }}</button>
               <button
                 type="button"
                 class="view-seg-btn"
                 :class="{ active: treeView === 'task' }"
                 @click="switchTreeView('task')"
-              >任务</button>
+              >{{ t('app.viewTask') }}</button>
             </div>
             <div class="sidebar-top-actions">
               <!-- ponytail: 不用 v-if/v-show——两者在 Vue 里都是 display:none，折叠按钮隐藏时
@@ -675,8 +843,8 @@ onUnmounted(() => {
                   visibility: treeView === 'project' ? 'visible' : 'hidden',
                   pointerEvents: treeView === 'project' ? 'auto' : 'none',
                 }"
-                :aria-label="allCollapsed ? '展开全部项目' : '收起全部项目'"
-                :data-tooltip="allCollapsed ? '展开全部项目' : '收起全部项目'"
+                :aria-label="allCollapsed ? t('app.expandAllProjects') : t('app.collapseAllProjects')"
+                :data-tooltip="allCollapsed ? t('app.expandAllProjects') : t('app.collapseAllProjects')"
                 :tabindex="treeView === 'project' ? 0 : -1"
                 @click="onFoldAll"
               >
@@ -707,6 +875,7 @@ onUnmounted(() => {
             :opened-session-ids="openedSessionIds"
             @select-project="selectProject"
             @remove-project="onRemoveProject"
+            @clear-sessions="onClearProjectSessions"
             @rename-project="onRenameProject"
             @reorder-project="onReorderProjects"
             @create-session="onCreateSession"
@@ -722,11 +891,27 @@ onUnmounted(() => {
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
-            <span>设置</span>
+            <span>{{ t('app.settings') }}</span>
           </button>
+          <!-- 侧栏更新入口（07 改造）：仅更新相关时出现，紧跟设置 -->
+          <UpdateEntry />
         </div>
+        <!-- 右缘拖拽手柄：hover/拖拽时中缝高亮为品牌青绿 -->
+        <div
+          class="sidebar-resizer"
+          :class="{ active: sidebarResizing }"
+          role="separator"
+          aria-orientation="vertical"
+          :data-tooltip="t('app.resizeSidebar')"
+          @pointerdown="onSidebarResizeStart"
+          @pointermove="onSidebarResizeMove"
+          @pointerup="onSidebarResizeEnd"
+          @pointercancel="onSidebarResizeEnd"
+        ></div>
       </aside>
 
+      <div class="rightcol">
+        <TitleBar @request-exit="requestExit" />
       <main class="content" :class="{ 'settings-mode': activeView === 'settings' }">
         <div v-if="sessionError" class="error-toast" @click="clearError">
           {{ sessionError }}
@@ -735,7 +920,7 @@ onUnmounted(() => {
         <div v-if="activeView !== 'settings'" class="app-toolbar">
           <button
             class="app-toolbar-btn"
-            data-tooltip="新建会话"
+            :data-tooltip="t('app.newSessionTooltip')"
             :disabled="projects.length === 0"
             @click="onCreateSession()"
           >
@@ -743,12 +928,12 @@ onUnmounted(() => {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            <span>新会话</span>
+            <span>{{ t('app.newSession') }}</span>
           </button>
           <button
             class="app-toolbar-btn"
             :class="{ 'is-active': multiWindow }"
-            data-tooltip="多窗口画布：会话并排观察"
+            :data-tooltip="t('app.multiWindowTooltip')"
             @click="toggleMultiWindow"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -757,8 +942,22 @@ onUnmounted(() => {
               <rect x="3" y="13" width="8" height="8" rx="1.5" />
               <rect x="13" y="13" width="8" height="8" rx="1.5" />
             </svg>
-            <span>多窗口</span>
+            <span>{{ t('app.multiWindow') }}</span>
           </button>
+          <template v-if="multiWindow">
+            <button
+              class="app-toolbar-btn"
+              @click="mwCanvasRef?.arrangeAuto()"
+            >
+              <span>{{ t('app.autoLayout') }}</span>
+            </button>
+            <button
+              class="app-toolbar-btn"
+              @click="mwCanvasRef?.clearAll()"
+            >
+              <span>{{ t('app.closeAll') }}</span>
+            </button>
+          </template>
           <span class="app-toolbar-space"></span>
         </div>
 
@@ -775,6 +974,7 @@ onUnmounted(() => {
           <div v-if="multiWindow" class="session-stage">
             <!-- 多窗口画布始终挂载，保留窗口布局 -->
             <MultiWindowCanvas
+              ref="mwCanvasRef"
               :sessions="sessions"
               :models="models"
               @close="multiWindow = false"
@@ -791,10 +991,10 @@ onUnmounted(() => {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M19 12H5M12 19l-7-7 7-7" />
                   </svg>
-                  <span>返回多窗口</span>
+                  <span>{{ t('app.backToMultiWindow') }}</span>
                 </button>
                 <span class="win-focus-title">
-                  {{ currentSession.alias || '会话 ' + currentSession.sessionId.slice(-6) }}
+                  {{ currentSession.alias || t('app.sessionFallback', { id: currentSession.sessionId.slice(-6) }) }}
                 </span>
                 <span class="win-focus-proj">{{ winFocusProjectName }}</span>
               </div>
@@ -805,7 +1005,6 @@ onUnmounted(() => {
                 :models="models"
                 :current-model="currentSessionModel"
                 :project-picker="projectPicker ?? undefined"
-                :git-busy="projectBusy"
                 @model-change="onModelChange"
                 @pick-project="onPickProject"
                 @open-project-picker="openFolderPicker"
@@ -822,7 +1021,6 @@ onUnmounted(() => {
               :models="models"
               :current-model="currentSessionModel"
               :project-picker="projectPicker ?? undefined"
-              :git-busy="projectBusy"
               @model-change="onModelChange"
               @session-created="onSessionCreated"
               @pick-project="onPickProject"
@@ -840,10 +1038,10 @@ onUnmounted(() => {
             @pick-project="onPickProject"
             @open-project-picker="openFolderPicker"
             @remove-project="onRemoveProject"
-            @carry-text="onLandingCarryText"
           />
         </template>
       </main>
+      </div>
     </section>
 
     <TrustAskDialog
@@ -859,8 +1057,12 @@ onUnmounted(() => {
       @cancel="showExitDialog = false"
     />
 
+    <!-- 提交或推送弹窗（GC-S11）：入口在 InstructionInput 状态行 / BranchBadge 浮窗，经 useGitCommitDialog 单例开合 -->
+    <GitCommitDialog />
+
     <ToastNotification
       v-if="toastMessage"
+      :key="toastSeq"
       :message="toastMessage"
       :type="toastType"
       @close="clearToast"
@@ -869,6 +1071,26 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* v3.85.2 启动接管 veil（见 script 的 bootVeilLeaving 注释）。门闩期间它就是启动页本体
+   （fixed 全屏自带底色，行为与原 100vh 布局等值）；放行后 opacity 淡出 200ms，把
+   BootWelcome→正式 UI 的硬切变成连续过渡。z 档高于应用内一切浮层（dialog/toast 3000）。 */
+.boot-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  opacity: 1;
+  transition: opacity 200ms ease-out;
+}
+.boot-veil-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-veil {
+    transition: none;
+  }
+}
+
 .app-container {
   height: 100vh;
   width: 100vw;
@@ -876,6 +1098,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .main-layout {
@@ -884,12 +1107,13 @@ onUnmounted(() => {
   display: flex;
   width: 100%;
   overflow: hidden;
-  background: var(--card);
 }
 
+/* 一体化壳层：侧栏列通顶。左右结构不再靠整块压暗的色块台阶表达，
+   而是同底色 + 左深右浅的淡出渐变 + 两端淡出的 1px 中缝（demo：prototypes/unified-shell-full.html） */
 .sidebar {
-  width: 292px;
-  min-width: 292px;
+  width: var(--sidebar-w, 292px);
+  min-width: var(--sidebar-w, 292px);
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -897,26 +1121,27 @@ onUnmounted(() => {
   height: 100%;
   position: relative;
   overflow: hidden;
-  background: color-mix(in oklab, var(--muted) 10%, transparent);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.035) 0%, rgba(0, 0, 0, 0.012) 72%, transparent 100%);
   transition: width var(--transition-base), min-width var(--transition-base), opacity var(--transition-base);
 }
 
-.sidebar::before {
+.sidebar::after {
   content: '';
   position: absolute;
-  inset: -40%;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse 80% 60% at 20% 30%, color-mix(in oklab, var(--muted-foreground) 10%, transparent) 0%, transparent 60%),
-    radial-gradient(ellipse 70% 50% at 80% 70%, color-mix(in oklab, var(--muted) 30%, transparent) 0%, transparent 55%);
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent 4%, var(--border) 18%, var(--border) 82%, transparent 96%);
 }
 
-.sidebar > * {
-  position: relative;
-  z-index: 1;
+/* 暗色（D 档）：底色已深（oklch 0.166），不再压黑（压黑会沉到光场剖面之下）；
+   改为自带一层竖向微光（+1~+3 电平，原型 D 档同款）——侧栏是略高于同位置主区的独立面 */
+:root[data-theme='dark'] .sidebar {
+  background: linear-gradient(180deg,
+    rgba(205, 218, 235, 0.004) 0%,
+    rgba(205, 218, 235, 0.016) 50%,
+    rgba(205, 218, 235, 0.023) 100%);
 }
 
 .sidebar.collapsed {
@@ -926,20 +1151,183 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* 深色主题下让左侧会话树比主区更黑，产生层次 */
-:root[data-theme='dark'] .sidebar {
-  background: oklch(0.22 0 0);
+/* 拖拽调宽期间关掉宽度过渡，否则侧栏跟手滞后、松手后又继续滑行 */
+.app-container.sidebar-resizing .sidebar {
+  transition: none;
 }
 
+/* 右缘拖拽手柄：透明热区骑在中缝上（sidebar overflow:hidden，故全部置于内侧），
+   hover/拖拽时以 2px 品牌青绿线覆盖默认 1px 灰缝作高亮反馈 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+
+/* 高亮取 demo 方案 B 形态（两端渐隐的柔光段，中心前景色），但不自动流动：
+   --seg-y 由 pointermove 写入视口 Y 坐标，鼠标停在哪光段就在哪；
+   不做 top 过渡保证贴手；侧栏通顶且容器从 y=0 起，clientY 可直接用作 top */
+.sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: var(--seg-y, 50%);
+  right: 0;
+  height: 110px;
+  width: 2px;
+  transform: translateY(-50%);
+  border-radius: 1px;
+  background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--foreground) 65%, transparent) 50%, transparent);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer.active::after {
+  opacity: 1;
+}
+
+/* 捕获指针后光标仍按命中元素渲染，拖拽中需在全局压住 col-resize 并禁选中 */
+:global(body.sidebar-resizing) {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.rightcol {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 侧栏列顶行：纯占位撑高 36px（拖拽已由窗口级 shell-topstrip 统一提供，
+   此处不再声明 drag，避免与 toggle 悬浮洞产生同级重叠区） */
 .workspace-header {
+  height: 36px;
+  min-height: 36px;
+}
+
+/* 窗口级顶部拖拽条：覆盖侧栏列顶部（含 toggle），toggle 作为其 no-drag 后代挖洞
+   （Electron 只对后代做洞，同级悬浮元素会被 drag 吞掉交互）；宽度与侧栏同源
+   （--sidebar-w），不伸进窗口按钮区。z 必须高于右列标题栏（200）：侧栏折叠后标题栏从 x=0 铺起，
+   若标题栏 drag 叠在拖拽条之上，toggle 的洞会被其原生拖拽重新吞掉（折叠后无法展开） */
+.shell-topstrip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--sidebar-w, 292px);
+  height: 36px;
+  z-index: 205;
+  -webkit-app-region: drag;
+}
+
+/* 折叠后右列从 x=0 铺起，右列标题栏的 drag 盒会盖住 toggle：Electron 的 no-drag
+   洞只在自己的 drag 子树内生效（按祖先归属），跨子树重叠无效——所以折叠时标题栏
+   整体让位一个侧栏宽度（--sidebar-w），该段顶部拖拽由 shell-topstrip 接管，两个 drag 区永不重叠 */
+.app-container.sidebar-collapsed :deep(.titlebar) {
+  margin-left: var(--sidebar-w, 292px);
+  /* 覆盖 TitleBar 的 width:100%，否则整条右移把窗口按钮顶出可视区 */
+  width: auto;
+}
+
+/* 悬浮 toggle：钉死窗口左上角，折叠/展开全程零位移，侧栏从它底下抽走 */
+.shell-toggle {
+  position: absolute;
+  left: 8px;
+  top: 2px;
+  z-index: 2;
+  -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
-  padding: 14px 18px;
-  min-height: 56px;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-/* FORGE 渐变文字 LOGO 已随 SM-S07 隐藏（品牌位移至 TitleBar 左上角 LOGO 瓷片）；
-   重设计后如需文字品牌，在 workspace-header 内新增节点即可 */
+.shell-toggle-mac {
+  left: 78px;
+}
+
+.shell-toggle:hover {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  color: var(--foreground);
+}
+
+.tb-logo {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.tb-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.shell-toggle:hover .tb-logo {
+  opacity: 0;
+  transform: scale(0.85);
+}
+
+.shell-toggle:hover .tb-panel {
+  opacity: 1;
+  transform: scale(1);
+  color: var(--foreground);
+}
+
+.tb-panel svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 整窗反光层（伪玻璃）：窗口未开 transparent/vibrancy，设计稿的反光感用一层
+   顶部椭圆柔光 + 右下角微光复现；纯视觉，压在 chrome 之上、悬浮 toggle 之下 */
+.shell-sheen {
+  position: absolute;
+  inset: 0;
+  z-index: 210;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 62% at 26% -12%, rgba(255, 255, 255, 0.55) 0%, transparent 58%),
+    radial-gradient(80% 55% at 105% 108%, rgba(255, 255, 255, 0.3) 0%, transparent 60%);
+}
+
+/* 暗色：D 档光场（原型 bg-tone-options-demo.html v6，213.4° 对角线性光场 + 底部反光）。
+   与设计稿一致的整窗剖面：右上最亮（+0.096 白）向左下线性衰减、构造上无热点；
+   盖顶而非沉底——面板保持不透明也被同一光场覆盖，整窗剖面连续。 */
+:root[data-theme='dark'] .shell-sheen {
+  background:
+    linear-gradient(213.4deg,
+      rgba(205, 218, 235, 0.096) 0%,
+      rgba(205, 218, 235, 0.050) 28%,
+      rgba(205, 218, 235, 0.024) 47%,
+      rgba(205, 218, 235, 0.019) 60%,
+      rgba(205, 218, 235, 0.010) 72%,
+      rgba(205, 218, 235, 0.000) 82%),
+    linear-gradient(0deg, rgba(205, 218, 235, 0.005) 0%, rgba(205, 218, 235, 0) 14%);
+}
 
 .tree-panel {
   flex: 1;
@@ -976,8 +1364,8 @@ onUnmounted(() => {
   position: absolute;
   top: 2px;
   bottom: 2px;
-  left: 2px;
-  right: calc(50% + 1px);
+  left: var(--pill-l, 2px);
+  right: var(--pill-r, calc(50% + 1px));
   border-radius: 999px;
   background: var(--surface-active);
   pointer-events: none;
@@ -986,9 +1374,8 @@ onUnmounted(() => {
     right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
 }
 
+/* 几何由 JS（--pill-l/--pill-r）按 active 按钮实测宽度给出，这里只切换方向时序 */
 .view-seg.is-task::before {
-  left: calc(50% + 1px);
-  right: 2px;
   transition:
     right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
     left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
@@ -1021,7 +1408,9 @@ onUnmounted(() => {
   gap: 4px;
 }
 
-/* 收起全部/展开全部（仅项目视角）：无 边框 ghost 按钮（SM-S06） */
+/* 收起全部/展开全部（仅项目视角）：无 边框 ghost 按钮（SM-S06）。
+   默认隐藏，悬停侧栏顶部区/按钮自身或键盘聚焦时淡入（visibility 占位逻辑见模板注释，
+   opacity 只负责显隐动画，两者叠加互不冲突） */
 .fold-all-btn {
   width: 30px;
   height: 30px;
@@ -1034,7 +1423,17 @@ onUnmounted(() => {
   border: 0;
   color: var(--muted-foreground);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  opacity: 0;
+  pointer-events: none;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.sidebar-top:hover .fold-all-btn,
+.fold-all-btn:hover,
+.fold-all-btn:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .fold-all-btn:hover {
@@ -1049,13 +1448,16 @@ onUnmounted(() => {
 
 .sidebar-footer {
   padding: 10px 12px 14px 28px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
 }
 
 .sidebar-link {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  width: auto;
   padding: 0;
   background: transparent;
   border: none;
@@ -1100,6 +1502,12 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+/* 暗色（D 档）：工具栏去不透明底。设计稿顶部与光场是一体的（实测 27.7 连续），
+   近不透明底会把对角光场切成「顶部亮带 + 下方暗区」的硬边界 */
+:root[data-theme='dark'] .app-toolbar {
+  background: transparent;
+}
+
 .app-toolbar-btn {
   display: inline-flex;
   align-items: center;
@@ -1111,11 +1519,19 @@ onUnmounted(() => {
   color: var(--foreground);
   font-size: 12px;
   font-weight: 500;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.06s ease;
 }
 
 .app-toolbar-btn:hover:not(:disabled) {
   border-color: var(--brand);
   color: var(--brand);
+}
+
+/* 按下反馈：底色加深 + 轻微缩放，点击有明确"按到了"的效果 */
+.app-toolbar-btn:active:not(:disabled) {
+  background: color-mix(in oklab, var(--brand) 18%, var(--background));
+  color: var(--brand);
+  transform: scale(0.94);
 }
 
 .app-toolbar-btn.is-active {

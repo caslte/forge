@@ -36,6 +36,9 @@
  *    clearSessionCommands 接线（本服务不参与会话删除流程）。
  */
 
+/** 仅类型依赖（无运行时开销，保持本层零依赖的 import 纪律） */
+import type { ClassifiedError } from '../errors/errorClassifier.ts';
+
 /** 会话执行状态（docs/api/03_conversation.md §5：streaming/done/canceled/error，加 idle 默认态） */
 export type ConversationStatus = 'idle' | 'streaming' | 'done' | 'canceled' | 'error';
 
@@ -285,6 +288,8 @@ export interface StreamState {
    * 新轮次（streaming）与正常终态（done/canceled/idle）清除。
    */
   lastError?: string | null;
+  /** 最近一次错误的结构化分类（CV-ERR-01）；规则同 lastError，供 UI 重建完整横幅 */
+  lastErrorInfo?: ClassifiedError | null;
 }
 
 /** 状态驱动选项（setStatus 内部辅助：携带/清空增量累积文本） */
@@ -296,6 +301,11 @@ export interface ConversationStatusOptions {
    * 非 error 状态忽略（lastError 一律清除）
    */
   lastError?: string;
+  /**
+   * 轮次错误的结构化分类（CV-ERR-01）；规则同 lastError。
+   * 省略时保留已记录值（切回 error 会话可完整重建横幅）；非 error 状态清除。
+   */
+  lastErrorInfo?: ClassifiedError;
 }
 
 /** 服务构造选项（校验解析器 + 事件回调注入点） */
@@ -687,6 +697,16 @@ export class ConversationService {
   }
 
   /**
+   * 查询会话最近一次轮次错误的结构化分类（CV-ERR-01）。
+   * 与 getLastError 同一份记录的两种视图：给的是原文，这里给的是分类结论。
+   * @param sessionId 会话 ID
+   * @returns 分类结果；未记录/无分类（未分类链路）返回 null
+   */
+  getLastErrorInfo(sessionId: string): ClassifiedError | null {
+    return this.streamStates.get(sessionId)?.lastErrorInfo ?? null;
+  }
+
+  /**
    * 会话状态驱动（内部辅助，供测试 / rpc 层模拟适配器驱动的状态流转）。
    * 写入内存状态表并触发 onStatusChange 回调（事件接线在 rpc 层）。
    * @param sessionId 会话 ID
@@ -700,6 +720,7 @@ export class ConversationService {
       status,
       lastDeltaText: opts !== undefined ? opts.lastDeltaText : current?.lastDeltaText,
       lastError: this.resolveLastError(status, current, opts),
+      lastErrorInfo: this.resolveLastErrorInfo(status, current, opts),
     });
     this.options.onStatusChange?.(sessionId, status);
   }
@@ -713,5 +734,16 @@ export class ConversationService {
     if (status !== 'error') return null;
     if (opts !== undefined && opts.lastError !== undefined) return opts.lastError;
     return current?.lastError ?? null;
+  }
+
+  /** lastErrorInfo 状态规则：与 lastError 同生命周期（error 期间保留，其他状态清除） */
+  private resolveLastErrorInfo(
+    status: ConversationStatus,
+    current: StreamState | undefined,
+    opts: ConversationStatusOptions | undefined,
+  ): ClassifiedError | null {
+    if (status !== 'error') return null;
+    if (opts !== undefined && opts.lastErrorInfo !== undefined) return opts.lastErrorInfo;
+    return current?.lastErrorInfo ?? null;
   }
 }

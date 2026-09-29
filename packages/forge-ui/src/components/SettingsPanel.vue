@@ -1,19 +1,14 @@
-<script lang="ts">
-/**
- * 模块级「已 toast 版本」记忆：SettingsPanel 随设置视图 v-if 挂载/卸载，
- * 发现新版本的 toast 需跨面板重开去重（同版本只提示一次）。
- */
-let lastNotifiedUpVersion: string | null = null;
-</script>
-
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 // 从瘦 subpath 导入：@forge/core 根入口 re-export 含 node:events 的 RPC 层，浏览器打包会炸
 import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
-import type { PiGetInfoResult, UpdaterSnapshot } from '../bridge';
+import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
-import { usePreferences } from '../composables/usePreferences';
+import { usePreferences, type ContentWidth } from '../composables/usePreferences';
+import { useUpdater } from '../composables/useUpdater';
+import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
+import SkillsSection from './SkillsSection.vue';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
 /**
@@ -24,7 +19,7 @@ import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
  * - 「主会话模型」单选项：复用 setDefault，全局唯一
  * 底层 forge-core 契约不变（saveProvider 的 type 固定 openai-completions，models 传单元素数组）。
  */
-const props = defineProps<{
+defineProps<{
   themeMode: ThemeMode;
 }>();
 
@@ -64,13 +59,28 @@ const apiKeyVisible = ref(false);
 const deleteConfirmId = ref<string | null>(null);
 let deleteTimer: ReturnType<typeof setTimeout> | null = null;
 
-const themeSwatches: { mode: ThemeMode; label: string; color: string }[] = [
-  { mode: 'light', label: '浅色', color: 'oklch(1 0 0)' },
-  { mode: 'dark', label: '深色', color: 'oklch(0.24 0.01 286.3)' },
+const { t, preference, activeLocale, setPreference } = useI18n();
+
+const themeSwatches: { mode: ThemeMode; labelKey: MessageKey; color: string }[] = [
+  { mode: 'light', labelKey: 'settings.theme.light', color: 'oklch(1 0 0)' },
+  { mode: 'dark', labelKey: 'settings.theme.dark', color: 'oklch(0.24 0.01 286.3)' },
+];
+
+// 模块 08：语言偏好三态；选项文案不随界面语言翻译（各语言自身书写，PRD 常规默认项）
+const languageOptions: { value: LocalePreference; labelKey: MessageKey }[] = [
+  { value: 'zh-CN', labelKey: 'settings.language.zhCN' },
+  { value: 'en', labelKey: 'settings.language.en' },
+  { value: 'system', labelKey: 'settings.language.system' },
+];
+
+/** 个性化：对话内容宽度两态（wide = 现有铺满行为，standard = 收拢居中） */
+const contentWidthOptions: { value: ContentWidth; labelKey: MessageKey }[] = [
+  { value: 'standard', labelKey: 'settings.personal.contentWidthStandard' },
+  { value: 'wide', labelKey: 'settings.personal.contentWidthWide' },
 ];
 
 const toast = useToast();
-const { showDiff, setShowDiff } = usePreferences();
+const { showDiff, setShowDiff, contentWidth, setContentWidth } = usePreferences();
 
 const canSubmitForm = computed(() => {
   return (
@@ -87,11 +97,11 @@ const levelOptions: ThinkingLevel[] = THINKING_LEVELS.filter((l) => l !== 'off')
 /** MP-S07：多选下拉触发器文案（未启用思考/空选/已选列表；off 不展示） */
 const selectedLevelsLabel = computed(() => {
   if (!formReasoning.value) {
-    return '未启用思考';
+    return t('settings.model.reasoningOff');
   }
   const shown = formLevels.value.filter((l) => l !== 'off');
   if (shown.length === 0) {
-    return '未选择思考等级';
+    return t('settings.model.noLevels');
   }
   return shown.join(' / ');
 });
@@ -152,7 +162,7 @@ async function onSaveProvider(): Promise<void> {
     await loadModels();
     resetForm();
     showAddForm.value = false;
-    toast.success('模型配置已保存');
+    toast.success(t('settings.model.saved'));
   } catch (e) {
     formError.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -269,12 +279,12 @@ function selectTheme(mode: ThemeMode): void {
 
 // ===== 版本更新（07，「关于」Tab）：明面为 forge 产品更新；内部为内置引擎的共享扩展更新 =====
 // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照
-const activeTab = ref<'general' | 'personal' | 'about'>('general');
+const activeTab = ref<'general' | 'personal' | 'skills' | 'about'>('general');
 const tabsEl = ref<HTMLElement | null>(null);
 const thumbEl = ref<HTMLElement | null>(null);
-const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, about: null as HTMLElement | null };
+const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, skills: null as HTMLElement | null, about: null as HTMLElement | null };
 
-function setTabRef(name: 'general' | 'personal' | 'about', el: unknown): void {
+function setTabRef(name: 'general' | 'personal' | 'skills' | 'about', el: unknown): void {
   tabBtns[name] = (el as HTMLElement) ?? null;
 }
 
@@ -310,6 +320,9 @@ function moveThumb(): void {
 
 watch(activeTab, () => { void nextTick(moveThumb); });
 
+// 语言切换重排 Tab 文案宽度：等 DOM 更新后重贴滑块（RO 兜底字体加载，这里管文案换语言）
+watch(activeLocale, () => { void nextTick(moveThumb); });
+
 function onResize(): void { moveThumb(); }
 
 const forgeVersion = ref<string | null>(null);
@@ -323,66 +336,47 @@ async function loadPiInfo(): Promise<void> {
   }
 }
 
-// ===== 应用自更新（07 IN-S03）：发现新版 toast 一次 + 分区常驻；检查/下载/安装失败静默可重试 =====
-// 快照镜像：updater.stateChanged 到达即整体替换；失败（6003/6004/6005）不弹窗、不出现红色报错横幅
-const upSnapshot = ref<UpdaterSnapshot | null>(null);
-/** 检查在途本地标记（checkForUpdates invoke 往返；状态跃迁本身经事件推送） */
-const upChecking = ref(false);
-/** 「重启安装」确认弹窗显隐（fixed 遮罩 + 居中 box，IN-F03 弹窗确认语义） */
+// ===== 应用自更新（07 IN-S03 改造）：状态与动作在 useUpdater 全局单例，本面板为「关于」页镜像消费方 =====
+// 口径：发现新版不再弹 toast（提示由侧栏 UpdateEntry 图标承担）；检查/下载/安装失败静默可重试
+const {
+  snapshot: upSnapshot,
+  checking: upChecking,
+  installing: upInstalling,
+  installRetry: upInstallRetry,
+  checkedUpToDate: upCheckedUpToDate,
+  logLines: upDebugLines,
+  foundVersion: upFoundVersion,
+  downloadPct: upDownloadPct,
+  ensureSubscribed: upEnsureSubscribed,
+  refresh: refreshUpState,
+  check: upCheck,
+  download: upDownload,
+  quitAndInstall: upQuitAndInstall,
+} = useUpdater();
+
+/** 「重启安装」确认弹窗显隐（fixed 遮罩 + 居中 box，IN-F03 弹窗确认语义；面板局部态） */
 const upConfirming = ref(false);
-/** quitAndInstall 在途标记（确认安装按钮 busy） */
-const upInstalling = ref(false);
-/** 安装失败（6005）后本地回到 downloaded 可重试态（后端 fail 收敛为 idle，快照仅保留 latestVersion） */
-const upInstallRetry = ref(false);
-/** 检查完成且无新版本：版本行内显示「✓ 已是最新」徽标（按钮仍保留，可再次手动检查） */
-const upCheckedUpToDate = ref(false);
+// 状态离开 downloaded（如另一入口完成安装/检查重置）时收起确认条
+watch(
+  () => upSnapshot.value?.status,
+  (status) => {
+    if (status !== 'downloaded' && upConfirming.value) upConfirming.value = false;
+  },
+);
 
-/**
- * 快照落位 + 派生反应。
- * - 发现新版本（status=found）：toast.info 一次，同版本不重复（记忆在模块级，跨面板重开不重复）。
- * - 离开 downloaded 态收起确认条；新检查/下载周期开始清除安装重试标记。
- */
-function applyUpSnapshot(snap: UpdaterSnapshot | null | undefined): void {
-  if (!snap || typeof snap.status !== 'string') return;
-  upSnapshot.value = snap;
-  // 调试日志：每次状态快照落位（事件推送 / invoke 返回）记录迁移与错误文本
-  upLog(
-    `state=${snap.status} current=${snap.currentVersion} latest=${snap.latestVersion ?? '-'}` +
-      ` progress=${snap.downloadProgress ?? '-'}` +
-      (snap.error ? ` error=${snap.error}` : ''),
-  );
-  // 离开「已是最新」态：发现新版本 / 下载 / 失败（idle 带 latest 或 error）时清除徽标
-  if (snap.status !== 'idle' || snap.latestVersion !== null || snap.error !== null) {
-    upCheckedUpToDate.value = false;
-  }
-  if (snap.status !== 'idle' && snap.status !== 'installing') {
-    upInstallRetry.value = false;
-  }
-  if (snap.status !== 'downloaded' && upConfirming.value) {
-    upConfirming.value = false;
-  }
-  if (snap.status === 'found' && snap.latestVersion && snap.latestVersion !== lastNotifiedUpVersion) {
-    lastNotifiedUpVersion = snap.latestVersion;
-    toast.info(`发现新版本 ${snap.latestVersion}`);
-  }
-}
-
-/** 调试控制台（原型风格滚动日志）：展开可见，记录 updater 状态迁移 / 调用结果，用于排查更新链路 */
+/** 调试控制台（原型风格滚动日志）：展开可见；日志源为 useUpdater 模块级 logLines（状态迁移/调用结果） */
 const upDebugOn = ref(false);
-const upDebugLines = ref<string[]>([]);
 const upDebugScrollEl = ref<HTMLElement | null>(null);
-function upLog(line: string): void {
-  const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-  upDebugLines.value.push(`[${ts}] ${line}`);
-  if (upDebugLines.value.length > 300) {
-    upDebugLines.value.splice(0, upDebugLines.value.length - 300);
-  }
-  // 新日志追加后自动滚到底，便于观察
-  void nextTick(() => {
-    const el = upDebugScrollEl.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  });
-}
+// 新日志追加后自动滚到底，便于观察
+watch(
+  () => upDebugLines.value.length,
+  () => {
+    void nextTick(() => {
+      const el = upDebugScrollEl.value;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  },
+);
 
 /** 复制全部调试日志到剪贴板（Electron 渲染进程下 navigator.clipboard 可用，失败回退 execCommand） */
 async function onCopyDebugLog(): Promise<void> {
@@ -402,9 +396,8 @@ async function onCopyDebugLog(): Promise<void> {
       document.execCommand('copy');
       document.body.removeChild(ta);
     }
-    upLog(`copyDebugLog → 已复制 ${upDebugLines.value.length} 行`);
-  } catch (e) {
-    upLog(`copyDebugLog → 失败 ${e instanceof Error ? e.message : String(e)}`);
+  } catch {
+    // 静默：复制失败无副作用
   }
 }
 
@@ -419,12 +412,6 @@ async function loadUpDebugEnabled(): Promise<void> {
   }
 }
 
-/** 分区常驻的「发现新版本」信息（found 之后有值；下载/安装失败后端保留该值供重试） */
-const upFoundVersion = computed<string | null>(() => upSnapshot.value?.latestVersion ?? null);
-
-/** 下载进度百分比（原型：版本行下方进度条数据源） */
-const upDownloadPct = computed<number>(() => Math.round(upSnapshot.value?.downloadProgress ?? 0));
-
 /** 主按钮形态：检查更新 → 更新（下载中 busy，进度走进度条）→ 重启安装 → 安装中…（busy 禁点） */
 interface UpBtnView {
   action: 'check' | 'download' | 'install' | null;
@@ -437,132 +424,70 @@ const upBtnView = computed<UpBtnView>(() => {
   const status = snap?.status ?? 'idle';
   const latest = snap?.latestVersion ?? null;
   if (upChecking.value || status === 'checking') {
-    return { action: null, label: '检查中…', busy: true };
+    return { action: null, label: t('settings.update.checking'), busy: true };
   }
   if (status === 'downloading') {
-    return { action: null, label: '更新', busy: true };
+    return { action: null, label: t('settings.update.update'), busy: true };
   }
   if (status === 'installing') {
-    return { action: null, label: '安装中…', busy: true };
+    return { action: null, label: t('settings.update.installing'), busy: true };
   }
   if (status === 'downloaded' || (upInstallRetry.value && latest !== null)) {
-    return { action: 'install', label: '重启安装', busy: false };
+    return { action: 'install', label: t('settings.update.installNow'), busy: false };
   }
   if (latest !== null) {
-    return { action: 'download', label: '更新', busy: false };
+    return { action: 'download', label: t('settings.update.update'), busy: false };
   }
-  return { action: 'check', label: '检查更新', busy: false };
+  return { action: 'check', label: t('settings.update.check'), busy: false };
 });
 
-/** 初始状态拉取（getState 快照还原；found 时按需补一次 toast） */
-async function refreshUpState(): Promise<void> {
-  try {
-    applyUpSnapshot(await call<UpdaterSnapshot>('updater/getState'));
-  } catch {
-    // 静默：快照缺失按未检查态展示
-  }
-}
-
-/** 检查更新（进入「关于」Tab 自动触发一次 + 按钮手动触发）；6003 静默回可重试态 */
-async function onCheckUpdates(): Promise<void> {
-  if (upChecking.value) return;
-  upChecking.value = true;
-  upLog('checkForUpdates → 发起检查');
-  try {
-    const res = await call<UpdaterSnapshot>('updater/checkForUpdates');
-    upLog(`checkForUpdates → 返回（state=${res.status}）`);
-    applyUpSnapshot(res);
-    // 检查完成且无新版本（idle 且无 error）→ 版本行显示「✓ 已是最新」徽标（按钮保留可重查）
-    upCheckedUpToDate.value = res.status === 'idle' && !res.latestVersion && !res.error;
-  } catch (e) {
-    // 检查失败（6003）：无打断性提示，分区保持可重试；失败原因入调试日志
-    upLog(`checkForUpdates → 失败 ${e instanceof Error ? e.message : String(e)}`);
-  } finally {
-    upChecking.value = false;
-  }
-}
-
-/** 下载更新；下载进度经 updater.stateChanged 事件推送，6004 静默回「发现新版本 + 更新」可重试态 */
-async function onDownloadUpdate(): Promise<void> {
-  upLog('downloadUpdate → 发起下载');
-  try {
-    const res = await call<UpdaterSnapshot>('updater/downloadUpdate');
-    upLog(`downloadUpdate → 返回（state=${res.status}）`);
-    applyUpSnapshot(res);
-  } catch (e) {
-    // 下载失败（6004）：静默，失败快照已经事件落位（latestVersion 保留）
-    upLog(`downloadUpdate → 失败 ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-/** 确认后执行安装重启：成功即退出（视觉不再返回）；6005 静默回到 downloaded 可重试态 */
-async function onQuitAndInstall(): Promise<void> {
-  if (upInstalling.value) return;
-  upInstalling.value = true;
-  upConfirming.value = false;
-  upLog('quitAndInstall → 确认安装');
-  try {
-    // 直用 invoke：需按 code 分流（call 会把非 0 信封压成 Error 丢字段）
-    const res = await window.forge.invoke('updater/quitAndInstall');
-    if (res.code === 0) {
-      applyUpSnapshot(res.data as UpdaterSnapshot | null);
-    } else {
-      upLog(`quitAndInstall → 返回 code ${res.code}（${res.message}）`);
-      upInstallRetry.value = true;
-    }
-  } catch (e) {
-    upLog(`quitAndInstall → 失败 ${e instanceof Error ? e.message : String(e)}`);
-    upInstallRetry.value = true;
-  } finally {
-    upInstalling.value = false;
-  }
-}
-
-/** 主按钮点击：按派生态分发 */
+/** 主按钮点击：按派生态分发（动作实现见 useUpdater） */
 function onUpBtnClick(): void {
   const action = upBtnView.value.action;
   if (action === 'check') {
-    void onCheckUpdates();
+    void upCheck();
   } else if (action === 'download') {
-    void onDownloadUpdate();
+    void upDownload();
   } else if (action === 'install') {
     upConfirming.value = true;
   }
 }
 
-/** updater.stateChanged：整体替换快照（含下载进度步进） */
-function onUpStateChanged(payload: unknown): void {
-  applyUpSnapshot(payload as UpdaterSnapshot | null);
+/** 确认安装：先收本面板确认条，再走全局动作（成功即退出应用） */
+function onQuitAndInstall(): void {
+  upConfirming.value = false;
+  void upQuitAndInstall();
 }
 
-// 进入「关于」Tab 自动检查一次（PRD §3.4：检查随分区打开自动触发）
-watch(activeTab, (tab) => {
-  if (tab === 'about') void onCheckUpdates();
-});
-
 let unsubProviders: (() => void) | null = null;
-let unsubUpdater: (() => void) | null = null;
+// Tab 按钮宽度变化（语言切换改文案、字体加载）时重贴滑块
+let thumbRo: ResizeObserver | null = null;
 
 onMounted(() => {
   void loadProviders();
   void loadModels();
   void loadPiInfo();
   void refreshUpState();
+  upEnsureSubscribed();
   void loadUpDebugEnabled();
   // 滑动选中块初始定位（含字体加载后宽度变化的一次校准）
   void nextTick(moveThumb);
   window.addEventListener('resize', onResize);
+  thumbRo = new ResizeObserver(() => moveThumb());
+  for (const btn of Object.values(tabBtns)) {
+    if (btn) thumbRo.observe(btn);
+  }
   unsubProviders = subscribe('model.providersChanged', () => {
     void loadProviders();
   });
-  unsubUpdater = subscribe('updater.stateChanged', onUpStateChanged);
 });
 
 onUnmounted(() => {
   unsubProviders?.();
-  unsubUpdater?.();
   if (deleteTimer) clearTimeout(deleteTimer);
   window.removeEventListener('resize', onResize);
+  thumbRo?.disconnect();
+  thumbRo = null;
 });
 </script>
 
@@ -570,12 +495,13 @@ onUnmounted(() => {
   <div class="settings">
     <header class="settings-header">
       <div>
-        <h1 class="settings-title">设置</h1>
+        <h1 class="settings-title">{{ t('settings.title') }}</h1>
       </div>
-      <button class="ghost settings-close" aria-label="关闭设置" @click="emit('close')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <path d="M6 6l12 12M18 6L6 18" />
+      <button class="ghost settings-back" :aria-label="t('settings.backToWorkspace')" @click="emit('close')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 12H5M12 19l-7-7 7-7" />
         </svg>
+        <span>{{ t('settings.backToWorkspace') }}</span>
       </button>
     </header>
 
@@ -587,40 +513,60 @@ onUnmounted(() => {
         :class="{ active: activeTab === 'general' }"
         :ref="(el) => setTabRef('general', el)"
         @click="activeTab = 'general'"
-      >通用</button>
+      >{{ t('settings.tab.general') }}</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'personal' }"
         :ref="(el) => setTabRef('personal', el)"
         @click="activeTab = 'personal'"
-      >个性化</button>
+      >{{ t('settings.tab.personal') }}</button>
+      <button
+        class="settings-tab"
+        :class="{ active: activeTab === 'skills' }"
+        :ref="(el) => setTabRef('skills', el)"
+        @click="activeTab = 'skills'"
+      >{{ t('settings.tab.skills') }}</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'about' }"
         :ref="(el) => setTabRef('about', el)"
         @click="activeTab = 'about'"
-      >关于</button>
+      >{{ t('settings.tab.about') }}</button>
     </nav>
 
     <div class="settings-body" v-if="activeTab === 'general'">
       <!-- 外观（通用 Tab 顶部） -->
       <section class="settings-section aside">
-        <h2 class="section-title">外观</h2>
+        <h2 class="section-title">{{ t('settings.appearance') }}</h2>
         <div class="theme-swatches">
           <button
-            v-for="t in themeSwatches"
-            :key="t.mode"
+            v-for="swatch in themeSwatches"
+            :key="swatch.mode"
             class="theme-swatch"
-            :class="{ active: themeMode === t.mode }"
-            @click="selectTheme(t.mode)"
+            :class="{ active: themeMode === swatch.mode }"
+            @click="selectTheme(swatch.mode)"
           >
-            <span class="swatch-color" :style="{ background: t.color }">
-              <svg v-if="themeMode === t.mode" class="swatch-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <span class="swatch-color" :style="{ background: swatch.color }">
+              <svg v-if="themeMode === swatch.mode" class="swatch-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </span>
-            <span class="swatch-label">{{ t.label }}</span>
+            <span class="swatch-label">{{ t(swatch.labelKey) }}</span>
           </button>
+        </div>
+        <div class="language-row">
+          <span class="language-label">{{ t('settings.language') }}</span>
+          <div class="language-options" role="radiogroup" :aria-label="t('settings.language')">
+            <button
+              v-for="opt in languageOptions"
+              :key="opt.value"
+              class="language-option"
+              :class="{ active: preference === opt.value }"
+              role="radio"
+              :aria-checked="preference === opt.value"
+              @click="setPreference(opt.value)"
+            >{{ t(opt.labelKey) }}</button>
+          </div>
         </div>
       </section>
 
@@ -628,7 +574,7 @@ onUnmounted(() => {
       <section class="settings-section main">
         <div class="section-head">
           <div>
-            <h2 class="section-title">模型配置</h2>
+            <h2 class="section-title">{{ t('settings.model.title') }}</h2>
           </div>
           <button class="section-action" @click="toggleForm">
             <svg v-if="!showAddForm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -638,28 +584,42 @@ onUnmounted(() => {
             <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>
-            {{ showAddForm ? '取消' : '添加模型' }}
+            {{ showAddForm ? t('common.cancel') : t('settings.model.add') }}
           </button>
         </div>
 
         <!-- 当前主会话模型（置于列表上方，模型多时不遮挡） -->
         <div v-if="defaultModel" class="default-model-row">
-          <span class="default-model-label">当前主会话模型：</span>
+          <span class="default-model-label">{{ t('settings.model.currentDefault') }}</span>
           <span class="default-model-value">{{ defaultModel }}</span>
-          <button class="ghost small" @click="onClearDefault">清除</button>
+          <button class="ghost small" @click="onClearDefault">{{ t('settings.model.clear') }}</button>
         </div>
 
-        <!-- 添加/编辑表单 -->
-        <div v-if="showAddForm" class="provider-form">
+        <!-- 添加/编辑表单（弹窗形态：不再内联在列表上方挤压/推开模型列表）。
+             Teleport 到 body：settings 区某祖先带 transform，fixed 遮罩会被其裁剪，须脱离组件树定位 -->
+        <Teleport to="body">
+        <div
+          v-if="showAddForm"
+          class="provider-form-overlay"
+          role="dialog"
+          aria-modal="true"
+          @click.self="toggleForm"
+        >
+        <div class="provider-form">
           <div class="form-head">
-            <span class="form-head-title">{{ editingId ? '编辑模型' : '添加模型' }}</span>
+            <span class="form-head-title">{{ editingId ? t('settings.model.edit') : t('settings.model.add') }}</span>
+            <button type="button" class="form-close" :aria-label="t('common.close')" @click="toggleForm">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
           </div>
           <label class="form-field">
-            <span class="form-label">名称</span>
-            <input v-model="formName" type="text" placeholder="如 Grok、GPT、MiniMax" />
+            <span class="form-label">{{ t('settings.model.name') }}</span>
+            <input v-model="formName" type="text" :placeholder="t('settings.model.namePlaceholder')" />
           </label>
           <label class="form-field">
-            <span class="form-label">API 地址</span>
+            <span class="form-label">{{ t('settings.model.baseUrl') }}</span>
             <input v-model="formBaseUrl" type="text" placeholder="https://api.xxx.com/v1" />
           </label>
           <label class="form-field">
@@ -669,13 +629,13 @@ onUnmounted(() => {
                 v-model="formApiKey"
                 :type="apiKeyVisible ? 'text' : 'password'"
                 class="api-key-input"
-                placeholder="sk-…（存入系统密钥链，不明文保存）"
+                :placeholder="t('settings.model.apiKeyPlaceholder')"
               />
               <button
                 type="button"
                 class="api-key-toggle"
-                :aria-label="apiKeyVisible ? '隐藏密钥' : '显示密钥'"
-                :data-tooltip="apiKeyVisible ? '隐藏密钥' : '显示密钥'"
+                :aria-label="apiKeyVisible ? t('settings.model.hideKey') : t('settings.model.showKey')"
+                :data-tooltip="apiKeyVisible ? t('settings.model.hideKey') : t('settings.model.showKey')"
                 @click="apiKeyVisible = !apiKeyVisible"
               >
                 <svg v-if="apiKeyVisible" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -690,30 +650,30 @@ onUnmounted(() => {
             </div>
           </label>
           <label class="form-field">
-            <span class="form-label">模型 ID</span>
-            <input v-model="formModel" type="text" placeholder="如 gpt-4o、grok-4.5" />
+            <span class="form-label">{{ t('settings.model.modelId') }}</span>
+            <input v-model="formModel" type="text" :placeholder="t('settings.model.modelIdPlaceholder')" />
           </label>
           <!-- MP-S06：上下文窗口 1M 单档勾选（勾选写 1000000，未勾选移除字段） -->
           <label class="form-field context-check context-1m">
             <input v-model="formContext1M" type="checkbox" />
-            <span class="form-label">上下文窗口 1M（100 万 tokens）</span>
+            <span class="form-label">{{ t('settings.model.context1M') }}</span>
           </label>
           <!-- 多模态：勾选写模型 input:["text","image"]（能发图片给模型），未勾选移除 -->
           <label class="form-field context-check context-vision">
             <input v-model="formVision" type="checkbox" />
-            <span class="form-label">支持图片输入（多模态）</span>
+            <span class="form-label">{{ t('settings.model.vision') }}</span>
           </label>
           <!-- MP-S07：思考强度勾选（与上下勾选行样式一致）+ 下方思考等级多选下拉（控制对话框可选挡位） -->
           <label class="form-field context-check">
             <input v-model="formReasoning" type="checkbox" />
-            <span class="form-label">思考强度</span>
+            <span class="form-label">{{ t('settings.model.reasoning') }}</span>
           </label>
           <div class="form-field level-picker" :class="{ disabled: !formReasoning }">
             <button
               type="button"
               class="level-picker-trigger"
               :disabled="!formReasoning"
-              data-tooltip="选择对话时可选用的思考等级"
+              :data-tooltip="t('settings.model.levelsTooltip')"
               @click.stop="levelMenuOpen = !levelMenuOpen"
             >
               <span class="level-picker-label">{{ selectedLevelsLabel }}</span>
@@ -723,7 +683,7 @@ onUnmounted(() => {
             </button>
             <div v-if="levelMenuOpen" class="level-overlay" @click="levelMenuOpen = false"></div>
             <div v-if="levelMenuOpen" class="level-menu">
-              <div class="menu-hint">对话框中可选的思考等级</div>
+              <div class="menu-hint">{{ t('settings.model.levelsHint') }}</div>
               <label v-for="l in levelOptions" :key="l" class="level-option">
                 <input
                   type="checkbox"
@@ -737,15 +697,17 @@ onUnmounted(() => {
           <div v-if="formError" class="form-error">{{ formError }}</div>
           <div class="form-actions">
             <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
-              {{ saving ? '保存中…' : (editingId ? '保存修改' : '添加模型') }}
+              {{ saving ? t('settings.model.saving') : (editingId ? t('settings.model.saveChanges') : t('settings.model.add')) }}
             </button>
           </div>
         </div>
+        </div>
+        </Teleport>
 
         <!-- 模型列表 -->
         <div v-if="providerError" class="section-error">{{ providerError }}</div>
         <div v-if="providers.length === 0 && !loadingModels" class="empty-state">
-          还没有模型，点击「添加模型」配置第一个
+          {{ t('settings.model.empty') }}
         </div>
         <div v-else-if="providers.length" class="provider-list">
           <div v-for="p in providers" :key="p.id" class="provider-item"
@@ -753,35 +715,35 @@ onUnmounted(() => {
             <div class="provider-info">
               <div class="provider-name-row">
                 <span class="provider-name">{{ p.name }}</span>
-                <span v-if="p.models[0] && isDefault(p.models[0])" class="default-tag">主会话模型</span>
-                <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">异常</span>
+                <span v-if="p.models[0] && isDefault(p.models[0])" class="default-tag">{{ t('settings.model.defaultTag') }}</span>
+                <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">{{ t('settings.model.errorTag') }}</span>
               </div>
               <div class="provider-meta">
                 <span v-if="p.baseUrl" class="provider-baseurl">{{ p.baseUrl }}</span>
-                <span v-else class="provider-baseurl muted">本地默认</span>
+                <span v-else class="provider-baseurl muted">{{ t('settings.model.localDefault') }}</span>
                 <span class="provider-models-count">{{ p.models[0] ?? '—' }}</span>
-                <span v-if="p.vision === true" class="vision-tag">多模态</span>
+                <span v-if="p.vision === true" class="vision-tag">{{ t('settings.model.visionTag') }}</span>
               </div>
             </div>
             <div class="provider-actions">
               <button
                 class="provider-default-btn"
-                data-tooltip="编辑模型配置"
+                :data-tooltip="t('settings.model.editTooltip')"
                 @click="onEdit(p)"
-              >编辑</button>
+              >{{ t('settings.model.editBtn') }}</button>
               <button
                 v-if="p.models[0] && !isDefault(p.models[0])"
                 class="provider-default-btn"
-                data-tooltip="设为主会话模型"
+                :data-tooltip="t('settings.model.setDefaultTooltip')"
                 @click="onSetDefault(p.models[0])"
-              >设为主会话</button>
+              >{{ t('settings.model.setDefault') }}</button>
               <button
                 class="provider-delete"
                 :class="{ confirming: deleteConfirmId === p.id }"
-                :data-tooltip="deleteConfirmId === p.id ? '再次点击确认删除' : '删除'"
+                :data-tooltip="deleteConfirmId === p.id ? t('settings.model.confirmDeleteTooltip') : t('common.delete')"
                 @click="onDeleteProvider(p.id)"
               >
-                {{ deleteConfirmId === p.id ? '确认删除' : '' }}
+                {{ deleteConfirmId === p.id ? t('settings.model.confirmDelete') : '' }}
                 <svg v-if="deleteConfirmId !== p.id" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="3 6 5 6 21 6" />
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -793,20 +755,39 @@ onUnmounted(() => {
       </section>
     </div>
 
-    <!-- 个性化 Tab：用户个性化偏好（首个：对话框 diff 展示开关） -->
+    <!-- 个性化 Tab：用户个性化偏好（内容宽度分段控件 / 对话框 diff 展示开关） -->
     <div class="personal-body" v-if="activeTab === 'personal'">
       <section class="settings-section">
         <div class="pref-row">
           <div class="pref-text">
-            <span class="pref-title">显示代码 Diff</span>
-            <span class="pref-desc">关闭后对话框不再展示代码变更对比，页面更简洁</span>
+            <span class="pref-title">{{ t('settings.personal.contentWidthTitle') }}</span>
+            <span class="pref-desc">{{ t('settings.personal.contentWidthDesc') }}</span>
+          </div>
+          <div class="width-options" role="radiogroup" :aria-label="t('settings.personal.contentWidthTitle')">
+            <button
+              v-for="opt in contentWidthOptions"
+              :key="opt.value"
+              class="width-option"
+              :class="{ active: contentWidth === opt.value }"
+              role="radio"
+              :aria-checked="contentWidth === opt.value"
+              @click="setContentWidth(opt.value)"
+            >{{ t(opt.labelKey) }}</button>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">{{ t('settings.personal.showDiffTitle') }}</span>
+            <span class="pref-desc">{{ t('settings.personal.showDiffDesc') }}</span>
           </div>
           <button
             class="pref-switch"
             :class="{ on: showDiff }"
             role="switch"
             :aria-checked="showDiff"
-            aria-label="显示代码 Diff"
+            :aria-label="t('settings.personal.showDiffTitle')"
             @click="setShowDiff(!showDiff)"
           >
             <span class="pref-knob"></span>
@@ -820,7 +801,7 @@ onUnmounted(() => {
       <section class="settings-section update-section">
         <!-- 版本行 + 同行右侧操作按钮；行占满到底（about-body 不限制宽度） -->
         <div class="version-row">
-          <span class="version-label">Forge 版本</span>
+          <span class="version-label">{{ t('settings.update.forgeVersion') }}</span>
           <span class="version-value">v{{ forgeVersion ?? '—' }}</span>
           <template v-if="upFoundVersion !== null">
             <span class="version-arrow">→</span>
@@ -830,7 +811,7 @@ onUnmounted(() => {
           <span class="version-actions">
             <span v-if="upCheckedUpToDate" class="up-uptodate">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-              已是最新
+              {{ t('settings.update.uptodate') }}
             </span>
             <button
               class="up-btn"
@@ -842,23 +823,23 @@ onUnmounted(() => {
         </div>
         <!-- 下载进度（原型：版本行下方进度条；检查/下载/安装失败静默回可重试态） -->
         <div v-if="upSnapshot?.status === 'downloading'" class="up-progress">
-          <div class="up-progress-meta"><span>正在下载 forge {{ upFoundVersion }}</span><b>{{ upDownloadPct }}%</b></div>
+          <div class="up-progress-meta"><span>{{ t('settings.update.downloading', { version: upFoundVersion ?? '' }) }}</span><b>{{ upDownloadPct }}%</b></div>
           <div class="up-progress-track"><div class="up-progress-fill" :style="{ width: upDownloadPct + '%' }"></div></div>
         </div>
         <!-- 调试控制台（仅本地配置文件开启后可见；滚动日志展示 updater 状态迁移/调用结果/错误） -->
         <div v-if="upDebugEnabled" class="up-debug">
           <button class="up-debug-toggle" @click="upDebugOn = !upDebugOn">
-            {{ upDebugOn ? '收起调试日志' : '展开调试日志' }}
+            {{ upDebugOn ? t('settings.update.collapseDebug') : t('settings.update.expandDebug') }}
           </button>
           <div v-if="upDebugOn" class="up-debug-console">
             <div class="up-debug-ver">
-              <span>当前 {{ forgeVersion ?? '—' }}</span>
-              <span>快照 {{ upSnapshot?.status ?? '—' }}</span>
-              <span v-if="upSnapshot?.error" class="up-debug-err">错误 {{ upSnapshot.error }}</span>
+              <span>{{ t('settings.update.debugCurrent', { version: forgeVersion ?? '—' }) }}</span>
+              <span>{{ t('settings.update.debugSnapshot', { status: upSnapshot?.status ?? '—' }) }}</span>
+              <span v-if="upSnapshot?.error" class="up-debug-err">{{ t('settings.update.debugError', { error: upSnapshot.error }) }}</span>
               <span class="up-debug-spacer"></span>
-              <button class="up-debug-copy" :disabled="upDebugLines.length === 0" @click="onCopyDebugLog">复制全部</button>
+              <button class="up-debug-copy" :disabled="upDebugLines.length === 0" @click="onCopyDebugLog">{{ t('settings.update.copyAll') }}</button>
             </div>
-            <div v-if="upDebugLines.length === 0" class="up-debug-empty">暂无日志：进入「关于」Tab 后自动记录检查与状态迁移</div>
+            <div v-if="upDebugLines.length === 0" class="up-debug-empty">{{ t('settings.update.debugEmpty') }}</div>
             <div ref="upDebugScrollEl" class="up-debug-scroll">
               <div v-for="(l, i) in upDebugLines" :key="i" class="up-debug-line">{{ l }}</div>
             </div>
@@ -868,16 +849,21 @@ onUnmounted(() => {
         <div v-if="upConfirming" class="up-confirm" role="dialog" aria-modal="true" @click.self="upConfirming = false">
           <div class="up-confirm-box">
             <div class="up-confirm-main">
-              <span class="up-confirm-title">安装 forge {{ upFoundVersion }}</span>
-              <span class="up-confirm-desc">关闭应用并安装更新，完成后自动重启。</span>
+              <span class="up-confirm-title">{{ t('settings.update.installTitle', { version: upFoundVersion ?? '' }) }}</span>
+              <span class="up-confirm-desc">{{ t('settings.update.installDesc') }}</span>
             </div>
             <div class="up-confirm-actions">
-              <button class="ghost small" @click="upConfirming = false">取消</button>
-              <button class="primary small" :disabled="upInstalling" @click="onQuitAndInstall">确认安装</button>
+              <button class="ghost small" @click="upConfirming = false">{{ t('common.cancel') }}</button>
+              <button class="primary small" :disabled="upInstalling" @click="onQuitAndInstall">{{ t('settings.update.confirmInstall') }}</button>
             </div>
           </div>
         </div>
       </section>
+    </div>
+
+    <!-- Skills Tab（模块 09）：独立 Tab 页，进入即挂载刷新 -->
+    <div class="settings-body" v-if="activeTab === 'skills'">
+      <SkillsSection />
     </div>
   </div>
 </template>
@@ -911,18 +897,19 @@ onUnmounted(() => {
   margin-top: 3px;
 }
 
-.settings-close {
-  width: 32px;
+.settings-back {
   height: 32px;
-  padding: 0;
+  padding: 0 12px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  border-radius: 8px;
 }
 
-.settings-close svg {
-  width: 17px;
-  height: 17px;
+.settings-back svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* Tab：通用 / 关于 —— 分段控件 + 滑动选中块（方案 A，原型确认） */
@@ -1133,6 +1120,35 @@ onUnmounted(() => {
   background: var(--card);
   box-shadow: var(--shadow-sm);
   transition: transform 0.2s;
+}
+
+/* 内容宽度分段控件（标准 / 宽）：与「语言」行同款胶囊单选 */
+.width-options {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.width-option {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--foreground);
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.width-option:hover {
+  border-color: var(--muted-foreground);
+}
+
+.width-option.active {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 6%, var(--card));
 }
 
 .pref-switch.on .pref-knob {
@@ -1517,15 +1533,76 @@ onUnmounted(() => {
   color: var(--foreground);
 }
 
-/* 模型配置表单 */
+/* 模块 08：语言切换行（外观区内、主题色板下方）。
+   与「外观」同款版式：标题独占一行，选项在下方。 */
+.language-row {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.language-label {
+  /* 与「外观」分区标题（.section-title）同款：14px/600 前景色 */
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.language-options {
+  display: flex;
+  gap: 8px;
+}
+
+.language-option {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.language-option:hover {
+  border-color: var(--muted-foreground);
+}
+
+.language-option.active {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 6%, var(--card));
+}
+
+/* 模型配置表单：弹窗形态（遮罩配方同 .up-confirm），不占用列表空间 */
+.provider-form-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn var(--transition-base);
+}
+
 .provider-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
-  background: color-mix(in oklab, var(--muted) 30%, var(--card));
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 22px 24px;
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-lg);
 }
 
 .form-field {
@@ -1538,6 +1615,30 @@ onUnmounted(() => {
 .form-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+}
+
+.form-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.form-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.form-close:hover {
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .form-head-title {
@@ -1635,7 +1736,9 @@ onUnmounted(() => {
 .level-menu {
   position: absolute;
   z-index: 11;
-  top: calc(100% + 4px);
+  /* 表单已改为弹窗（内部可滚动）：向下弹会被 modal 底边裁切，故朝上展开 */
+  top: auto;
+  bottom: calc(100% + 4px);
   left: 0;
   right: 0;
   background: var(--card);

@@ -2,6 +2,10 @@
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import type { GitBranchInfo } from '../types';
 import { filterBranches, shouldAskConfirm, displayBranch } from '../utils/branchBadge';
+import { openGitCommitDialog } from '../composables/useGitCommitDialog';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 /**
  * 分支徽标与切换浮窗（PM-S05，AC-PM-013/014/016/017，docs/api/01_project.md §10/§11）。
@@ -11,11 +15,19 @@ import { filterBranches, shouldAskConfirm, displayBranch } from '../utils/branch
 const props = defineProps<{
   /** 项目规范化路径（git 查询目标） */
   projectPath: string;
-  /** 项目忙（任一会话 streaming）：禁用徽标 */
+  /** 忙（当前会话自身 streaming）：禁用徽标；同项目其他会话执行中不锁（2026-09-23 口径修正） */
   busy: boolean;
+  /** 项目显示名（GC-S11「提交或推送…」入口透传给弹窗副标题） */
+  projectName?: string;
+  /** 会话 id（GC-S11：AI 生成提交说明的模型上下文） */
+  sessionId?: string;
 }>();
 
 const info = ref<GitBranchInfo | null>(null);
+/** isGitRepo 变化外抛（GC-S11）：宿主据此决定「提交或推送」状态行入口是否渲染 */
+const emit = defineEmits<{
+  (e: 'git-repo', isGit: boolean): void;
+}>();
 const panelOpen = ref(false);
 const query = ref('');
 const confirming = ref(false);
@@ -34,7 +46,9 @@ async function refresh(): Promise<void> {
     const r = await window.forge.invoke('git/getBranchInfo', { path: props.projectPath });
     // 仅成功时更新 info；失败（1002/5000/网络）保留旧值，避免一过性错误让徽标闪烁消失
     if (r.code === 0 && r.data) {
-      info.value = r.data as GitBranchInfo;
+      const data = r.data as GitBranchInfo;
+      info.value = data;
+      emit('git-repo', data.isGitRepo);
     }
   } catch {
     // 静默：保留旧 info
@@ -108,6 +122,16 @@ function togglePanel(): void {
   void nextTick(() => filterRef.value?.focus());
 }
 
+/** 浮窗内「提交或推送…」（GC-S11 第二入口）：先关浮窗还原焦点，再开弹窗 */
+function onCommitEntry(): void {
+  if (props.busy) return;
+  const path = props.projectPath;
+  const name = props.projectName;
+  const sid = props.sessionId;
+  closePanel();
+  openGitCommitDialog({ projectPath: path, projectName: name, sessionId: sid });
+}
+
 /** 点选分支：dirty 且目标≠当前先确认；6001 时浮窗内展示 stderr、浮窗不关 */
 async function pickBranch(branch: string): Promise<void> {
   if (!info.value) return;
@@ -143,7 +167,6 @@ async function doSwitch(branch: string): Promise<void> {
       type="button"
       class="meta-link git-pill"
       :class="{ 'is-busy': busy }"
-      :data-tooltip="busy ? '会话执行中' : '切换分支'"
       :aria-disabled="busy"
       @click="togglePanel"
     >
@@ -165,10 +188,10 @@ async function doSwitch(branch: string): Promise<void> {
           v-model="query"
           class="git-filter"
           type="text"
-          placeholder="过滤分支…"
+          :placeholder="t('project.filterBranches')"
           spellcheck="false"
         />
-        <div v-if="filtered.length === 0" class="git-empty">无其他分支</div>
+        <div v-if="filtered.length === 0" class="git-empty">{{ t('project.noOtherBranches') }}</div>
         <button
           v-for="b in filtered"
           :key="b"
@@ -178,18 +201,29 @@ async function doSwitch(branch: string): Promise<void> {
           @click="pickBranch(b)"
         >
           <span>{{ b }}</span>
-          <span v-if="b === info?.branch" class="git-current">当前</span>
+          <span v-if="b === info?.branch" class="git-current">{{ t('project.current') }}</span>
+        </button>
+        <div class="git-sep"></div>
+        <button type="button" class="git-item git-commit-entry" @click="onCommitEntry">
+          <span class="git-commit-main">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4" />
+              <line x1="12" y1="2" x2="12" y2="8" />
+              <line x1="12" y1="16" x2="12" y2="22" />
+            </svg>
+            <span>{{ t('git.branchEntry') }}</span>
+          </span>
         </button>
         <div v-if="stderr" class="git-stderr">{{ stderr }}</div>
       </template>
       <template v-else>
-        <div class="menu-hint">确认切换分支</div>
+        <div class="menu-hint">{{ t('project.confirmSwitchBranch') }}</div>
         <div class="git-confirm-desc">
-          工作区有未提交更改，建议先提交或暂存
+          {{ t('project.dirtySwitchWarning') }}
         </div>
         <div class="git-confirm-actions">
-          <button type="button" class="git-btn" @click="closePanel">取消</button>
-          <button type="button" class="git-btn git-btn-danger" @click="doSwitch(pendingBranch)">仍要切换</button>
+          <button type="button" class="git-btn" @click="closePanel">{{ t('common.cancel') }}</button>
+          <button type="button" class="git-btn git-btn-danger" @click="doSwitch(pendingBranch)">{{ t('project.switchAnyway') }}</button>
         </div>
       </template>
     </div>
@@ -326,6 +360,30 @@ async function doSwitch(branch: string): Promise<void> {
 .git-current {
   font-size: 11px;
   color: var(--brand);
+}
+
+/* 分支列表与「提交或推送…」入口之间的分隔（GC-S11 第二入口） */
+.git-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.git-commit-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-foreground);
+}
+
+.git-commit-entry:hover .git-commit-main {
+  color: var(--foreground);
+}
+
+.git-commit-main svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
 }
 
 .git-stderr {

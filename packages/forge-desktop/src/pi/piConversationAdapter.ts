@@ -150,7 +150,23 @@ interface SessionCallbacks {
 }
 
 export interface PiConversationError {
+  /**
+   * 展示文本。CV-ERR-01 起**等于 raw**：文案生成职责从本层上移到 UI（按分类统一生成），
+   * 本层不再逐处加工原始错误（旧的 “No API key found” 中文改写已由分类器接管）。
+   */
   message: string;
+  /** provider / 底层原始错误文本，原样透传、永不加工 */
+  raw: string;
+  /**
+   * 本轮在出错前是否已产出可见内容（thinking/text）。
+   * 为真时错误只发生在收尾，UI 应降级为最轻的语气（不当作断裂）。
+   */
+  hasVisibleContent: boolean;
+}
+
+/** 构造上报用错误对象（统一三个字段，避免各处遗漏 raw/degraded 依据） */
+function makeError(raw: string, hasVisibleContent: boolean): PiConversationError {
+  return { message: raw, raw, hasVisibleContent };
 }
 
 /** pi 自动重试开始事件载荷（attempt/maxAttempts 由 pi 提供，每轮独立计数） */
@@ -498,16 +514,16 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           await lease.session.abort();
         } catch {}
       }
-      // 保留 pi 原始错误的 provider 名（便于定位是哪条配置缺凭据）
-      const message = /already processing/i.test(error.message)
+      // 保留 pi 原始错误：文案加工一律交给分类器（CV-ERR-01），本层只传原文
+      const raw = error.message;
+      const message = /already processing/i.test(raw)
         ? '上一轮任务仍在后台执行，已将其结束，请重新发送'
-        : /No API key found/i.test(error.message)
-          ? `模型凭据未配置（${error.message}）：请在设置中为对应模型填写并保存 API Key 后重试`
-          : error.message;
+        : raw;
       // 若本轮已通过 handleEvent 上报过同类错误（如 message_end error），避免重复
       if (!this.errorEmittedThisTurn.has(sessionId)) {
-        this.errorListeners.get(sessionId)?.({ message });
-        this.eventHandlers.onError?.(sessionId, { message });
+        const reported = makeError(message, (this.partialContent.get(sessionId) ?? '') !== '');
+        this.errorListeners.get(sessionId)?.(reported);
+        this.eventHandlers.onError?.(sessionId, reported);
       }
       this.errorEmittedThisTurn.delete(sessionId);
       throw new Error(message);
@@ -1074,14 +1090,14 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       if (stopReason === 'error') {
         const content = extractAssistantText(event.message.content);
         const raw = errMsgRaw || content || '对话处理失败';
-        const message = /No API key found/i.test(raw)
-          ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
-          : raw;
         if (content !== '') this.partialContent.set(sessionId, content);
         this.livePartial.delete(sessionId);
         this.errorEmittedThisTurn.add(sessionId);
-        this.errorListeners.get(sessionId)?.({ message });
-        this.eventHandlers.onError?.(sessionId, { message });
+        // 真机场景（MiniMax 流尾错误）：内容已完整输出但 stopReason=error，
+        // 带上 hasVisibleContent 让上层把它降级为提示而非红色断裂。
+        const error = makeError(raw, content !== '');
+        this.errorListeners.get(sessionId)?.(error);
+        this.eventHandlers.onError?.(sessionId, error);
         return;
       }
       // pi AssistantMessage.content 为内容块数组（或字符串），提取纯文本
@@ -1122,12 +1138,10 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       ((event as { errorMessage: string }).errorMessage.length > 0)
     ) {
       const raw = (event as { errorMessage: string }).errorMessage;
-      const message = /No API key found/i.test(raw)
-        ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
-        : raw;
       this.errorEmittedThisTurn.add(sessionId);
-      this.errorListeners.get(sessionId)?.({ message });
-      this.eventHandlers.onError?.(sessionId, { message });
+      const error = makeError(raw, (this.partialContent.get(sessionId) ?? '') !== '');
+      this.errorListeners.get(sessionId)?.(error);
+      this.eventHandlers.onError?.(sessionId, error);
       return;
     }
     if (event.type === 'error') {
@@ -1139,12 +1153,10 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
             ? raw.message
             : undefined;
       if (typeof rawMsg === 'string' && rawMsg.length > 0) {
-        const message = /No API key found/i.test(rawMsg)
-          ? `模型凭据未配置（${rawMsg}）：请在设置中为对应模型填写并保存 API Key 后重试`
-          : rawMsg;
         this.errorEmittedThisTurn.add(sessionId);
-        this.errorListeners.get(sessionId)?.({ message });
-        this.eventHandlers.onError?.(sessionId, { message });
+        const error = makeError(rawMsg, (this.partialContent.get(sessionId) ?? '') !== '');
+        this.errorListeners.get(sessionId)?.(error);
+        this.eventHandlers.onError?.(sessionId, error);
         return;
       }
     }
@@ -1172,12 +1184,10 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           typeof event.finalError === 'string' && event.finalError !== ''
             ? event.finalError
             : '对话处理失败';
-        const message = /No API key found/i.test(raw)
-          ? `模型凭据未配置（${raw}）：请在设置中为对应模型填写并保存 API Key 后重试`
-          : raw;
         this.errorEmittedThisTurn.add(sessionId);
-        this.errorListeners.get(sessionId)?.({ message });
-        this.eventHandlers.onError?.(sessionId, { message });
+        const reported = makeError(raw, (this.partialContent.get(sessionId) ?? '') !== '');
+        this.errorListeners.get(sessionId)?.(reported);
+        this.eventHandlers.onError?.(sessionId, reported);
       }
       return;
     }
@@ -1201,8 +1211,9 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           : undefined;
       if (failure !== undefined) {
         this.errorEmittedThisTurn.add(sessionId);
-        this.errorListeners.get(sessionId)?.({ message: failure });
-        this.eventHandlers.onError?.(sessionId, { message: failure });
+        const reported = makeError(failure, false);
+        this.errorListeners.get(sessionId)?.(reported);
+        this.eventHandlers.onError?.(sessionId, reported);
         return;
       }
       // 被中止（用户取消 / 无可压缩内容）既不算完成也不算错误

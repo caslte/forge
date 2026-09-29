@@ -164,8 +164,8 @@ test('ASK-E2E-001 @P0 @mock-backend E-CV-026：面板渲染在输入框上方 + 
   await expect(page.locator('.conv-input-wrap [data-testid="ask-panel"]')).toHaveCount(1);
   await expect(page.locator('[data-testid="ask-heading-text"]')).toHaveText(Q1.question);
 
-  // N+1 tab（2 题 + 备注）
-  await expect(page.locator('.ask-tab')).toHaveCount(3);
+  // tab 数 = 题目数（2 题；备注屏已移除）
+  await expect(page.locator('.ask-tab')).toHaveCount(2);
 
   // 首步：无「上一题」、有「下一题」、**无「提交答案」**（中间步不得提交 → 规避 0 答提交 ≡ 取消）
   await expect(page.locator('[data-testid="ask-prev"]')).toHaveCount(0);
@@ -218,13 +218,11 @@ test('ASK-E2E-001 @P0 @mock-backend E-CV-026：面板渲染在输入框上方 + 
   await page.locator('[data-testid="ask-option-1"]').click();
   await expect(page.locator('[data-testid="ask-heading-text"]')).toHaveText(Q2.question);
 
-  // 走到末步（备注 tab）才出现「提交答案」
-  await page.locator('[data-testid="ask-next"]').click();
-  await expect(page.locator('[data-testid="ask-global-note"]')).toBeVisible();
+  // 最后一题 = 末步：直接出现「提交答案」，且无「下一题」
   await expect(page.locator('[data-testid="ask-submit"]')).toBeVisible();
   await expect(page.locator('[data-testid="ask-next"]')).toHaveCount(0);
 
-  // 「上一题」回到第 2 题 → 提交按钮又消失（顺序不强制但按钮严格随步骤）
+  // 「上一题」回到第 1 题 → 提交按钮又消失（顺序不强制但按钮严格随步骤）
   await page.locator('[data-testid="ask-prev"]').click();
   await expect(page.locator('[data-testid="ask-submit"]')).toHaveCount(0);
 
@@ -310,8 +308,8 @@ test('ASK-E2E-003 @P0 @mock-backend E-CV-026/050：0 答禁用提交；提交后
   await boot(page);
   await emitAsk(page, { requestId: 'r3', questions: [Q1, Q2], timeoutMs: 60_000 });
 
-  // 0 答走到末步：提交按钮存在但禁用（点它不得产生任何回填）
-  await page.locator('[data-testid="ask-tab-note"]').click();
+  // 0 答走到末题（第 2 题 = 末步）：提交按钮存在但禁用（点它不得产生任何回填）
+  await page.locator('[data-testid="ask-tab-1"]').click();
   const submit = page.locator('[data-testid="ask-submit"]');
   await expect(submit).toBeVisible();
   await expect(submit).toBeDisabled();
@@ -320,18 +318,13 @@ test('ASK-E2E-003 @P0 @mock-backend E-CV-026/050：0 答禁用提交；提交后
   await expect(panel(page)).toBeVisible();
   expect(await lastReply(page)).toBeNull();
 
-  // 只填备注、一题未选 → 仍禁用
-  await page.locator('[data-testid="ask-global-note"]').fill('仅备注');
-  await expect(submit).toBeDisabled();
-
   // 作答 2 题（第 1 题单选、第 2 题多选 + 自定义并入末位）→ 按钮可用
   await page.locator('[data-testid="ask-tab-0"]').click();
-  await page.locator('[data-testid="ask-option-0"]').click(); // 自动前进到第 2 题
+  await page.locator('[data-testid="ask-option-0"]').click(); // 自动前进到第 2 题（= 末步）
   await page.locator('[data-testid="ask-option-0"]').click();
   await page.locator('[data-testid="ask-option-1"]').click();
   await page.locator('[data-testid="ask-option-custom"]').click();
   await page.locator('[data-testid="ask-custom-input"]').fill('自定义补充');
-  await page.locator('[data-testid="ask-tab-note"]').click();
   await expect(submit).toBeEnabled();
   await submit.click();
 
@@ -350,7 +343,8 @@ test('ASK-E2E-003 @P0 @mock-backend E-CV-026/050：0 答禁用提交；提交后
   expect(reply.sessionId).toBe(SESSION_ID);
   expect(reply.requestId).toBe('r3');
   expect(reply.cancelled).toBe(false);
-  expect(reply.globalNote).toBe('仅备注');
+  // 备注入口已隐藏：交互态提交的 payload 不再携带 globalNote
+  expect(reply.globalNote).toBeUndefined();
   expect(reply.answers).toHaveLength(2);
   expect(reply.answers[0]).toMatchObject({ kind: 'option', answer: 'A 方案：调整声明顺序' });
   expect(reply.answers[1]).toMatchObject({

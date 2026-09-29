@@ -10,6 +10,7 @@
  * 仅对合法 todo 完成事件更新快照，其余事件（普通工具完成、todo 工具无 details、details 非法）
  * 一律静默忽略返回原快照引用。
  */
+import { i18n } from '../i18n/index.ts';
 
 /** 任务状态（与 pi `todo` 工具 status 枚举一致） */
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'deleted';
@@ -168,7 +169,7 @@ const SUBJECT_CLASS_MAP: Record<TodoStatus, string> = {
 export function formatTodoRow(task: TodoTask): string {
   const g = GLYPH_MAP[task.status];
   const subj = truncateSubject(task.subject ?? '', MAX_SUBJECT_CODEPOINTS);
-  const subjectText = subj === '' ? '（无标题）' : subj;
+  const subjectText = subj === '' ? i18n.t('panels.todo.untitled') : subj;
   const subjectCls = SUBJECT_CLASS_MAP[task.status];
   let html = `<span class="${g.cls}">${g.char}</span> <span class="${subjectCls}">${escapeHtml(subjectText)}</span>`;
   if (task.status === 'in_progress' && task.activeForm && task.activeForm.length > 0) {

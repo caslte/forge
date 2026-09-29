@@ -1,7 +1,8 @@
 /**
  * 真实 pi models.json 适配器（双向同步）。
  *
- * 职责：把 pi 的 `~/.pi/agent/models.json` 作为唯一数据源读写，forge 作为可视化编辑器
+ * 职责：把 forge agent 目录下的 pi models.json（路径由调用方注入，生产 = <agentDir>/models.json）
+ * 作为唯一数据源读写，forge 作为可视化编辑器
  * 与其双向同步（对应 docs/prd/05_model_provider.md TD-MP-03「复用 pi models.json」）。
  *
  * pi models.json 结构（用户本机实例）：
@@ -68,7 +69,7 @@ interface PiModelsFile {
   providers: Record<string, PiProviderRecord>;
 }
 
-/** 默认 pi models.json 路径：~/.pi/agent/models.json */
+/** 缺省 models.json 路径：~/.pi/agent/models.json（仅 dev/测试回退；生产由 createForgeCore 派生注入） */
 export function defaultPiModelsPath(): string {
   return path.join(os.homedir(), '.pi', 'agent', 'models.json');
 }
@@ -111,7 +112,7 @@ export function stripJsonComments(src: string): string {
 
 /**
  * 真实 pi models.json 适配器。
- * @param filePath models.json 路径（默认 ~/.pi/agent/models.json）
+ * @param filePath models.json 路径（缺省回退 defaultPiModelsPath，仅 dev/测试）
  */
 export class PiModelsFileAdapter {
   private readonly filePath: string;

@@ -8,7 +8,7 @@
  *   页面无 console error / pageerror / requestfailed（B3 冒烟）。
  * - E-MP-007（AC-MP-011/012）：切级别提交 setSessionThinkingLevel 并断言参数；新会话继承全局默认；
  *   已存在会话（有自己存储值）互不影响；无多余 toast；流式进行中切换器可点击且不断流。
- * - E-MP-008（AC-MP-014，visual）：切到 max 出现金色流光动画类（约 2-3s 后移除）；切其他级别无动画；
+ * - E-MP-008（AC-MP-014，visual）：切到 max 出现就地金色扫光（约 1s 后移除、不越出浮窗）；切其他级别无动画；
  *   关键元素可见无重叠。
  */
 import { test, expect, type Page } from '@playwright/test';
@@ -145,11 +145,13 @@ async function openSession(page: Page, alias: string): Promise<void> {
   await expect(page.locator('.compose-box')).toBeVisible();
 }
 
-/** 点击思考级别切换器并展开菜单 */
+/** 展开思考级别浮窗（已展开则不重复点击：选完级别浮窗保持展开，选档不再收） */
 async function openLevelMenu(page: Page): Promise<void> {
   await expect(page.locator('.level-wrap')).toBeVisible();
-  await page.locator('.level-wrap .meta-link').click();
-  await expect(page.locator('.level-menu')).toBeVisible();
+  if (!(await page.locator('.level-pop').isVisible())) {
+    await page.locator('.level-wrap .meta-link').click();
+  }
+  await expect(page.locator('.level-seg')).toBeVisible();
 }
 
 // ===== E-MP-006（AC-MP-010）：推理/非推理模型切换器显隐 + B3 冒烟 =====
@@ -166,13 +168,13 @@ test('TLEVEL-E2E-001 @P0 @mock-backend E-MP-006：推理模型显示切换器，
   await expect(page.locator('.level-wrap .meta-link')).toContainText('medium');
 
   await openLevelMenu(page);
-  const items = page.locator('.level-menu .menu-item');
+  const items = page.locator('.level-seg .level-item');
   await expect(items).toHaveCount(LEVELS_REASON.length);
   for (const lv of LEVELS_REASON) {
-    await expect(page.locator('.level-menu')).toContainText(lv);
+    await expect(page.locator('.level-seg')).toContainText(lv);
   }
-  // 当前级别 active 高亮 medium
-  await expect(page.locator('.level-menu .menu-item.active')).toHaveText('medium');
+  // 当前级别高亮 medium
+  await expect(page.locator('.level-seg .level-item.on')).toHaveText('medium');
 
   // 切到非推理模型（仅 off）：切换器隐藏入口
   await openSession(page, '普通会话');
@@ -191,7 +193,7 @@ test('TLEVEL-E2E-002 @P0 @mock-backend E-MP-007：切换提交参数、新会话
 
   await openSession(page, '会话一');
   await openLevelMenu(page);
-  await page.locator('.level-menu .menu-item', { hasText: 'high' }).click();
+  await page.locator('.level-seg .level-item', { hasText: 'high' }).click();
 
   // 断言 setSessionThinkingLevel 调用参数（sessionId + level = high）
   await page.waitForFunction(() => (window.__tlCalls?.length ?? 0) > 0);
@@ -247,7 +249,7 @@ test('TLEVEL-E2E-003 @P1 @mock-backend E-MP-007：流式进行中切换器可点
   // 流式进行中：思考级别切换器仍可点击并可切换（不实际打断发送流）
   await expect(page.locator('.level-wrap .meta-link')).toBeEnabled();
   await openLevelMenu(page);
-  await page.locator('.level-menu .menu-item', { hasText: 'high' }).click();
+  await page.locator('.level-seg .level-item', { hasText: 'high' }).click();
 
   // 回复仍持续到达并最终完成（未被流式切换中断；切换器可点击但发送流不断流）
   await expect(page.locator('.msg-assistant', { hasText: '完整回复完整回复' })).toBeVisible({
@@ -262,8 +264,10 @@ test('TLEVEL-E2E-003 @P1 @mock-backend E-MP-007：流式进行中切换器可点
   health.assertHealthy();
 });
 
-// ===== E-MP-008（AC-MP-014，PRD 3.5）：max 金色流光动画（时长量化 + 帧率 ≥30fps 精确断言） =====
-test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现金色流光动画，时长与帧率(≥30fps)量化满足 PRD 3.5', async ({ page }) => {
+// ===== E-MP-008（AC-MP-014，PRD 3.5）：max 金色扫光动画（就地扫光 + 帧率 ≥30fps 精确断言） =====
+// 方案 A 落地：反馈锚在 max 档位自身（原悬浮「M A X」文字已下线），故本用例除了量化
+// 时长/帧率，另回归断言「扫光元素完全落在浮窗内、不侵入输入正文区」。
+test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现就地金色扫光动画，时长与帧率(≥30fps)量化满足 PRD 3.5', async ({ page }) => {
   const health = attachHealthGuards(page);
   const s1 = mkSession({ alias: '流光会话' });
   await boot(page, [s1]);
@@ -276,16 +280,16 @@ test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现金色流光�
   const levelBox = (await page.locator('.level-wrap').boundingBox())!;
   expect(levelBox.x).toBeGreaterThanOrEqual(modelBox.x + modelBox.width - 1);
 
-  // 初始无流光
-  await expect(page.locator('.max-shimmer')).toHaveCount(0);
+  // 初始无扫光
+  await expect(page.locator('.level-item.sweep')).toHaveCount(0);
 
-  // 切到 max：先在页面侧启动轮询，捕获 .max-shimmer 从「出现→移除」的时长（performance.now 时间戳差）
+  // 切到 max：先在页面侧启动轮询，捕获 .level-item.sweep 从「出现→移除」的时长（performance.now 时间戳差）
   await openLevelMenu(page);
   const durPromise = page.evaluate(() => {
     return new Promise<{ appearAt: number; disappearAt: number; durationMs: number }>((resolve) => {
       let appearAt: number | null = null;
       const tick = () => {
-        const present = !!document.querySelector('.max-shimmer');
+        const present = !!document.querySelector('.level-item.sweep');
         if (appearAt === null && present) {
           appearAt = performance.now();
         } else if (appearAt !== null && !present) {
@@ -298,18 +302,50 @@ test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现金色流光�
       requestAnimationFrame(tick);
     });
   });
-  await page.locator('.level-menu .menu-item', { hasText: 'max' }).click();
-  await expect(page.locator('.max-shimmer')).toHaveCount(1);
+  await page.locator('.level-seg .level-item', { hasText: 'max' }).click();
+  await expect(page.locator('.level-item.sweep')).toHaveCount(1);
 
-  // 合成器友好（附加断言）：MAX 动画仅作用于 transform/opacity——动画名 max-text-flow（渐变流动，不触发布局/绘制）
+  // 方案 A 回归：已下线悬浮「M A X」文字层，扫光不得越出浮窗侵入输入正文区
+  await expect(page.locator('.max-shimmer')).toHaveCount(0);
+  const sweepBox = (await page.locator('.level-item.sweep').boundingBox())!;
+  const popBox = (await page.locator('.level-pop').boundingBox())!;
+  expect(
+    sweepBox.y,
+    `扫光元素必须完全落在浮窗内（不得上浮到输入正文区）：sweep.y=${sweepBox.y} vs pop.y=${popBox.y}`,
+  ).toBeGreaterThanOrEqual(popBox.y - 1);
+
+  // 合成器友好（附加断言）：扫光动画名 level-max-flow（渐变流动，挂在文字紧包围盒上）+ 格子轻弹。
+  // 高亮块金环脉冲已按用户要求下线（金环本身也已移除）：pill 不再有任何 animation。
   const animInfo = await page.evaluate(() => {
-    const el = document.querySelector('.max-shimmer .max-text');
-    if (!el) return null;
-    const cs = getComputedStyle(el);
-    return { animationName: cs.animationName, transform: cs.transform };
+    const el = document.querySelector('.level-item.sweep');
+    const txt = el?.querySelector('.level-t');
+    const pill = document.querySelector('.level-pill');
+    if (!el || !txt) return null;
+    return {
+      cellAnimationName: getComputedStyle(el).animationName,
+      textAnimationName: getComputedStyle(txt).animationName,
+      pillAnimationName: pill ? getComputedStyle(pill).animationName : '',
+    };
   });
   expect(animInfo).not.toBeNull();
-  expect(animInfo!.animationName).toContain('max-text-flow');
+  expect(animInfo!.textAnimationName).toContain('level-max-flow');
+  expect(animInfo!.cellAnimationName).toContain('level-cell-pop');
+  expect(animInfo!.pillAnimationName).toBe('none');
+
+  // 扫光渐变必须挂在文字自身（.level-t）而不是整个按钮：按钮比「max」宽 2 倍多，
+  // 渐变铺在按钮上会变成一条比字形宽得多的宽带（与 demo 不一致的根因）
+  const gradWidth = await page.evaluate(() => {
+    const txt = document.querySelector<HTMLElement>('.level-item.sweep .level-t');
+    const btn = document.querySelector<HTMLElement>('.level-item.sweep');
+    if (!txt || !btn) return null;
+    return { text: txt.getBoundingClientRect().width, button: btn.getBoundingClientRect().width };
+  });
+  expect(gradWidth).not.toBeNull();
+  expect(
+    gradWidth!.text,
+    `扫光渐变应只覆盖文字宽度（text=${gradWidth!.text.toFixed(1)}px），而不是整个按钮（${gradWidth!.button.toFixed(1)}px）`,
+  ).toBeLessThanOrEqual(gradWidth!.button);
+  expect(gradWidth!.text).toBeLessThan(gradWidth!.button);
 
   // 帧率量化（E-MP-008，PRD 3.5 ≥30fps）：动画进行中（先 wait 200ms 驱动真实帧），rAF 连续采样 ~600ms
   await page.waitForTimeout(200);
@@ -338,19 +374,106 @@ test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现金色流光�
   const { durationMs } = await durPromise;
   expect(
     durationMs,
-    `MAX 动画时长实测 ${durationMs.toFixed(0)}ms，需落在 [2200, 3400]ms`,
-  ).toBeGreaterThanOrEqual(2200);
-  expect(durationMs).toBeLessThanOrEqual(3400);
+    `max 扫光时长实测 ${durationMs.toFixed(0)}ms，需落在 [1100, 1600]ms（PRD 3.5「约 1s 一次性反馈」）`,
+  ).toBeGreaterThanOrEqual(1100);
+  expect(durationMs).toBeLessThanOrEqual(1600);
 
-  // 切到其他级别（low）→ 无流光动画
+  // 切到其他级别（low）→ 无扫光动画
   await expect(page.locator('.level-wrap .meta-link')).toContainText('max');
   await openLevelMenu(page);
-  await page.locator('.level-menu .menu-item', { hasText: 'low' }).click();
+  await page.locator('.level-seg .level-item', { hasText: 'low' }).click();
   await expect(page.locator('.level-wrap .meta-link')).toContainText('low');
-  await expect(page.locator('.max-shimmer')).toHaveCount(0);
+  await expect(page.locator('.level-item.sweep')).toHaveCount(0);
   // 短暂等待确认无延迟出现
   await page.waitForTimeout(400);
-  await expect(page.locator('.max-shimmer')).toHaveCount(0);
+  await expect(page.locator('.level-item.sweep')).toHaveCount(0);
+
+  health.assertHealthy();
+});
+// ===== 方案 D：分段滑条浮窗（水滴高亮 / 键盘 / Esc 归还焦点） =====
+/** 读回高亮块与 active 档位的几何关系（--pill-l/--pill-r 由 JS 实测写入） */
+async function readPillGeometry(page: Page) {
+  return page.evaluate(() => {
+    const seg = document.querySelector<HTMLElement>('.level-seg')!;
+    const on = seg.querySelector<HTMLElement>('.level-item.on')!;
+    const pill = seg.querySelector<HTMLElement>('.level-pill')!;
+    const cs = getComputedStyle(pill);
+    return {
+      pillL: parseFloat(cs.left),
+      pillW: parseFloat(cs.width),
+      itemL: on.offsetLeft,
+      itemW: on.offsetWidth,
+      cls: seg.className,
+    };
+  });
+}
+
+test('TLEVEL-E2E-005 @P1 @mock-backend 方案D：高亮块几何贴合 active 档位 + 水滴拉伸 + 键盘换挡 + Esc 归还焦点', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  const s1 = mkSession({ alias: '滑条会话' });
+  await boot(page, [s1]);
+  await openSession(page, '滑条会话');
+  await expect(page.locator('.level-wrap .meta-link')).toContainText('medium');
+
+  await openLevelMenu(page);
+  // 展开后：首贴无动画（浮窗入场动画已在播），高亮块与当前档位完全对齐
+  await page.waitForTimeout(60);
+  let g = await readPillGeometry(page);
+  expect(g.cls).not.toContain('no-anim');
+  expect(Math.abs(g.pillL - g.itemL)).toBeLessThanOrEqual(1);
+  expect(Math.abs(g.pillW - g.itemW)).toBeLessThanOrEqual(1);
+
+  // 向右点选 max：中途高亮块被拉宽（水滴），落位后回到档位宽度
+  const stretch = page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        const seg = document.querySelector<HTMLElement>('.level-seg')!;
+        let maxRatio = 0;
+        const t0 = performance.now();
+        const tick = () => {
+          const pill = seg.querySelector<HTMLElement>('.level-pill')!;
+          const on = seg.querySelector<HTMLElement>('.level-item.on')!;
+          if (on) maxRatio = Math.max(maxRatio, pill.offsetWidth / on.offsetWidth);
+          if (performance.now() - t0 < 500) requestAnimationFrame(tick);
+          else resolve(maxRatio);
+        };
+        requestAnimationFrame(tick);
+      }),
+  );
+  await page.locator('.level-seg .level-item', { hasText: 'max' }).click();
+  const maxRatio = await stretch;
+  expect(maxRatio, `向右滑行中高亮块应被拉成水滴（实测拉伸比 ${maxRatio.toFixed(2)}）`).toBeGreaterThan(1.15);
+  g = await readPillGeometry(page);
+  expect(Math.abs(g.pillL - g.itemL)).toBeLessThanOrEqual(1);
+  expect(Math.abs(g.pillW - g.itemW)).toBeLessThanOrEqual(1);
+  // 浮窗保持展开（便于连续换挡）
+  await expect(page.locator('.level-seg')).toBeVisible();
+  await expect(page.locator('.level-wrap .meta-link')).toContainText('max');
+
+  // 键盘：←/→ 换挡（高亮块随动），Home/End 跳首末档
+  await page.locator('.level-seg').focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator('.level-seg .level-item.on')).toHaveText('high');
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator('.level-seg .level-item.on')).toHaveText('medium');
+  await page.keyboard.press('End');
+  await expect(page.locator('.level-seg .level-item.on')).toHaveText('max');
+  await page.keyboard.press('Home');
+  await expect(page.locator('.level-seg .level-item.on')).toHaveText('off');
+  await page.waitForTimeout(320);
+  g = await readPillGeometry(page);
+  expect(Math.abs(g.pillL - g.itemL)).toBeLessThanOrEqual(1);
+
+  // Esc 收起，焦点归还触发器
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.level-pop')).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement?.className)).toContain('meta-link');
+
+  // max 金色：再次切到 max 时触发器文字与高亮块走金色
+  await openLevelMenu(page);
+  await page.locator('.level-seg .level-item', { hasText: 'max' }).click();
+  await expect(page.locator('.level-wrap.is-max')).toHaveCount(1);
+  await expect(page.locator('.level-wrap.is-max .level-item.on')).toHaveText('max');
 
   health.assertHealthy();
 });

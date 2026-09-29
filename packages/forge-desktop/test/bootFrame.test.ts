@@ -4,7 +4,7 @@
  * 这块代码的价值在于「把窗口上有没有内容变成可量化的事实」，所以测试的重点也是**判据本身**：
  * 1. 纯底色帧（空文档 / 只画了 backgroundColor）必须判为「无内容」——这正是用户报的白板；
  * 2. splash 这类真画面必须判为「有内容」，且内容占比落在与真实几何相符的量级
- *    （56px 标志块 + 两行小字在 1280x820 上是千分之几），据以确认 FRAME_CONTENT_RATIO_MIN
+ *    （300px 字标带 + 一行小字在 1280x820 上是千分之几），据以确认 FRAME_CONTENT_RATIO_MIN
  *    这个阈值既不会漏判白板、也不会把真画面误判成白板；
  * 3. 异常输入（null / 尺寸为 0 / 缓冲区长度不足）一律返回空统计且不抛错——探针绝不能
  *    在启动路径上抛错。
@@ -78,23 +78,21 @@ test('纯底色帧判为「无内容」——这正是用户看到的白板', ()
   assert.ok(s.contentRatio < FRAME_CONTENT_RATIO_MIN, '纯底色帧必须落在白板判据之下');
 });
 
-test('含标志块与文案的 splash 帧判为「有内容」，且占比与真实几何同量级', () => {
+test('含字标与文案的 splash 帧判为「有内容」，且占比与真实几何同量级', () => {
   const w = 1280;
   const h = 820;
   const buf = makeBitmap(w, h, WHITE);
-  // 居中 56x56 标志块（与 index.html / BootWelcome.vue 的 splash 一致）
-  paintRect(buf, w, h, { x: 612, y: 300, w: 56, h: 56 }, BRAND);
-  // 「Forge」字块 + 一行 phase 文案的粗略占位（字高 22px / 13px）
-  paintRect(buf, w, h, { x: 600, y: 372, w: 80, h: 22 }, INK);
+  // 居中 300px 字标带（与 index.html / BootWelcome.vue 的 splash 一致，实心占位偏保守）
+  paintRect(buf, w, h, { x: 490, y: 330, w: 300, h: 40 }, INK);
+  // 一行 phase 文案的粗略占位（spinner 已移除，splash 不再含品牌蓝像素）
   paintRect(buf, w, h, { x: 556, y: 408, w: 168, h: 13 }, INK);
 
   const s = statsFromBitmap(buf, w, h);
 
-  // 内容占比 = (56*56 + 80*22 + 168*13) / (1280*820) ≈ 0.71%，按 4 抽稀后仍在同一量级
+  // 内容占比 = (300*40 + 168*13) / (1280*820) ≈ 1.35%，按 4 抽稀后仍在同一量级
   assert.ok(s.contentRatio > FRAME_CONTENT_RATIO_MIN, `内容占比 ${s.contentRatio} 应高于白板判据`);
   assert.ok(s.contentRatio < 0.03, `内容占比 ${s.contentRatio} 不应高到像整屏涂满`);
-  assert.ok(s.brandRatio > 0, '标志块必须被识别（BGRA 通道序正确的证据）');
-  assert.ok(s.brandRatio < s.contentRatio, '标志块只是内容的一部分');
+  assert.equal(s.brandRatio, 0, 'splash 已无 spinner，不应出现品牌蓝像素');
   assert.equal(s.background, '#ffffff');
 });
 

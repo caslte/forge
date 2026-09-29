@@ -8,7 +8,11 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { ChangedFileEntry, ChangedFileSummary } from '../composables/useChangedFiles';
+import { useI18n } from '../i18n/index.ts';
+import { collapseDotSegments } from '../utils/pathSegments.ts';
 import DiffView from './DiffView.vue';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   summary: ChangedFileSummary;
@@ -37,12 +41,13 @@ function relPath(path: string): string {
 }
 
 /** 把工具入参 path 规整为绝对路径：相对路径则拼项目根前缀；空 / 已是绝对 → 原样返回。
- *  已 normalize 为正斜杠（useChangedFiles.parseFileToolInput），无需再替换 \\ */
+ *  已 normalize 为正斜杠（useChangedFiles.parseFileToolInput），无需再替换 \\；
+ *  折叠 . / .. 中间段——工具入参 ./x 常见，ShellExecuteEx 不归一这种段（见 pathSegments.ts） */
 function absoluteFilePath(p: string): string {
   const looksAbsolute = p.startsWith('/') || /^[a-zA-Z]:\//.test(p);
-  if (looksAbsolute) return p;
+  if (looksAbsolute) return collapseDotSegments(p);
   const root = props.projectPath?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
-  return root !== '' ? `${root}/${p}` : p;
+  return root !== '' ? collapseDotSegments(`${root}/${p}`) : p;
 }
 
 /** 取正斜杠路径的目录部分；根目录 / 单段名原样返回（让 openPath 自己失败即可） */
@@ -104,7 +109,7 @@ onBeforeUnmount(() => {
   <div class="changed-files" :class="{ collapsed }">
     <button class="cf-head" @click="collapsed = !collapsed">
       <svg class="cf-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5h-7a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-11z" /><path d="M14 2.5v6h6.5" /></svg>
-      <span class="cf-count">{{ files.length }} 个文件已更改</span>
+      <span class="cf-count">{{ t('tool.changedFilesCount', { n: files.length }) }}</span>
       <span class="cf-spacer"></span>
       <span class="cf-total">
         <span class="cf-add">+{{ summary.totalAdded }}</span>
@@ -158,7 +163,7 @@ onBeforeUnmount(() => {
         <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-        打开所在目录
+        {{ t('tool.openContainingDir') }}
       </button>
     </div>
   </Teleport>

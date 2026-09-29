@@ -14,7 +14,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electro
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // v3.76 欢迎页启动链：createForgeCore（连带整个 pi SDK，静态 import 实测 2.4s）不再
 // 顶层静态加载——whenReady 先建窗口显示欢迎页，再动态 import 组装 core，完成后推
 // boot.ready（见 app.whenReady 内注释）。此处仅保留纯类型 import（零运行时代价）。
@@ -25,14 +25,15 @@ import {
   type AutoUpdaterLike,
 } from './pi/appUpdater.ts';
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
-import { defaultPiAgentDir } from './pi/piRuntime.ts';
+import { ensurePiShellPath } from './pi/shellProbe.ts';
 import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 import { defaultUpdaterStatePath } from './pi/updaterState.ts';
 import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode } from './theme.ts';
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_THEME_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { createNotifyToastManager } from './notifyToast.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -326,6 +327,34 @@ const splashReady = new Promise<void>((resolve) => {
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * 生效语言镜像（zh-CN|en）：渲染进程经 forge:locale:set 回报（localStorage['forge.locale']
+ * 是唯一事实来源，主进程读不到），系统通知小窗（notifyToast.ts）标题文案取词用。
+ * 缺省 zh-CN（应用源语言，与 i18n 兜底一致）。
+ */
+let uiLocale: 'zh-CN' | 'en' = 'zh-CN';
+
+/**
+ * 通知小窗应用图标：读 forge-ui 的 logo-main.png 转 data URI（37KB 级，每进程读一次）。
+ * 优先读 src/assets（品牌 LOGO 的唯一事实来源；dev 下 dist 产物可能过期——曾因此
+ * 弹出旧版 LOGO）；生产包不含 src，回退 dist 产物（public/ 随 vite build 拷入）。
+ * 都读不到（dev 未构建 UI 等）返回 null——通知页回退字母方块，不影响功能。
+ */
+function resolveToastLogoSrc(): string | null {
+  const candidates = [
+    path.join(__dirname, '../../forge-ui/src/assets/logo-main.png'),
+    path.join(__dirname, '../../forge-ui/dist/logo-main.png'),
+  ];
+  for (const p of candidates) {
+    try {
+      return `data:image/png;base64,${fs.readFileSync(p).toString('base64')}`;
+    } catch {
+      // 换下一个候选路径
+    }
+  }
+  return null;
+}
+
 /** 创建主窗口（无边框，自定义标题栏）；dev 模式自动挂 DevTools + F12/Ctrl+Shift+I 快捷键 */
 function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
   const win = new BrowserWindow({
@@ -347,7 +376,7 @@ function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
     // 建窗底色（v3.78.6）：窗口建立到首次合成之间唯一的画面，必须与 splash 底色
     // （= 设计令牌 --background，分主题）逐位一致，否则交接口有色阶跳变。主题从
     // userData/forge-theme.json 同步读回（渲染进程每次解析/切换都回写，见 theme.ts 顶部），
-    // 读不到时回 light。
+    // 读不到时回默认主题（dark）。
     backgroundColor: backgroundFor(theme),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -401,6 +430,24 @@ function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
 function createAndLoadWindow(isDev: boolean, themeMode: ThemeMode): BrowserWindow {
   const win = createWindow(isDev, themeMode);
   const devUrl = process.env.FORGE_DEV_SERVER_URL;
+  // 导航守卫（Electron 安全清单）：window.forge 桥绑在 webContents 上，跟加载哪个
+  // URL 无关——一旦消息里的投毒链接把窗口导航走，攻击者页面就拿到整套 IPC 能力。
+  // 故只放行应用自身文档：dev 限 dev server 同源，prod 限 index.html 本体；
+  // window.open（target=_blank / JS）一律 deny。
+  const allowedOrigin = devUrl ? new URL(devUrl).origin : null;
+  const appFileUrl = pathToFileURL(path.join(__dirname, '../../forge-ui/dist/index.html')).href;
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (e, target) => {
+    let ok = false;
+    try {
+      ok = allowedOrigin !== null
+        ? new URL(target).origin === allowedOrigin
+        : target === appFileUrl;
+    } catch {
+      ok = false;
+    }
+    if (!ok) e.preventDefault();
+  });
   if (devUrl) {
     const expectedOrigin = process.env.FORGE_DEV_SERVER_ORIGIN;
     const loadedUrl = new URL(devUrl);
@@ -419,11 +466,16 @@ function createAndLoadWindow(isDev: boolean, themeMode: ThemeMode): BrowserWindo
  * 注册与 forge-core 无关的 IPC：启动状态查询 + 窗口控制 / 对话框 / 附件 / 文件。
  * v3.76 欢迎页启动链：窗口创建后立即注册（core 组装是异步的，这批 handler 不等它），
  * 保证欢迎页期间窗口最小化/关闭/文件选择等都可用。
+ * @param agentDir pi 数据域根（<userData>/agent），shell 健康探测据此解析
  */
-function registerShellIpc(bootState: BootState): void {
+function registerShellIpc(bootState: BootState, agentDir: string): void {
   // 启动状态查询（欢迎页门闩「拉」通道）：handler 引用 bootState 对象本身，
   // core 组装完成后原地改写字段即可，无需重注册 handler
   ipcMain.handle(IPC_BOOT_STATE, () => bootState);
+  // shell 健康探测（对话区横幅数据源）：与 pi 会话同口径解析 bash，命中 WSL 占位/
+  // 三级落空时先自动定位 Git Bash 写配置再复探，只有本机确实没有可用 bash 才回异常，
+  // 见 pi/shellProbe.ts（横幅上的「重新检测」也走这条通道：装完 Git 点一下即自愈）
+  ipcMain.handle(IPC_SHELL_PROBE, () => ensurePiShellPath(agentDir));
   // splash 上屏回执（v3.78.7）：渲染进程报「已绘制并提交两帧」，主进程据此显示窗口。
   // 监听在这里注册（loadURL 之后、页面脚本执行之前），回执不会早于监听而丢失。
   ipcMain.on(IPC_BOOT_SPLASH_READY, () => notifySplashReady?.());
@@ -469,10 +521,74 @@ function registerShellIpc(bootState: BootState): void {
     }
     return res.filePaths;
   });
-  // 系统文件管理器打开目录（PM 侧栏右键“打开项目所在目录”）；成功 true，失败 false
+  // 系统文件管理器打开目录（PM 侧栏右键“打开项目所在目录”）；成功 true，失败 false。
+  // CV-TRUST-02：这条通道语义上只服务「打开目录」。Windows 上 shell.openPath 指向
+  // .exe/.bat/.lnk 即「打开=运行」，渲染层任意字符串不得直传（与 XSS 面组合成 RCE 链）
+  // ——恒校验目标必须是真实存在的目录，文件/不存在的路径一律拒绝。
   ipcMain.handle(IPC_SHELL_OPEN_PATH, (_e, p: unknown) => {
     if (typeof p !== 'string' || p === '') return false;
-    return shell.openPath(p).then((err) => err === '');
+    // 渲染层拼接的路径可能残留 . / .. 中间段（工具入参 ./x 常见）：statSync 能解析，
+    // 但 ShellExecuteEx 不归一中间段会弹「Windows 找不到文件」——先词法归一再校验/打开。
+    const normalized = path.normalize(p);
+    try {
+      if (!fs.statSync(normalized).isDirectory()) return false;
+    } catch {
+      return false;
+    }
+    return shell.openPath(normalized).then((err) => err === '');
+  });
+  // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
+  // URL，其余协议一律拒绝——这条通道绝不能转交 openPath（.exe 会被“打开”=运行）。
+  ipcMain.handle(IPC_SHELL_OPEN_EXTERNAL, (_e, u: unknown) => {
+    if (typeof u !== 'string' || u === '') return false;
+    let parsed: URL;
+    try {
+      parsed = new URL(u);
+    } catch {
+      return false;
+    }
+    if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) return false;
+    return shell.openExternal(u).then(() => true).catch(() => false);
+  });
+  // 画布卡片另存：原生保存对话框选位置，取消返回 null。
+  // defaultPath 只取 basename——渲染进程给的是模型起的标题，含 ../ 会把对话框
+  // 初始位置带出预期目录，这里一次性掐掉（用户仍可在对话框里自行改文件名）。
+  // CV-TRUST-03：对话框返回的路径记入 allowlist，IPC_FILE_WRITE_TEXT 仅放行
+  // 与之相等的路径——写盘通道与「用户亲手选定」绑定，渲染进程伪造的其他路径不生效。
+  let lastDialogSavePath: string | null = null;
+  ipcMain.handle(IPC_DIALOG_SAVE_FILE, async (_e, name: unknown) => {
+    const safeName = typeof name === 'string' && name !== '' ? path.basename(name) : 'canvas.html';
+    const options = {
+      title: '另存为',
+      defaultPath: safeName,
+      filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+    } as Electron.SaveDialogOptions;
+    const res = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (res.canceled || !res.filePath) {
+      lastDialogSavePath = null;
+      return null;
+    }
+    lastDialogSavePath = res.filePath;
+    return res.filePath;
+  });
+  // 写文本：仅服务「用户刚在保存对话框里亲手选定的路径」这一场景，故限定 .html/.htm；
+  // CV-TRUST-03：路径必须与最近一次保存对话框的实际返回相等（见 IPC_DIALOG_SAVE_FILE
+  // 处注释）——「对话框挑的」这个威胁模型由 allowlist 强制成立，渲染进程伪造的其他
+  // 路径（如启动目录投持久化）在此被拒。
+  ipcMain.handle(IPC_FILE_WRITE_TEXT, (_e, args: unknown) => {
+    const p = (args as { path?: unknown } | null)?.path;
+    const text = (args as { text?: unknown } | null)?.text;
+    if (typeof p !== 'string' || p === '' || typeof text !== 'string') return false;
+    if (!/\.html?$/i.test(p)) return false;
+    if (p !== lastDialogSavePath) return false;
+    try {
+      fs.writeFileSync(p, text, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
   });
   // 主题回写（v3.78.6）：渲染进程解析/切换主题时告知主进程——落盘供下次冷启动建窗
   // 取用（消除暗色主题下先闪一帧亮底色的现象），并就地刷新当前窗口底色，使
@@ -483,6 +599,10 @@ function registerShellIpc(bootState: BootState): void {
       console.log(`[theme] 主题镜像落盘失败（${mode}），下次冷启动底色回默认`);
     }
     mainWindow?.setBackgroundColor(backgroundFor(mode));
+  });
+  // 语言回报（系统通知标题取词用）：与主题通道同构，非 'zh-CN'/'en' 一律忽略
+  ipcMain.on(IPC_LOCALE_SET, (_e, mode: unknown) => {
+    if (mode === 'zh-CN' || mode === 'en') uiLocale = mode;
   });
   // 附件密钥嗅探：文本文件命中凭据特征 → flagged（发送前 UI 弹确认，出域防线）
   ipcMain.handle(IPC_ATTACHMENT_SCAN, (_e, paths: unknown) => {
@@ -557,9 +677,9 @@ class ElectronUpdaterAdapter implements AutoUpdaterLike {
     return autoUpdater.downloadUpdate();
   }
   quitAndInstall(): void {
-    // 更新安装策略见 QUIT_AND_INSTALL_OPTIONS：非静默（isSilent=false）→ 安装器显示带应用图标
-    // 与「正在安装」文案的进度窗口，用户可见进度且无需点击；forceRunAfter=true 装完自动重开应用。
-    // 配合 electron-builder.yml 的 nsis.oneClick=true，更新路径全程无向导页、零点击。
+    // 更新安装策略见 QUIT_AND_INSTALL_OPTIONS：非静默（isSilent=false）→ 安装器显示可见进度页；
+    // forceRunAfter=true 配合 build/installer.nsh 的 customInstall（--updated 时拉起应用 + Quit），
+    // 向导模式下更新路径依旧零点击、不进结束页（配置详见 electron-builder.yml nsis 块）。
     autoUpdater.quitAndInstall(
       QUIT_AND_INSTALL_OPTIONS.isSilent,
       QUIT_AND_INSTALL_OPTIONS.forceRunAfter,
@@ -595,10 +715,19 @@ function readUpdateDebugEnabled(userDataPath: string): boolean {
 app.whenReady().then(async () => {
   const storePath = path.join(app.getPath('userData'), 'forge-store.json');
   // 建窗底色主题（v3.78.6）：必须在 createWindow 之前同步读回——窗口底色只能在建窗时刻给，
-  // 而那一刻渲染进程尚未执行（拿不到 localStorage）。缺省 light（同 useTheme.ts）。
+  // 而那一刻渲染进程尚未执行（拿不到 localStorage）。缺省 dark（同 useTheme.ts）。
   const themeMode = readThemeSync(app.getPath('userData'));
   // QA-G1/G4：updater-state.json（手动更新 components 快照 + lastUpdateCheckAt 持久化路径）
   const updaterStatePath = defaultUpdaterStatePath(app.getPath('userData'));
+  // pi 数据域根（skills/sessions/models.json/trust.json/settings.json 全部派生于此）：
+  // 产品上与终端 pi 的 ~/.pi/agent 隔离，落 forge userData，卸载即随目录清理。
+  // 单一注入点——createForgeCore/预热/预装更新共用，内置 CLI 子进程经 PI_CODING_AGENT_DIR 同根。
+  const forgeAgentDir = path.join(app.getPath('userData'), 'agent');
+  // pi-memory 钉根：该扩展记忆根只认 PI_MEMORY_DIR、不读 PI_CODING_AGENT_DIR，
+  // 不钉则记忆文件写回 ~/.pi/agent/memory、破坏上方与终端 pi 的隔离。in-process 扩展
+  // 直接读 process.env；内置 CLI 子进程经 buildPiCliEnv 展开 process.env 同源继承。
+  // ??= 保留维护者用外部 env 指向自定义记忆根的调试口子。
+  process.env.PI_MEMORY_DIR ??= path.join(forgeAgentDir, 'memory');
   // P3-D：Windows 下优先用 safeStorage（DPAPI）持久化密钥；不可用时回退环境变量适配器
   const keychain = new SafeStorageKeychainAdapter(
     path.join(app.getPath('userData'), 'forge-keyvault.json'),
@@ -635,7 +764,7 @@ app.whenReady().then(async () => {
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
   const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null };
   const win = createAndLoadWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
-  registerShellIpc(bootState);
+  registerShellIpc(bootState, forgeAgentDir);
 
   // ===== v3.78.2：先让静态 splash 上屏，再放开主进程做同步重活 =====
   // core 组装（pi SDK 同步求值）与预热（jiti 同步编译）跑在 Node 事件循环上，而该
@@ -643,6 +772,15 @@ app.whenReady().then(async () => {
   // 与导航提交会一起被卡住，用户看到数秒纯底色白屏（实测 0.6s→4.7s，详见
   // waitForSplashPainted 注释）。此处让主线程先空转等 splash 提交并合成一帧。
   await waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS);
+
+  // ===== shell 自愈（2026-09）：把「用户自己去 settings.json 填 shellPath」变成自动动作 =====
+  // 时机选在这里的理由：splash 已上屏（spawn where/reg 的几十毫秒不会卡首帧），而
+  // createForgeCore 还没组装（首个 pi 会话尚未创建）——写进 settings.json 的 shellPath
+  // 对之后所有会话立即生效，用户全程无感。
+  // 成本可控：probePiShell 先读 settings.json，解析成功（绝大多数机器）直接返回；
+  // 只有真不可用才 spawn where git.exe / reg query 找 Git Bash。
+  // 失败（本机无 Git）不拦启动：异常留给对话区横幅，用户装完 Git 可点「重新检测」自愈。
+  await ensurePiShellPath(forgeAgentDir).catch(() => {});
 
   // eventBus 由 createForgeCore 返回，端口 emit 先以闭包晚绑定（跃迁都发生在组装完成之后）
   let coreEventBus: NodeJS.EventEmitter | null = null;
@@ -658,6 +796,8 @@ app.whenReady().then(async () => {
   const { createForgeCore, invoke } = await import('./createForgeCore.ts');
   const { methodTable, eventBus } = createForgeCore(storePath, {
     keychain,
+    // pi 数据域根注入（缺省会回退 ~/.pi/agent，生产禁止依赖缺省）
+    piAgentDir: forgeAgentDir,
     // 设置页「版本更新」展示用产品版本
     forgeVersion: appVersion,
     // IN-S03：应用自更新端口（updater/* RPC + updater.stateChanged 事件）
@@ -666,9 +806,94 @@ app.whenReady().then(async () => {
     updaterStatePath,
     // 更新调试开关（userData/updater-debug.json，实时读取；false=普通用户不可见调试控制台）
     getUpdateDebugEnabled: () => readUpdateDebugEnabled(app.getPath('userData')),
+    // 模块 09：skill 删除/覆盖导入的回收站能力（Electron Shell API；失败由 skillService 回退永久删除）
+    trashItem: (targetPath) => shell.trashItem(targetPath),
   });
   coreEventBus = eventBus;
   registerCoreIpc(invoke, methodTable, eventBus);
+
+  // ===== 系统通知（AI 回复完成提示；方案 A：Win11 通知风格自绘小窗，原型
+  // prototypes/ai-reply-toast-demo.html）=====
+  // 触发：conversation.statusChanged 到达终态（done/canceled/error）且主窗口非前台——
+  // 用户在别的窗口干活时回复悄悄完成，通知从右下角滑入；点击聚焦主窗口并跳转会话。
+  const notifyToast = createNotifyToastManager({
+    getMainWindow: () => mainWindow,
+    getLocale: () => uiLocale,
+    logoSrc: resolveToastLogoSrc(),
+  });
+  win.on('closed', () => notifyToast.disposeAll());
+
+  // 同会话去重状态：
+  // - lastToastedAt：任意终态通知后的短冷却（重复终态只弹第一条）
+  // - lastInterruptAt：cancel 编排（createForgeCore）会先 setStatus('canceled') 再经
+  //   done 门控补发一次 'done'——5s 内跟随中断/出错到达的 done 视为同一轮收尾，
+  //   不用「回复已完成」覆盖「回复被中断/出错」通知
+  const lastToastedAt = new Map<string, number>();
+  const lastInterruptAt = new Map<string, number>();
+  eventBus.on('conversation.statusChanged', (raw) => {
+    const p = raw as { sessionId?: unknown; status?: unknown };
+    if (typeof p?.sessionId !== 'string' || typeof p?.status !== 'string') return;
+    const kind =
+      p.status === 'done' ? 'done' : p.status === 'canceled' ? 'interrupt' : p.status === 'error' ? 'error' : null;
+    if (kind === null) return;
+    // 窗口前台聚焦时不打扰（最小化视为离开，会弹）；两种情况都留一行日志方便排查
+    const w = mainWindow;
+    if (!w || w.isDestroyed() || (w.isFocused() && w.isVisible())) {
+      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口前台 → 不弹通知`);
+      return;
+    }
+    const now = Date.now();
+    if (now - (lastToastedAt.get(p.sessionId) ?? 0) < 3000) {
+      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，3s 冷却内 → 不重复弹`);
+      return;
+    }
+    if (kind === 'done' && now - (lastInterruptAt.get(p.sessionId) ?? 0) < 5000) {
+      console.log(`[notify] 会话 ${p.sessionId} done 紧随中断/出错 → 不覆盖原通知`);
+      return;
+    }
+    console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口非前台 → 弹系统通知`);
+    lastToastedAt.set(p.sessionId, now);
+    if (kind !== 'done') lastInterruptAt.set(p.sessionId, now);
+    const sessionId = p.sessionId;
+    // 正文取最后一条用户消息（「任务：…」摘要）。直接发送路径的 user 气泡由渲染层
+    // 乐观插入、不经 eventBus 的 conversation.message（该事件只有队列补发跟进才带
+    // role=user），故此处从历史接口现取，勿依赖事件缓存。
+    const en = uiLocale === 'en';
+    const queryHistory = methodTable['conversation/queryHistory'];
+    if (!queryHistory) return;
+    void Promise.resolve()
+      .then(() => queryHistory({ sessionId }))
+      .then((res) => {
+        const messages = (res as { code?: number; data?: { messages?: unknown } } | null)?.data?.messages;
+        let task = '';
+        if (Array.isArray(messages)) {
+          for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const m = messages[i] as { role?: unknown; content?: unknown } | null;
+            if (m?.role === 'user' && typeof m.content === 'string' && m.content.trim() !== '') {
+              task = m.content;
+              break;
+            }
+          }
+        }
+        task = task.replace(/\s+/g, ' ').trim();
+        let body: string;
+        if (task === '') {
+          body =
+            kind === 'done'
+              ? en
+                ? 'The reply has finished.'
+                : '回复已生成。'
+              : en
+                ? 'The reply did not complete.'
+                : '本轮回复未完成。';
+        } else {
+          const full = `${en ? 'Task: ' : '任务：'}${task}`;
+          body = full.length > 160 ? `${full.slice(0, 160)}…` : full;
+        }
+        notifyToast.notify({ kind, sessionId, body });
+      })
+      .catch((err) => console.log(`[notify] 取会话历史失败，通知正文回退默认：${err instanceof Error ? err.message : String(err)}`));
+  });
 
   // ===== 预热入口（v3.78 上移到 boot.ready 之前；boot 前主路径 + boot 后 fallback 共用）=====
   let warmCwd: string | null = null;
@@ -684,7 +909,9 @@ app.whenReady().then(async () => {
     // 要求 main.ts 顶层不静态依赖它）；此处到达时 SDK 本就已被 core 组装加载进
     // 模块缓存，二次 import 零成本。warmPiResourceLoader 内部已 catch 全部异常
     // （仅告警后正常 resolve），promise 不会 reject，下方 Promise.race 安全。
-    warmupPromise = import('./pi/createPiAgentSessionFactory.ts').then((m) => m.warmPiResourceLoader(cwd));
+    warmupPromise = import('./pi/createPiAgentSessionFactory.ts').then((m) =>
+      m.warmPiResourceLoader(cwd, forgeAgentDir),
+    );
     return warmupPromise;
   };
 
@@ -740,7 +967,7 @@ app.whenReady().then(async () => {
   // 后台 fire-and-forget，不阻塞启动；编排内部绝不抛出，仅结构化日志（无 UI 提示）
   void createStartupUpdate({
     statePath: updaterStatePath,
-    agentDir: defaultPiAgentDir(),
+    agentDir: forgeAgentDir,
     currentVersion: appVersion,
     logger: (line) => console.log('[startup-update]', line),
   })

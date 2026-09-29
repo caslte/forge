@@ -3,6 +3,41 @@
  * 与 @forge/core / @forge/desktop 的 ipc-contract 保持一致。
  */
 
+/**
+ * 对话错误分类结果（CV-ERR-01）。
+ *
+ * 本地声明而非 import @forge/core：与 bridge.ts 保持同一惯例（避免浏览器打包引入
+ * node:events）。字段必须与 forge-core `ClassifiedError` 逐一同名同型。
+ */
+export interface ForgeErrorInfo {
+  category:
+    | 'auth'
+    | 'quota'
+    | 'context'
+    | 'local-env'
+    | 'rate-limit'
+    | 'busy'
+    | 'provider'
+    | 'network'
+    | 'unknown';
+  source:
+    | 'user-config'
+    | 'user-account'
+    | 'session-state'
+    | 'host-environment'
+    | 'model-provider'
+    | 'local-network'
+    | 'undetermined';
+  /** provider / 底层原始错误文本（横幅第一行冒号后原样展示） */
+  raw: string;
+  /** 重试是否可能成功（决定是否给「立即重试」） */
+  retryable: boolean;
+  /** 本轮已产出可见内容、仅收尾报错 → 降级为最轻语气 */
+  degraded: boolean;
+  httpStatus?: number;
+  providerCode?: string;
+}
+
 export interface ProjectItem {
   path: string;
   alias: string | null;
@@ -36,7 +71,40 @@ export interface GitBranchInfo {
   detached: boolean;
 }
 
-/** 输入框项目选择器描述（SM-S01 v3.21）：单视图传入，多窗口 compact 不传则不渲染 */
+/** git/getStatus 响应 data（GC-S11，docs/api/11_git_commit_push.md §1） */
+export interface GitStatusInfo {
+  isGitRepo: boolean;
+  /** 当前分支；detached 时为短 SHA；null=无法解析（极端仓库态） */
+  branch: string | null;
+  detached: boolean;
+  /** 变更文件数（含未跟踪） */
+  fileCount: number;
+  /** 行数统计（numstat 累加；二进制文件计 0） */
+  added: number;
+  removed: number;
+  /** 暂存区是否为空（X 列全空） */
+  stagedEmpty: boolean;
+  /** 暂存区文件数（不勾「包含未暂存」时的待提交数） */
+  stagedCount: number;
+  /** 未推送提交涉及的文件数（无 upstream 时退 origin/分支，再退「本地领先所有远端」）；无远端/detached/无 HEAD → null（未知） */
+  unpushedCount: number | null;
+  /** 仓库是否已有 HEAD（新仓库 false） */
+  hasHead: boolean;
+}
+
+/** git/commit 成功 data（docs/api/11_git_commit_push.md §2） */
+export interface CommitData {
+  shortHash: string;
+  fileCount: number;
+}
+
+/** git/push 成功 data（docs/api/11_git_commit_push.md §3） */
+export interface PushData {
+  branch: string;
+  remote: string;
+}
+
+/** 输入框项目选择器描述（SM-S01 v3.21）：单视图/多窗口均传入；无归属项目（currentPath=null）则不渲染 */
 export interface ProjectPickerDescriptor {
   /** draft=新建会话可选归属；session=会话中只读信息（归属不可换） */
   mode: 'draft' | 'session';
@@ -61,6 +129,8 @@ export interface ConversationMessage {
   status?: 'started' | 'completed' | 'error';
   /** 工具入参（edit 类含 file_path/old_string/new_string） */
   input?: Record<string, unknown>;
+  /** 上下文压缩边界标记（role=system 时）：true = 这是一次压缩留下的分界，非真实消息 */
+  compacted?: boolean;
 }
 
 export interface ToolEvent {

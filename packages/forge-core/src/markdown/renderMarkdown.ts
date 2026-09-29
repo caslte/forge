@@ -6,10 +6,20 @@
  * - 安全（白名单 sanitize-html，见 docs/prd/03_conversation.md 渲染安全要求）：
  *   - 禁止原生 HTML：script/style/iframe/事件属性（on*）一律移除。
  *   - 危险协议链接：javascript:/data:/vbscript: 等 href/src 被清除。
+ *   - 链接策略：仅 http/https/mailto 保留为 <a>（点击由渲染层拦截交系统浏览器打开），
+ *     相对路径/锚点/协议相对等一律降级为 <span> 纯文本——防投毒链接把应用窗口导航走。
  * - mermaid 块：语言为 mermaid 时输出带 `data-md-mermaid` 的占位 div（源码经 base64 编码），
  *   前端扫描该标记后异步渲染为图表（渲染失败时该 div 内已含转义原文，直接可读）。
+ * - canvas 块：语言为 canvas 时同理输出 `data-md-canvas` 占位，前端解码后塞进
+ *   iframe srcdoc 沙箱渲染（见 forge-ui HtmlCanvasBlock）。卡片源码是完整 HTML，
+ *   **绝不能过本文件的 sanitize 白名单**（白名单不含 style，会把卡片样式剥光），
+ *   故走 base64 占位绕开；安全边界由 iframe 的 sandbox 全关承担，两条线互斥。
+ *   注意 ` ```html ` 仍走 hljs 高亮展示源码（模型给项目写 HTML 示例是常态），
+ *   不可劫持——画布围栏只用 canvas 这一个语言名。
  * - 统一渲染：流式与结束后均用本函数完整渲染，保证两种状态样式一致
  *   （曾用流式简化渲染导致紧凑/正常样式跳变，已移除）。
+ * - 代码块复制：每个 ``` 围栏套一层 `.md-code-wrap`，内含一枚空的 `.md-code-copy`
+ *   按钮（图标与点击都在渲染层）；按钮是 pre 的兄弟——pre 里的多余空白会变成代码首行。
  *
  * 纯 Node 模块：不 import Electron / Vue / pi，可在 node:test 下直接回归（含 XSS 用例）。
  */
@@ -18,14 +28,29 @@ import { Marked } from 'marked';
 import { hljs } from './hljsCore.ts';
 import sanitizeHtml from 'sanitize-html';
 
+import { CANVAS_LANGUAGE, looksLikeAsciiArt } from './canvasSandbox.ts';
+
 /** marked 实例：gfm + 换行即 <br>（对齐消息正文既有行为） */
 const marked = new Marked({ gfm: true, breaks: true });
+
+export {
+  CANVAS_LANGUAGE,
+  CANVAS_DEFAULT_HEIGHT,
+  CANVAS_TALL_HEIGHT,
+  looksLikeHtmlCanvas,
+  looksLikeAsciiArt,
+  buildCanvasDocument,
+  buildCanvasStandaloneFile,
+  type CanvasTokens,
+} from './canvasSandbox.ts';
 
 /** 白名单标签（sanitize-html allowedTags） */
 const ALLOWED_TAGS = [
   'p', 'br', 'hr', 'strong', 'em', 'del', 'code', 'pre', 'blockquote',
   'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span', 'div',
+  // 代码块右上角的复制按钮（点击行为在渲染层委托，见 forge-ui markdownLinks）
+  'button',
 ];
 
 /** hljs 行内 span 的 class 需放行（hljs-keyword 等） */
@@ -33,11 +58,12 @@ const ALLOWED_ATTRIBUTES = {
   a: ['href', 'title', 'target'],
   img: ['src', 'alt', 'title'],
   pre: ['class'],
-  code: ['class', 'data-md-mermaid'],
+  code: ['class', 'data-md-mermaid', 'data-md-canvas'],
   span: ['class'],
   div: ['class'],
   th: ['align'],
   td: ['align'],
+  button: ['class', 'type', 'tabindex'],
 };
 
 /**
@@ -88,6 +114,14 @@ function codeRenderer(lang: string | undefined, text: string): string {
     return `<pre class="md-mermaid-wrap"><code class="md-mermaid" data-md-mermaid="${encoded}">${escaped}</code></pre>`;
   }
 
+  // Canvas：模型手写的 HTML 卡片。转义原文兜底（非 HTML 内容降级时可读），
+  // 真正的渲染源是 base64 —— 它绕开 sanitize，交给 iframe 沙箱承载
+  if (language === CANVAS_LANGUAGE) {
+    const escaped = htmlEscape(trimmed);
+    const encoded = encodeBase64Utf8(trimmed);
+    return `<pre class="md-canvas-wrap"><code class="md-canvas" data-md-canvas="${encoded}">${escaped}</code></pre>`;
+  }
+
   let highlighted: string;
   const hlLang = language !== undefined ? LANG_ALIASES[language] : undefined;
   if (hlLang !== undefined && hljs.getLanguage(hlLang)) {
@@ -96,7 +130,8 @@ function codeRenderer(lang: string | undefined, text: string): string {
     highlighted = htmlEscape(trimmed);
   }
   const cls = language !== undefined ? ` class="language-${htmlEscape(language)}"` : '';
-  return `<pre class="md-code-block"><code${cls}>${highlighted}</code></pre>`;
+  // 复制按钮是 pre 的兄弟而非子节点：pre 内任何多余空白都会渲染成代码首行
+  return `<div class="md-code-wrap"><button type="button" class="md-code-copy" tabindex="0"></button><pre class="md-code-block"><code${cls}>${highlighted}</code></pre></div>`;
 }
 
 /** 转义 HTML 特殊字符 */
@@ -143,6 +178,17 @@ marked.use({
     },
     codespan(token) {
       return `<code class="md-inline-code">${htmlEscape(token.text)}</code>`;
+    },
+    // 字符画段落兜底：模型常不用任何围栏、直接在正文里画 ASCII 图。breaks 只保住
+    // 换行，连续空格仍会被浏览器折叠，对齐照样全毁。呈字符画形态的段落整体转
+    // <pre>（等宽 + pre 空白），用户看到的是完整可读的图而不是一坨管道符。
+    // 返回 false 走 marked 默认段落渲染，普通正文零影响。
+    paragraph(token) {
+      const raw = token.text ?? '';
+      if (looksLikeAsciiArt(raw, 2)) {
+        return `<pre class="md-ascii">${htmlEscape(raw)}</pre>`;
+      }
+      return false;
     },
   },
 });
@@ -203,6 +249,24 @@ export function renderMarkdown(source: string, cacheable = true): string {
         }
         return { tagName, attribs: next } as never;
       },
+      // 复制按钮只认本渲染器生成的那一个类：其余 button（用户手写的 HTML）降级为
+      // span，且不带任何属性——渲染层只按 .md-code-copy 委托点击，认不得别的
+      button: (tagName, attribs) => {
+        const cls = sanitizeClass(attribs['class']);
+        if (cls !== 'md-code-copy') return { tagName: 'span', attribs: {} } as never;
+        return { tagName, attribs: { class: cls, type: 'button', tabindex: '0' } } as never;
+      },
+      // 链接白名单前移到标签转换：http/https/mailto 保留为 <a>（点击交渲染层拦截
+      // → openExternal），其余（相对路径、#锚点、//协议相对、javascript: 等）整体
+      // 降级为 span——模型爱写 [`docs/x.md`](docs/x.md) 当文档入口，这类死链不该
+      // 有链接形态，更不该让窗口导航。
+      a: (tagName, attribs) => {
+        const href = attribs['href'] ?? '';
+        if (/^(https?:|mailto:)/i.test(href)) {
+          return { tagName, attribs } as never;
+        }
+        return { tagName: 'span', attribs: {} } as never;
+      },
     },
   });
   if (cacheable) {
@@ -242,10 +306,28 @@ export function looksLikeMermaid(source: string): boolean {
 }
 
 /**
- * 围栏是否未闭合（``` 计数为奇数）：未闭合围栏会吞到文末，故末块必是未闭合的那个。
- * 流式期间用于：末尾 mermaid 块先按源码展示，闭合后再渲染图表，避免半截源码反复渲染失败。
- * ponytail: 按计数奇偶判断，正文里出现行内三反引号（非围栏）会误判，聊天场景罕见，可接受。
+ * 围栏是否未闭合（按行扫描 GFM 围栏语法）。
+ *
+ * 为什么按行而不是全局数 ```：正文里行中提到「```canvas」这类词（模型解释自己为
+ * 什么没出图，是常态）会把全局奇偶计数带偏——围栏明明闭合却判未闭合，终态下
+ * canvas 骨架蒙版永远不撤（不会再有后续 token 来"闭合"它），界面假转圈。
+ *
+ * GFM 规则：开栏行 = 行首 ≤3 空格 + ≥3 个同字符（` 或 ~），可带信息串；闭栏行 =
+ * 同字符、长度不小于开栏长度、行尾除空白外无别的。四反引号外壳包三反引号示例时，
+ * 内层行因长度不足不会被误判为闭栏。
+ *
+ * 已知取舍：列表内缩进 ≥4 空格的围栏不参与判定（与缩进代码块无法行级区分），
+ * 聊天场景围栏几乎都在顶层，可接受。
  */
 export function hasOpenFence(source: string): boolean {
-  return ((source ?? '').match(/```/g)?.length ?? 0) % 2 === 1;
+  let open: { ch: string; len: number } | null = null;
+  for (const line of (source ?? '').split(/\r?\n/)) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (open === null) {
+      if (m) open = { ch: m[1]![0]!, len: m[1]!.length };
+    } else if (m && m[1]![0] === open.ch && m[1]!.length >= open.len && m[2]!.trim() === '') {
+      open = null;
+    }
+  }
+  return open !== null;
 }

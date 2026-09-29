@@ -26,6 +26,7 @@ export type ForgeMethod =
   // project（01）
   | 'project/addProject'
   | 'project/removeProject'
+  | 'project/clearSessions'
   | 'project/queryProjectList'
   | 'project/openProject'
   | 'project/updateProjectAlias'
@@ -34,6 +35,11 @@ export type ForgeMethod =
   // git（wu-02）
   | 'git/getBranchInfo'
   | 'git/switchBranch'
+  // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
+  | 'git/getStatus'
+  | 'git/commit'
+  | 'git/push'
+  | 'git/generateCommitMessage'
   // session（02）
   | 'session/createSession'
   | 'session/querySessionList'
@@ -67,6 +73,11 @@ export type ForgeMethod =
   | 'subagent/stop'
   | 'subagent/clearFinished'
   | 'subagent/queryOutput'
+  // skill（09：Skill 管理，docs/prd/09_skill_management.md）
+  | 'skill/listSkills'
+  | 'skill/importSkill'
+  | 'skill/createSkill'
+  | 'skill/deleteSkill'
   // pi（07）
   | 'pi/getInfo'
   | 'pi/updatePlugins'
@@ -125,6 +136,60 @@ export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
 
 /**
+ * preload ↔ main shell 通道：系统浏览器/邮件客户端打开外链（消息正文链接拦截）。
+ * 与 openPath 刻意分开：这条只收 http/https/mailto 绝对 URL，绝不落到 shell.openPath
+ * （后者会把任意字符串交给系统「打开」，指向 .exe 就等于双击运行）。
+ */
+export const IPC_SHELL_OPEN_EXTERNAL = 'forge:shell:openExternal';
+
+/**
+ * preload ↔ main shell 通道：pi bash 解析健康探测 + 自愈（渲染层启动横幅数据源）。
+ * 探测到不可用时主进程会自动定位 Git Bash 并写入 settings.json，再复探一次。
+ */
+export const IPC_SHELL_PROBE = 'forge:shell:probe';
+
+/**
+ * shell 探测结果（forge:shell:probe 响应）。
+ *
+ * 背景：pi 的 bash 解析在 Windows 上按 settings.shellPath → Program Files Git ×2 →
+ * PATH bash.exe 三级兜底，第三级会命中 System32 的 WSL 占位 bash.exe——WSL 未装时
+ * 每条命令只返回一句 UTF-16 乱码的「未安装 Linux 子系统」，模型侧表现为
+ * 「bash 工具被 WSL 拦截、彻底不可用」（2026-09 dev 切根事故）。forge 启动时用同一
+ * 口径探测一次，异常则在对话区横幅给出可操作指引。
+ *
+ * 自愈（2026-09 追加）：探测异常时主进程会按 where git.exe 反推 / 注册表 / 常见安装
+ * 路径 / PATH 的顺序找真 bash 并写进 shellPath（见 pi/gitBashResolver.ts），用户不需要
+ * 自己编辑配置。只有本机确实没有可用 bash 时才把异常交给横幅。
+ */
+export type ShellProbeResult =
+  | {
+      ok: true;
+      /** 解析到的 shell 绝对路径 */
+      shell: string;
+      /** true=本次结果是「自动写入 shellPath 后复探」得到的（配置刚落盘，重启后全会话生效） */
+      autoFixed?: boolean;
+    }
+  | {
+      ok: false;
+      /** wsl-stub=PATH 兜底命中 System32 WSL 占位；no-shell=三级全落空（getShellConfig 抛错） */
+      reason: 'wsl-stub' | 'no-shell';
+      /** 探测到的可疑/缺失 shell 路径；no-shell 时为 null */
+      shell: string | null;
+      /** 修复目标：forge agent 根下 settings.json（自动修复也失败时，用户可在此手工兜底） */
+      settingsPath: string;
+    };
+
+/**
+ * 画布卡片「另存」（见 docs/plan/canvas-card.md）：原生保存对话框选位置 + 写 UTF-8 文本。
+ *
+ * 为什么走保存对话框而不是自造目录（如项目下 .forge/canvas/）：卡片是模型产出的
+ * 一次性图示，落到项目里会污染 git 状态（改动文件卡会变吵），落到 userData 又不好
+ * 找。让用户在对话框里自己决定去哪，两条顾虑一起消掉。
+ */
+export const IPC_DIALOG_SAVE_FILE = 'forge:dialog:saveFile';
+export const IPC_FILE_WRITE_TEXT = 'forge:file:writeText';
+
+/**
  * preload ↔ main 主题通道（v3.78.6）：渲染进程把当前主题同步给主进程。
  *
  * 为什么需要：`BrowserWindow.backgroundColor` 只在建窗时刻可给，而那一刻主进程读不到
@@ -135,6 +200,26 @@ export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
  * 详见 packages/forge-desktop/src/theme.ts 顶部说明。
  */
 export const IPC_THEME_SET = 'forge:theme:set';
+
+/**
+ * preload ↔ main 界面语言通道：渲染进程把生效语言同步给主进程。
+ * 与主题通道同构（localStorage 唯一事实来源，主进程只持镜像）：语言存 localStorage
+ * ['forge.locale']，主进程读不到——而系统通知小窗（notifyToast.ts）的标题文案
+ * 「回复已完成 / Reply completed」需要按当前语言取词。单向 fire-and-forget。
+ */
+export const IPC_LOCALE_SET = 'forge:locale:set';
+
+/** 生效语言（与 forge-ui i18n 的 ActiveLocale 同构，本地声明惯例） */
+export type ToastLocale = 'zh-CN' | 'en';
+
+/**
+ * 通知小窗（notifyToast.ts）↔ 页面通道：每条通知一个 data: URL 页面 +
+ * notifyToastPreload 暴露的 window.notifyToast 三动作（ready/close/activate）。
+ * ready 携带页面实测的通知卡片高度（主进程据此调整窗口尺寸再 showInactive）。
+ */
+export const IPC_NOTIFY_TOAST_READY = 'forge:notifyToast:ready';
+export const IPC_NOTIFY_TOAST_CLOSE = 'forge:notifyToast:close';
+export const IPC_NOTIFY_TOAST_ACTIVATE = 'forge:notifyToast:activate';
 
 /** preload ↔ main 附件通道（统一给路径：嗅探 + 截图落盘 + 缩略图读取） */
 export const IPC_ATTACHMENT_SCAN = 'forge:attachment:scan';
@@ -171,7 +256,10 @@ export type ForgeEvent =
   // v3.76 启动门闩：forge-core 组装完成后由 main 手动 send 一次。
   // 注意：不进 FORGE_EVENTS 数组（那是 eventBus 转发注册表，core 未就绪时 eventBus
   // 不存在、注册不了）；渲染端通过 forge:boot-state 拉取兜底防错过。
-  | 'boot.ready';
+  | 'boot.ready'
+  // 系统通知点击跳转（notifyToast.ts）：主进程直发（不经 core eventBus），
+  // payload { sessionId }——渲染端收到后切换到该会话（App.vue onSelectSession）
+  | 'notify.focusSession';
 
 /** 全部事件名运行时数组（主进程遍历注册转发，避免遗漏事件） */
 export const FORGE_EVENTS: readonly ForgeEvent[] = [
@@ -277,6 +365,14 @@ export interface SubagentRemovedPayload {
   sessionId: string;
   agentIds: string[];
 }
+
+/**
+ * Skill 管理（09）契约类型（事实来源在 ./pi/skillService.ts；type-only 再导出，
+ * 不会把 pi SDK 拉进 preload 运行时 bundle）。forge-ui 按仓库惯例在 types.ts 独立
+ * 声明同形类型。4090 = 同名冲突待确认（data.conflictPath，UI 弹确认后带
+ * overwrite=true 重调）。
+ */
+export type { SkillScope, SkillEntry, SkillIssue, ListSkillsResult } from './pi/skillService.ts';
 
 /** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json） */
 export interface PiGetInfoResult {

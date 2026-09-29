@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { call } from '../bridge';
-import type { ProjectItem, SessionItem } from '../types';
+import type { ProjectItem, ProjectPickerDescriptor, SessionItem } from '../types';
 import ConversationView from './ConversationView.vue';
 
 /**
@@ -21,8 +21,6 @@ const props = defineProps<{
   session: SessionItem | null;
   /** 可选模型列表（透传给输入框，与单视图一致） */
   models: string[];
-  /** 项目忙（PM-S05 AC-PM-016）：透传给分支徽标禁用 */
-  gitBusy?: boolean;
 }>();
 
 const currentModel = ref<string | null>(null);
@@ -34,6 +32,14 @@ const project = computed<ProjectItem>(() => ({
   lastOpenedAt: '',
   trust: 'trusted',
 }));
+
+/** 输入框下方状态行的项目徽标（session 只读态）；显示名=路径末段 */
+const projectPicker = computed<ProjectPickerDescriptor | undefined>(() => {
+  const p = props.session?.projectPath;
+  if (!p) return undefined;
+  const segs = p.replace(/\\/g, '/').split('/');
+  return { mode: 'session', currentPath: p, currentName: segs[segs.length - 1] || p, items: [] };
+});
 
 async function loadModel(): Promise<void> {
   try {
@@ -67,7 +73,7 @@ onMounted(() => {
     :session="session"
     :models="models"
     :current-model="currentModel"
-    :git-busy="gitBusy"
+    :project-picker="projectPicker"
     @model-change="onModelChange"
   />
 </template>

@@ -9,6 +9,7 @@
 export type ForgeMethod =
   | 'project/addProject'
   | 'project/removeProject'
+  | 'project/clearSessions'
   | 'project/queryProjectList'
   | 'project/openProject'
   | 'project/updateProjectAlias'
@@ -44,8 +45,18 @@ export type ForgeMethod =
   | 'subagent/stop'
   | 'subagent/clearFinished'
   | 'subagent/queryOutput'
+  // skill（09：Skill 管理，docs/prd/09_skill_management.md）
+  | 'skill/listSkills'
+  | 'skill/importSkill'
+  | 'skill/createSkill'
+  | 'skill/deleteSkill'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
+  // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
+  | 'git/getStatus'
+  | 'git/commit'
+  | 'git/push'
+  | 'git/generateCommitMessage'
   | 'pi/getInfo'
   | 'pi/updatePlugins'
   | 'app/getUpdateDebug'
@@ -81,7 +92,10 @@ export type ForgeEvent =
   | 'git.branchChanged'
   | 'updater.stateChanged'
   // v3.76 启动门闩：forge-core 组装完成后主进程推送一次（拉通道见 getBootState）
-  | 'boot.ready';
+  | 'boot.ready'
+  // 系统通知点击跳转（主进程 notifyToast 直发，不经 core eventBus）：payload { sessionId }，
+  // UI 收到后切换到该会话（App.vue onSelectSession）
+  | 'notify.focusSession';
 
 /**
  * 启动状态（与 @forge/desktop ipc-contract.ts BootState 同构，本地声明惯例）。
@@ -92,6 +106,26 @@ export interface BootState {
   ready: boolean;
   startedAt: number;
   durationMs: number | null;
+}
+
+/**
+ * shell 健康探测结果（与 @forge/desktop ipc-contract.ts ShellProbeResult 同构，本地声明惯例）。
+ * 背景：pi 的 bash 三级兜底在 Windows 上可能命中 System32 的 WSL 占位（每条命令只回
+ * 一句乱码的「未安装 Linux 子系统」），ok=false 时对话区渲染常驻横幅指引修复。
+ *
+ * autoFixed：主进程探测失败时会自动定位 Git Bash 写进 shellPath 再复探，成功即回
+ * ok=true + autoFixed=true——配置刚落盘，已存在的会话仍持旧解析结果，UI 据此提示重启
+ * （见 @forge/desktop pi/shellProbe.ts ensurePiShellPath）。
+ */
+export type ShellProbeResult = {
+  ok: true;
+  shell: string;
+  autoFixed?: boolean;
+} | {
+  ok: false;
+  reason: 'wsl-stub' | 'no-shell';
+  shell: string | null;
+  settingsPath: string;
 }
 
 /** IPC invoke 返回信封（透传 forge-core RpcResult） */
@@ -318,10 +352,16 @@ export interface ForgeBridge {
   dialog: {
     selectDirectory(): Promise<string | null>;
     selectFiles(): Promise<string[]>;
+    /** 另存对话框（画布卡片用）：返回用户选定的绝对路径，取消返回 null */
+    saveFile(defaultName: string): Promise<string | null>;
   };
   shell: {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
     openPath(path: string): Promise<boolean>;
+    /** 系统浏览器/邮件客户端打开外链（仅 http/https/mailto，主进程校验）；失败返回 false */
+    openExternal(url: string): Promise<boolean>;
+    /** pi bash 解析健康探测（对话区横幅数据源，见 ShellProbeResult 注释） */
+    shellProbe(): Promise<ShellProbeResult>;
   };
   theme: {
     /**
@@ -331,6 +371,14 @@ export interface ForgeBridge {
      * 启动的第一帧底色。取值同 types.ts 的 ThemeMode。
      */
     set(mode: 'light' | 'dark'): void;
+  };
+  /**
+   * 生效语言回报主进程（与主题通道同构，localStorage['forge.locale'] 唯一事实来源）。
+   * 仅系统通知小窗（主进程 notifyToast.ts）标题文案取词用。可选：浏览器 mock 不实现，
+   * 旧 preload 亦无此方法，调用侧一律 `window.forge.locale?.set(...)`。
+   */
+  locale?: {
+    set(mode: 'zh-CN' | 'en'): void;
   };
   file: {
     /** 拖拽/粘贴 File 对象 → 磁盘绝对路径；无盘文件（剪贴板截图）返回空串 */
@@ -345,6 +393,8 @@ export interface ForgeBridge {
     readImage(path: string): Promise<string | null>;
     /** @ 补全候选：项目内白名单文件绝对路径（BFS 浅层优先，上限 2000）；项目缺失/不可读返回 [] */
     listProjectFiles(projectPath: string): Promise<string[]>;
+    /** 写 UTF-8 文本（画布卡片另存，主进程限定 .html/.htm）；失败返回 false */
+    writeText(path: string, text: string): Promise<boolean>;
   };
 }
 
@@ -356,6 +406,60 @@ export interface PendingAttachment {
   flagged: boolean;
   /** 图片缩略图 data URL（仅图片附件，加载后填充；预览/放大用） */
   dataUrl?: string;
+}
+
+/**
+ * ===== Skill 管理（09）类型 =====
+ * 事实来源在 @forge/desktop pi/skillService.ts；按本文件惯例本地声明同形类型。
+ */
+
+/** skill 作用域：user=全局，project=当前项目 */
+export type SkillScope = 'user' | 'project';
+
+/** 单条生效 skill（loader 返回的均为同名冲突生效方；loser 走 issues 诊断） */
+export interface SkillEntry {
+  name: string;
+  description: string;
+  /** pi sourceInfo.scope 映射；'other'=不归组兜底展示 */
+  scope: 'user' | 'project' | 'other';
+  /** skill 目录绝对路径（根路径徽标数据源） */
+  dirPath: string;
+  /** SKILL.md 绝对路径 */
+  filePath: string;
+  disableModelInvocation: boolean;
+}
+
+/** 异常/冲突诊断（warning=非法或未加载，collision=同名被覆盖） */
+export interface SkillIssue {
+  type: 'warning' | 'error' | 'collision';
+  message: string;
+  path: string | null;
+  winnerPath: string | null;
+  loserPath: string | null;
+}
+
+/** skill/listSkills 响应 data */
+export interface ListSkillsResult {
+  cwd: string;
+  skills: SkillEntry[];
+  issues: SkillIssue[];
+}
+
+/** skill/importSkill | createSkill 同名冲突响应（code=4090，确认后带 overwrite=true 重调） */
+export interface SkillConflictData {
+  conflictPath: string;
+  sourceDir?: string;
+}
+
+/**
+ * 调用主进程方法并原样返回信封（不抛错）。
+ * Skill 管理用：4090 冲突是需要 UI 弹确认的**正常分支**，不适合 call() 的抛错语义。
+ */
+export async function invokeRaw<T = unknown>(
+  method: ForgeMethod,
+  params?: Record<string, unknown>,
+): Promise<ForgeResult<T>> {
+  return (await window.forge.invoke(method, params)) as ForgeResult<T>;
 }
 
 /**

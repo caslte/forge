@@ -18,7 +18,11 @@ import {
   recordManualComponentUpdate,
   touchLastUpdateCheckAt,
 } from '../../src/pi/startupUpdate.ts';
-import { RECOMMENDED_PLUGINS, missingRecommended } from '../../src/pi/recommendedPlugins.ts';
+import {
+  RECOMMENDED_LIST_VERSION,
+  RECOMMENDED_PLUGINS,
+  missingRecommended,
+} from '../../src/pi/recommendedPlugins.ts';
 import { readUpdaterState, writeUpdaterState, type UpdaterState } from '../../src/pi/updaterState.ts';
 
 const NOW_ISO = '2026-09-08T08:00:00.000Z';
@@ -45,6 +49,7 @@ function baseState(extra: Partial<UpdaterState> = {}): UpdaterState {
     lastRunForgeVersion: null,
     preinstallDone: false,
     preinstallDoneAt: null,
+    preinstallListVersion: 0,
     lastUpdateCheckAt: null,
     components: {},
     ...extra,
@@ -85,7 +90,8 @@ function setup(opts: {
     runCli: async (args) => {
       fake.cliCalls.push(args);
       if (opts.cliThrow) throw new Error('cli boom');
-      const pkg = args[1] ?? '';
+      // 编排给安装命令统一加 npm: 前缀（引擎按前缀走 registry）；按裸包名判定失败
+      const pkg = (args[1] ?? '').replace(/^npm:/, '');
       if (opts.cliFail?.(pkg)) return { ok: false, output: `E404 ${pkg}` };
       return { ok: true, output: `installed ${pkg}` };
     },
@@ -102,9 +108,10 @@ function setup(opts: {
   return fake;
 }
 
-test('recommendedPlugins：清单 6 项；missingRecommended 保持推荐顺序且跳过已装项', () => {
-  assert.equal(RECOMMENDED_PLUGINS.length, 6);
+test('recommendedPlugins：清单 7 项；missingRecommended 保持推荐顺序且跳过已装项', () => {
+  assert.equal(RECOMMENDED_PLUGINS.length, 7);
   assert.ok(RECOMMENDED_PLUGINS.includes('@tintinweb/pi-subagents'));
+  assert.ok(RECOMMENDED_PLUGINS.includes('pi-memory'));
   // Path 2：rpiv-ask-user-question 必须**不在**清单里 —— forge 已自建同名工具
   // （@forge/extensions 的 ask_user_question），继续预装会让用户环境里出现两个同名
   // 工具（虽然运行时由 extensionsOverride 屏蔽，也不该再给新用户装）。
@@ -124,6 +131,7 @@ test('recommendedPlugins：清单 6 项；missingRecommended 保持推荐顺序�
     '@narumitw/pi-goal',
     'pi-compact-display',
     '@juicesharp/rpiv-todo',
+    'pi-memory',
   ]);
 });
 
@@ -136,9 +144,9 @@ test('首启预装：缺失项逐项 install、既有项保留、settings 不被
   const h = setup({ agentDir, currentVersion: '0.2.0' });
   await h.run();
 
-  // 缺失项 = 推荐清单顺序中除已装 pi-mcp-adapter 外的 9 项；@user/custom 不在推荐清单、不受影响
+  // 缺失项 = 推荐清单顺序中除已装 pi-mcp-adapter 外的其余项；@user/custom 不在推荐清单、不受影响
   const expected = RECOMMENDED_PLUGINS.filter((n) => n !== 'pi-mcp-adapter');
-  assert.deepEqual(h.cliCalls, expected.map((pkg) => ['install', pkg, '--no-approve']));
+  assert.deepEqual(h.cliCalls, expected.map((pkg) => ['install', `npm:${pkg}`, '--no-approve']));
   // 只增不删：编排不直接改 settings.json（补装由内置 CLI 负责）
   assert.equal(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8'), settingsBefore);
 
@@ -168,6 +176,66 @@ test('预装幂等：成功后第二次 run 不再调用 install', async () => {
   await second.run();
   assert.equal(second.cliCalls.length, 0);
   assert.equal(readUpdaterState(first.statePath).preinstallDone, true);
+});
+
+test('升级补装：老状态 preinstallDone=true 但清单版本落后 → 只补缺项并追平版本', async () => {
+  // 模拟 0.1.x 老用户：前 6 项全装好，清单版本 0（v2 字段缺失/落后）
+  const agentDir = makeAgentDir(
+    RECOMMENDED_PLUGINS.filter((n) => n !== 'pi-memory').map((n) => `npm:${n}`),
+  );
+  const h = setup({
+    agentDir,
+    state: baseState({
+      preinstallDone: true,
+      preinstallDoneAt: NOW_ISO,
+      lastRunForgeVersion: '0.2.0',
+    }),
+    currentVersion: '0.2.0',
+  });
+  await h.run();
+  // 只补缺项：唯一缺失 = pi-memory；已装的 6 项不重碰；安装命令带 npm: 前缀
+  assert.deepEqual(h.cliCalls, [['install', 'npm:pi-memory', '--no-approve']]);
+  const state = readUpdaterState(h.statePath);
+  assert.equal(state.preinstallListVersion, RECOMMENDED_LIST_VERSION);
+  assert.equal(state.preinstallDone, true);
+});
+
+test('清单版本已追平：不再触发补缺（用户此后手删清单项也不会被带回）', async () => {
+  const agentDir = makeAgentDir(RECOMMENDED_PLUGINS.map((n) => `npm:${n}`));
+  const h = setup({
+    agentDir,
+    state: baseState({
+      preinstallDone: true,
+      preinstallDoneAt: NOW_ISO,
+      preinstallListVersion: RECOMMENDED_LIST_VERSION,
+      lastRunForgeVersion: '0.2.0',
+    }),
+    currentVersion: '0.2.0',
+  });
+  await h.run();
+  assert.equal(h.cliCalls.length, 0);
+  assert.equal(h.updaterCalls, 0);
+});
+
+test('升级补装失败：清单版本不前进，preinstallDone 保持 true，下次启动仍重试', async () => {
+  const agentDir = makeAgentDir(
+    RECOMMENDED_PLUGINS.filter((n) => n !== 'pi-memory').map((n) => `npm:${n}`),
+  );
+  const h = setup({
+    agentDir,
+    state: baseState({
+      preinstallDone: true,
+      preinstallDoneAt: NOW_ISO,
+      lastRunForgeVersion: '0.2.0',
+    }),
+    currentVersion: '0.2.0',
+    cliFail: (pkg) => pkg === 'pi-memory',
+  });
+  await h.run();
+  assert.equal(h.cliCalls.length, 1);
+  const state = readUpdaterState(h.statePath);
+  assert.equal(state.preinstallListVersion, 0); // 未追平 → 下次启动重试
+  assert.equal(state.preinstallDone, true); // 不被错误回滚
 });
 
 test('预装失败：标志保持 false（其余项仍尝试），后续联动检查继续执行', async () => {
@@ -200,6 +268,7 @@ test('版本变化联动：触发 extensionUpdater、回写 lastRunForgeVersion/
     agentDir,
     state: baseState({
       preinstallDone: true,
+      preinstallListVersion: RECOMMENDED_LIST_VERSION, // 清单已追平：本测试只隔离联动阶段
       lastRunForgeVersion: '0.1.0',
       components: { 'pi-mcp-adapter': '2.0.0', '@gone/old': '9.9.9' },
     }),
@@ -227,6 +296,7 @@ test('版本未变化：不触发联动、不改写状态', async () => {
     agentDir,
     state: baseState({
       preinstallDone: true,
+      preinstallListVersion: RECOMMENDED_LIST_VERSION,
       lastRunForgeVersion: '0.2.0',
       preinstallDoneAt: '2026-01-01T00:00:00.000Z',
     }),
@@ -244,7 +314,7 @@ test('首次运行（lastRunForgeVersion=null）：不触发联动，只回写�
   const agentDir = makeAgentDir(['npm:pi-mcp-adapter'], { 'pi-mcp-adapter': '2.32.1' });
   const h = setup({
     agentDir,
-    state: baseState({ preinstallDone: true }), // 预装已完成，跳过预装阶段
+    state: baseState({ preinstallDone: true, preinstallListVersion: RECOMMENDED_LIST_VERSION }), // 预装已完成且清单追平：跳过预装阶段
     currentVersion: '0.2.0',
   });
   await h.run();
@@ -260,6 +330,7 @@ test('联动失败：保留旧 lastRunForgeVersion/components，静默记录', a
     agentDir,
     state: baseState({
       preinstallDone: true,
+      preinstallListVersion: RECOMMENDED_LIST_VERSION,
       lastRunForgeVersion: '0.1.0',
       components: { 'pi-mcp-adapter': '2.0.0' },
     }),

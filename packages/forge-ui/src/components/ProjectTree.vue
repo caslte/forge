@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
 import { sortSessionsByActivation, projectTagOf } from '../utils/sessionView';
+import { useI18n, type MessageKey } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   projects: ProjectItem[];
@@ -18,6 +21,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select-project', path: string): void;
   (e: 'remove-project', path: string): void;
+  (e: 'clear-sessions', path: string): void;
   (e: 'rename-project', path: string, alias: string): void;
   (e: 'create-session', projectPath?: string): void;
   (e: 'select-session', id: string): void;
@@ -58,16 +62,20 @@ let deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 const projectDeleteConfirmPath = ref<string | null>(null);
 let projectDeleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 
+// 清理所有会话两阶段确认（菜单内；确认文案与删除独立，避免语义混淆）
+const clearSessionsConfirmPath = ref<string | null>(null);
+let clearSessionsConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+
 // 项目拖拽排序：视觉反馈 + 落点（before/after）
 const draggedPath = ref<string | null>(null);
 const dragOverPath = ref<string | null>(null);
 const dragOverPos = ref<'before' | 'after' | null>(null);
 
-const statusTitleMap: Record<SessionStatus, string> = {
-  idle: '空闲',
-  streaming: '运行中',
-  error: '出错',
-  done: '已完成',
+const statusTitleMap: Record<SessionStatus, MessageKey> = {
+  idle: 'project.statusIdle',
+  streaming: 'project.statusStreaming',
+  error: 'project.statusError',
+  done: 'project.statusDone',
 };
 
 type StatusTone = 'streaming' | 'error' | 'done' | 'none';
@@ -80,7 +88,7 @@ function projectDisplayName(p: ProjectItem): string {
 }
 
 function sessionDisplayName(s: SessionItem): string {
-  return s.alias || '会话 ' + s.sessionId.slice(-6);
+  return s.alias || t('project.sessionName', { id: s.sessionId.slice(-6) });
 }
 
 // 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序
@@ -171,7 +179,7 @@ function sessionTone(s: SessionItem): StatusTone {
 }
 
 function statusTitle(s: SessionItem): string {
-  return statusTitleMap[s.status];
+  return t(statusTitleMap[s.status]);
 }
 
 function isExpanded(path: string): boolean {
@@ -237,23 +245,34 @@ function clearDeleteConfirmTimer(): void {
 function openProjectMenu(p: ProjectItem, ev: MouseEvent): void {
   menuOpenPath.value = p.path;
   const w = 184;
-  const h = 144;
+  const h = 184;
   menuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
   menuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
   clearProjectDeleteTimer();
   projectDeleteConfirmPath.value = null;
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = null;
 }
 
 function closeMenu(): void {
   menuOpenPath.value = null;
   clearProjectDeleteTimer();
   projectDeleteConfirmPath.value = null;
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = null;
 }
 
 function clearProjectDeleteTimer(): void {
   if (projectDeleteConfirmTimer) {
     clearTimeout(projectDeleteConfirmTimer);
     projectDeleteConfirmTimer = null;
+  }
+}
+
+function clearClearSessionsTimer(): void {
+  if (clearSessionsConfirmTimer) {
+    clearTimeout(clearSessionsConfirmTimer);
+    clearSessionsConfirmTimer = null;
   }
 }
 
@@ -315,6 +334,24 @@ function onMenuOpenDir(): void {
   const path = menuOpenPath.value;
   closeMenu();
   if (path) void window.forge.shell.openPath(path);
+}
+
+// 清理所有会话两阶段：首次点击菜单项变红“确认清理”，3 秒内再次点击才 emit
+function onMenuClearSessions(): void {
+  const path = menuOpenPath.value;
+  if (!path) return;
+  if (clearSessionsConfirmPath.value === path) {
+    clearClearSessionsTimer();
+    clearSessionsConfirmPath.value = null;
+    closeMenu();
+    emit('clear-sessions', path);
+    return;
+  }
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = path;
+  clearSessionsConfirmTimer = setTimeout(() => {
+    clearSessionsConfirmPath.value = null;
+  }, 3000);
 }
 
 function onMenuRename(): void {
@@ -442,26 +479,67 @@ function onWindowScroll(): void {
   if (menuOpenPath.value) closeMenu();
 }
 
+// 滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩
+const treeRoot = ref<HTMLElement | null>(null);
+const fadeTop = ref(false);
+const fadeBottom = ref(false);
+
+function updateTreeFade(): void {
+  const el = treeRoot.value;
+  if (!el) return;
+  fadeTop.value = el.scrollTop > 1;
+  fadeBottom.value = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+}
+
+let fadeObserver: ResizeObserver | null = null;
+function observeTreeFadeSource(): void {
+  const el = treeRoot.value;
+  if (!el) return;
+  fadeObserver?.disconnect();
+  // 观察容器自身（尺寸变化）与内容节点（增删/折叠动画导致的高度变化）
+  fadeObserver = new ResizeObserver(updateTreeFade);
+  fadeObserver.observe(el);
+  if (el.firstElementChild) fadeObserver.observe(el.firstElementChild);
+  updateTreeFade();
+}
+
+watch(
+  () => [props.projects, props.sessions, taskExpanded.value],
+  () => nextTick(observeTreeFadeSource),
+  { deep: true }
+);
+
 onMounted(() => {
   document.addEventListener('click', onDocumentClick, true);
   document.addEventListener('keydown', onDocumentKeydown);
   window.addEventListener('scroll', onWindowScroll, true);
+  window.addEventListener('resize', updateTreeFade);
+  observeTreeFadeSource();
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocumentClick, true);
   document.removeEventListener('keydown', onDocumentKeydown);
   window.removeEventListener('scroll', onWindowScroll, true);
+  window.removeEventListener('resize', updateTreeFade);
+  fadeObserver?.disconnect();
+  fadeObserver = null;
   clearDeleteConfirmTimer();
   clearProjectDeleteTimer();
+  clearClearSessionsTimer();
 });
 </script>
 
 <template>
-  <div class="project-tree">
+  <div
+    ref="treeRoot"
+    class="project-tree"
+    :class="{ 'fade-t': fadeTop, 'fade-b': fadeBottom }"
+    @scroll="updateTreeFade"
+  >
     <!-- 任务视角（SM-S06）：平摊全部会话，行尾项目 tag，排序与项目视角同规则 -->
     <template v-if="isTaskView">
-      <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">暂无会话</div>
+      <div v-if="allSessionsSorted.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noSessions') }}</div>
       <div v-else class="tree-section task">
         <div
           v-for="session in visibleTaskSessions"
@@ -491,7 +569,7 @@ onUnmounted(() => {
               v-model="renameSessionValue"
               class="tree-rename-input"
               type="text"
-              placeholder="会话别名"
+              :placeholder="t('project.sessionAlias')"
               @click.stop
               @dblclick.stop
               @keydown.enter.prevent="commitRenameSession()"
@@ -504,7 +582,7 @@ onUnmounted(() => {
               :title="sessionDisplayName(session)"
               @dblclick.stop="startRenameSession(session)"
             >{{ sessionDisplayName(session) }}</div>
-            <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">已开窗</span>
+            <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
           </div>
 
           <span class="tree-session-proj-tag" :title="session.projectPath">{{ taskProjectTag(session) }}</span>
@@ -514,11 +592,11 @@ onUnmounted(() => {
               type="button"
               class="tree-icon-button danger"
               :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
-              :aria-label="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
-              :data-tooltip="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
+              :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+              :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
               @click.stop="handleDeleteSessionClick(session)"
             >
-              <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">确认</span>
+              <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
               <svg
                 v-else
                 viewBox="0 0 24 24"
@@ -542,14 +620,14 @@ onUnmounted(() => {
           class="tree-session-toggle"
           @click.stop="taskExpanded = !taskExpanded"
         >
-          {{ taskExpanded ? '折叠显示' : `展开显示 ${hiddenTaskCount} 个` }}
+          {{ taskExpanded ? t('project.collapseDisplay') : t('project.expandDisplay', { count: hiddenTaskCount }) }}
         </button>
       </div>
     </template>
 
     <!-- 项目视角（现状）：按项目分组 -->
     <template v-else>
-      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">暂无项目</div>
+      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noProjects') }}</div>
 
     <div v-else class="tree-section" @dragover="onSectionDragOver" @drop="onSectionDrop">
       <div
@@ -577,12 +655,12 @@ onUnmounted(() => {
           <button
             type="button"
             class="tree-arrow"
-            :class="{ collapsed: !isExpanded(project.path) }"
-            :aria-label="isExpanded(project.path) ? '折叠项目' : '展开项目'"
+            :aria-label="isExpanded(project.path) ? t('project.collapseProject') : t('project.expandProject')"
             @click.stop="toggleExpand(project.path)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9" />
+              <path v-if="isExpanded(project.path)" d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+              <path v-else d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             </svg>
           </button>
 
@@ -593,7 +671,7 @@ onUnmounted(() => {
               v-model="renameProjectValue"
               class="tree-rename-input"
               type="text"
-              placeholder="项目别名"
+              :placeholder="t('project.projectAlias')"
               @click.stop
               @dblclick.stop
               @keydown.enter.prevent="commitRenameProject()"
@@ -612,8 +690,8 @@ onUnmounted(() => {
             <button
               type="button"
               class="tree-icon-button"
-              aria-label="新建会话"
-              data-tooltip="新建会话"
+              :aria-label="t('project.newSession')"
+              :data-tooltip="t('project.newSession')"
               @click.stop="onCreateSession(project)"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -625,8 +703,8 @@ onUnmounted(() => {
               type="button"
               class="tree-icon-button project-more-trigger"
               :class="{ active: menuOpenPath === project.path }"
-              aria-label="更多操作"
-              data-tooltip="更多操作"
+              :aria-label="t('project.moreActions')"
+              :data-tooltip="t('project.moreActions')"
               @click.stop="openProjectMenu(project, $event)"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -668,7 +746,7 @@ onUnmounted(() => {
                   v-model="renameSessionValue"
                   class="tree-rename-input"
                   type="text"
-                  placeholder="会话别名"
+                  :placeholder="t('project.sessionAlias')"
                   @click.stop
                   @dblclick.stop
                   @keydown.enter.prevent="commitRenameSession()"
@@ -681,7 +759,7 @@ onUnmounted(() => {
                   :title="sessionDisplayName(session)"
                   @dblclick.stop="startRenameSession(session)"
                 >{{ sessionDisplayName(session) }}</div>
-                <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">已开窗</span>
+                <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
               </div>
 
               <div class="tree-node-actions">
@@ -689,11 +767,11 @@ onUnmounted(() => {
                   type="button"
                   class="tree-icon-button danger"
                   :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
-                  :aria-label="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
-                  :data-tooltip="deleteConfirmId === session.sessionId ? '确认删除' : '删除会话'"
+                  :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                  :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
                   @click.stop="handleDeleteSessionClick(session)"
                 >
-                  <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">确认</span>
+                  <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
                   <svg
                     v-else
                     viewBox="0 0 24 24"
@@ -717,10 +795,10 @@ onUnmounted(() => {
               class="tree-session-toggle"
               @click.stop="toggleSessionListExpand(project.path)"
             >
-              {{ expandedSessionLists.has(project.path) ? '折叠显示' : `展开显示 ${hiddenSessionCount(project.path)} 个` }}
+              {{ expandedSessionLists.has(project.path) ? t('project.collapseDisplay') : t('project.expandDisplay', { count: hiddenSessionCount(project.path) }) }}
             </button>
             <div v-else-if="sessionsOf(project.path).length === 0" class="tree-empty tree-empty-inline">
-              暂无会话
+              {{ t('project.noSessions') }}
             </div>
           </div>
         </div>
@@ -742,14 +820,28 @@ onUnmounted(() => {
           <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          打开项目所在目录
+          {{ t('project.openProjectDir') }}
         </button>
         <button type="button" class="project-action-menu-item" @click="onMenuRename">
           <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
-          重命名
+          {{ t('project.rename') }}
+        </button>
+        <button
+          type="button"
+          class="project-action-menu-item danger"
+          :class="{ confirming: clearSessionsConfirmPath === menuOpenPath }"
+          @click="onMenuClearSessions"
+        >
+          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <line x1="10" y1="11" x2="10" y2="17" />
+            <line x1="14" y1="11" x2="14" y2="17" />
+          </svg>
+          {{ clearSessionsConfirmPath === menuOpenPath ? t('project.confirmClear') : t('project.clearSessions') }}
         </button>
         <button
           type="button"
@@ -761,7 +853,7 @@ onUnmounted(() => {
             <polyline points="3 6 5 6 21 6" />
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
           </svg>
-          {{ projectDeleteConfirmPath === menuOpenPath ? '确认删除' : '删除项目' }}
+          {{ projectDeleteConfirmPath === menuOpenPath ? t('project.confirmDelete') : t('project.deleteProject') }}
         </button>
       </div>
     </Teleport>
@@ -775,6 +867,33 @@ onUnmounted(() => {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  /* 与侧栏上方「项目/任务」切换、下方「设置」保持固定间距（含渐隐区） */
+  margin: 6px 0;
+  --edge-fade: 28px;
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+}
+
+.project-tree.fade-t {
+  --fade-top: var(--edge-fade);
+}
+
+.project-tree.fade-b {
+  --fade-bottom: var(--edge-fade);
 }
 
 .project-tree::-webkit-scrollbar {
@@ -839,16 +958,16 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   margin: 0 8px;
-  padding: 10px 12px;
+  padding: 4px 12px;
   border-radius: var(--radius-lg);
   cursor: pointer;
-  color: var(--foreground);
+  color: color-mix(in oklab, var(--foreground) 80%, var(--muted-foreground));
   transition: background var(--transition-fast);
   min-width: 0;
 }
 
 .tree-project:hover {
-  background: var(--surface-hover);
+  background: var(--muted);
 }
 
 /* 项目选中不再使用背景色（仅 hover 有底色），避免与会话选中态视觉打架 */
@@ -875,14 +994,8 @@ onUnmounted(() => {
 }
 
 .tree-arrow svg {
-  width: 14px;
-  height: 14px;
-  transform: rotate(0deg);
-  transition: transform var(--transition-fast);
-}
-
-.tree-arrow.collapsed svg {
-  transform: rotate(-90deg);
+  width: 15px;
+  height: 15px;
 }
 
 .tree-node-main {
@@ -1023,15 +1136,55 @@ onUnmounted(() => {
 }
 
 .tree-session {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 12px 4px 24px;
+  gap: 6px;
+  padding: 2px 12px 2px 24px;
   border-radius: var(--radius-md);
   cursor: pointer;
-  color: var(--foreground);
-  transition: background var(--transition-fast);
+  color: var(--muted-foreground);
   min-width: 0;
+}
+
+.tree-session.active {
+  color: var(--foreground);
+}
+
+/* hover 高亮时文字恢复常规黑色 */
+.tree-session:hover {
+  color: var(--foreground);
+}
+
+/* hover 高亮走 ::before 伪元素做「从内向外微延展」（prototypes/session-hover-demo.html 方案 C）：
+   文字/圆点静止，只有背景胶囊缓出铺满，列表零位移；
+   720→950ms、幅度 0.93→0.88（横向每侧约 17px），用户实机持续要更慢更大 */
+.tree-session::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+  opacity: 0;
+  transform: scale(0.88);
+  transition:
+    opacity 950ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 950ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tree-session:hover::before {
+  opacity: 1;
+  transform: scale(1);
+}
+.tree-session.active::before {
+  background: var(--surface-active);
+  opacity: 1;
+  transform: scale(1);
+}
+/* 行内容盖在高亮层之上 */
+.tree-session > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* 已在多窗口画布上：置灰、去交互 */
@@ -1039,8 +1192,8 @@ onUnmounted(() => {
   opacity: 0.45;
   cursor: default;
 }
-.tree-session.on-canvas:hover {
-  background: transparent;
+.tree-session.on-canvas::before {
+  display: none;
 }
 .session-oncanvas-tag {
   flex-shrink: 0;
@@ -1065,14 +1218,6 @@ onUnmounted(() => {
   border-radius: 999px;
   padding: 1px 7px;
   background: color-mix(in oklab, var(--muted) 30%, transparent);
-}
-
-.tree-session:hover {
-  background: var(--surface-hover);
-}
-
-.tree-session.active {
-  background: var(--surface-active);
 }
 
 .tree-session-status-dot {

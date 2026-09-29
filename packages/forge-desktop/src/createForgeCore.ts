@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ForgeStore,
+  normalizeProjectPath,
   ProjectService,
   createProjectApi,
   createGitApi,
@@ -21,6 +22,7 @@ import {
   createSessionApi,
   ConversationService,
   createConversationApi,
+  classifyError,
   createToolApi,
   ModelService,
   createModelApi,
@@ -47,7 +49,7 @@ import {
 } from './pi/piSessionPaths.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
 import { createSlashCommandResources } from './pi/slashCommandResources.ts';
-import { PiModelsFileAdapter, defaultPiModelsPath } from './pi/piModelsFileAdapter.ts';
+import { PiModelsFileAdapter } from './pi/piModelsFileAdapter.ts';
 import {
   SUBAGENT_OUTPUT_TAIL_BYTES,
   readTail,
@@ -65,6 +67,8 @@ import {
   createUpdaterMethods,
   type AppUpdaterPort,
 } from './pi/appUpdater.ts';
+import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
+import { createCommitMessageMethods } from './git/commitMessageService.ts';
 import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
@@ -84,9 +88,10 @@ export interface ForgeCoreDeps {
   keychain?: KeychainAdapter;
   /** 项目信任权威端口（P2-A）；缺省接真实 pi trust store（agentDir 下 trust.json） */
   trustStore?: TrustStorePort;
-  /** pi models.json 路径（默认 ~/.pi/agent/models.json） */
+  /** pi models.json 路径（缺省派生自 piAgentDir：<agentDir>/models.json） */
   piModelsPath?: string;
-  /** pi agent 目录（默认 ~/.pi/agent）；测试指向空目录可隔离真实凭据 */
+  /** pi agent 目录（生产由 main.ts 注入 <userData>/agent；缺省回退 ~/.pi/agent，
+   * 测试指向空目录可隔离真实凭据） */
   piAgentDir?: string;
   /** 可注入 pi 会话工厂；缺省时使用真实 pi 会话工厂 */
   piAgentSessionFactory?: PiAgentSessionFactory<MinimalPiSession>;
@@ -110,6 +115,11 @@ export interface ForgeCoreDeps {
   /** 更新调试开关（main.ts 读 userData/updater-debug.json，enabled=true 时前端显示调试控制台）。
    * 缺省 false=普通用户不可见 */
   getUpdateDebugEnabled?: () => boolean;
+  /** 模块 09（skill 管理）：移入系统回收站端口（main.ts 注入 Electron shell.trashItem，
+   * 纯 TS 内核不 import Electron）。缺省/失败时删除与覆盖导入回退永久删除（TD-SK-04） */
+  trashItem?: (targetPath: string) => Promise<void>;
+  /** 模块 09：测试接缝——替换 skill 枚举用的 pi DefaultResourceLoader 装配 */
+  skillLoaderFactory?: (cwd: string, agentDir: string) => SkillLoaderLike;
 }
 
 /**
@@ -133,23 +143,21 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       }
     },
   };
+  // agentDir 单点解析（生产 = <userData>/agent，main.ts 注入）：trust store、会话转录、
+  // models.json、skill 写入根全部从这一根派生，杜绝多处各自缺省造成读写裂脑。
+  const agentDir = resolvePiAgentDir(deps.piAgentDir);
+  const piModelsPath = deps.piModelsPath ?? path.join(agentDir, 'models.json');
   const projectService = new ProjectService(
     store,
-    deps.trustStore ??
-      new PiTrustStoreAdapter(
-        deps.piAgentDir ??
-          path.join(
-            process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
-            '.pi',
-            'agent',
-          ),
-      ),
+    deps.trustStore ?? new PiTrustStoreAdapter(agentDir),
     projectSessionsPort,
   );
   const projectApi = createProjectApi(projectService, eventBus);
 
   // git（wu-02）：与 project 共享同一事件汇，switchBranch 分支变化经 eventBus 转发渲染进程
-  const gitApi = createGitApi({ gitService: new GitService(), projectService, events: eventBus });
+  // gitService 提升为共享实例：gitApi（查询/切换）与 generateCommitMessage（diff 收集）复用
+  const gitService = new GitService();
+  const gitApi = createGitApi({ gitService, projectService, events: eventBus });
 
   // conversation adapter 先行声明（sessionService 删除钩子闭包引用；实际初始化在下方）
   let conversationAdapter: PiConversationAdapter;
@@ -158,9 +166,8 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   let subagentServiceRef: SubagentService | undefined;
 
   // session（02）：删除会话时先释放对话侧运行资源（P2-D lease dispose + stop）。
-  // agentDir 提前到此处解析：会话删除要按同一 agentDir 推导 pi 转录文件路径
+  // 会话删除按同一 agentDir 推导 pi 转录文件路径
   //（与 createPiAgentSessionFactory 的建文件路径必须逐字节一致，否则删不掉）。
-  const agentDir = resolvePiAgentDir(deps.piAgentDir);
   const piSessionAdapter = new PiSessionAdapter({ agentDir });
   const sessionService = new SessionService(
     store,
@@ -191,7 +198,14 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // streaming」（照常 notifyMainTurnStart）。非 streaming 状态统一清理防标记泄漏到下一轮。
   const retryRestorePending = new Set<string>();
   const piAgentSessionFactory =
-    deps.piAgentSessionFactory ?? createPiAgentSessionFactory({ agentDir: deps.piAgentDir });
+    deps.piAgentSessionFactory ??
+    createPiAgentSessionFactory({
+      agentDir,
+      modelsPath: piModelsPath,
+      // CV-TRUST-01：执行链信任门——pi 持久决策 ∨ trustOnce 会话内放行，
+      // 由 ProjectService.isTrustedForExecution 统一口径（会话创建与预热共用）
+      projectTrustedFor: (cwd) => projectService.isTrustedForExecution(cwd),
+    });
   // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件
   // （agentDir/sessions/<encodeURIComponent(cwd)>/forge-<id>.jsonl，见 piSessionPaths）
   const resolveSessionFile = (sessionId: string): string | undefined => {
@@ -308,7 +322,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   });
   // model（05）共享实例：提供真实 provider 就绪检查（models 非空）与会话模型解析
   const modelService = new ModelService({
-    modelsFile: deps.modelsFile ?? new PiModelsFileAdapter(deps.piModelsPath ?? defaultPiModelsPath()),
+    modelsFile: deps.modelsFile ?? new PiModelsFileAdapter(piModelsPath),
     keychain: deps.keychain ?? new EnvVarKeychainAdapter(),
     store,
     // P3-D：配置变更审计日志（追加写 store 同目录，载荷仅动作标识 + providerId，无密钥）
@@ -330,7 +344,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     // 过滤规则）。模型解析失败时内部返回 null -> 服务层映射为 1004「模型未配置」。
     thinkLevels: {
       getSupportedThinkingLevels: (model: string) =>
-        getPiSupportedThinkingLevels(model, deps.piModelsPath),
+        getPiSupportedThinkingLevels(model, piModelsPath),
     },
   });
   const conversationService = new ConversationService(conversationAdapter, {
@@ -419,10 +433,18 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
     onError: (sessionId, error) => {
       pokeMainTurnActivity(sessionId);
-      const message = error?.message ?? '对话处理失败';
-      // lastError 随 error 状态记录（红点会话切回后错误横幅的数据源）
-      conversationService.setStatus(sessionId, 'error', { lastError: message });
-      conversationApi.emitError(sessionId, 5000, message);
+      // CV-ERR-01：归因与文案生成收口到分类器。本层只做「原文 + 本轮是否已有内容」的
+      // 传递，不再各自加工文案（旧逻辑散在 adapter 4 处，导致同一错误在不同路径下说法不一）。
+      const raw = error?.raw ?? error?.message ?? '对话处理失败';
+      const classified = classifyError(raw, {
+        hasVisibleContent: error?.hasVisibleContent ?? false,
+      });
+      // lastError/lastErrorInfo 随 error 状态记录（红点会话切回后错误横幅的数据源）
+      conversationService.setStatus(sessionId, 'error', {
+        lastError: raw,
+        lastErrorInfo: classified,
+      });
+      conversationApi.emitError(sessionId, 5000, raw, { error: classified });
     },
     onAutoRetryStart: (sessionId, info) => {
       pokeMainTurnActivity(sessionId); // 重试等待期也是会话活动，刷新看门狗
@@ -431,10 +453,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       // status 事件不清提示条，顺序不能反
       retryRestorePending.add(sessionId);
       conversationService.setStatus(sessionId, 'streaming');
+      // retry 字段标明「这不是终态错误」（CV-ERR-01）：UI 据此显示重试进度而非错误横幅
       conversationApi.emitError(
         sessionId,
         5000,
         `模型连接中断，正在自动重试（第 ${info.attempt}/${info.maxAttempts} 次）…`,
+        { retry: { attempt: info.attempt, maxAttempts: info.maxAttempts } },
       );
     },
     // CV-S09：队列变更 → conversation.queueUpdated，UI 据此渲染待发送徽标/浮窗。
@@ -493,6 +517,69 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   // model（05）：复用共享 ModelService（真实 pi models.json 双向同步；测试可注入 mock）
   const modelApi = createModelApi(modelService, eventBus);
 
+  // generateCommitMessage（模块 11 GC-F05）：单次 chat/completions 调用（不起 agent）。
+  // provider 解析口径：会话模型（session→global 回退在 getSessionModel 内）→ 缺省退
+  // 全局默认模型 → models.json 归属 provider → apiKey 明文（queryProviderList 已经
+  // keychain.readKey 尝试解析 $VAR/!cmd 引用；仍为引用时按 $VAR 兜底查一次进程环境变量，
+  // 未命中即视为无法解析）。错误码 6008（git 域顺延）；apiKey 绝不入日志。
+  const commitMessageMethods = createCommitMessageMethods({
+    gitService,
+    isProjectRegistered: (targetPath) => {
+      const r = projectService.queryProjectList();
+      if (!r.ok) {
+        return false;
+      }
+      let key: string;
+      try {
+        key = normalizeProjectPath(targetPath);
+      } catch {
+        key = path.resolve(targetPath);
+      }
+      return r.data.projects.some((p) => p.path === key);
+    },
+    resolveChatTarget: async (sessionId) => {
+      let model: string | null = null;
+      if (sessionId !== null) {
+        const r = await modelService.getSessionModel(sessionId);
+        if (r.ok) {
+          model = r.data.model;
+        }
+      }
+      if (model === null) {
+        const r = await modelService.queryModels();
+        if (r.ok) {
+          model = r.data.defaultModel;
+        }
+      }
+      if (model === null || model.trim() === '') {
+        return { ok: false, code: 6008, message: '未配置模型：请先在设置页配置 provider 与默认模型' };
+      }
+      const pr = await modelService.queryProviderList();
+      if (!pr.ok) {
+        return { ok: false, code: 6008, message: pr.message };
+      }
+      const provider = pr.data.providers.find((p) => p.models.includes(model));
+      if (provider === undefined) {
+        return { ok: false, code: 6008, message: `模型未归属任何已配置 provider: ${model}` };
+      }
+      if (provider.baseUrl === null || provider.baseUrl.trim() === '') {
+        return { ok: false, code: 6008, message: `provider「${provider.id}」缺少 baseUrl，无法调用` };
+      }
+      if (!provider.type.startsWith('openai')) {
+        return { ok: false, code: 6008, message: `暂不支持 ${provider.type} 协议的 AI 生成提交说明` };
+      }
+      let apiKey = provider.apiKey ?? null;
+      const envRef = apiKey !== null ? /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(apiKey) : null;
+      if (envRef !== null) {
+        apiKey = process.env[envRef[1] as string] ?? null;
+      }
+      if (apiKey === null || apiKey === '' || apiKey.startsWith('!')) {
+        return { ok: false, code: 6008, message: 'API Key 无法解析，请在设置页重新保存该 provider' };
+      }
+      return { ok: true, target: { baseUrl: provider.baseUrl, apiKey, model } };
+    },
+  });
+
   // wu-06：subagent/queryList | subagent/stop | subagent/clearFinished RPC 方法映射
   // 三个方法都委托 SubagentService，返回信封与错误码（1001/1002/5000）严格按 service 输出。
   // 取消 sendMessage 末尾的重复 pushStatus：onStatusChange 回调已处理状态推送（原 completionHandler
@@ -525,6 +612,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       const agentId = readStringParam(params, 'agentId');
       if (sessionId === null || agentId === null) {
         return failEnvelope(1001, '参数错误：sessionId/agentId 必须为非空字符串');
+      }
+      // CV-TRUST-04：agentId 直拼 tasks/${agentId}.output，../ 或分隔符可跳出 tmp 目录。
+      // 白名单放行扩展实际生成的 ID 形态（UUID/nanoid/sub-agent-N），路径分隔符不存在
+      // 即无从遍历。
+      if (!/^[A-Za-z0-9._-]+$/.test(agentId)) {
+        return failEnvelope(1001, '参数错误：agentId 含非法字符');
       }
       const session = store.getSession(sessionId);
       if (session === undefined) {
@@ -578,7 +671,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       data: { forgeVersion: deps.forgeVersion ?? '0.0.0-dev' },
     }),
     'pi/updatePlugins': async () => {
-      const result = await (deps.piUpdateExtensions ?? updatePiExtensions)();
+      const result = await (deps.piUpdateExtensions ?? (() => updatePiExtensions(agentDir)))();
       if (!result.ok) {
         return { code: 6002, message: '组件更新失败', data: { output: result.output } };
       }
@@ -645,6 +738,14 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     return baseResult;
   };
 
+  // skill（09）：skill 管理 RPC（list/import/create/delete）。枚举复用 pi loader；
+  // 回收站能力经 deps.trashItem 端口（main.ts 注入 shell.trashItem，缺省回退永久删除）。
+  const skillMethods: MethodTable = createSkillMethods({
+    agentDir,
+    trashItem: deps.trashItem,
+    loaderFactory: deps.skillLoaderFactory,
+  });
+
   const methodTable: MethodTable = {
     ...projectApi.methods,
     ...gitApi.methods,
@@ -652,7 +753,9 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...conversationApi.methods,
     ...toolApi.methods,
     ...modelApi.methods,
+    ...commitMessageMethods,
     ...subagentMethods,
+    ...skillMethods,
     ...piMethods,
     ...updaterMethods,
     // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）

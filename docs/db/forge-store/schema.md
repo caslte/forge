@@ -12,7 +12,7 @@ forge 是 Electron 桌面应用，**不引入传统关系数据库**。本 schem
 
 - **存（forge 自有）**：项目元数据、会话元数据缓存、全局默认模型、会话模型偏好。
 - **不存（归 pi，只读/只写对接）**：
-  - pi session JSONL（会话消息与原始数据）——见 `~/.pi/agent/sessions`，forge 不复制。
+  - pi session JSONL（会话消息与原始数据）——见 `<userData>/agent/sessions`，forge 不复制。
   - models.json（provider 配置）——forge 作为可视化编辑器读写该文件，密钥借 `!command`/`$ENV_VAR`，不明文。
   - OS keychain（API key 实际存放）——forge 经 `!forge-secret` 读写。
 - **存储演进**：单 JSON 文件 `forge-store.json`，含 `schemaVersion` 字段支持后续迁移拆分（PRD 01 §3.5 兼容性要求）。
@@ -122,7 +122,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 | 会话模型覆盖 | forge | forge-store.json | 读写 |
 | 全局默认思考级别 | forge | forge-store.json | 读写（PRD05 MP-S05） |
 | 会话思考级别覆盖 | forge | forge-store.json | 读写（PRD05 MP-S05） |
-| pi 会话消息 | pi | JSONL（`~/.pi/agent/sessions`） | 只读/委托创建 |
+| pi 会话消息 | pi | JSONL（`<userData>/agent/sessions`） | 只读/委托创建 |
 | provider 配置 | pi | models.json | 写入（可视化编辑器），含模型 contextWindow |
 | API key | pi | OS keychain | 经 `!forge-secret` 读写，不明文入库 |
 | 项目信任状态 | pi | pi 内部 | 只读缓存（trustState 仅展示） |

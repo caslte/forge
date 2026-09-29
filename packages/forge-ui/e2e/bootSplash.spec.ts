@@ -133,14 +133,14 @@ async function readWelcomeState(page: Page, selector: string, titleSelector: str
   );
 }
 
-test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（无滚动条 / 无白边），且为亮色', async ({
+test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（无滚动条 / 无白边），且为默认暗色', async ({
   page,
 }) => {
   await freezeBeforeModuleChain(page);
   await page.goto('/');
   await expect(page.locator('#app-boot-splash')).toBeVisible();
 
-  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-name');
+  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-phase');
 
   // 1) 全站 reset 尚未生效时，splash 必须自带最小 reset
   expect(s.marginTop, `body margin-top=${s.marginTop}`).toBe('0px');
@@ -156,11 +156,11 @@ test('BOOT-SPLASH-001 @P0 @mock-backend splash 无全站样式时不得溢出（
   expect(Math.abs(s.width - s.viewportW), `width=${s.width} vs ${s.viewportW}`).toBeLessThanOrEqual(1);
   expect(Math.abs(s.height - s.viewportH), `height=${s.height} vs ${s.viewportH}`).toBeLessThanOrEqual(1);
 
-  // 4) 默认（无持久化主题）= 亮色，且不设 data-theme（与 useTheme 默认值一致）
-  expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBeNull();
+  // 4) 默认（无持久化主题）= 暗色，且引导脚本直接设上 data-theme（与 useTheme 默认值一致）
+  expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBe('dark');
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
-  expect(s.bg.luma, `亮色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeGreaterThan(0.85);
-  expect(s.fg.luma, `亮色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeLessThan(0.4);
+  expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.5);
 });
 
 test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执行即已是暗色欢迎页', async ({
@@ -171,7 +171,7 @@ test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执�
   await page.goto('/');
   await expect(page.locator('#app-boot-splash')).toBeVisible();
 
-  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-name');
+  const s = await readWelcomeState(page, '#app-boot-splash', '#app-boot-splash .splash-phase');
 
   // 机制断言：模块链被冻结（useTheme.ts 根本没跑）时 data-theme 已在 <html> 上
   // —— 证明 index.html 的同步引导脚本生效，而不是事后靠模块链补的
@@ -180,7 +180,7 @@ test('BOOT-SPLASH-002 @P0 @mock-backend 持久化为暗色时，模块链未执�
   // 视觉断言：暗底 + 亮字，底色必须不透明（变量解析失败会是透明）
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
   expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
-  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.6);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.5);
 });
 
 test('BOOT-SPLASH-003 @P0 @mock-backend 门闩期间的 BootWelcome 同为暗色（接管不闪亮）', async ({
@@ -192,26 +192,26 @@ test('BOOT-SPLASH-003 @P0 @mock-backend 门闩期间的 BootWelcome 同为暗色
   await page.goto('/');
 
   await expect(page.locator('.boot-welcome')).toBeVisible({ timeout: 15_000 });
-  const s = await readWelcomeState(page, '.boot-welcome', '.boot-welcome .boot-name');
+  const s = await readWelcomeState(page, '.boot-welcome', '.boot-welcome .boot-phase');
 
   expect(s.themeAttr, `data-theme=${s.themeAttr}`).toBe('dark');
   expect(s.bg.alpha, `底色不透明度（raw=${s.bg.raw}）`).toBe(255);
   expect(s.bg.luma, `暗色底 luma=${s.bg.luma}（raw=${s.bg.raw}）`).toBeLessThan(0.35);
-  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.6);
+  expect(s.fg.luma, `暗色字 luma=${s.fg.luma}（raw=${s.fg.raw}）`).toBeGreaterThan(0.5);
   health.assertHealthy();
 });
 
 /**
- * BOOT-SPLASH-004（v3.78.8）：splash 的**字与图标**必须在模块链执行前就在场。
+ * BOOT-SPLASH-004（v3.78.8）：splash 的**字标与文案**必须在模块链执行前就在场。
  *
  * 背景：v3.78.7 用户报「一开始没有字，只有白板」。像素统计口径（`bootFrame.ts`）能给出
  * 「这一帧有没有内容」，但它量的是真机窗口；这条用例从 DOM 侧把同一件事锁住——
- * 冻结模块链（= splash 整个展示窗口期的真实状态）后，splash 的文案/图标必须可见、
- * 有非零尺寸、且完整落在视口内。任何「容器高度塌成 0 / 文案被清空 / 元素被推出视口」
- * 都会在这里红，而不是等到用户看到白板。
+ * 冻结模块链（= splash 整个展示窗口期的真实状态）后，splash 的字标/文案必须
+ * 可见、有非零尺寸、且完整落在视口内。任何「容器高度塌成 0 / 文案被清空 / 元素被推出
+ * 视口」都会在这里红，而不是等到用户看到白板。
  * 与 001 的分工：001 管几何与配色（不溢出、不亮暗错档），本用例管**内容在场**。
  */
-test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与图标必须在场（不得只有白板）', async ({
+test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字标与文案必须在场（不得只有白板）', async ({
   page,
 }) => {
   const health = attachHealthGuards(page);
@@ -219,13 +219,13 @@ test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与�
   await page.goto('/');
   await expect(page.locator('#app-boot-splash')).toBeVisible();
 
-  // 文案与图标在场：`Forge` 字标 + 阶段文案 + 标志块 SVG
-  await expect(page.locator('#app-boot-splash .splash-name')).toHaveText('Forge');
+  // 内容在场：FORGE 字标（默认暗色档显示 wm-dark）+ 阶段文案
+  await expect(page.locator('#app-boot-splash .splash-word.wm-dark')).toBeVisible();
   const phase = (await page.locator('#app-boot-splash .splash-phase').textContent()) ?? '';
   expect(phase.trim().length, `阶段文案="${phase}" 不得为空`).toBeGreaterThan(0);
-  await expect(page.locator('#app-boot-splash svg')).toBeVisible();
+  await expect(page.locator('#app-boot-splash .splash-spinner')).toHaveCount(0);
 
-  // 几何：三者都必须有非零尺寸且完整落在视口内（原 bug 的表现是它们根本没上屏）
+  // 几何：两者都必须有非零尺寸且完整落在视口内（原 bug 的表现是它们根本没上屏）
   const geo = await page.evaluate(() => {
     const pick = (sel: string) => {
       const el = document.querySelector(sel);
@@ -234,18 +234,16 @@ test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与�
       return { top: r.top, left: r.left, width: r.width, height: r.height };
     };
     return {
-      name: pick('#app-boot-splash .splash-name'),
+      word: pick('#app-boot-splash .splash-word.wm-dark'),
       phase: pick('#app-boot-splash .splash-phase'),
-      icon: pick('#app-boot-splash svg'),
       viewportW: window.innerWidth,
       viewportH: window.innerHeight,
     };
   });
 
   const items = [
-    { label: 'Forge 字标', rect: geo.name },
+    { label: 'FORGE 字标', rect: geo.word },
     { label: '阶段文案', rect: geo.phase },
-    { label: '标志块', rect: geo.icon },
   ];
   for (const { label, rect } of items) {
     if (rect === null) throw new Error(`${label} 不在 DOM 中`);
@@ -255,6 +253,55 @@ test('BOOT-SPLASH-004 @P0 @mock-backend 模块链未执行时 splash 的字与�
     expect(rect.left, `${label} left=${rect.left}`).toBeGreaterThanOrEqual(0);
     expect(rect.top + rect.height, `${label} 下边界`).toBeLessThanOrEqual(geo.viewportH + 1);
     expect(rect.left + rect.width, `${label} 右边界`).toBeLessThanOrEqual(geo.viewportW + 1);
+  }
+  health.assertHealthy();
+});
+
+/**
+ * BOOT-SPLASH-005（v3.85.2）：字标**解码前不得回执 splashReady**，且字标自带占位几何。
+ *
+ * 背景：v3.78.7 的回执只数了两帧 rAF，若 PNG 尚未解码，主进程 show 出来的第一帧
+ * 就没有 FORGE（用户报「加载页 FORGE 字样会闪一下」的第一段）。同时 prod 是
+ * `base:'./'` + loadFile（file://），splash 的绝对路径 `/logo-…` 在打包版直接裂图；
+ * `height:auto` 无 width/height 属性时解码前盒子塌 0，BootWelcome 交接再放大一次。
+ * 断言口径：冻结模块链（无 preload 桥）下回执脚本仍会落 `window.__forgeSplashNotified`
+ * 观测位——wordLoaded 必为 true；src 为相对路径；img 带显式 width/height 属性。
+ */
+test('BOOT-SPLASH-005 @P0 @mock-backend splash 回执必在字标解码后，且字标为相对路径 + 显式占位', async ({
+  page,
+}) => {
+  const health = attachHealthGuards(page);
+  await freezeBeforeModuleChain(page);
+  await page.goto('/');
+
+  // 回执发生（幂等观测位出现）——超时即说明 decode 门把回执卡死（新死门）
+  await page.waitForFunction(
+    () => (window as unknown as { __forgeSplashNotified?: unknown }).__forgeSplashNotified !== undefined,
+    undefined,
+    { timeout: 10_000 },
+  );
+  const info = await page.evaluate(() => {
+    const marks = [...document.querySelectorAll<HTMLImageElement>('#app-boot-splash .splash-word')];
+    return {
+      notified: (window as unknown as { __forgeSplashNotified: { wordLoaded: boolean } })
+        .__forgeSplashNotified,
+      srcs: marks.map((im) => im.getAttribute('src') ?? ''),
+      dims: marks.map((im) => ({
+        w: im.getAttribute('width'),
+        h: im.getAttribute('height'),
+        natural: im.naturalWidth,
+      })),
+    };
+  });
+
+  expect(info.notified.wordLoaded, '回执时字标尚未 complete/解码').toBe(true);
+  for (const src of info.srcs) {
+    expect(src, `字标 src="${src}" 必须是相对路径（prod file:// 下绝对路径裂图）`).not.toMatch(/^\//);
+  }
+  for (const d of info.dims) {
+    expect(d.w, '字标缺显式 width 属性（解码期盒子塌 0）').toBe('320');
+    expect(d.h, '字标缺显式 height 属性').toBe('42');
+    expect(d.natural, '字标 PNG 未加载成功').toBeGreaterThan(0);
   }
   health.assertHealthy();
 });

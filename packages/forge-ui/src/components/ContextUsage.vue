@@ -1,12 +1,16 @@
 <script setup lang="ts">
+import { useI18n } from '../i18n/index.ts';
+
 defineProps<{
   sessionId: string;
 }>();
+
+const { t } = useI18n();
 </script>
 
 <template>
   <!-- 占位：forge-core 尚未提供上下文用量事件 -->
-  <div class="ctx" :data-session-id="sessionId" data-tooltip="forge-core 尚未提供上下文用量事件">
+  <div class="ctx" :data-session-id="sessionId" :data-tooltip="t('chat.contextTooltip')">
     <span class="ctx-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="9" />
@@ -14,7 +18,7 @@ defineProps<{
       </svg>
     </span>
     <div class="ctx-body">
-      <div class="ctx-label">上下文：未实现</div>
+      <div class="ctx-label">{{ t('chat.contextLabelUnimplemented') }}</div>
       <div class="ctx-bar">
         <div class="ctx-fill"></div>
       </div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from '../i18n/index.ts';
 import type { Subagent } from '../types';
 
 /**
@@ -26,6 +27,8 @@ const emit = defineEmits<{
   (e: 'clear-finished'): void;
 }>();
 
+const { t } = useI18n();
+
 /** 排序后的展示顺序：active 在前（按 startedAt asc），终态按 finishedAt desc */
 const sorted = computed<Subagent[]>(() => {
   return [...props.subagents].sort((a, b) => {
@@ -45,15 +48,15 @@ const hasFinished = computed(() =>
 function statusText(status: Subagent['status']): string {
   switch (status) {
     case 'queued':
-      return '排队中';
+      return t('panels.subagent.statusQueued');
     case 'running':
-      return '运行中';
+      return t('panels.subagent.statusRunning');
     case 'completed':
-      return '已完成';
+      return t('panels.subagent.statusCompleted');
     case 'failed':
-      return '失败';
+      return t('panels.subagent.statusFailed');
     case 'stopped':
-      return '已终止';
+      return t('panels.subagent.statusStopped');
   }
 }
 
@@ -91,7 +94,7 @@ function onClearClick(): void {
 </script>
 
 <template>
-  <div v-if="subagents.length > 0" class="subagent-tabbar" role="tablist" aria-label="子 Agent Tab 栏">
+  <div v-if="subagents.length > 0" class="subagent-tabbar" role="tablist" :aria-label="t('panels.subagent.tabbarAria')">
     <div class="subagent-tab-scroll">
       <!-- 主会话 Tab：固定首位 -->
       <button
@@ -104,7 +107,7 @@ function onClearClick(): void {
         @keydown="onTabKey(null, $event)"
       >
         <span class="subagent-status-dot main"></span>
-        <span class="subagent-tab-label">主会话</span>
+        <span class="subagent-tab-label">{{ t('panels.subagent.mainSession') }}</span>
       </button>
 
       <button
@@ -130,16 +133,16 @@ function onClearClick(): void {
           class="subagent-tab-close"
           role="button"
           tabindex="0"
-          aria-label="关闭 Tab"
-          title="关闭"
+          :aria-label="t('panels.subagent.closeTabAria')"
+          :title="t('common.close')"
           @click="onClose(sa.agentId, $event)"
           @keydown="onCloseKey(sa.agentId, $event)"
         >×</span>
         <span
           v-else
           class="subagent-tab-close disabled"
-          aria-label="运行中 Tab 不可关闭"
-          title="运行中"
+          :aria-label="t('panels.subagent.runningTabCloseAria')"
+          :title="t('panels.subagent.statusRunning')"
         >×</span>
       </button>
     </div>
@@ -148,7 +151,7 @@ function onClearClick(): void {
       class="subagent-clear-btn"
       :disabled="!hasFinished"
       type="button"
-      data-tooltip="清除全部终态 Tab"
+      :data-tooltip="t('panels.subagent.clearAllTooltip')"
       @click="onClearClick"
     >
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -156,12 +159,17 @@ function onClearClick(): void {
         <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
         <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
       </svg>
-      <span>清除已完成</span>
+      <span>{{ t('common.clearCompleted') }}</span>
     </button>
   </div>
 </template>
 
 <style scoped>
+/* 列宽跟随个性化「内容宽度」偏好（--conv-col 由 .conv-view 定义：
+   wide=100%，standard=min(--content-col-std,100%)）。本栏是 .conv-view 的直接子项，
+   不在 .conv-messages-inner / .conv-input-wrap 内，若不限宽会在标准宽度下仍铺满，
+   与已收拢的正文列、输入框左右错开。宽度取 100% + max-width（单写 max-width 会塌成
+   fit-content），过渡与正文列同步。 */
 .subagent-tabbar {
   display: flex;
   align-items: center;
@@ -169,6 +177,17 @@ function onClearClick(): void {
   padding: 6px 22px 2px;
   background: var(--background);
   flex-shrink: 0;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--conv-col, 100%);
+  margin-inline: auto;
+  transition: max-width var(--transition-decelerate);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-tabbar {
+    transition: none;
+  }
 }
 
 .subagent-tab-scroll {
@@ -330,5 +349,19 @@ function onClearClick(): void {
 .subagent-clear-btn svg {
   width: 12px;
   height: 12px;
+}
+</style>
+
+<!-- 暗色 --brand 接近纯白，hover/active 边瞬间跳白显突兀；压到 40% mix 极轻提亮，不形成可辨环。
+     ponytail: 调光旋钮 mix %，想再亮改 50%、再压改 30%；light 不动。 -->
+<style>
+:root[data-theme='dark'] .subagent-tab:hover {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+}
+:root[data-theme='dark'] .subagent-tab.active {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
+}
+:root[data-theme='dark'] .subagent-clear-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--brand) 55%, transparent);
 }
 </style>

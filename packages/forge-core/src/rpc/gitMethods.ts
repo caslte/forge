@@ -13,6 +13,11 @@
  * 4. 事件 git.branchChanged（TD-PM-09）：switchBranch 成功且分支变化时发射
  *    { path, branch }；幂等（目标即当前分支，changed=false）不发射。
  * 5. 异常隔离：意外异常捕获为 5000，不向调用方泄漏异常细节。
+ * 6. 模块 11（git 提交/推送）扩 getStatus / commit / push 三方法（TD-GC-01），
+ *    错误码 6006（提交失败）/ 6007（推送失败）沿用 6001 的 data.stderr 透传形态；
+ *    commit 的 includeUnstaged 缺省视为 true（勾选框默认勾上口径）。
+ *    git/generateCommitMessage 不在本层——需要 provider 配置与密钥解密，
+ *    由 forge-desktop 组装（src/git/commitMessageService.ts）。
  */
 
 import path from 'node:path';
@@ -74,6 +79,9 @@ export class GitApi {
     this.methods = {
       'git/getBranchInfo': (params) => this.getBranchInfo(params),
       'git/switchBranch': (params) => this.switchBranch(params),
+      'git/getStatus': (params) => this.getStatus(params),
+      'git/commit': (params) => this.commit(params),
+      'git/push': (params) => this.push(params),
     };
   }
 
@@ -141,6 +149,80 @@ export class GitApi {
       return fail(result.code, result.message);
     } catch (err) {
       console.error('[switchBranch] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /** git/getStatus：提交弹窗数据源（模块 11 GC-F01，只读） */
+  private async getStatus(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      return ok(await this.gitService.getStatus(path));
+    } catch (err) {
+      console.error('[getStatus] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /**
+   * git/commit：提交（模块 11 GC-F03）。includeUnstaged 缺省 true（勾选框默认口径）；
+   * 6006/1001 失败信封与 6001 同款（data.stderr 附 git 原始错误）。
+   */
+  private async commit(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    const message = requireString(params, 'message');
+    if (message === null) {
+      return fail(1001, '参数错误：message 必须为非空字符串');
+    }
+    const raw = isRecord(params) ? params.includeUnstaged : undefined;
+    const includeUnstaged = typeof raw === 'boolean' ? raw : true;
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      const result = await this.gitService.commit(path, message, includeUnstaged);
+      if (result.ok) {
+        return ok(result.data);
+      }
+      if (result.code === 6006) {
+        return { code: 6006, message: result.message, data: { stderr: result.stderr ?? '' } };
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[commit] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /** git/push：推送当前分支（模块 11 GC-F04），6007 附 git 原始 stderr */
+  private async push(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      const result = await this.gitService.push(path);
+      if (result.ok) {
+        return ok(result.data);
+      }
+      if (result.code === 6007) {
+        return { code: 6007, message: result.message, data: { stderr: result.stderr ?? '' } };
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[push] internal error', err);
       return fail(5000, 'internal error');
     }
   }

@@ -16,8 +16,13 @@ import {
   IPC_WINDOW_IS_MAXIMIZED,
   IPC_DIALOG_OPEN_DIRECTORY,
   IPC_DIALOG_OPEN_FILE,
+  IPC_DIALOG_SAVE_FILE,
+  IPC_FILE_WRITE_TEXT,
+  IPC_SHELL_OPEN_EXTERNAL,
+  IPC_SHELL_PROBE,
   IPC_SHELL_OPEN_PATH,
   IPC_THEME_SET,
+  IPC_LOCALE_SET,
   IPC_ATTACHMENT_SCAN,
   IPC_CLIPBOARD_SAVE_IMAGE,
   IPC_CLIPBOARD_SAVE_TEXT,
@@ -29,6 +34,7 @@ import {
   type ForgeEvent,
   type ForgeResult,
   type BootState,
+  type ShellProbeResult,
   type ForgeAskUserQuestion,
   type AskUserQuestionRequestPayload,
   type AskUserQuestionReplyParams,
@@ -58,6 +64,10 @@ const dialogControl = {
   async selectFiles(): Promise<string[]> {
     return ipcRenderer.invoke(IPC_DIALOG_OPEN_FILE) as Promise<string[]>;
   },
+  /** 另存对话框：返回用户选定的绝对路径，取消返回 null */
+  async saveFile(defaultName: string): Promise<string | null> {
+    return ipcRenderer.invoke(IPC_DIALOG_SAVE_FILE, defaultName) as Promise<string | null>;
+  },
 };
 
 /** window.forge.file 附件能力：路径解析 / 密钥嗅探 / 截图落盘（统一给路径） */
@@ -84,12 +94,22 @@ const fileControl = {
   async listProjectFiles(root: string): Promise<string[]> {
     return ipcRenderer.invoke(IPC_FILE_LIST_PROJECT, root) as Promise<string[]>;
   },
+  /** 写 UTF-8 文本（画布卡片另存用，仅 .html/.htm）；失败返回 false */
+  async writeText(path: string, text: string): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_FILE_WRITE_TEXT, { path, text }) as Promise<boolean>;
+  },
 };
 
-/** window.forge.shell 系统能力：文件管理器打开目录 */
+/** window.forge.shell 系统能力：文件管理器打开目录 / 系统浏览器打开外链 */
 const shellControl = {
   async openPath(path: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_PATH, path) as Promise<boolean>;
+  },
+  async openExternal(url: string): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_SHELL_OPEN_EXTERNAL, url) as Promise<boolean>;
+  },
+  async shellProbe(): Promise<ShellProbeResult> {
+    return ipcRenderer.invoke(IPC_SHELL_PROBE) as Promise<ShellProbeResult>;
   },
 };
 
@@ -101,6 +121,16 @@ const shellControl = {
 const themeControl = {
   set(mode: 'light' | 'dark'): void {
     ipcRenderer.send(IPC_THEME_SET, mode);
+  },
+};
+
+/**
+ * window.forge.locale 生效语言回报：与主题通道同构（localStorage 唯一事实来源）。
+ * 主进程持镜像仅为系统通知小窗（notifyToast.ts）标题文案取词；fire-and-forget。
+ */
+const localeControl = {
+  set(mode: 'zh-CN' | 'en'): void {
+    ipcRenderer.send(IPC_LOCALE_SET, mode);
   },
 };
 
@@ -191,6 +221,7 @@ const forgeBridge = {
   dialog: dialogControl,
   shell: shellControl,
   theme: themeControl,
+  locale: localeControl,
   file: fileControl,
 };
 

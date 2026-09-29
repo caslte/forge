@@ -28,11 +28,15 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 | 1002 | 资源不存在 |
 | 1004 | provider 未配置 |
 | 1005 | 信任未通过 |
+| 4090 | skill 同名冲突待用户确认（data.conflictPath；正常分支，UI 弹确认后带 overwrite=true 重调） |
 | 6001 | git 切换失败（data.stderr 附 git 原始错误） |
 | 6002 | 组件更新失败（data.output 附更新器输出尾部） |
 | 6003 | 应用更新检查失败（feed 不可达/网络失败；UI 静默处理） |
 | 6004 | 应用更新下载失败/校验失败 |
 | 6005 | 应用更新安装启动失败 |
+| 6006 | git 提交失败（data.stderr 附 git 原始错误；暂存区为空亦 6006） |
+| 6007 | git 推送失败（data.stderr 附 git 原始错误；分离 HEAD 拒绝同码） |
+| 6008 | AI 生成提交说明失败（无变更/未配置模型/网络/非 2xx；message 不含密钥） |
 | 5000 | 内部错误 |
 
 ## 模块清单
@@ -46,6 +50,9 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 | 05 | 模型与 Provider | api/05_model.md | 已确认 | 05 |
 | 06 | 子 Agent 管理 | api/06_subagent.md | 已确认 | 06 |
 | 07 | 版本更新与安装包（pi 运行时） | api/07_pi.md | 已确认 | 07 |
+| 08 | UI 国际化 | —（纯前端，无 RPC 接口） | 已实现 | 08 |
+| 09 | Skill 管理 | api/09_skill.md | 已确认 | 09 |
+| 11 | Git 提交与推送 | api/11_git_commit_push.md | 已确认 | 11 |
 
 ## 更新规则
 

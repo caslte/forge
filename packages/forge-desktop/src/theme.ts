@@ -24,7 +24,7 @@ export type ThemeMode = 'light' | 'dark';
 /**
  * 建窗底色（与 forge-ui/src/design-tokens.css 的 `--background` **逐位一致**）：
  * - light：`oklch(1 0 0)` = #ffffff
- * - dark ：`oklch(0.26 0.006 286.2)` = #242427
+ * - dark ：`oklch(0.166 0.009 263.6)` = #0d0f13（D 档设计稿复刻底色，rgb(13 15 19)）
  *
  * 逐位一致是硬要求：这份底色是 splash 出现前的那一帧，只要与 splash 底色（同一令牌）
  * 有差，交接口就会看到一次色阶跳变。test/theme.test.ts 直接从 design-tokens.css 解析
@@ -32,11 +32,11 @@ export type ThemeMode = 'light' | 'dark';
  */
 export const THEME_BACKGROUND: Record<ThemeMode, string> = {
   light: '#ffffff',
-  dark: '#242427',
+  dark: '#0d0f13',
 };
 
-/** 缺省主题：与 useTheme.ts 的「无存储 = light」、index.html 引导脚本同值 */
-export const DEFAULT_THEME: ThemeMode = 'light';
+/** 缺省主题：与 useTheme.ts 的「无存储 = dark」、index.html 引导脚本同值 */
+export const DEFAULT_THEME: ThemeMode = 'dark';
 
 /** 主题镜像文件绝对路径（userData 目录由调用方传入，本模块不自取 app.getPath） */
 export function themeFilePath(userDataDir: string): string {
@@ -54,7 +54,7 @@ export function backgroundFor(mode: ThemeMode): string {
 
 /**
  * 同步读主题镜像。文件缺失 / JSON 损坏 / 取值非法一律回默认值——
- * 「读不到就用 light」不会让启动失败，与渲染进程的缺省行为一致。
+ * 「读不到就用默认主题」不会让启动失败，与渲染进程的缺省行为一致。
  */
 export function readThemeSync(userDataDir: string): ThemeMode {
   try {

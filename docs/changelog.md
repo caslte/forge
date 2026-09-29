@@ -1,5 +1,194 @@
 # 变更日志
 
+## v3.85.6 (修复：系统通知小窗 LOGO 过期且模糊)
+
+> 来源：2026-09-29 用户反馈（截图）——回复完成通知左上角的 LOGO 是旧版带锤铁砧图且分辨率很低，与当前品牌 LOGO 不符。
+
+- **根因**：`main.ts` 的 `resolveToastLogoSrc()` 只读 `forge-ui/dist/logo-main.png`（vite build 时从 `public/` 拷入）。该文件是 gitignore 的构建产物，本机 dist 停留在换 LOGO 之前的构建，通知就一直弹旧图；且旧图本身只有 64px 级，16px 显示下发糊。
+- **改动（`packages/forge-desktop/src/main.ts`）**：`resolveToastLogoSrc()` 改为按序尝试两个候选——先 `forge-ui/src/assets/logo-main.png`（品牌 LOGO 唯一事实来源，1024px 高清，dev 下 dist 过期也不再错），读不到（生产包不含 src）回退 `dist` 产物；全部失败仍返回 null 走字母方块兜底。
+- **构建产物刷新**：重新执行 forge-ui `vite build`，`dist/logo-main.png` 已与 `public/` 最新 LOGO 逐位一致（md5 校验）；生产包经 extraResources 打入的也是新图。
+
+## v3.85.5 (调整：思考级别 max 去金环、停脉冲，浅色主题高亮块改白底)
+
+> 来源：2026-09-29 用户反馈（看截图逐条）——①切到 max 时高亮块金环脉冲闪烁先停掉；②max 高亮块外层的金色描边去掉；③浅色主题下高亮块的中灰底难看。
+
+- **改动（`packages/forge-ui/src/components/InstructionInput.vue`）**：
+  - 删除 `.level-wrap.is-max .level-pill` 的金色描边环（`0 0 0 1px color-mix(--gold-deep 42%)`）与 `.level-pill.max-sweep` 的金环脉冲动画（`level-pill-pulse` keyframes 一并删除）——金环没了，脉冲（脉冲的对象就是金环）随之整个下线；max 反馈只剩文字金色扫光 + 格子轻弹。
+  - 浅色主题新增覆盖 `:root[data-theme='light'] .level-pill { background: var(--background) }`：原 `--surface-active` 中灰（L≈90%）贴在白色浮窗上是一块灰斑，改白底后与 App.vue 项目/任务切换器同款 iOS 分段控件观感（白胶囊 + 浅灰轨道 + `--shadow-sm`）；深色主题维持微亮灰块不变。
+  - 浅色主题金字渐变随之改暗色扫（同批用户反馈「白光扫看不清」）：`--gold-fade` 浅色值 `oklch(0.92 …)` 浅灰尾在白底上不可见 → 改深铜 `oklch(0.40 0.07 85)`；新增 `--gold-hi` 扫光高亮带令牌（深色混白提亮 / 浅色混黑变暗），`.lv-max` 常驻五段渐变的中间带从写死 `color-mix(--gold 55%, white)` 换用该令牌。深色主题所有取值不变。
+  - max 金色文字（常驻渐变 + 扫光停驻渐变）保留，浅底金字（`--gold: oklch(0.68 0.14 85)`）在白胶囊上可读。
+- **e2e（`e2e/thinkingLevel.spec.ts` TLEVEL-E2E-004）**：断言 ③ `level-pill-pulse` 改为高亮块 `animation-name === 'none'`（脉冲下线的回归防线）；文字 `level-max-flow` / 格子 `level-cell-pop` 断言不变。该 spec 5/5 通过。
+- **视觉核对**：mock-backend + Playwright 实截深/浅两主题浮窗——深色：max 金字、高亮块无金环；浅色：白胶囊凸起、无灰块、金字可读（临时 spec 与截图已清理）。
+
+## v3.85.4 (改进：max 反馈动画改为「就地金色扫光」，下线悬浮 M A X 文字)
+
+> 来源：2026-09-28 用户反馈——思考级别改成分段滑条浮窗后，「切 max 的金色动画」浮在浮窗上方、飘进输入框正文区压住文字，很不好看。方案对比原型在 `prototypes/thinking-level-max-shimmer-demo.html`（0 现状 / A 就地扫光 / B 浮窗内文字 / C 收起后播 / D 光柱 五方案可切换对比），**A 方案定稿**。
+
+- **根因**：`M A X` 文字是锚在级别胶囊正上方的**外挂层**（`.max-shimmer { bottom: 100% }`）。原选择器点选即收起，胶囊上方就是输入正文区的空白；改成浮窗且选完保持展开后，为不被浮窗盖住而加的 `.is-open { bottom: calc(100% + 12px + var(--level-pop-h)) }` 把它顶到浮窗上方——于是它飘进正文区压住占位符/输入内容，还和触发源断开。控件形态一变，这个外挂层就得重测一次（还要挂 `ResizeObserver` 测浮窗高）。
+- **改动（`packages/forge-ui/src/components/InstructionInput.vue`）**：
+  - 删除：`.max-shimmer` 元素与样式、`max-text-flow` / `max-in` / `max-out` 三个 keyframes、`--level-pop-h` 及其展开时的实测写入、`levelPopEl` / `levelWrapEl` 两个 ref、`shimmerOn` + `triggerShimmer()`。反馈不再产生任何浮层，也不依赖浮窗高度测量。
+  - 新增 `flashMaxCell()`：选到 max 时给 max 档位挂 `.sweep`、给高亮块挂 `.pulse`，950ms 后摘除（重入先摘再挂，确保动画重启）。
+  - 新增样式：档位文字包一层 `.level-t`，**扫光渐变挂在文字紧包围盒上而不是整个按钮**——按钮比「max」三个字母宽 2 倍多，渐变铺在按钮上会变成一条比字形宽得多的宽带，看着不像「这几个字被点亮」（原型与实现的第一版差异即出在这里）。`.level-item.on.sweep` 走格子 `scale` 轻弹 0.32s（`level-cell-pop`），`.level-t` 走 LOGO 同款金色渐变 `background-clip: text` 流过 0.9s（`level-max-flow`），`.level-pill.pulse` 走高亮块金环脉冲 ×2（`level-pill-pulse`）。扫光结束后 active 的 max 文字停在金色渐变上（`.level-wrap.is-max .level-item.on .level-t`），与旧 M A X 动画同色系，不突然变回素色。
+  - 业务规则不变：`selectLevel` 仍是唯一的动画触发点（加载/重载落出 max 不触发）、乐观更新 + 静默降级、浮窗保持展开。
+- **e2e（`e2e/thinkingLevel.spec.ts` TLEVEL-E2E-004）**：断言从 `.max-shimmer` 换成 `.level-item.sweep`，时长窗口 `[2200,3400]ms` → `[850,1300]ms`；新增三条回归——① `.max-shimmer` 恒为 0 且扫光元素**完全落在 `.level-pop` 内**（越出即失败，正是这次的 bug）；② 三个动画名分别为 `level-max-flow`（文字）/ `level-cell-pop`（格子）/ `level-pill-pulse`（高亮块）；③ **扫光渐变的实际宽度必须小于按钮宽度**（即渐变挂在 `.level-t` 文字盒上，而非铺满按钮——这条正是「实现与原型不一致」的回归防线）。帧率 ≥30fps 断言保留。
+- **视觉核对**：Playwright 抓真机与原型页面同一时刻（150/400/750/1400ms）帧逐一比对，扫光落点、金色带宽度、格子弹动、高亮块脉冲一致（临时 spec 与对比帧已清理）。
+- **文档同步**：`prd/05_model_provider.md`（§3.5 反馈措辞 + AC-MP-014 + 交互描述改为分段滑条浮窗）、`test/05_model/coverage-matrix.md`（U-MP-008 / E-MP-008）「约 2-3s 金色流光」→「约 1s 金色扫光（档位内就地播放，不侵入输入正文区）」。
+
+## v3.85.3 (改进：思考级别切换器改为「分段滑条浮窗 + 水滴高亮」)
+
+> 来源：2026-09-28 用户反馈——文字下拉换挡太慢、要打开才能看全部档位，期望参考 Codex 的分段滑条。原型在 `prototypes/thinking-level-slider-demo.html`（A~E 五方案横向对比，D 方案定稿）。
+
+- **改动（均在 `packages/forge-ui`）**：
+  - `InstructionInput.vue`：`.level-menu`（文字下拉列表）→ `.level-pop` 浮窗 + `.level-seg` 横向分段滑条。触发器保持现状纯文字（`.meta-link` + chevron，无胶囊边框），只在末尾加展开指示三角（随浮窗开合旋转）。选完档位浮窗**保持展开**（方便连续换挡），Esc / 点外部收起。
+  - 高亮块 `.level-pill` 复刻 `App.vue` 项目/任务切换的水滴果冻机制：不整体平移，而是左右两条边分别动画（`--pill-l` / `--pill-r` 为 JS 实测 active 按钮 `offsetLeft/offsetWidth` 写入的几何），先行边 `240ms cubic-bezier(0.34,1.45,0.64,1)` 带回弹、另一条边 `260ms … 70ms` 追上去，途中被拉成水滴，落位时两头先后回弹；向右滑加 `.fwd` 让右边先行，向左回基态。
+  - 几何不猜：展开时下一帧实测贴位（`.no-anim` 免叠一次动画），改挡位带水滴，`ResizeObserver` 监听分段条尺寸（等宽字体异步加载 / 窗口缩放会改档位宽窄）重贴无动画。切模型导致挡位集重建同样走无动画重贴。
+  - 键盘：`←/→`（含 `↑/↓`）换挡、`Home/End` 首末档、`Esc` 收起并把焦点归还触发器；`role="radiogroup"` / `role="radio"` / `aria-checked` / `aria-label`（新增 i18n 键 `input.level.aria`）。档位按钮自身不画焦点环（当前位置已由高亮块表达）。
+  - `max` 金色联动：`.level-wrap.is-max` 令高亮块加金环、当前档位文字转金（`--logo-gradient-accent`）。`M A X` 流光动画在浮窗展开时上移到浮窗上方（`--level-pop-h` 为实测浮窗高，不靠魔法数字），保持「切 max 有庆祝动画」。
+  - 业务规则不变：`availableLevels` 仅 `off` 时隐藏入口、推理模型只剩 `max` 仍显示、会话级乐观更新 + 草稿态回显全局默认、切 max 播放流光（E-MP-008 行为未回退）。
+- **验证**：`e2e/thinkingLevel.spec.ts` 选择器随 DOM 迁移（`.level-menu .menu-item` → `.level-seg .level-item`），新增 TLEVEL-E2E-005 覆盖：高亮块几何与 active 档位误差 ≤1px、向右滑行中实测拉伸比 >1.15（真水滴）、`←/→`/`Home`/`End` 换挡、`Esc` 收起并归还焦点、`is-max` 金色态。回归：该 spec **5/5**、forge-ui 单测 **294/294**、`vue-tsc` 0 错；真机（mock bridge，1280×820）暗/亮双主题目检：暗色高亮块改用 `--surface-active`（与 `.view-seg::before` 同令牌）后与项目/任务切换器观感一致。
+- **踩坑**：① 浮窗不再随选档关闭 → `M A X` 动画文字被浮窗盖住（若直接跳过动画则 `E-MP-008` 行为回退），改为按实测浮窗高上移；② 等宽字体异步 swap 后档位宽窄变化，`--pill-*` 变陈旧（实测偏 1.3px），加 `ResizeObserver` 重贴；③ `.level-seg` 不能挂 Vue `:class` 绑定（`patchClass` 会整串覆写 `className`，冲掉 JS 侧加的 `.fwd/.no-anim`），故这两个类一律命令式切换。
+
+## v3.85.2 (修复：启动 FORGE 字样「闪一下」+ 接管新会话时「跳一下」)
+
+> 来源：2026-09-27 用户反馈两条——①「app 加载页的 FORGE 字样会闪一下」；②「加载完成跳到新会话时，forge 字样会调整一下高度，这个调整过程用户能明显感知，就是跳了一下」。
+
+- **根因（四处，全部在启动三段接管 splash → BootWelcome → 正式 UI 的接缝上）**：
+  1. **入场动画重放**：`BootWelcome.vue` 的 `.boot-logo` 带 `boot-fade-in 0.4s`（opacity 0→1 + 下移 6px），而 splash 上的字标是**静态在场**的——Vue 挂载替换 `#app` 的瞬间，屏上已有的 FORGE 消失并从零淡入 = 「闪一下」。违反 index.html 写死的不变量「视觉必须与 BootWelcome 完全一致，接管无缝」。
+  2. **两份不同的字标 URL**：splash 引用 `public/logo-wordmark-on-*.png`（且为绝对路径 `/logo-…`），BootWelcome/LandingHero/ConversationView `import` 的是 `src/assets/` 下**另一份同名文件**——交接时新 URL 重新拉取解码，`height:auto` 下解码前盒子塌 0。附带：prod 是 `base:'./'` + `loadFile`（file://），绝对路径在打包版 splash 直接裂图只剩 alt。
+  3. **boot 期假 LandingHero 闪现**：门闩放行时 `projects` 恒为空数组（`loadProjects` 是放行后才发的异步 IPC），**有项目的用户每次启动都会先挂载零项目落地页**（字标几何 A），project 落地后换成会话空态 hero（几何 B）——同一枚字标 ~300ms 内被摆到两个位置，即「调整了一下高度，跳了一下」。
+  4. **字标尺寸三处不一致**：splash/BootWelcome `300px` vs LandingHero/conv-hero `min(40cqw,320px)`（常规窗口恒 320），交接时尺寸还会变一次。
+- **修复（均在 `packages/forge-ui`）**：
+  - `index.html`：字标改相对路径 `./logo-wordmark-on-*.png`（修 prod 裂图）+ 显式 `width=320 height=42`（PNG 357×47 等比，杜绝解码塌高）；`splashReady` 回执前必须等两张字标 `img.decode()`（300ms 兜底超时，与主进程 2500ms show 超时两层互不替代）——主进程 show 出的第一帧必带 FORGE。回执时落 `window.__forgeSplashNotified` 观测位。
+  - `BootWelcome.vue`：删 `boot-fade-in` 动画与 keyframes；字标改 `BASE_URL + 'logo-wordmark-on-*.png'`（dev '/'、prod './' 与 splash 解析到同一资源）；宽度统一 320。
+  - `App.vue`：新增 `projectsLoaded`（`loadProjects` **finally** 置位，报错/零项目同样放行，不成死门）；正式 UI 挂载条件收紧为 `formalUiReady = bootReady ∧ projectsLoaded`（首拉含 openProject 落地，ConversationView 首帧即终态，boot 期不再闪现落地页）；放行后 BootWelcome 改 fixed veil **淡出 200ms** 再卸载（400ms 超时兜底卸载，reduced-motion 直落），把切页硬切变成连续过渡。
+  - `ConversationView.vue` / `LandingHero.vue`：字标切同一 public URL + 显式宽高；hero lift 的 ResizeObserver 增观测 `inputWrapRef`（models 异步回填等推动输入框长高时字标随重测，不再漂移）。
+  - `src/assets/logo-wordmark-on-*.png` 副本**保留**（6 个原型页直接引用该路径，删则破坏原型同步）。
+- **验证（红→绿，非推断）**：RED 基线先在旧代码实测复现——HANDOFF-001 抓到 boot 期 `.landing-hero` 闪现、HANDOFF-002 抓到 `boot-fade-in` 在场、SPLASH-005 抓到无 decode 门。新增 `e2e/bootHandoff.spec.ts` 4 条（假落地页不复活 / BootWelcome 无动画且字标 320 = hero 档 / 接管后 veil 必卸载且屏上只剩一份字标）+ `bootSplash.spec.ts` 扩 BOOT-SPLASH-005（回执在解码后 + 相对路径 + 显式占位）。回归：boot 相关 5 个 spec **16/16**、forge-ui 单测 **294/294**、`vue-tsc` 0 错；`vite build` 产物复核 `dist/index.html` 字标为相对路径 + 显式宽高、bundle 内三处 `BASE_URL` 字标引用在场。全量 e2e **122 passed / 13 failed**：boot 相关 16 条全绿；13 条失败逐条归属核对，全部落在本期未触碰的面——branchBadge ×2 / mw-restore ×2 / queue（QC-001 队列项渲染、QC-003 停止回填）/ session 树排序 / todoPanel 009b 遮挡 / conversationHistoryLocate / subagent 结果用量 ×2，即 v3.84.x 条目记录的**存量挂清单**（HEAD 干净基线对照验证过）叠加当前在途改动（InstructionInput 队列态、压缩横幅删除、msg-brand 字标接管、D 档底色）；`__repro-dark-d`、`__repro-subagent-bar` 为在途采样的 repro 草稿。剥离复跑（仅这 7 个 spec 单独跑）失败集合逐条一致，非负载抖动。真机 dev/打包各启动一次由用户目检。
+
+## v3.85.1 (修复：压缩完成后底部横幅残留)
+
+> 来源：2026-09-27 用户反馈两条——①自动压缩后「上下文已压缩（减少 81%）」横幅在输出期间一直残留在消息流底部；②「压缩了多少不需要显示，因为上面还有一个上下文已压缩的横幅（内联分隔条）」。
+
+- **结论**：底部常驻完成横幅与两处反馈重复——压缩点位置已有内联「上下文已压缩」分隔条（v3.84.0 CV-S07 口径），减少百分比与 token 变化已在瞬时 toast 里（PRD 交互口径本就是 4~5s 瞬时提示）。故**删除完成态常驻横幅**，仅保留压缩中的「正在压缩上下文…」进度条。
+- **改动（均在 `packages/forge-ui`）**：
+  - `composables/useCompactBanner.ts`：状态收敛为「压缩中」布尔 Map（`sessionId → true`），删 `markDone`/`getBanner`/`CompactBannerState`，新增 `isCompacting`；`compactReductionPct` 保留（toast 文案仍在用）。
+  - `components/ConversationView.vue`：横幅只在压缩中渲染（`compactingNow`），完成即卸载；样式选择器同步收敛。
+  - `components/InstructionInput.vue`：手动压缩成功路径与 `conversation.compacted` 事件改为 `clearCompactBanner` 收尾（原 `markDone`）。
+  - `i18n/domains/chat.ts`：删无引用的 `chat.contextCompactedReduction`（zh+en）。
+  - `e2e/contextCompact.spec.ts`：手动/自动压缩两例改断言「完成后 `.compact-banner` 计数为 0」，头部注释同步口径。
+- **验证**：`@forge/ui` typecheck 0 错、单测 294 过 / 0 挂。e2e 需 Playwright 浏览器补跑（同 v3.84.0 待办）。
+
+## v3.85.0 (修复：流式收尾帧底部跳一下)
+
+> 来源：2026-09-26 用户反馈「AI 输出完了之后对话框底部会跳一下」。e2e 探针实测定位根因后按方案 A（高度过渡）修复。
+
+- **根因（实测，非推理）**：不是钉底失败——`onConvResize` 的补钉底在 ResizeObserver 回调里逐帧同步（`dScrollH == dScrollTop` 恒成立）。真凶是**收尾帧底部区块构成的一次性变化**：`.conv-thinking` 思考指示行随 `v-if` 卸载（实测 39px + flex gap 16px）、`.msg-footer` 消息底栏同帧挂载（实测 17px + margin-top 8px），净 **−30px 一帧完成**，滚动虽同帧跟随，视觉上就是整段对话内容「跳一下」。输入区全程不动；`scrollbar-gutter`、终态补落位稳定期两个方案经改前改后各 6 次实测均无对应缺陷（已回退，见知识库）。
+- **改动（方案 A：~160ms 高度过渡）**：
+  - `packages/forge-ui/src/components/ConversationView.vue`：`.conv-thinking` 包 `Transition :css="false" @leave`，**rAF 逐帧显式赋值**收拢 height/padding/opacity，按有无相邻兄弟用负外边距等量抵消将消失的 flex gap，末帧零尺寸后才 `done()` 卸载。
+  - `packages/forge-ui/src/components/MessageCard.vue`：`.msg-footer` 包 `Transition :css="false" @enter`，从 0 高/0 透明/0 外边距展开到自然尺寸，结束后清内联样式交还 CSS（基础 opacity 0.6）。两处 `SETTLE_MS=160` 保持同帧启动、同步完成。
+  - `prefers-reduced-motion` 与无 `matchMedia` 环境（单测）直接完成不动画。
+- **关键坑（探针两次实测才发现）**：`.conv-thinking` 有上下 padding 各 10px，**box-sizing:border-box 下渲染高度不能低于 padding 之和**（内容盒钳到 0 为下限）——只动 `height` 必卡死在 20px，残余 19px 在卸载帧一次性跳出；CSS transition 版与 rAF 版冻在同一 20px，证明是布局钳制而非动画引擎问题。修法：padding 与 height 同比例收拢。
+- **验证**：探针 `e2e/__repro-stream-end-jump.spec.ts --grep "repro L"` 实跑 2 次：`think` 39px→0 连续收拢、footer 0→17px 同步展开、卸载帧位移 ≈0、单帧最大 ≈11px（easeOutCubic 起步，修复前单帧 −30px）；`@forge/ui` typecheck 0 错、单测 **294 过 / 0 挂**。
+- **文档**：PRD 03 CV-S02 业务规则补「收尾帧过渡」+ 新增 **AC-CV-054**；测试文档同步 **E-CV-030**（`docs/test/03_conversation/{coverage-matrix,e2e}.md`）；知识库 `docs/knowledge/stream-end-bottom-jump.md` 追加修复记录与两个布局坑；本条目。
+- **待办**：真实 pi 会话复测（合成场景未覆盖 SuggestionChips / 压缩横幅 / 工具卡收起等同帧挂载的叠加来源）；截图证据补录。
+
+## v3.84.0 (修复：下一步建议抢占一轮 + 压缩后历史丢失)
+
+> 来源：2026-09-26 用户反馈两条——①「AI 输出完了之后会拼命的选择第一个继续下探，而不是让我看」；
+> ②「压缩完了之后之前的历史消息没了」（附压缩后的会话截图）。两条都是 forge 侧口径问题，pi 不动。
+
+- **修复 1 · 下一步建议不再抢占一轮（suggest_next_steps）**：
+  - 根因：`suggestNextSteps()` 只返回 `content/details`，缺 pi 的**轮次收束信号**。pi 在**每个工具批次后默认补跑一次 LLM 调用**，模型手里只剩自己刚列出的建议、又没有新用户输入，于是顺势开工第 1 条——观感就是「不等人，闷头往下钻」，还多花一轮 token。
+  - 改动（`packages/forge-extensions/src/suggestNextSteps/extension.ts`）：成功路径返回 `terminate: true`（pi 见此跳过补跑，本轮结束改由用户点选驱动）；**拒参路径不带**，保留模型改参重试的空间。guidelines 4→5 条（新增末条「NEVER start any of these steps yourself」），tool description 补「This call ENDS your turn」。
+  - 易错点：`terminate` 只在**同批次全部 finalize 结果都 terminating** 时生效，所以「作为最后一个动作**单独**调用、不与其他工具并批」必须保留（一并写入第 4 条 guideline），否则信号被同批非终止结果吃掉。
+  - 验证：`@forge/extensions` **65 过 / 0 挂**（新增 3 例：合法→terminate / 非法→不带 / execute 透传口径一致，guidelines 计数锁 5）。
+- **修复 2 · 压缩不再抹掉界面历史（CV-S07 口径修正）**：
+  - 根因：`loadPiSessionHistory` 用 `manager.buildContextEntries()`——那是**已应用压缩的模型上下文视图**，压缩点之前的条目被换成摘要；再加上主循环 `entry.type !== 'message'` 又把 `compaction` 条目本身跳过，结果**旧消息和摘要同时消失**（"历史没了"是用户侧的实感）。磁盘 JSONL 里条目一条没删（压缩只是 append 一条 compaction），丢的是读法。
+  - 口径（写进 PRD）：**压缩只替换喂给模型的上下文，用户看到的 transcript 必须完整**，压缩点用一条分隔条标记。
+  - 改动：
+    - `packages/forge-desktop/src/pi/loadPiSessionHistory.ts`：改走 `getBranch()`（叶子→根全量分支）；`compaction` 条目落成 `{ role:'system', content:摘要, ts, compacted:true }` 插入原位。探针实测两 API 差异：`getBranch = m1|m2|compaction|m3|m4`，`buildContextEntries = compaction|m2|m3|m4`（m1 被抹）。
+    - `packages/forge-ui`：`types.ts` 加 `compacted?`；`useSessionConversation` 展示项新增 `compaction-divider`（位于压缩前后之间）；`MessageListItem` 渲染 line+文案分界条与**可展开摘要**（两行钳制，点击展开）；i18n 新增 `chat.compactionSummaryExpand/Collapse`（zh+en）。
+  - 验证：`@forge/desktop` **314 过 / 0 挂**（新增 3 例：压缩前消息仍在 / 标记恰好 1 条且带摘要与位置 / 未压缩会话无标记）；`@forge/ui` **294 过 / 0 挂**；desktop+extensions+ui 三包 typecheck **0 错**。
+  - 文档：`docs/prd/03_conversation.md` CV-S07 新增「历史口径」业务规则 + 改写自动压缩的反馈条 + 新增 **AC-CV-052/053**；`docs/api/03_conversation.md` queryHistory 补「压缩分隔标记」字段说明、重写 `conversation.compacted` 的 UI 契约；测试文档同步 **U-CV-026 / E-CV-029**（`docs/test/03_conversation/{coverage-matrix,e2e}.md`）；本条目。
+  - **待办**：新增 e2e `E-CV-029`（`e2e/contextCompact.spec.ts`）本机未安装 Playwright 浏览器（无 `~/.cache/ms-playwright`）**未实跑**；改动涉及主进程读取路径，`Electron 真机验收`压缩后的历史完整性与分隔条观感后再收口。
+
+## v3.83.0 (功能：Git Bash 自动识别与 shellPath 自愈)
+
+> 来源：2026-09-26 用户反馈——shell 横幅直接报「Shell 不可用」并要求用户自己去 `settings.json` 填 `shellPath`，问「自动识别 Git Bash 可以做到吗，然后填到配置中，而不是要用户自己做配置这件事」。承接 v3.78.x shell 健康探测（从"告诉用户哪里坏了"到"主进程自己修好"）。
+
+- **主进程（forge-desktop）**：
+  - 新增 `src/pi/gitBashResolver.ts`：零 pi 依赖的 Git Bash 候选链（纯 fs + child_process，单测可直接跑）。按 ① `where git.exe` **反推安装根**（对每个 git.exe 逐级上溯试 `<dir>\bin\bash.exe`、`<dir>\usr\bin\bash.exe`，三级覆盖 `cmd\git.exe` 与 `mingw64\bin\git.exe` 两种形态，不依赖目录名约定）→ ② 注册表 `HKLM|HKCU\SOFTWARE\GitForWindows` 的 `InstallPath` → ③ 常见位置（`ProgramFiles` / `x86` / `LOCALAPPDATA\Programs` / scoop）→ ④ `where bash.exe` 的顺序解析；每级都过 `usable()` = 文件真实存在 **且** 非 WSL 占位（`isWslStubBash` 判定扩到 SysWOW64），PATH 上「占位在前、真 bash 在后」时逐个过滤取真 bash。全部候选来源可注入（`platform/env/exists/findOnPath/registryInstallPath`）。
+  - `src/pi/shellProbe.ts` 新增 `ensurePiShellPath()`：探测失败 → 解析 Git Bash → 经 pi `SettingsManager.setShellPath()` + `await flush()` 写进 `<agentDir>/settings.json`（合并写，`packages`/`models` 等既有字段不丢）→ **复探确认**后才回 `ok=true + autoFixed=true`；解析不到或写失败一律返回原异常（不谎报修复成功）。`probePiShell` 保持纯探测不变。
+  - `main.ts` 启动链：`splash 上屏之后、createForgeCore 之前` await 一次自愈——修好的 shellPath 在首个 pi 会话创建前就落盘，用户全程无感（横幅根本不出现）；失败不拦启动。成本可控：`probePiShell` 先读 settings.json，正常机器直接返回，只有真不可用才 spawn。`IPC_SHELL_PROBE` 改走 `ensurePiShellPath`（运行期兜底：装完 Git 点「重新检测」即可自愈）。
+  - `ipc-contract.ts`：`ShellProbeResult` 的 ok 分支加 `autoFixed?: boolean`（＝本次是自动写配置后复探恢复的，配置刚落盘、已存在会话仍持旧解析结果）。
+- **前端（forge-ui）**：`useShellHealth` 增加 `autoFixed` / `busy` / `reprobe()`（重测绕过首挂载幂等闸门，探测中禁按钮）；对话区横幅三态——**自动修复成功**（`autoFixed`，muted 色提示「已自动识别 Git Bash（路径）并写入配置，重启应用后新会话生效」）、**仍不可用**（原错误色 + 「重新检测」+「打开配置文件所在目录」双入口）、正常（无横幅）；i18n 新增 `chat.shellReprobe/Reprobing/AutoFixed` 并改写 `chat.shellFixHint`（中英全键，`sb-actions`/`sb-ok`/`.sb-fix:disabled` 样式同源）。
+- **文档**：新增 `docs/knowledge/git-bash-autofix.md`（+ index.json 登记）记录候选链、时机纪律与五个易错点；本条目。
+- **真机验证（本机 Windows + Git 装 `D:\work\tools\Git`，PATH 只有 `<root>\cmd`）**：确认旧链路三级全落空的根因（PATH 里没有 `bin\bash.exe`），新链路由 `where git.exe` 反推出 `D:\work\tools\Git\bin\bash.exe` 并成功合并写进 `<userData>/agent/settings.json`（`packages` 7 项原样保留），复探 `ok=true`。
+  - 过程中踩到并加固：**落盘前 `path.normalize`**。候选若带重复分隔符（如 `D:////work////Git////bin////bash.exe`），Windows 视作合法路径（`existsSync` 通过、连复探也通过），但 spawn 行为不稳——属于「看起来修好了、实际还是坏的」一类最难查的配置；补单测锁住。
+- **验证**：新增 `test/pi/gitBashResolver.test.ts` 10 例（候选链全部依赖注入驱动，不依赖测试机装没装 Git）+ `shellProbe.test.ts` 追加 5 例（已可用零副作用 / 解析不到不动配置 / 修复成功且 packages 不丢 / 候选路径形态不规范须规范化 / 候选不可用不谎报）；`@forge/desktop` 311 过·0 挂·1 skip，`@forge/ui` 294 过·0 挂，两包 typecheck 0 错。
+
+## v3.82.0 (功能：模块 11 Git 提交与推送)
+
+> PRD：docs/prd/11_git_commit_push.md（2026-09-23「开工」，视觉/交互严格对齐 prototypes/terminal-git-prototype.html 定稿 demo）。
+
+- **后端 4 RPC（forge-core/forge-desktop）**：
+  - `git/getStatus|commit|push` 落 `forge-core/src/git/gitService.ts`（execFile git CLI，写操作 30s 超时）：getStatus 聚合 porcelain v1 + numstat（含未跟踪、二进制安全、unborn 走 `--cached` 基线）；commit 支持 `includeUnstaged`（勾=`add -A`），服务端双保险拒绝空暂存（AC-11-07）；push 自动 `-u origin <branch>`（无 upstream 时）。错误码 **6006 提交 / 6007 推送**，失败信封带 git 原始 `data.stderr`。
+  - `git/generateCommitMessage` 落 `forge-desktop/src/git/commitMessageService.ts`（**单次 OpenAI 兼容 chat/completions，非 agent**，TD-GC 口径）：provider 解析链 = 会话模型→全局默认→models.json（keychain 解密，apiKey 不落日志）；diff 上下文 = 全量文件清单 + 每文件前 40 行 + 30k 字符预算（TD-GC-03）；语言随渲染层 `lang`；错误码 **6008**。
+  - 校验：forge-core 400/400（git 真实仓库临时目录 24 例）、forge-desktop typecheck+单测过；`ipc-contract.ts`/`bridge.ts` 双白名单 +4。
+- **前端（forge-ui）**：`GitCommitDialog.vue`（App 根常驻，`useGitCommitDialog` 模块级单例开合，同 useToast 套路）——ExitConfirmDialog 视觉骨架 + demo `.dlg-*` 控件（分支条 secondary 底、绿实心勾选框、无边框 AI 胶囊按钮、黑色主按钮暗色主题走 primary）；双入口=状态行「⊙ 提交或推送」meta-link + BranchBadge 浮窗分隔线下「提交或推送…」（后者经 BranchBadge `git-repo` 事件与非 git 项目对齐不渲染）；busy 禁用沿用 AC-PM-016；`stagedEmpty && !includeUnstaged` 或无变更 → 提交/提交并推送禁用 + 单行提示（推送独立可用）；提交中三按钮+关闭全禁用；失败（6006/6007/6008）弹窗内展示原始 stderr **不关窗**（BranchBadge 6001 模式）；提交并推送成功只出一条合并 toast；AI 生成 disabled+spinner、结果覆盖输入框。i18n 新域 `domains/git.ts`（zh+en 全键）；`mock-bridge.ts` 内存实现 4 方法（stagedEmpty 演示态 + `__fail__` 提交钩子失败模拟）。
+  - 验证：forge-ui typecheck 0 错、289/289（④ 删 4 条 isProjectBusy 单测后）、浏览器 mock 双入口/中英双查/成功·失败·禁用·推送·Esc 全链路通过。**待办**：Electron 真机验收（主进程有改动需重启 dev app）。
+  - 真机反馈修复（2026-09-23 截图，edu-community 实链路）：① 去掉「没有待提交的变更」提示（键删除，仅保留暂存区为空勾选提示）；② footer 三按钮与勾选 label 锁单行（nowrap+shrink-0，en 放不下时整组换行右对齐），460px 实测单行不再挤成竖排；③ AI 生成按钮图标由放射状「加载感」星形换成 sparkles 四角星；④ **busy 粒度修正（用户拍板）**：分支徽标/提交入口禁用只看**当前会话自身** streaming，同项目其他会话执行中不再锁本会话（不同会话可以提交不同的代码）——`gitBusy` prop 链（App projectBusy/Canvas isProjectBusy）整体拆除，InstructionInput 由既有 `sessionStatus` 派生；`isProjectBusy` 纯函数与其 4 条单测删除；AC-PM-016/AC-11-13/GC-S06 文档口径同步；⑤ 提交/推送执行中可见反馈（用户：「卡住不知道什么情况」）：进行中的那个 footer 按钮换成 spinner+「提交中…/推送中…」（commit-push 走两阶段文案 提交中…→推送中…，`phase` ref 驱动），其余按钮照常禁用；i18n +`git.doingCommit/doingPush`（zh+en）；`mock-bridge` git/commit·git/push 加 1.2s/1.8s 人工延迟，浏览器 dev 可观察进行中态；⑥ **AI 生成空内容加固（forge-desktop，需重启 dev app）**：真机 MiniMax-M3 点「AI 生成」报「模型返回空内容」——`max_tokens` 300→1024（思考型模型 reasoning 吃预算）、HTTP 200 + `base_resp.status_code≠0`（MiniMax 网关形态）识别为 provider 业务错误透传码与消息、正文空但有 `reasoning_content` 单独文案「只输出了思考内容没有正文」、空内容分支打形状诊断日志（model/finish_reason/content 类型/reasoning 字符数，不记内容）；`docs/api/11_git_commit_push.md` §4 同步；单测 +2（base_resp/reasoning 形态）+成功用例锁 max_tokens=1024，forge-desktop 284 过/0 挂/1 skip；⑦ 弹窗副标题加**待提交/待推送计数**（用户指定，随「包含未暂存」勾选变化）：`git/getStatus` 响应 +`stagedCount`（porcelain X 列判据同 stagedEmpty，不勾时的待提交数）+`unpushedCount`（`diff --name-only upstream...HEAD` 行数，无 upstream/detached/无 HEAD 为 null 即 UI 不显示）；`GitStatusInfo` 双端类型同步；弹窗 `.dlg-counts` 纯前端派生（勾=fileCount，不勾=stagedCount，零重查）；i18n +`git.statCommit/statPush`；forge-core 真仓库测试 +1（unpushed 全周期：null→0→2→push→0）+stagedCount 断言 2 条，401/401；mock/浏览器实测勾选切换「待提交 8 ↔ 0」联动通过；`docs/api/11` §1 字段表同步。**口径修正（2026-09-24 真机反馈：本地新分支提交 4 文件未推送却不显示待推送）**：原实现「无 upstream → null」把最该提示的场景漏掉了；改为三级判据——有 upstream 比 upstream、无则比 `origin/<分支>`、分支从未推送则数 `HEAD --not --remotes`（本地独有提交涉及文件，去重）；踩坑：零远端跟踪引用时 `--not --remotes` 会吞掉隐式 HEAD 输出为空，须显式给 HEAD；仅无远端/detached/无 HEAD 才 null。真仓库（forge dev-v0.2.0，upstream 在）实测 10 与裸 git 对拍一致；core 测试改写为三级判据全周期（1→0→2→0→新分支 1），401/401。
+- **文档**：新增 `docs/api/11_git_commit_push.md`；`docs/api/index.md`（6006/6007/6008 + 模块行）、`docs/overview.md`、PRD 11 状态同步。
+
+## v3.81.0 (文档：模块 10 内嵌终端 / 模块 11 Git 提交与推送 PRD 定稿)
+
+> 口径来源：2026-09-23 对齐讨论 + `prototypes/terminal-git-prototype.html` demo 三轮验收（终端面板形态、弹窗入口收敛、AI 生成按钮样式、连体 tab）。两模块均**待开工**，无代码变更。
+
+- 新增 `docs/prd/10_embedded_terminal.md`：底部面板（非覆盖层）+ 多 tab；新 tab cwd 自动取当前会话项目根、已开 tab 不随项目切换（D2 混合口径）；完整交互终端 xterm.js+node-pty（TD-TM-01 推荐 @lydell/node-pty 预编译回退，**spike 为开发第一步**）；用户终端与 agent bash 两套独立；数据流走事件下行+invoke 上行复用现有 IPC 治理。
+- 新增 `docs/prd/11_git_commit_push.md`：全量提交语义（用户拍板砍掉"仅本会话"，不建变更账本）；弹窗=ExitConfirmDialog 视觉模式，双入口（状态行「提交或推送」+分支浮窗），无文件清单无 diff 统计（D5）；「包含未暂存变更」勾选（勾=add -A+commit，不勾仅暂存区且空时禁用+服务端拒绝）；AI 生成=主进程单次 OpenAI 兼容 chat/completions（复用 models.json provider 与 keychain 解密，diff 截断 30k，语言跟随 app locale）；push 失败弹窗内 stderr 回显（BranchBadge 6001 模式）；busy 禁用沿用 AC-PM-016 语义；新增 git/getStatus·commit·push·generateCommitMessage 四 RPC。
+- `docs/prd/index.md`、`docs/overview.md` 模块表同步 10/11 两行。
+
+## v3.80.0 (功能：UI 国际化（模块 08）+ Skill 管理（模块 09）)
+
+> PRD：docs/prd/08_ui_i18n.md、docs/prd/09_skill_management.md（2026-09-22 用户「开工」批准后按 08→09 顺序交付）。
+
+- **模块 08 · UI 国际化（已完成）**：自研轻量 composable（零新依赖，不引 vue-i18n），仅覆盖 App UI 静态文案（AI 回复内容不翻译）。
+  - 基础设施：`forge-ui/src/i18n/`（`index.ts` 提供 `useI18n().t(key, vars)` + `{name}` 插值 + zh 缺键回退；`zh-CN.ts` 为键集事实来源 `MessageKey`；字典按域拆 `domains/*.ts`，键名前缀即域名禁止跨域重名）。
+  - 全量迁移：28 组件 + utils 硬编码中文 → `t()` 调用；`en.ts` 合并字典允许缺键（回退 zh，逐批补齐纪律）。
+  - 三态偏好：zh-CN / en / system（跟随 `navigator.language`），localStorage `forge.locale` 持久化；设置页「通用」Tab 语言切换器即时生效。主进程零改动。
+  - 验证：forge-ui `vue-tsc` 0 错、单测 293/293（含 `i18n.test.ts` 键集/插值/回退断言）、浏览器三态切换验收通过。
+- **模块 09 · Skill 管理（代码交付，真机验收待确认）**：设置页「关于」Tab 版本更新分区下方新增「Skills」分区——查看（全局/项目两组 + 真实根路径徽标 + 异常与冲突折叠区）、导入本地文件夹、模板新建、删除。
+  - 后端 `forge-desktop/src/pi/skillService.ts`（纯 TS，Electron 经端口注入）：`skill/listSkills|importSkill|createSkill|deleteSkill` 四方法并入 forge-core methodTable；枚举复用 pi `DefaultResourceLoader`（口径 == agent 实际加载，TD-SK-01），pi 静默跳过的非法目录补**影子扫描**以 warning 如实上报（AC-09-02）；同名冲突走 **4090 确认协议**（`data.conflictPath` → UI 弹确认 → `overwrite:true` 重调，旧目录先入回收站，TD-SK-03）；删除/覆盖统一 `shell.trashItem` 优先、失败回退永久删除并回报 `trashed:false`（TD-SK-04）；写目标固定 `<agentDir>/skills` 与 `<project>/.agents/skills`（TD-SK-05）；containment：直接子目录 + realpath 复核父目录 + 符号链接指向复验，越界 1001（AC-09-11）；导入临时目录 + rename 原子落位、失败清理不留半个 skill。零重载/零通知（TD-SK-06），新会话与下次查询自然生效。
+  - IPC 契约：`ipc-contract.ts` ForgeMethod +4；类型经 **type-only re-export** 暴露（不把 pi SDK 拉进 preload 打包）。preload 无运行期方法白名单，零改动；目录选择/打开目录复用既有 `dialog.selectDirectory` / `shell.openPath`。
+  - 前端 `SkillsSection.vue`：4090 为正常分支不适用 `call()` 抛错语义 → bridge 新增 `invokeRaw<T>()` 原样返回信封；确认/删除/新建弹窗 Teleport 到 body（规避设置页祖先 transform 裁剪 fixed 遮罩）；文案全走 i18n（`domains/skills.ts` zh+en）。`mock-bridge.ts` 内存实现四方法（含 4090/overwrite/trashed 协议）供浏览器 dev 预览。
+  - 验证：forge-desktop 单测全套 **272 过/0 挂/1 skip**（新增 `test/pi/skillService.test.ts` 15 例，覆盖 AC-09-01/02/05/06/07/08/09/11/12）、tsc 0 错；forge-ui typecheck 0 错、293/293；浏览器 mock 链路交互验收通过（列表分组/新建/同名冲突覆盖/删除 toast/导入/导入冲突取消/项目级落 `.agents/skills`/非法名保留输入报错）。**待办**：Electron 实应用真实链路 + Windows 回收站实测（AC-09-10）后翻 09 状态为已完成。
+  - e2e 回归修复（i18n 交付的连带账）：Playwright 默认 `navigator.language=en-US` + 语言偏好 `system` → 整页英文渲染，打爆全部中文文本选择器（settings 8 条、subagent/tooltip/todoPanel 等约 30 条）。修法：`playwright.config.ts` `use.locale='zh-CN'`（测试环境钉死中文，语言切换本身仍由设置页用例覆盖）。另修复 2 条**存量挂**（非本期引入）：`smoke` 断言的 `.workspace-brand` 文字品牌位已在 757f328 换成 logo 图（改断言 `.tb-logo` 可见）；`updater` E-IN-001/002 期望 `0.2.0` 而版本行 551e6d7 起按设计渲染 `v0.2.0`（期望补 `v` 前缀）。修复后 settings+updater+smoke 全绿。全量套件 **106/117**：剩余 11 条挂经 HEAD 干净基线 worktree 对照跑验证为**逐条一致的存量挂**（repro 草稿用例、bootSplash-004 splash svg、landingHero `.landing-wordmark`、branchBadge ×2、mw-restore 几何 ×2、queue QC-003 停止回填、session E-SM-001 树排序、todoPanel 009b hero 遮挡、conversationHistoryLocate），归属近几笔已提交的 UI 重构（logo/TitleBar/hero），与本期 08/09 无关，留待对应改动方修期望值。
+  - 文档：新增 `docs/api/09_skill.md`；`docs/api/index.md`（4090 码 + 08/09 模块行）、`docs/prd/index.md`、`docs/overview.md` 状态同步。
+
+## v3.79.0 (需求：首装可选安装目录（NSIS 向导）、默认暗色主题、模型编辑弹窗化)
+
+- **需求 1 · 首装选安装位置（三轮迭代）**：
+  - 第一版（被否定）：保留 `oneClick:true`，`build/installer.nsh` 的 customInit 在「非静默 + 无 --updated + 注册表无历史目录」时 `nsDialogs::SelectFolderDialog` 弹目录框。用户反馈：「正常都是安装什么，默认在什么目录下安装，可以自定义安装，而不是打开直接就是个选择窗」——裸弹选目录框不是标准安装体验。
+  - 最终版：改用官方**向导模式** `oneClick:false` + `allowToChangeInstallationDirectory:true`（首装/重装显示「选择安装位置」页，默认目录预填、可「更改」）。更新零点击靠三处配合补齐：目录页由模板 `skipPageIfUpdated` 跳过（electron-updater 恒传 --updated）；「安装模式」页由 `customInstallMode`（`$isForceCurrentInstall="1"` → PRE Abort，forge 恒 per-user 该页纯噪音）跳过；结束页由 `customInstall` 在 `--updated + --force-run` 时复刻 oneClick 收尾（HideWindow + 拉起应用 + quitSuccess，不进结束页）。
+  - 编译期实测修正两处：① `!insertmacro StartApp` 与模板静默收尾分支的 `Var startAppArgs` 撞名（variable already declared）→ 内联 `${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "--updated"`；② 模板 `!ifmacrodef customInstallmode` 与 `customInstallMode` 大小写不一致——makensis 3.0.4.1 实测宏名大小写不敏感，钩子有效。installer.nsh 保持 UTF-8 BOM（NSIS 3 无 BOM 按 ANSI 读，中文注释乱码）。
+  - **第三轮反馈（2026-09-19）· 目录页文案补「自动补 forge 子目录」说明**：真机确证官方 `instFilesPre` 在点击「安装」瞬间把不以 forge 结尾的路径自动补 `\forge`（选 `D:\软件\` → 实装 `D:\软件\forge`），但目录页输入框预览看不到，用户误以为装进所选路径本身。用户选定方案：只加静态提示文案、不改行为。做法用 MUI2 官方扩展点 `!define MUI_DIRECTORYPAGE_TEXT_TOP`（installer.nsh 内、BUILD_UNINSTALLER 守卫下），文案 = SimpChinese 默认文案 + 一行提示；代价是该 DirText 原文不走 LangString，全语言统一显示中文（面向中文用户，有意接受）。**踩坑证伪**：先前尝试 `MUI_PAGE_CUSTOMFUNCTION_SHOW` 挂 SHOW 钩子运行时读 static 追加——编译期确认目录页消费了该 define（Pages.nsh 首次消费即 !undef + warning-as-error 证明 Call 已生成），但真机弹窗/日志双探针均无触发：**NSIS 3.0.4.1 内建 directory 页运行时不派发 SHOW 回调**，此路死，勿再尝试。验证：真机 dump 目录页 static 已含提示行；`installerConfig.test.ts` 增至 4 条（新增文案断言 + 反向守卫：禁 SHOW 回退、禁诊断代码残留）。
+  - **验证**：`npm run dist` 出包成功（building target=nsis oneClick=false perMachine=false）；零点击更新真机模拟——`forge-0.1.9-x64-setup.exe --updated --force-run`（electron-updater 的确切参数组合）exit 0、全程无页面停留、装完 forge.exe 自动拉起（`%LOCALAPPDATA%\Programs\forge`）。契约测试 `test/pi/installerConfig.test.ts` 重写为 4 条：向导配置断言（oneClick=false / allowToChangeInstallationDirectory=true / perMachine=false / runAfterFinish=true）、installer.nsh 更新守卫断言（isUpdated+isForceRun 收尾、BUILD_UNINSTALLER 包裹）、目录页文案断言（TEXT_TOP + 提示行 + 禁 SHOW/诊断残留）、isSilent=false 不可回退（2026-09-14 反馈）。
+- **需求 2 · 首次安装默认暗色主题**：三层同步改默认值——`useTheme.ts` 初始 `ref('dark')`、`index.html` 同步引导脚本（无存储/异常时 `data-theme='dark'`，splash 期即暗色不闪白）、`theme.ts` `DEFAULT_THEME='dark'`（主进程建窗底色）。真机日志 `[boot] 建窗底色 theme=dark bg=#242427`。`theme.test.ts` 缺省断言与 `bootSplash.spec.ts` BOOT-SPLASH-001 默认档（亮→暗）同步翻转。
+- **需求 3 · 模型添加/编辑弹窗化**：`SettingsPanel.vue` 表单从列表区移入 `<Teleport to="body">` 的居中模态（遮罩 + blur、点遮罩/关闭按钮退出、Esc），模型列表不再被挤压；`.level-menu` 改朝上展开防被弹窗底边裁切；保留全部既有 e2e 选择器。踩坑：fixed 遮罩最初被带 transform 的祖先裁剪只盖住内容区 → Teleport 到 body 解决。真机验证：overlay 盒子 = 视口（1280×820），侧边栏/顶栏/四角 `elementFromPoint` 均命中遮罩，`.provider-list` 位置不变；`settings + bootSplash` e2e 12/12。
+- **需求 4 · 环境**：`npm install --registry=https://registry.npmmirror.com` 全量装齐并启动 dev（vite 51731 + Electron）。打包侧两个环境坑：winCodeSign 解压需符号链接权限（非管理员失败）→ 手工把已解压目录改名为正式缓存名 `winCodeSign-2.6.0`；NSIS warning-as-error（6010 未引用函数）→ installer.nsh 全量 `!ifndef BUILD_UNINSTALLER` 包裹。
+- **文档同步**：PRD 07（TD-IN-07 修订为「向导 + installer.nsh 零点击收尾」、IN-F01/IN-F03 业务规则、AC-IN-001、反馈/决策追溯表）、coverage-matrix（AC-IN-001、反馈表两条）、packaging.md（安装包形态）。
+- **验证汇总**：forge-desktop 单测 **256/256**、tsc 0 错；forge-ui e2e（settings/bootSplash）12/12；安装包真机三路径（首装向导页在场 + 目录页提示文案可见 + --updated 零点击）验证通过。
+
+## v3.79.1 (样式：子 Agent 运行中指示对齐主会话 — 银色流光 + 读秒，去除三点)
+
+- **用户反馈**：子 Agent 结果视图运行中底部「··· 正在思考…」与主会话流式思考指示器（银色流光 + 读秒）观感不一致；期望同一种「Codex 式」流光表达。
+- **根因（`SubagentResultView.vue`）**：v3.15 引入无边框指示时，为了「简单先于抽象」只用了三圆点 + 静态文字（`.srv-indicator > .thinking-dot ×3 + <span>`），没有复用主会话 `ConversationView.vue` 里 `conv-thinking` 的银色流光结构。运行时两者并排（多窗口/分块）观感分裂。
+- **修复**：
+  - 模板同步主会话结构：`<div class="srv-indicator"><span class="thinking-text thinking-shimmer">{{ text }}</span><span class="thinking-sec">{{ formatElapsed(sec) }}</span></div>`，删除三点 + 静态文案。
+  - 样式对齐：`padding: 10px 14px; font-size: 14px;` 与 `.conv-thinking` 一致；`.thinking-shimmer` 复用主会话同套银色渐变 + 2.4s 流光；`.thinking-sec` 复用主会话同套 `font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.55;`。
+  - 读秒改用既有 `utils/formatElapsed.ts`（`<60s → 42s`、`<60m → 5m30s`、≥1h 进位），与主会话完全同源。
+- **验证**：`packages/forge-ui` 单测 **286/286** 全过、`vue-tsc` 0 错。E-SA-010 断言文字不变（「底部无边框'正在输出…'指示」仍通过），子 Agent e2e 11/11。
+
 ## v3.78.9 (修复：AI 回复中同一句话在工具卡片之间重复出现——切会话再切回才恢复)
 
 - **用户反馈**：AI 回复时同一段文本（如"明白了，回退上次的改动…"）在工具卡片之间反复出现（同一轮内 2~3 次），切换会话再切回后显示恢复正常。此前已改过一次（前端 `onMessage` 以"覆盖最后一条 assistant"避免 delta 累积 + 完整消息成双），未盖住本场景。

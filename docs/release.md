@@ -8,8 +8,8 @@
 
 | job | 机器 | 产物 |
 |---|---|---|
-| win-x64 | windows-latest | `forge-<版本>-x64-setup.exe` |
-| win-arm64 | windows-11-arm | `forge-<版本>-arm64-setup.exe` |
+| win-x64 | windows-latest | `Forge-<版本>-x64-setup.exe` |
+| win-arm64 | windows-11-arm | `Forge-<版本>-arm64-setup.exe` |
 | mac-arm64 | macos-14 | `.dmg` + `.zip`（Apple Silicon） |
 | mac-x64 | macos-15-intel | `.dmg` + `.zip`（Intel） |
 | linux-x64 | ubuntu-latest | `.AppImage` + `.deb` |

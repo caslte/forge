@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call } from '../bridge';
 import type { ProjectItem, SessionItem, ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
+import SuggestionChips from './SuggestionChips.vue';
 import TodoPanel from './TodoPanel.vue';
 import AskUserQuestionPanel from './AskUserQuestionPanel.vue';
 import MessageListItem from './MessageListItem.vue';
@@ -11,12 +12,20 @@ import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { useCompactBanner } from '../composables/useCompactBanner';
+import { useShellHealth } from '../composables/useShellHealth';
 import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 import { formatElapsed } from '../utils/formatElapsed.ts';
+import { toErrorBannerModel } from '../utils/errorPresentation.ts';
+import { useI18n } from '../i18n/index.ts';
+
+// v3.85.2：字标与 splash/BootWelcome 同一 URL（public 资产，dev '/'、prod './' 均可解析）——
+// 全链路共享同一次加载/解码，接管时不再有「新图解码前塌高」的闪动
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
 
 /**
  * 对话主视图。
@@ -25,6 +34,8 @@ import { formatElapsed } from '../utils/formatElapsed.ts';
  *
  * 其他职责与原文档一致。
  */
+const { t } = useI18n();
+
 const props = defineProps<{
   /** 草稿态（新建会话尚未发送首条消息）时为 null；发送首条消息时先创建会话再发送 */
   sessionId: string | null;
@@ -34,8 +45,6 @@ const props = defineProps<{
   currentModel: string | null;
   /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
   projectPicker?: ProjectPickerDescriptor;
-  /** 项目忙（任一会话 streaming，PM-S05 AC-PM-016）：透传给分支徽标禁用 */
-  gitBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -63,9 +72,13 @@ const {
   isStreaming,
   loadingHistory,
   errorMsg,
+  errorInfo,
+  retryInfo,
+  retryLastUserMessage,
   todoSnapshot,
   isEmpty,
   displayItems,
+  turnSuggestion,
   windowedItems,
   historyWindowTruncated,
   expandHistoryWindow,
@@ -105,24 +118,63 @@ const {
 });
 
 /**
- * 上下文压缩横幅（内存持久，按 sessionId 隔离）：压缩中「正在压缩上下文…」，
- * 完成「上下文已压缩（减少 x%）」。切换会话再回来仍保留；重启 App 丢失。
+ * 上下文压缩横幅（内存态，按 sessionId 隔离）：仅覆盖压缩中区间
+ * （「正在压缩上下文…」）。完成后不再常驻——压缩点由消息流内联
+ * 「上下文已压缩」分隔条标记，结果由瞬时 toast 反馈（2026-09-27 用户反馈）。
  * 状态由 InstructionInput 的事件订阅 / 压缩点击统一维护，视图只读渲染。
  */
-const { getBanner: getCompactBanner } = useCompactBanner();
+const { isCompacting } = useCompactBanner();
 /** 个性化：对话框 diff 展示开关（设置页个性化 Tab，localStorage 持久） */
-const { showDiff } = usePreferences();
-const compactBanner = computed(() => getCompactBanner(props.sessionId));
+const { showDiff, contentWidth } = usePreferences();
+const compactingNow = computed(() => isCompacting(props.sessionId));
+
+/**
+ * 错误横幅展示模型（CV-ERR-01）：有结构化分类时由分类决定结论句/色调/是否给重试；
+ * 无分类（本机或 RPC 层失败，只有原文）时走 .conv-error--plain 单行样式。
+ * 不在视图里拼文案——文案规则集中在 utils/errorPresentation.ts，便于单测与调改。
+ */
+const errorBanner = computed(() =>
+  errorInfo.value === null ? null : toErrorBannerModel(errorInfo.value),
+);
+
+/** 「立即重试」：重发本会话最后一条用户消息（pi 无重跑上一轮的原语，
+ *  重试会在历史里多一条相同的用户消息——按钮文案与解释句均已说明这一点）。 */
+function onRetryError(): void {
+  void retryLastUserMessage();
+}
+
+/**
+ * shell 健康横幅（全局单例，非按会话隔离——shell 是机器属性）。
+ * 主进程按 pi 同口径探测 bash，且失败时会自动定位 Git Bash 写进 settings.json 再复探：
+ * - broken 非空＝本机确实没有可用 bash（或写配置失败）→ 常驻提示 + 重新检测 + 打开配置目录；
+ * - autoFixed 非空＝本次是自动写配置后恢复的，提示重启（已存在会话仍持旧解析结果）。
+ * 2026-09 dev 切根后 WSL 拦截事故的收尾：用户不再需要自己编辑 settings.json。
+ */
+const {
+  broken: shellBroken,
+  autoFixed: shellAutoFixed,
+  busy: shellProbing,
+  ensureProbed: ensureShellProbed,
+  reprobe: reprobeShell,
+} = useShellHealth();
+ensureShellProbed();
+/** 打开 settings.json 所在目录做修复（路径去掉末段文件名，win/posix 通用） */
+function openShellSettingsDir(): void {
+  const p = shellBroken.value?.settingsPath;
+  if (p) void window.forge.shell.openPath(p.replace(/[\\/][^\\/]+$/, ''));
+}
 const scrollRef = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 
 /** 会话切换：重置共享状态机并清视图侧回看态 */
 function resetForSession(): void {
   resetConvForSession();
+  stoppedNotice.value = false;
   // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
   reviewCtrl.reset();
   syncReview();
   clearLocateHighlight();
+  beginSettlePin();
 }
 
 /** 滚动到底部：覆盖 smooth 做瞬时定位，下一帧再补一次；长内容快速到达最后一条回复 */
@@ -136,15 +188,159 @@ function scrollToBottom(): void {
     if (scrollRef.value !== el) return;
     el.scrollTop = el.scrollHeight;
     el.style.scrollBehavior = prev;
+    updateConvFade();
   });
 }
 
+/**
+ * 会话切换后的「落位稳定期」。首帧钉底之后仍有两类延后变化会把视口留在底部上方：
+ * - 消息区**变矮**：子 Agent 标签栏（subagent/queryList 异步回填）/ Todo 面板在钉底后才挂载；
+ * - 内容**变高**：流式态经 getStatusHint 迟到恢复 → 末尾「正在执行…」指示行晚挂载。
+ * 两种情况浏览器都只保持 scrollTop 数值，不跟随补差。稳定期内任一尺寸变化重新钉底；
+ * 用户在此期间手动滚动即刻放弃（尊重用户位置，不与回看抢方向盘）。
+ */
+const SETTLE_PIN_MS = 800;
+let settlePinUntil = 0;
+
+function beginSettlePin(): void {
+  settlePinUntil = Date.now() + SETTLE_PIN_MS;
+}
+
+function cancelSettlePin(): void {
+  settlePinUntil = 0;
+}
+
+/**
+ * 消息区/内容尺寸变化：先钉底再刷新上下沿渐隐。
+ * 流式 markdown 按 150ms 节流重渲染，而滚底挂在每个 delta 上（useSessionConversation.scheduleScroll），
+ * 两者不同帧：增长帧内容已变高、视口未跟上 → 底沿渐隐亮起，下个 delta 才跳回 → 底部周期性闪烁。
+ * ResizeObserver 回调在本帧绘制前，跟随态在此同帧钉底可关掉错位窗口；
+ * 渐隐改为钉底后再算，增长帧不会闪出遮罩。
+ */
+function onConvResize(): void {
+  const settling = Date.now() < settlePinUntil;
+  if (settling && !autoFollow.value) {
+    // 稳定期内的回看态只可能是布局钳位被 onMessagesScroll 误判成「用户上滚」而 detach
+    // （detach 无定位目标）；真·手动滚动已由下面的输入事件结束稳定期，
+    // 而点了时间轴定位（有 targetIndex）是明确意图，不覆盖。
+    if (reviewTargetIndex.value === null) {
+      reviewCtrl.exit();
+      syncReview();
+    }
+  }
+  if (settling || autoFollow.value) scrollToBottom();
+  updateConvFade();
+}
+
+// 消息区滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩（同会话树口径）
+const convFadeTop = ref(false);
+const convFadeBottom = ref(false);
+
+function updateConvFade(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  convFadeTop.value = el.scrollTop > 1;
+  convFadeBottom.value = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+}
+
+let convFadeObserver: ResizeObserver | null = null;
+
 /** 发送消息：草稿态（未发首条消息）先真正创建会话再发送（状态机在 useSessionConversation） */
 /** 停止当前轮（CV-S09）：被清空的待发队列文本回填输入框（pi TUI ESC 同款） */
+/** 主动打断提示：停止按钮 / Esc×2 后置显，下一轮开始或切会话收起（内存态，不落库） */
+const stoppedNotice = ref(false);
+
 async function onCancelTurn(): Promise<void> {
   const cleared = await cancelTurn();
   if (cleared.length > 0) inputRef.value?.restoreQueuedText(cleared);
+  stoppedNotice.value = true;
 }
+
+watch(isStreaming, (streaming) => {
+  if (streaming) stoppedNotice.value = false;
+});
+
+/** 收尾帧高度过渡时长：把一次性布局跳变摊成可感知的平滑收拢（与 MessageCard footer 展开同步） */
+const SETTLE_MS = 160;
+
+/** 是否播放过渡：测试环境（无 matchMedia）与「减少动态效果」系统偏好下直接完成，不动画 */
+function canAnimate(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/**
+ * 思考指示行摘除过渡（v3.85.0 底部跳动修复）：流式结束该行随 v-if 卸载，
+ * 实测一帧内消失 ~55px（行高 39px + flex gap 16px），是收尾帧「跳一下」的主要来源。
+ * rAF 逐帧显式赋值驱动收拢。关键坑：该行有上下 padding 各 10px，
+ * box-sizing:border-box 下渲染高度不能低于 padding 之和（内容盒钳到 0 为下限），
+ * 只动 height 会卡死在 20px、残余在卸载帧一次性跳出（探针两次实测确认），
+ * 故 padding 必须与 height 同步收到 0。
+ * 父容器为 column flex + gap，元素卸载时上/下侧 gap 一并消失，
+ * 按有无相邻兄弟用负外边距等量抵消，保证动画结束后零残余。
+ */
+function collapseThinking(el: Element, done: () => void): void {
+  const node = el as HTMLElement;
+  const h = node.offsetHeight;
+  if (!canAnimate() || h === 0) {
+    done();
+    return;
+  }
+  const cs = getComputedStyle(node);
+  const pt = parseFloat(cs.paddingTop) || 0;
+  const pb = parseFloat(cs.paddingBottom) || 0;
+  const parent = node.parentElement;
+  const gap = parent ? parseFloat(getComputedStyle(parent).rowGap) || 0 : 0;
+  const topGap = node.previousElementSibling ? gap : 0;
+  const bottomGap = node.nextElementSibling ? gap : 0;
+  const style = node.style;
+  style.boxSizing = 'border-box';
+  style.overflow = 'hidden';
+  style.minHeight = '0px'; // 防 flex min-height:auto 钳制（overflow:hidden 理论上已归零，双保险）
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    done();
+  };
+  const start = performance.now();
+  const tick = (now: number): void => {
+    if (finished) return;
+    const p = Math.min((now - start) / SETTLE_MS, 1);
+    const e = 1 - Math.pow(1 - p, 3); // easeOutCubic：先快后慢，收尾更柔
+    style.height = `${(h * (1 - e)).toFixed(2)}px`;
+    style.paddingTop = `${(pt * (1 - e)).toFixed(2)}px`;
+    style.paddingBottom = `${(pb * (1 - e)).toFixed(2)}px`;
+    style.opacity = (1 - e).toFixed(3);
+    if (topGap > 0) style.marginTop = `-${(topGap * e).toFixed(2)}px`;
+    if (bottomGap > 0) style.marginBottom = `-${(bottomGap * e).toFixed(2)}px`;
+    if (p < 1) {
+      requestAnimationFrame(tick);
+      return;
+    }
+    finish(); // 末帧已写到 0 高/0 透明/-gap 边距，done 后由 Vue 卸载（此刻尺寸为零，无残余跳变）
+  };
+  requestAnimationFrame(tick);
+  setTimeout(finish, SETTLE_MS + 160); // 兜底：rAF 停摆（如切走窗口）时也要按时卸载
+}
+
+/**
+ * 流式 FORGE 字标：轮次开始（思考阶段、本轮尚无 assistant/tool 展示项）时显示在思考行头部；
+ * 本轮首个展示项（工具组或 assistant 卡）一旦出现，字标由该项头部接管
+ * （见 useSessionConversation displayItems turnBrand + MessageListItem .msg-brand）。
+ */
+const turnBrandRendered = computed(() => {
+  const msgs = messages.value;
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    const m = msgs[i]!;
+    if (m.role === 'user') return false;
+    if (m.compacted) continue;
+    if (m.role === 'assistant' || m.role === 'tool') return true;
+  }
+  return false;
+});
 
 async function onSend(text: string): Promise<void> {
   if (props.sessionId === null) {
@@ -179,20 +375,18 @@ async function onSend(text: string): Promise<void> {
       return;
     }
   }
+  // 主动发消息 = 要回到底部看新一轮回复：退出回看恢复自动跟随
+  reviewCtrl.exit();
+  syncReview();
   await sendTurn(text);
 }
 
-/**
- * 落地 hero 草稿直通（v3.77）：零项目落地页（LandingHero）输入的文本，在项目
- * 打开、本视图挂载后由上层（App post-flush）经此回填草稿输入框，用户无感衔接。
- * 仅草稿态（无会话）接受——带真实 sessionId 时是既有会话，回填会污染其输入框。
- */
-function restoreDraft(text: string): void {
-  if (props.sessionId !== null) return;
-  inputRef.value?.restoreQueuedText([text]);
+/** 点「新会话」：输入框无内容时还原被手动拖高的高度（App 经此透传，草稿态重复点击 sessionId 不变、watch 不触发） */
+function resetInputHeightIfEmpty(): void {
+  inputRef.value?.resetHeightIfEmpty();
 }
 
-defineExpose({ restoreDraft });
+defineExpose({ resetInputHeightIfEmpty });
 
 function onModelChange(model: string): void {
   emit('model-change', model);
@@ -203,7 +397,7 @@ function onModelChange(model: string): void {
 const switchBanner = ref<string | null>(null);
 let switchBannerTimer: ReturnType<typeof setTimeout> | null = null;
 function showSwitchBanner(model: string): void {
-  switchBanner.value = `已切换模型 ${model}`;
+  switchBanner.value = t('chat.modelSwitched', { model });
   // 横幅渲染在对话流底部，立即滚动到底部，避免需要手动下拉才能看到
   autoScrollToBottom();
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
@@ -220,7 +414,9 @@ const hasTimeline = computed(() => messages.value.some((m) => m?.role === 'user'
 /**
  * 回看模式状态机（纯函数，utils/reviewMode）：
  * - 点击条目 enter(index) → review（autoFollow=false）：流式 delta/新消息不再强制滚底；
+ * - 流式/浏览期间用户手动上滚离开底部 → detach() → review（无定位目标）：同上不再滚底；
  * - 滚动触底（距底 <40px，去抖停稳判定）或点击"回到底部"提示条 → exit → browse（autoFollow=true）；
+ * - 用户发送新消息 → exit 回浏览（主动发消息 = 要看新一轮回复）；
  * - 会话切换 resetForSession → reset() 回浏览模式。
  */
 const reviewCtrl = createReviewModeController();
@@ -340,9 +536,27 @@ async function maybeExpandHistoryWindow(): Promise<void> {
   }
 }
 
-/** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 回看态停稳触底退出（原有信号） */
+/** scrollRef 滚动：向上触顶扩窗（历史窗口化）+ 手动上滚暂停跟随 + 回看态停稳触底退出 */
+/** 上次滚动位置（方向判定用）：用户上滚 vs 程序化滚底（扩窗锚定/定位/置底均为向下） */
+let lastScrollTop = 0;
+
 function onMessagesScroll(): void {
+  updateConvFade();
   void maybeExpandHistoryWindow();
+  const elNow = scrollRef.value;
+  if (elNow) {
+    const scrolledUpBy = lastScrollTop - elNow.scrollTop;
+    lastScrollTop = elNow.scrollTop;
+    // 流式输出期间用户向上翻阅历史：脱离自动跟随（delta 不再强制滚底），
+    // 露出「回到底部」按钮；滚回距底 <NEAR_BOTTOM_PX 停稳后由下方触底判定恢复
+    if (
+      scrolledUpBy > 2 &&
+      elNow.scrollHeight - elNow.scrollTop - elNow.clientHeight > NEAR_BOTTOM_PX
+    ) {
+      reviewCtrl.detach();
+      syncReview();
+    }
+  }
   if (!isReviewing.value) return;
   if (nearBottomTimer !== null) clearTimeout(nearBottomTimer);
   nearBottomTimer = setTimeout(() => {
@@ -454,20 +668,73 @@ watch(
   },
 );
 
+/**
+ * 流式期间连按两次 Esc 停止当前轮（与停止按钮同走 onCancelTurn，含队列回填）。
+ * 仅流式时挂监听；会消费 ESC 的界面（历史浮窗 / ask 提问面板）开着时这次按键
+ * 归它们，双击计数清零，不与「Esc 关闭浮窗」抢同一次按键。
+ */
+const DOUBLE_ESC_MS = 500;
+let lastEscAt = 0;
+
+function onEscKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || e.repeat) return;
+  if (historyPopover.value.open || askRequest.value !== null) {
+    lastEscAt = 0;
+    return;
+  }
+  const now = Date.now();
+  if (now - lastEscAt > DOUBLE_ESC_MS) {
+    lastEscAt = now;
+    return;
+  }
+  lastEscAt = 0;
+  void onCancelTurn();
+}
+
+watch(
+  isStreaming,
+  (streaming) => {
+    lastEscAt = 0;
+    if (streaming) window.addEventListener('keydown', onEscKeydown);
+    else window.removeEventListener('keydown', onEscKeydown);
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   // 回看模式触底判定（scrollRef 元素常驻，仅 v-show 切换）
   scrollRef.value?.addEventListener('scroll', onMessagesScroll, { passive: true });
+  // 上下沿渐隐 + 切会话落位稳定期补钉底：观察容器与内容节点（流式增高/消息增删/折叠都会重算）
+  const el = scrollRef.value;
+  if (el) {
+    convFadeObserver = new ResizeObserver(onConvResize);
+    convFadeObserver.observe(el);
+    if (el.firstElementChild) convFadeObserver.observe(el.firstElementChild);
+    // 用户手动滚动 = 明确的位置意图，立即结束稳定期
+    // （pointerdown 覆盖拖动滚动条，它既不触发 wheel 也不触发 touchstart）
+    el.addEventListener('wheel', cancelSettlePin, { passive: true });
+    el.addEventListener('touchstart', cancelSettlePin, { passive: true });
+    el.addEventListener('pointerdown', cancelSettlePin, { passive: true });
+    el.addEventListener('keydown', cancelSettlePin);
+  }
+  // 挂载即带会话（多窗格/切窗口重挂）时同样走稳定期：本钩子晚于 composable 的
+  // onMounted（loadHistory/loadSubagents 已发起），此处开窗不会漏掉异步回填
+  if (props.sessionId !== null) beginSettlePin();
+  updateConvFade();
 });
 
 onUnmounted(() => {
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
   window.removeEventListener('keydown', onPopoverKeydown);
+  window.removeEventListener('keydown', onEscKeydown);
   // 回看模式清理：触底判定去抖计时器 + 定位高亮
   if (nearBottomTimer !== null) {
     clearTimeout(nearBottomTimer);
     nearBottomTimer = null;
   }
   scrollRef.value?.removeEventListener('scroll', onMessagesScroll);
+  convFadeObserver?.disconnect();
+  convFadeObserver = null;
   clearLocateHighlight();
 });
 
@@ -519,6 +786,14 @@ const heroLiftReady = ref(false);
  * hero 是 wrap 的 absolute 子元素，会随 wrap 一起被 transform 带走，
  * 所以要把当前已生效的位移减回去，才是未位移的原始几何。
  *
+ * 关键：hero 与 wrap 共用同一个 translateY（hero 是 wrap 的子元素），
+ * 因此「组中心」受变换污染的幅度恰好等于 hero 高度的一半——
+ * 用 view 的偏移量把 wrap 还原成未位移布局位（offsetTop 不含祖先 transform），
+ * 再补回这半个 hero，即可精确还原原始几何。
+ * 若直接拿变换后的 rect 相减（旧算法 rawTop 减 wr.top 时污染抵消不掉），
+ * 拖拽/缩放窗口时 ResizeObserver 会在 transform 过渡中途重测，误差按
+ * 「1 + hero高/输入框高」倍自我放大，表现为字标漂移、顶部被裁切。
+ *
  * 注意：必须在 hero 已挂载且父级 flex 布局完成（首帧绘制后）再测。
  * 否则会测到 hero 未就位 / 父级高度为 0，算出超大负位移把输入框顶到顶部
  * （连续切换多窗口导致 ConversationView 反复挂载时最易触发，表现为“输入框被提到上面”）。
@@ -532,12 +807,21 @@ function measureHeroLift(): boolean {
   if (isEmpty.value && !heroRef.value) return false;
   const vr = view.getBoundingClientRect();
   if (vr.height === 0) return false;
-  const wr = wrap.getBoundingClientRect();
-  const hr = heroRef.value?.getBoundingClientRect();
-  const rawTop = hr ? Math.min(hr.top, wr.top) : wr.top;
-  const rawBottom = hr ? Math.max(hr.bottom, wr.bottom) : wr.bottom;
-  const groupCenter = (rawTop + rawBottom) / 2 - heroLift.value;
-  heroLift.value = Math.round(vr.top + vr.height / 2 - groupCenter);
+  // offset* 系列不受任何祖先 transform 影响，是纯布局几何
+  const wrapTop = wrap.offsetTop;
+  const wrapH = wrap.offsetHeight;
+  const viewH = view.offsetHeight;
+  let heroH = 0;
+  if (heroRef.value) {
+    // offsetHeight 不含祖先 transform；enter 过渡的 opacity 会推动内层字标高度，
+    // 故 rect 高度更贴合当前渲染态——仅当它不小于布局高度时采用
+    const layoutH = heroRef.value.offsetHeight;
+    const renderedH = heroRef.value.getBoundingClientRect().height;
+    heroH = Math.max(layoutH, Math.round(renderedH));
+  }
+  // 未位移时组中心 = wrap 顶 - hero 高 + (hero 高 + wrap 高)/2
+  const groupCenter = wrapTop - heroH / 2 + wrapH / 2;
+  heroLift.value = Math.round(viewH / 2 - groupCenter);
   return true;
 }
 
@@ -584,6 +868,9 @@ onMounted(() => {
       if (isEmpty.value) measureHeroLift();
     });
     liftResizeObs.observe(viewRef.value);
+    // v3.85.2：wrap 自身高度也会被 models 异步回填/状态行内容推动，而 hero 锚在
+    // wrap 顶（bottom:100%）——只观测 view 会漏掉这类「输入框长高 → 字标漂移」的重测
+    if (inputWrapRef.value) liftResizeObs.observe(inputWrapRef.value);
   }
 });
 
@@ -594,10 +881,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="viewRef" class="conv-view">
+  <div ref="viewRef" class="conv-view" :class="{ 'col-standard': contentWidth === 'standard' }">
     <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。整行与结果视图 v-show 互斥
          （结果视图激活时隐藏整行，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
-    <div class="conv-main-row" v-show="!showResultView">
+    <div class="conv-main-row" :class="{ 'has-rail': hasTimeline }" v-show="!showResultView">
       <ConversationTimelineRail
         v-if="hasTimeline"
         v-show="!showResultView"
@@ -608,14 +895,19 @@ onUnmounted(() => {
         @hover-end="onTimelineHoverEnd"
       />
       <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
-      <div ref="scrollRef" v-show="!showResultView" class="conv-messages">
+      <div
+        ref="scrollRef"
+        v-show="!showResultView"
+        class="conv-messages"
+        :class="{ 'fade-t': convFadeTop, 'fade-b': convFadeBottom }"
+      >
         <div class="conv-messages-inner">
           <!-- 加载态 -->
           <div v-if="loadingHistory" class="conv-loading">
             <span class="loading-dot"></span>
             <span class="loading-dot"></span>
             <span class="loading-dot"></span>
-            <span class="loading-text">加载历史消息</span>
+            <span class="loading-text">{{ t('chat.loadHistoryMessages') }}</span>
           </div>
           <!-- 消息流：连续 ≥2 的 tool 聚为可折叠组。每个展示项独立组件 + 稳定 key，
                流式聚合边界变化（单条 ↔ 组）只在组件内部切换形态，避免 patch 错位 -->
@@ -630,24 +922,38 @@ onUnmounted(() => {
               :show-diff="showDiff"
               @toggle-group="toggleGroup"
             />
-            <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光 -->
-            <div v-if="isStreaming" class="conv-thinking">
-              <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
-              <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
+            <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光。
+                 收尾帧随 v-if 卸载会连同所在 flex gap 一帧消失 ~55px（实测主要跳动来源），
+                 用 JS 钩子把高度/透明度渐变收拢、负外边距抵消将消失的 gap（v3.85.0）。
+                 外层包装块同帧卸载：字标与思考行一起被 collapseThinking 收拢，无残余跳动 -->
+            <Transition :css="false" @leave="collapseThinking">
+              <div v-if="isStreaming" class="conv-streaming-head">
+                <div v-if="!turnBrandRendered" class="msg-brand">FORGE</div>
+                <div class="conv-thinking">
+                  <span class="thinking-text thinking-shimmer">{{ streamPhaseText }}</span>
+                  <span class="thinking-sec">{{ formatElapsed(streamElapsedSec) }}</span>
+                </div>
+              </div>
+            </Transition>
+            <!-- 下一步建议芯片：锚定消息流末尾、仅当前轮（契约 I1 v2，key=该建议消息，换轮复位已点态） -->
+            <SuggestionChips
+              v-if="turnSuggestion"
+              :key="turnSuggestion.toolEventId ?? turnSuggestion.ts"
+              :msg="turnSuggestion"
+              @pick="onSend"
+            />
+            <!-- 主动打断提示（同款分隔线横幅形态）：说明这一轮是手动停的，非模型/网络原因 -->
+            <div v-if="stoppedNotice" class="conv-switch-banner">
+              <span class="csb-line"></span>
+              <span class="csb-text">{{ t('chat.stoppedNotice') }}</span>
+              <span class="csb-line"></span>
             </div>
           </template>
 
-          <!-- 上下文压缩横幅（内存持久，App 关闭前保持）：压缩中警示色微光，完成后常驻提示 -->
-          <div
-            v-if="compactBanner"
-            class="compact-banner"
-            :class="{ working: compactBanner.phase === 'compacting' }"
-          >
+          <!-- 上下文压缩横幅（仅压缩中）：警示色微光提示，完成后收掉 -->
+          <div v-if="compactingNow" class="compact-banner working">
             <span class="cb-line"></span>
-            <span
-              class="cb-text"
-              :class="{ 'thinking-shimmer': compactBanner.phase === 'compacting' }"
-            >{{ compactBanner.phase === 'compacting' ? '正在压缩上下文' : compactBanner.text }}</span>
+            <span class="cb-text thinking-shimmer">{{ t('chat.compactingContext') }}</span>
             <span class="cb-line"></span>
           </div>
 
@@ -658,9 +964,76 @@ onUnmounted(() => {
             <span class="csb-line"></span>
           </div>
 
-          <!-- 错误提示 -->
-          <div v-if="errorMsg" class="conv-error">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <!-- shell 健康横幅（常驻）：自动定位 Git Bash 仍失败时说明原因并给修复入口 -->
+          <div v-if="shellBroken" class="shell-banner">
+            <span class="sb-line"></span>
+            <div class="sb-body">
+              <span class="sb-text">{{ shellBroken.reason === 'wsl-stub' ? t('chat.shellWslStub') : t('chat.shellNoShell') }}</span>
+              <span class="sb-hint">{{ t('chat.shellFixHint', { path: shellBroken.settingsPath }) }}</span>
+              <span class="sb-actions">
+                <button type="button" class="sb-fix" :disabled="shellProbing" @click="reprobeShell">
+                  {{ shellProbing ? t('chat.shellReprobing') : t('chat.shellReprobe') }}
+                </button>
+                <button type="button" class="sb-fix" @click="openShellSettingsDir">{{ t('chat.shellOpenFolder') }}</button>
+              </span>
+            </div>
+            <span class="sb-line"></span>
+          </div>
+
+          <!-- 自动修复成功（config 刚落盘）：已存在会话仍持旧 shell，提示重启后生效 -->
+          <div v-else-if="shellAutoFixed" class="shell-banner">
+            <span class="sb-line"></span>
+            <div class="sb-body">
+              <span class="sb-text sb-ok">{{ t('chat.shellAutoFixed', { path: shellAutoFixed.shell }) }}</span>
+            </div>
+            <span class="sb-line"></span>
+          </div>
+
+          <!-- 错误横幅（CV-ERR-01）：两行结构——第一行结论 + 原始错误原文，
+               第二行解释 +（仅可重试时）立即重试。色调三档：需用户处理/可自愈/已完整。 -->
+          <div v-if="errorBanner" class="conv-error" :class="`conv-error--${errorBanner.tone}`">
+            <svg class="ce-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <div class="ce-body">
+              <div class="ce-line1">
+                <span class="ce-verdict">{{ errorBanner.title }}</span><span
+                  v-if="errorBanner.raw !== ''"
+                  class="ce-raw"
+                  >：{{ errorBanner.raw }}</span
+                >
+              </div>
+              <div class="ce-line2">
+                <span class="ce-detail">{{ errorBanner.detail }}</span>
+                <button
+                  v-if="errorBanner.showRetry"
+                  class="ce-retry"
+                  type="button"
+                  :disabled="isStreaming"
+                  @click="onRetryError"
+                >
+                  <span class="ce-retry-ico" aria-hidden="true">↻</span>
+                  {{ t('chat.errorRetry') }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- 自动重试进行中（CV-ERR-01）：轮次未终止，不是错误——独立于横幅显示进度 -->
+          <div v-else-if="retryInfo" class="conv-error conv-error--info">
+            <span class="ce-spinner" aria-hidden="true"></span>
+            <div class="ce-body">
+              <div class="ce-line1">
+                <span class="ce-verdict">{{
+                  t('chat.errorRetrying', { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
+                }}</span>
+              </div>
+            </div>
+          </div>
+          <!-- 无分类的本机/RPC 失败：保持单行原文（分类器只管 provider/网络层错误） -->
+          <div v-else-if="errorMsg" class="conv-error conv-error--plain">
+            <svg class="ce-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10" />
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -684,7 +1057,7 @@ onUnmounted(() => {
             <line x1="12" y1="5" x2="12" y2="19" />
             <polyline points="5 12 12 19 19 12" />
           </svg>
-          <span>回到底部</span>
+          <span>{{ t('chat.backToBottom') }}</span>
         </button>
       </Transition>
     </div>
@@ -738,8 +1111,9 @@ onUnmounted(() => {
            直接移除，不走 260ms 离场淡出——否则淡出残影会与「加载历史消息」同屏。
            正常发送首条消息时 loadingHistory 为 false，过渡保留 -->
       <Transition name="conv-hero" :css="!loadingHistory">
-        <div v-if="isEmpty" ref="heroRef" class="conv-hero" aria-label="新建会话：输入任务开始对话">
-          <span class="conv-wordmark" aria-hidden="true">forge</span>
+        <div v-if="isEmpty" ref="heroRef" class="conv-hero" :aria-label="t('chat.heroAriaLabel')">
+          <img class="conv-hero-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
+          <img class="conv-hero-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
         </div>
       </Transition>
       <InstructionInput
@@ -752,7 +1126,7 @@ onUnmounted(() => {
         :project-path="props.project.path"
         :queue-items="queueItems"
         :git-project-path="props.projectPicker?.currentPath ?? props.project.path"
-        :git-busy="props.gitBusy ?? false"
+        :commit-entry="!isEmpty"
         @send="onSend"
         @cancel="onCancelTurn"
         @model-change="onModelChange"
@@ -781,12 +1155,12 @@ onUnmounted(() => {
 
     <!-- 单个子 agent 终止二次确认弹窗（不可逆） -->
     <div v-if="pendingStopAgentId" class="stop-confirm-overlay" @click.self="cancelSubagentStop">
-      <div class="stop-confirm" role="alertdialog" aria-modal="true" aria-label="确认终止子 Agent">
-        <div class="stop-confirm-title">确认终止该子 Agent？</div>
-        <div class="stop-confirm-desc">该操作不可逆。终止后子 Agent 将转“已终止”状态，未完成的工作不会保留。</div>
+      <div class="stop-confirm" role="alertdialog" aria-modal="true" :aria-label="t('chat.stopSubagentAriaLabel')">
+        <div class="stop-confirm-title">{{ t('chat.stopSubagentTitle') }}</div>
+        <div class="stop-confirm-desc">{{ t('chat.stopSubagentDesc') }}</div>
         <div class="stop-confirm-actions">
-          <button type="button" class="stop-confirm-cancel" @click="cancelSubagentStop">取消</button>
-          <button type="button" class="stop-confirm-confirm" @click="confirmSubagentStop">确认终止</button>
+          <button type="button" class="stop-confirm-cancel" @click="cancelSubagentStop">{{ t('common.cancel') }}</button>
+          <button type="button" class="stop-confirm-confirm" @click="confirmSubagentStop">{{ t('chat.stopSubagentConfirm') }}</button>
         </div>
       </div>
     </div>
@@ -800,6 +1174,25 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--background);
+
+  /* 内容列宽（个性化偏好 settings.personal.contentWidth）：
+     wide = 100%（现有行为，铺满）；standard = 固定列宽居中。
+     列宽数值走 token --content-col-std，改一处即全局生效（HMR 实时可调）。 */
+  --conv-col: 100%;
+  /* 输入框/状态行/浮窗宽度：跟随所在形态（hero 首屏收窄居中，见 .hero-mode） */
+  --conv-box-w: 100cqw;
+}
+
+/* 标准宽度：正文列与输入区同宽居中；min() 保证窄窗格自动退化为满宽 */
+.conv-view.col-standard {
+  --conv-col: min(var(--content-col-std, 920px), 100%);
+}
+
+/* 左缘时间线窄条占掉消息区左侧，标准宽度下若不补右侧对称 padding，
+   内容列会以「消息区」而非「整列视口」为中心，整体右移半个窄条宽，
+   与下方输入框错开。补齐后两者严格同轴。 */
+.conv-view.col-standard .conv-main-row.has-rail .conv-messages {
+  padding-right: calc(38px + var(--timeline-rail-w, 28px));
 }
 
 /* 左缘时间线 + 消息区横排容器（CV-S06）：时间线窄条在左，消息流占满余宽；
@@ -825,6 +1218,31 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 18px 38px;
   scroll-behavior: smooth;
+  --edge-fade: 28px;
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+}
+
+.conv-messages.fade-t {
+  --fade-top: var(--edge-fade);
+}
+
+.conv-messages.fade-b {
+  --fade-bottom: var(--edge-fade);
 }
 
 .conv-messages-inner {
@@ -832,6 +1250,19 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 16px;
   flex: 1;
+  /* 内容列收拢（标准宽度）：居中 + 宽度过渡，与输入框同步动画。
+     width:100% 必须显式写：margin-inline:auto 会取消 flex 的 stretch 对齐，
+     只留 max-width 时列会塌成 fit-content（宽模式也被压窄）。 */
+  width: 100%;
+  max-width: var(--conv-col);
+  margin-inline: auto;
+  transition: max-width var(--transition-decelerate);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conv-messages-inner {
+    transition: none;
+  }
 }
 
 /* 加载态 */
@@ -866,6 +1297,24 @@ onUnmounted(() => {
   padding: 10px 14px;
   color: var(--muted-foreground);
   font-size: 14px;
+}
+
+/* 流式头部包装：字标 + 思考行同挂收起过渡（collapseThinking 测的是本块整体高度） */
+.conv-streaming-head {
+  display: flex;
+  flex-direction: column;
+}
+
+/* FORGE 轮次字标（流式阶段，与 MessageListItem .msg-brand 同口径）；
+   左右 14px 抵消 .conv-thinking 内边距，使字标与正文左缘对齐 */
+.msg-brand {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  margin: 4px 14px -4px;
+  user-select: none;
 }
 
 .loading-dot,
@@ -947,7 +1396,7 @@ onUnmounted(() => {
   transition: none;
 }
 
-.conv-input-wrap.hero-priming .compose-box {
+.conv-input-wrap.hero-priming :deep(.compose-box) {
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
@@ -955,7 +1404,7 @@ onUnmounted(() => {
   .conv-input-wrap {
     transition: none;
   }
-  .conv-input-wrap .compose-box {
+  .conv-input-wrap :deep(.compose-box) {
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
 }
@@ -974,20 +1423,25 @@ onUnmounted(() => {
   user-select: none;
 }
 
-/* 巨型 forge 字标：实底 + 下缘蒙版渐隐，融进背板。
-   透明度刻意留低——抬到 0.2 以上深色主题会起脏斑 */
-.conv-wordmark {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  line-height: 1;
-  color: var(--foreground);
-  opacity: 0.14;
-  /* 老浏览器兜底 */
-  font-size: 96px;
-  font-size: min(26cqw, 180px);
-  -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+/* FORGE 字标（设计稿切图，深浅主题各一版，按 data-theme 切换）。
+   首屏不再放图形 LOGO，字标即主视觉，纯黑白不变灰 */
+.conv-hero-wordmark {
+  display: none;
+  width: min(40cqw, 320px);
+  height: auto;
+  margin-bottom: 44px;
+  pointer-events: none;
+  user-select: none;
+}
+
+:root:not([data-theme='light']) .conv-hero-wordmark.wm-dark,
+:root[data-theme='light'] .conv-hero-wordmark.wm-light {
+  display: block;
+}
+
+/* 浅色主题下纯黑字标对比过强，降透明度柔化（与 landing 首屏同参数） */
+:root[data-theme='light'] .conv-hero-wordmark.wm-light {
+  opacity: 0.8;
 }
 
 .conv-hero-enter-active,
@@ -1002,17 +1456,32 @@ onUnmounted(() => {
 
 /* 输入框宽度随 hero 态收窄居中：两端都写成 cqw 派生的长度，
    避免 percentage ↔ px 插值在 Chromium 上的不确定行为 */
-.conv-input-wrap .compose-box {
-  max-width: 100cqw;
+/* InstructionInput 为多根 fragment（compose-box + 状态行），不再继承父组件 scopeId，
+   父作用域规则必须经 :deep() 才能命中 .compose-box */
+/* 宽度统一取 --conv-box-w：默认 100cqw（= 原有 100cqw），hero 态收窄，
+   标准宽度偏好下由 .conv-view.col-standard 改写为内容列宽（三种形态一致，不跳宽） */
+.conv-input-wrap :deep(.compose-box) {
+  max-width: var(--conv-box-w);
+  margin-inline: auto;
   transition:
     border-color var(--transition-fast),
     box-shadow var(--transition-fast),
     max-width var(--transition-decelerate);
 }
 
-.conv-input-wrap.hero-mode .compose-box {
-  max-width: min(640px, 100cqw);
-  margin: 0 auto;
+/* hero 收窄居中（状态行同宽跟随，保证项目/分支左缘贴着输入框左缘） */
+.conv-input-wrap.hero-mode {
+  --conv-box-w: min(640px, 100cqw);
+}
+
+.conv-input-wrap :deep(.compose-status) {
+  max-width: var(--conv-box-w);
+  margin-inline: auto;
+}
+
+/* 标准宽度：输入框整体（输入框 + 状态行）跟随正文列宽 */
+.conv-view.col-standard .conv-input-wrap {
+  --conv-box-w: var(--conv-col);
 }
 
 /*
@@ -1021,7 +1490,7 @@ onUnmounted(() => {
  * scoped CSS 里 :deep() 只能往下穿透、不能往上选祖先）。TodoPanel.vue 不重复定义。
  */
 .conv-input-wrap.hero-mode :deep(.todo-panel) {
-  max-width: min(640px, 100cqw);
+  max-width: var(--conv-box-w);
   /* 保留 -10px 底 margin：面板底部仍塞进输入框背后，保持延伸一体感 */
   margin: 0 auto -10px;
 }
@@ -1029,8 +1498,16 @@ onUnmounted(() => {
 /* Path 2：问卷面板与 compose-box 同宽居中（与上面 TodoPanel 规则同理，写在
    ConversationView 才能往上选 .conv-input-wrap 祖先）。 */
 .conv-input-wrap.hero-mode :deep(.ask-panel) {
-  max-width: min(640px, 100cqw);
+  max-width: var(--conv-box-w);
   margin: 0 auto -10px;
+}
+
+/* 非 hero 态：Todo / 问卷浮窗（挂在输入框上方）跟随输入框同宽居中，
+   否则标准宽度下浮窗仍铺满，与收窄的输入框错位 */
+.conv-input-wrap:not(.hero-mode) :deep(.todo-panel),
+.conv-input-wrap:not(.hero-mode) :deep(.ask-panel) {
+  max-width: var(--conv-box-w);
+  margin-inline: auto;
 }
 
 /* 模型切换横幅：带左右横线的居中提示 */
@@ -1054,24 +1531,200 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-/* 错误提示 */
-.conv-error {
+/* shell 健康横幅：同款横线分隔；主句警示色，修复路径小字可选中复制（供手动编辑配置） */
+.shell-banner {
   display: flex;
   align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  animation: fadeIn 0.2s ease-out;
+}
+.sb-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+}
+.sb-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+}
+.sb-text {
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--destructive);
+}
+.sb-hint {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  max-width: 520px;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+/* 自动修复成功态：同一横幅位置换成正常色，与错误态区分但不喧哗 */
+.sb-ok {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.sb-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sb-fix {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.sb-fix:disabled {
+  color: var(--muted-foreground);
+  cursor: default;
+  text-decoration: none;
+}
+
+/* 错误横幅（CV-ERR-01）：色调三档 + 单行 fallback。
+   红色只给「用户不动它就不行」的类（凭据/额度/上下文/本机依赖），
+   可自愈与未识别用 warning——不把红色当常态，红才有信号价值。 */
+.conv-error {
+  display: flex;
+  align-items: flex-start;
   gap: 8px;
   padding: 10px 14px;
   border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--destructive) 8%, var(--card));
-  border: 1px solid color-mix(in oklab, var(--destructive) 24%, transparent);
-  color: var(--destructive);
   font-size: 12.5px;
   animation: fadeIn 0.2s ease-out;
+  --ce-tone: var(--muted-foreground);
+  background: color-mix(in oklab, var(--ce-tone) 8%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--ce-tone) 24%, transparent);
+  color: var(--ce-tone);
 }
 
-.conv-error svg {
+.conv-error--destructive {
+  --ce-tone: var(--destructive);
+}
+
+.conv-error--warning {
+  --ce-tone: var(--warning);
+}
+
+.conv-error--info {
+  --ce-tone: var(--info);
+}
+
+.conv-error--plain {
+  --ce-tone: var(--muted-foreground);
+  align-items: center;
+}
+
+.ce-icon {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ce-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ce-line1 {
+  min-width: 0;
+  /* 原文可能很长（整段 JSON 错误体）：限两行并允许在任意字符断行，
+     不让一条 provider 长错误把输入框顶下去 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+}
+
+.ce-verdict {
+  font-weight: 600;
+}
+
+/* 原始错误原文：等宽、不加粗、略暗——它在“解释结论”，不该抢结论的视觉重量 */
+.ce-raw {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: color-mix(in oklab, var(--ce-tone) 72%, var(--muted-foreground));
+  overflow-wrap: anywhere;
+}
+
+.ce-line2 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: color-mix(in oklab, var(--ce-tone) 78%, var(--muted-foreground));
+  line-height: 1.45;
+}
+
+.ce-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid color-mix(in oklab, var(--ce-tone) 34%, transparent);
+  background: color-mix(in oklab, var(--ce-tone) 10%, transparent);
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease-out;
+}
+
+.ce-retry:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ce-tone) 20%, transparent);
+}
+
+.ce-retry:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ce-retry-ico {
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* 自动重试指示：转圈只表示“还在等”，不表示死锁 */
+.ce-spinner {
+  width: 12px;
+  height: 12px;
+  margin: 3px 2px 0;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in oklab, var(--ce-tone) 30%, transparent);
+  border-top-color: var(--ce-tone);
+  animation: ce-spin 0.9s linear infinite;
+}
+
+@keyframes ce-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ce-spinner {
+    animation: none;
+  }
 }
 
 /* 结果视图：与消息流 v-show 互斥，独立占据消息区位置 */
@@ -1153,7 +1806,13 @@ onUnmounted(() => {
 }
 
 /* ===== CV-S06 回看模式"回到底部"提示条（AC-CV-016） =====
-   悬浮于消息流底部（absolute 不参与布局，回看切换零跳动），点击退出回看恢复自动滚底 */
+   悬浮于消息流底部（absolute 不参与布局，回看切换零跳动），点击退出回看恢复自动滚底。
+
+   ⚠️ 入场动画不能用全局 fadeIn（其关键帧只有 translateY，没有 translateX(-50%)，
+   跑动画时 transform 会被覆盖 → left:50% 没有抵消 → 按钮左缘钉在中线、整体偏右；
+   0.15s 后动画结束、静态 transform 回血、按钮"啪"左跳半宽）。这里用一个本地 keyframe
+   把 translateX(-50%) 显式写入 from/to，静态 transform 同步保留作 fallback（动画未
+   跑/被 reduced-motion 禁用时仍居中）。 */
 .review-backdown {
   position: absolute;
   bottom: 12px;
@@ -1172,7 +1831,14 @@ onUnmounted(() => {
   font-weight: 500;
   cursor: pointer;
   box-shadow: var(--shadow-lg);
-  animation: fadeIn 0.15s ease-out;
+  animation: review-backdown-in 0.15s ease-out;
+}
+
+/* CV-S06 本地入场 keyframe：translateX(-50%) 必须显式带上，否则会覆盖静态居中。
+   与下方 .bd-pop-enter-from / .bd-pop-leave-to 的 transform 写法保持一致。 */
+@keyframes review-backdown-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0);   }
 }
 
 .review-backdown svg {

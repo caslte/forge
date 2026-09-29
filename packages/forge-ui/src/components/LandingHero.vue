@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted } from 'vue';
 import type { ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
+
+// v3.85.2：字标与 splash/BootWelcome/conv-hero 同一 URL、同一档尺寸（320px）
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
 
 /**
  * 落地 hero（v3.77）：零项目时的启动首屏，替换旧「选择项目」卡片。
@@ -11,9 +15,10 @@ import InstructionInput from './InstructionInput.vue';
  * `{ mode:'draft', currentPath:null, currentName:'打开项目', items:[] }`，
  * 菜单里只有「打开项目…」入口。
  *
- * 草稿直通：发送（或选中项目）→ 上层弹目录选择器 → 项目打开后本组件卸载，
- * 卸载时把未发送文本经 carry-text 上抛；App 在分支切换后的 post-flush 把它
- * 回填进项目视图的草稿输入框（经 ConversationView.restoreDraft），用户无感衔接。
+ * 草稿直通：输入框是 InstructionInput（sessionId 恒空 → 草稿态统一 key），
+ * 文本实时落在模块级草稿仓库（utils/composerDrafts）里；发送后回填的文本
+ * 同样在仓。项目打开、本组件卸载后，项目视图的草稿输入框挂载即从同一 key
+ * 回填，用户无感衔接——不再需要 carry-text 事件接力。
  */
 const props = defineProps<{
   models: string[];
@@ -27,18 +32,13 @@ const emit = defineEmits<{
   (e: 'pick-project', path: string): void;
   (e: 'open-project-picker'): void;
   (e: 'remove-project', path: string): void;
-  /** 卸载时上抛未发送的输入文本（App 暂存，项目打开后回填草稿输入框） */
-  (e: 'carry-text', text: string): void;
 }>();
 
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
-/** 发送路径的文本暂存：onSend 会先清空输入框再 emit，目录选择取消时文本已回填 */
-let sentCarry = '';
 
 function onSend(text: string): void {
   if (props.projectPicker?.currentPath) return; // 落地态恒无项目；有值说明上层误用，丢弃
-  sentCarry = text;
-  // 视觉回填：目录选择取消时不丢字；选中则组件随即卸载，回填无副作用
+  // 视觉回填：目录选择取消时不丢字；选中则组件随即卸载，文本经草稿仓库直通
   inputRef.value?.restoreQueuedText([text]);
   emit('open-project-picker');
 }
@@ -55,12 +55,6 @@ function onRemoveProject(path: string): void {
   emit('remove-project', path);
 }
 
-onBeforeUnmount(() => {
-  const current = inputRef.value?.getText() ?? '';
-  const carry = current.trim() !== '' ? current : sentCarry;
-  if (carry.trim() !== '') emit('carry-text', carry);
-});
-
 onMounted(() => {
   inputRef.value?.focus();
 });
@@ -68,7 +62,8 @@ onMounted(() => {
 
 <template>
   <div class="landing-hero">
-    <span class="landing-wordmark" aria-hidden="true">forge</span>
+    <img class="landing-wordmark wm-dark" :src="logoWordmarkDark" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
+    <img class="landing-wordmark wm-light" :src="logoWordmarkLight" alt="FORGE" width="320" height="42" aria-hidden="true" draggable="false" />
     <div class="landing-input">
       <InstructionInput
         ref="inputRef"
@@ -101,20 +96,24 @@ onMounted(() => {
   container-type: inline-size;
 }
 
-/* 巨型 forge 字标：参数照抄 .conv-wordmark（实底 + 下缘蒙版渐隐，融进背板） */
+/* FORGE 字标主视觉（与会话内 conv-hero-wordmark 同参数），纯黑白不变灰 */
 .landing-wordmark {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: -0.05em;
-  line-height: 1;
-  color: var(--foreground);
-  opacity: 0.14;
-  font-size: 96px;
-  font-size: min(26cqw, 180px);
-  -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 25%, transparent 100%);
+  display: none;
+  width: min(40cqw, 320px);
+  height: auto;
+  margin-bottom: 16px;
   pointer-events: none;
   user-select: none;
+}
+
+:root:not([data-theme='light']) .landing-wordmark.wm-dark,
+:root[data-theme='light'] .landing-wordmark.wm-light {
+  display: block;
+}
+
+/* 浅色主题下纯黑字标对比过强，降透明度柔化 */
+:root[data-theme='light'] .landing-wordmark.wm-light {
+  opacity: 0.8;
 }
 
 /* 同 hero-mode 的输入框宽度：min(640px, 容器宽) */

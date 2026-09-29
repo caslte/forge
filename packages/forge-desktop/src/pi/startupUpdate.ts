@@ -2,10 +2,12 @@
  * 首启静默预装 + 版本变化联动更新编排（docs/prd/07_installer_update.md IN-F02/IN-F04）。
  *
  * 由 main.ts 在 app.whenReady 内 fire-and-forget 挂接（后台静默，不阻塞启动）：
- * - 预装（AC-IN-004/005/006/007）：preinstallDone=false 时对比推荐清单与
- *   ~/.pi/agent settings.packages 补缺（只增不删，不动用户已装/自装项），
- *   逐项经内置 CLI `pi install <pkg>`；全部成功置 preinstallDone=true；
- *   任一失败保持 false，下次启动重试（幂等）
+ * - 预装（AC-IN-004/005/006/007）：preinstallDone=false 或清单版本未追平
+ *   （RECOMMENDED_LIST_VERSION，新增推荐项后老用户升级也能补装）时对比推荐清单与
+ *   forge agent 目录（<userData>/agent）settings.packages 补缺（只增不删，不动用户已装/自装项），
+ *   逐项经内置 CLI `pi install npm:<pkg>`（裸名会被引擎按本地路径解析，必须带前缀）；
+ *   全部成功置 preinstallDone=true + 记录清单版本；
+ *   任一失败保持原样，下次启动重试（幂等）
  * - 联动（AC-IN-012/013/014）：lastRunForgeVersion ≠ 当前版本 → 后台静默
  *   `pi update --extensions`（复用 piRuntime.updatePiExtensions），成功回写
  *   lastRunForgeVersion + components 快照 + lastUpdateCheckAt；失败/离线/CLI 缺失
@@ -18,11 +20,13 @@ import { promisify } from 'node:util';
 import {
   PI_UPDATE_TIMEOUT_MS,
   type PiUpdateResult,
+  buildPiCliEnv,
   readPiExtensionList,
   resolveBundledPiCli,
   updatePiExtensions,
 } from './piRuntime.ts';
-import { missingRecommended } from './recommendedPlugins.ts';
+import { missingRecommended, RECOMMENDED_LIST_VERSION } from './recommendedPlugins.ts';
+import { buildPiCliArgv, ensureConsoleHidePreload } from './consoleHidePreload.ts';
 import { readUpdaterState, updateComponents, writeUpdaterState } from './updaterState.ts';
 
 const execFileAsync = promisify(execFile);
@@ -38,7 +42,7 @@ function tail(s: string): string {
 export interface StartupUpdateDeps {
   /** updater-state.json 绝对路径（userData 目录下） */
   statePath: string;
-  /** pi agent 目录（~/.pi/agent，与 createForgeCore 解析一致） */
+  /** forge agent 目录（<userData>/agent，与 createForgeCore 注入同一根） */
   agentDir: string;
   /** 当前 forge 版本（main.ts 注入 app.getVersion()） */
   currentVersion: string;
@@ -56,19 +60,27 @@ export interface StartupUpdate {
   run(): Promise<void>;
 }
 
-/** 默认 CLI 执行：经 ELECTRON_RUN_AS_NODE 以 node 模式跑内置引擎 CLI（不依赖全局 pi） */
-async function defaultRunCli(args: string[]): Promise<{ ok: boolean; output: string }> {
+/** 默认 CLI 执行：经 ELECTRON_RUN_AS_NODE 以 node 模式跑内置引擎 CLI（不依赖全局 pi）；
+ * env 经 buildPiCliEnv 注入 PI_CODING_AGENT_DIR，组件装到 forge 自有 agent 目录 */
+async function defaultRunCli(args: string[], agentDir: string): Promise<{ ok: boolean; output: string }> {
   const cli = resolveBundledPiCli();
   if (cli === null) {
     return { ok: false, output: '内置引擎 CLI 不存在，无法执行组件命令' };
   }
   try {
-    const { stdout } = await execFileAsync(process.execPath, [cli, ...args], {
-      windowsHide: true,
-      timeout: PI_UPDATE_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    });
+    // 预加载注入 windowsHide 缺省值：引擎 spawnCommand 未传 windowsHide，其孙进程
+    // （cross-spawn → cmd.exe → npm）会弹可见控制台（外层 windowsHide 管不到孙进程）。
+    const preload = ensureConsoleHidePreload(agentDir);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      buildPiCliArgv(cli, args, preload),
+      {
+        windowsHide: true,
+        timeout: PI_UPDATE_TIMEOUT_MS,
+        maxBuffer: 4 * 1024 * 1024,
+        env: buildPiCliEnv(agentDir),
+      },
+    );
     return { ok: true, output: tail(stdout) };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
@@ -91,8 +103,8 @@ export function snapshotComponents(agentDir: string): Record<string, string> {
 }
 
 export function createStartupUpdate(deps: StartupUpdateDeps): StartupUpdate {
-  const runCli = deps.runCli ?? defaultRunCli;
-  const extensionUpdater = deps.extensionUpdater ?? updatePiExtensions;
+  const runCli = deps.runCli ?? ((args: string[]) => defaultRunCli(args, deps.agentDir));
+  const extensionUpdater = deps.extensionUpdater ?? (() => updatePiExtensions(deps.agentDir));
   const now = deps.now ?? (() => new Date());
   const log = (line: string): void => {
     try {
@@ -105,10 +117,12 @@ export function createStartupUpdate(deps: StartupUpdateDeps): StartupUpdate {
   /** 组件版本快照（实体已安装项；清单已列但实体未安装的不入快照） */
   const snapshot = (): Record<string, string> => snapshotComponents(deps.agentDir);
 
-  /** 预装（IN-F02）：补缺只增不删；全部成功置标志，任一失败保持 false 下次重试 */
+  /** 预装（IN-F02）：补缺只增不删；全部成功记清单版本，任一失败保持原样下次重试 */
   const runPreinstall = async (): Promise<void> => {
     const state = readUpdaterState(deps.statePath);
-    if (state.preinstallDone) return; // AC-IN-006：已执行预装，幂等跳过
+    // AC-IN-006 双条件闸门：本轮清单已全部装好 且 已处理到当前清单版本才跳过；
+    // 清单版本前进（RECOMMENDED_LIST_VERSION++）→ 老用户升级后重跑一轮补缺（新推荐项升级必达）
+    if (state.preinstallDone && state.preinstallListVersion >= RECOMMENDED_LIST_VERSION) return;
     const installed = readPiExtensionList(deps.agentDir).map((p) => p.name);
     const missing = missingRecommended(installed);
     if (missing.length === 0) {
@@ -116,7 +130,10 @@ export function createStartupUpdate(deps: StartupUpdateDeps): StartupUpdate {
     }
     let allOk = true;
     for (const pkg of missing) {
-      const res = await runCli(['install', pkg, '--no-approve']);
+      // 引擎 parseSource 只认 "npm:" 前缀走 registry，裸名会按本地路径解析报
+      // "Path does not exist"——清单存裸名（与 readPiExtensionList 剥前缀后的比对口径一致），
+      // 安装命令统一加前缀。
+      const res = await runCli(['install', `npm:${pkg}`, '--no-approve']);
       if (res.ok) {
         const version = readPiExtensionList(deps.agentDir).find((p) => p.name === pkg)?.version;
         log(`[预装] ${pkg} ${version ?? '未知'} (来源=预装)`);
@@ -125,10 +142,11 @@ export function createStartupUpdate(deps: StartupUpdateDeps): StartupUpdate {
         log(`[静默] 预装失败：${pkg} ${tail(res.output)}`);
       }
     }
-    if (!allOk) return; // 保持 preinstallDone=false，下次启动重试（AC-IN-007）
+    if (!allOk) return; // 保持 preinstallDone/listVersion 原样，下次启动重试（AC-IN-007）
     const next = readUpdaterState(deps.statePath);
     next.preinstallDone = true;
     next.preinstallDoneAt = now().toISOString();
+    next.preinstallListVersion = RECOMMENDED_LIST_VERSION;
     next.components = snapshot(); // 补装明细入 components 快照（IN-F02）
     writeUpdaterState(deps.statePath, next);
   };

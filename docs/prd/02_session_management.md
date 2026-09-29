@@ -29,7 +29,7 @@
 
 ### 1.4 已确认业务决策
 
-- 会话 = pi session，复用 pi JSONL 存储（`~/.pi/agent/sessions`），forge 不重造消息存储。
+- 会话 = pi session，复用 pi JSONL 存储（`<userData>/agent/sessions`），forge 不重造消息存储。
 - 多会话并行执行：每个会话对应独立 pi `AgentSession` 实例，UI 切换不影响执行。
 - 视窗 = **应用内画布**（单 BrowserWindow 内模拟多窗口，方案 A，原型 `plan/window-mode-mockup.html` 已验证交互）：关闭即摘展示不删会话、会话池拖拽开窗、自由 resize、**窗口吸附**（自定义 snap 逻辑，左/右/上/下/四角铺满，非 OS Aero Snap）、z-index 置顶、默认 4 窗格可自由组合。**非真 OS 窗口，不支持跨屏**（跨屏若需后续改真 BrowserWindow，属重写）。
 - 跨项目会话观察：会话池列出所有项目的会话，可跨项目拖到画布并排。
@@ -189,7 +189,7 @@
 - **业务规则**：
   - 多独立窗口画布（TD-SM-02 A）：每窗口观察一个会话。
   - 一会话一窗口（TD-SM-04 A）：同一会话不重复开窗。
-  - 跨项目会话池（TD-SM-03 A）：会话池列出所有项目会话，可跨项目拖到画布。forge 自行遍历 `~/.pi/agent/sessions/` 解码各 cwd 枚举跨项目会话（pi 无此 API）。
+  - 跨项目会话池（TD-SM-03 A）：会话池列出所有项目会话，可跨项目拖到画布。forge 自行遍历 `<userData>/agent/sessions/` 解码各 cwd 枚举跨项目会话（pi 无此 API）。
   - 关闭窗口 = 摘除展示，不删会话。
   - 窗口吸附（自定义 snap，非 OS Aero Snap）：拖窗口到画布左/右/上/下边缘铺满半区，拖到四角铺满象限；拖拽时显示预览框。
   - 自由 resize：拖窗口右下角调整大小（最小尺寸限制）。

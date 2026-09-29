@@ -165,7 +165,7 @@
 
 - **前置条件**：消息已发送，AgentSession 处理中。
 
-- **业务规则**：token 增量流式渲染（TD-CV-01 A）；pi 事件 -> CanonicalEvent -> 增量事件推送（桌面 IPC 事件 / headless SSE）-> 前端增量 DOM 更新；不阻塞 UI。
+- **业务规则**：token 增量流式渲染（TD-CV-01 A）；pi 事件 -> CanonicalEvent -> 增量事件推送（桌面 IPC 事件 / headless SSE）-> 前端增量 DOM 更新；不阻塞 UI。**收尾帧过渡**（v3.85.0）：运行中 -> 已完成的那一帧，思考指示行摘除（实测 39px+gap）与消息 footer 挂载（实测 17px+margin）不得硬切换产生单帧布局跳变——两块以 ~160ms 同步高度过渡收拢/展开（`prefers-reduced-motion` 下直接完成），保证钉底滚动逐帧跟随、无可见跳动。
 
 - **业务数据**：assistant 消息增量内容。
 
@@ -187,6 +187,7 @@
 | --------- | ------------------ | ---- | ---- | ------ | ---- |
 | AC-CV-004 | AI 回复流式增量显示，UI 不卡顿 | E2E  | 正常流程 | 性能     | 长响应  |
 | AC-CV-005 | 流式中断时保留已收内容并标记中断   | E2E  | 异常   | 状态/一致性 | 网络中断 |
+| AC-CV-054 | 流式收尾帧无布局跳变：思考行摘除与 footer 挂载经 ~160ms 过渡完成，逐帧采样卸载帧 `dScrollH≈0`（修复前一帧 −30px） | E2E（探针） | 正常流程 | 视觉稳定性 | 回看态不强制滚底（不违反 AC-CV-016） |
 
 #### 功能点：CV-S03 富文本渲染
 
@@ -345,6 +346,13 @@
   - **流式保护**：streaming 期间禁用压缩入口——运行时压缩会先 `abort` 当前轮，
     若允许点击会静默截断正在生成的回答。
 
+  - **历史口径（2026-09-26 口径修正）**：压缩**只替换喂给模型的上下文**，不动
+    用户看到的 transcript。历史加载读 pi 会话的**全量分支**（`getBranch()`，
+    叶子→根），**不用** `buildContextEntries()`（后者是已应用压缩的上下文视图，
+    会把压缩点之前的条目换成摘要）；压缩点位置渲染一条「上下文已压缩」分隔条 +
+    可展开摘要。原因：用户反馈「压缩完了之后之前的历史消息没了」——彼时旧消息连同
+    摘要一起消失（旧消息被压缩视图剔除、compaction 条目又被当作非消息条目跳过）。
+
 - **业务数据**：压缩前后 token 数、压缩摘要、触发来源（manual / auto）。
 
 - **交互与反馈**：
@@ -354,7 +362,8 @@
   - 手动压缩失败：显示失败原因（如「Nothing to compact」「会话未激活」）；
 
   - 自动压缩完成：消息区顶部出现提示条「上下文已自动压缩，历史已更新」，5s 后消失，
-    并重新拉取会话历史（压缩会把 transcript 替换为摘要，不重拉则界面与真实上下文不一致）；
+    并重新拉取会话历史（重拉是为了拿到新产生的压缩标记，不是因为历史被删——
+    见「历史口径」：压缩点之前的对话始终保留）；
 
   - 自动压缩失败：走 `conversation.error` 上报，绝不静默。
 
@@ -383,6 +392,8 @@
 | AC-CV-023 | 运行时自动压缩完成发射 conversation.compacted（reason=auto），UI 重拉历史并提示 | 集成   | 正常流程    | 跨模块协作 | 自动压缩                   |
 | AC-CV-024 | 自动压缩失败经 conversation.error 上报，不静默                          | 集成   | 异常      | 错误反馈  | 压缩异常                   |
 | AC-CV-025 | 重启后进入仅加载历史的会话即可见估算用量；压缩边界后无新用量时显示未知                        | 集成   | 正常流程/边界 | 状态一致性 | 无 lease、无模型元数据时返回 null |
+| AC-CV-052 | 压缩后界面历史不丢：压缩点之前的 user/assistant 消息仍在列表里（按原时间序）                   | unit  | 正常流程    | 数据一致性  | 已压缩会话（含 compaction 条目） |
+| AC-CV-053 | 压缩点位置渲染「上下文已压缩」分隔条，恰好 1 条，位于压缩前后之间，摘要可展开查看                  | E2E  | 正常流程    | 展示正确性  | 压缩摘要非空/为空均可        |
 
 #### 功能点：CV-S08 斜杠命令（扩展）
 
@@ -459,12 +470,12 @@
 > 契约见 `docs/plan/ask-user-question-contract.md`（编码唯一依据），实施计划见 `docs/plan/ask-user-question-extension.md`。
 
 - **目标**：模型在需求不明确时主动向用户提出结构化问题（1–4 题 × 2–4 选项，可多选、可带 markdown 预览），forge 在输入框上方以内嵌面板承载交互，替代 CLI 侧的 TUI 左右分栏；用户作答后答案经原路回填给模型继续推理。
-- **前置条件**：主会话已激活；forge 内置扩展 `ask_user_question` 已注册（随 forge 版本走，不依赖 `~/.pi/agent` 预装）；模型判定需要澄清并调用该工具。用户环境若装有同名 rpiv 插件，由 `extensionsOverride` 在内存中屏蔽（不修改用户 `settings.json`）。
+- **前置条件**：主会话已激活；forge 内置扩展 `ask_user_question` 已注册（随 forge 版本走，不依赖 agent 目录预装）；模型判定需要澄清并调用该工具。用户环境若装有同名 rpiv 插件，由 `extensionsOverride` 在内存中屏蔽（不修改用户 `settings.json`）。
 - **业务规则**：
   - **协议分层**（TD-CV-12）：工具注册用 pi 官方 `registerTool` SDK；`questions[]` 入参与 `details` 出参照抄 rpiv 私有约定（本地固化，不跟随上游）；传输通道（事件名 / RPC 方法 / `requestId` / 超时）为 forge 自有设计。
   - **投递**：扩展在 `execute` 内投递 `ask-user:request`（`{ requestId, questions, timeoutMs }`）到**该会话私有**的扩展事件总线 → 适配器按会话订阅并补齐必需 `sessionId` → 上抛 `conversation.askUserQuestionRequested`（已登记 `FORGE_EVENTS` 白名单）→ 渲染进程各窗格按 `sessionId` 认领。
   - **回填**：`askUserQuestion/reply` RPC（`{ sessionId, requestId, answers, cancelled, globalNote? }`）→ 适配器 `replyAskUserQuestion` 经该会话总线 emit `ask-user:reply:{requestId}` → 扩展侧 await 的 Promise 兑现 → 工具返回 `{ content:[{type:'text',text:envelope}], details }`。
-  - **超时双阈值**：`DEFAULT_ASK_USER_TIMEOUT_MS = 60s` 随请求下发给面板驱动倒计时；面板**归零时主动回填**「已答部分 + `cancelled:true`」；扩展侧实际等待 `60s + ASK_USER_REPLY_GRACE_MS(1.5s)` 作为安全网。错开 1.5s 是为避免「扩展先超时 → 已答部分丢失」的竞态。
+  - **超时双阈值**：`DEFAULT_ASK_USER_TIMEOUT_MS = 600s`（10 分钟）随请求下发给面板驱动倒计时；面板**归零时主动回填**「已答部分 + `cancelled:true`」；扩展侧实际等待 `600s + ASK_USER_REPLY_GRACE_MS(1.5s)` 作为安全网。错开 1.5s 是为避免「扩展先超时 → 已答部分丢失」的竞态。
   - **preview 不回流**：`details.answers[].preview` 照常填充供 UI 展示，但模型侧 envelope **不含** `selected preview:` 段（rpiv 因 CLI 无面板被迫回流；forge 有真面板，省 token）。
   - **推荐标记双通道**：模型可能按新约定置 `options[].recommended = true`，也可能沿用旧习惯在 label 尾部加 `(Recommended)`。UI 两条通道都识别；识别到后缀时**仅显示层**剥离，回填给模型的 label 保持原始值。
   - **校验**：`validateQuestionnaire` 6 条规则（无题目 / 超 4 题 / 题干重复 / 选项为空 / 保留标签 / 选项标签重复）在扩展侧拦截，失败直接返回 `cancelled:true + error`，不投递面板。

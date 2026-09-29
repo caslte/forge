@@ -1,5 +1,7 @@
 import { computed, ref } from 'vue';
 
+import { i18n } from '../i18n/index.ts';
+
 /**
  * 流式阶段指示（方案 A：由现有会话/工具事件推断当前动作）：
  * - thinking   流式中但无工具运行、无正文增量 → 「助手正在思考」
@@ -13,28 +15,41 @@ import { computed, ref } from 'vue';
 
 /** pi 内置工具名 → 动作文案；未知工具回退「正在执行 {name}」 */
 function toolPhaseText(name: string | null): string {
-  if (!name) return '正在执行工具';
+  if (!name) return i18n.t('chat.phaseToolGeneric');
   switch (name.toLowerCase()) {
     case 'write':
     case 'apply_patch':
-      return '正在写入';
+      return i18n.t('chat.phaseToolWrite');
     case 'edit':
     case 'multi_edit':
-      return '正在编辑';
+      return i18n.t('chat.phaseToolEdit');
     case 'read':
     case 'view':
-      return '正在读取';
+      return i18n.t('chat.phaseToolRead');
     case 'bash':
     case 'powershell':
     case 'shell':
-      return '正在执行命令';
+      return i18n.t('chat.phaseToolCommand');
     case 'grep':
     case 'find':
     case 'ls':
     case 'glob':
-      return '正在搜索';
+      return i18n.t('chat.phaseToolSearch');
+    case 'ask_user_question':
+      return i18n.t('chat.phaseToolAskUser');
+    case 'todo':
+      return i18n.t('chat.phaseToolTodo');
+    // pi-subagents 注册的四个工具（见 SUBAGENT_TOOL_NAMES）
+    case 'agent':
+      return i18n.t('chat.phaseToolSpawnAgent');
+    case 'get_subagent_result':
+      return i18n.t('chat.phaseToolWaitAgent');
+    case 'steer_subagent':
+      return i18n.t('chat.phaseToolSteerAgent');
+    case 'subagentworkflow':
+      return i18n.t('chat.phaseToolWorkflow');
     default:
-      return `正在执行 ${name}`;
+      return i18n.t('chat.phaseToolNamed', { name });
   }
 }
 
@@ -70,8 +85,8 @@ export function useStreamPhase() {
 
   const streamPhaseText = computed(() => {
     if (phase.value === 'tool') return toolPhaseText(activeTool.value?.name ?? null);
-    if (phase.value === 'outputting') return '正在输出';
-    return '助手正在思考';
+    if (phase.value === 'outputting') return i18n.t('chat.phaseOutputting');
+    return i18n.t('chat.phaseThinking');
   });
 
   return { streamPhaseText, reset, markOutputting, markTool, markToolEnd };

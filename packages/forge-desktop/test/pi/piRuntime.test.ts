@@ -2,13 +2,14 @@
  * piRuntime 单测（docs/api/07_pi.md）：
  * - readPiExtensionList：settings.json（含 JSONC 注释）解析 + npm 实体版本回读 + 缺失静默降级
  * - createForgeCore pi/getInfo：forgeVersion 注入 + 插件清单透传（deps.piAgentDir 隔离真实目录）
+ * - buildPiCliEnv：内置 CLI 子进程 env 必须把 agent 根钉死到 forge 自有目录（防裂脑）
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readPiExtensionList } from '../../src/pi/piRuntime.ts';
+import { buildPiCliEnv, readPiExtensionList } from '../../src/pi/piRuntime.ts';
 import { createForgeCore, invoke } from '../../src/createForgeCore.ts';
 
 /** 建临时 agent 目录并写入 settings.json + 可选 npm 实体 */
@@ -90,4 +91,15 @@ test('createForgeCore pi/updatePlugins：更新成功透传输出尾部', async 
   const res = await invoke(methodTable, 'pi/updatePlugins');
   assert.equal(res.code, 0);
   assert.deepEqual(res.data, { output: 'updated 3 packages' });
+});
+
+test('buildPiCliEnv：PI_CODING_AGENT_DIR 钉到入参 agent 根，覆盖继承的同名 env', () => {
+  process.env.PI_CODING_AGENT_DIR = path.join(os.tmpdir(), 'stray-agent');
+  try {
+    const env = buildPiCliEnv('C:\\fake\\userData\\agent');
+    assert.equal(env.PI_CODING_AGENT_DIR, 'C:\\fake\\userData\\agent');
+    assert.equal(env.ELECTRON_RUN_AS_NODE, '1');
+  } finally {
+    delete process.env.PI_CODING_AGENT_DIR;
+  }
 });

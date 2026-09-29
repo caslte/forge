@@ -45,8 +45,23 @@ const DB: {
   projects: Array<Record<string, unknown>>;
   sessions: MockSessionSeed[];
   subagents: Record<string, MockSubagentSeed[]>;
-  /** mock git 状态（PM-S05）：不在表内 = 非 git 项目（isGitRepo:false 全空值） */
-  git: Record<string, { branch: string; branches: string[]; dirty: boolean }>;
+  /** mock git 状态（PM-S05）：不在表内 = 非 git 项目（isGitRepo:false 全空值）；
+   *  GC-S11 扩展可缺省的状态字段（fileCount 等），缺省按 0/true 兜底 */
+  git: Record<
+    string,
+    {
+      branch: string;
+      branches: string[];
+      dirty: boolean;
+      fileCount?: number;
+      added?: number;
+      removed?: number;
+      stagedEmpty?: boolean;
+      stagedCount?: number;
+      unpushedCount?: number | null;
+      hasHead?: boolean;
+    }
+  >;
 } = {
   projects: [
     { path: 'D:/work/aiwork/forge', alias: null, lastOpenedAt: new Date().toISOString(), trust: 'trusted' },
@@ -93,6 +108,14 @@ const DB: {
       branch: 'dev-v0.1.0',
       branches: ['dev-v0.1.0', 'main', 'feat/login'],
       dirty: true,
+      // GC-S11 演示态：有变更但暂存区为空 → 不勾「包含未暂存变更」时按钮禁用+提示
+      fileCount: 8,
+      added: 44,
+      removed: 11,
+      stagedEmpty: true,
+      stagedCount: 0,
+      unpushedCount: 2,
+      hasHead: true,
     },
   },
 };
@@ -380,6 +403,49 @@ function sortSubagents(list: MockSubagentSeed[]): MockSubagentSeed[] {
   });
 }
 
+/* ===== skill 管理 mock（模块 09）=====
+ * 内存版 skills 目录：与 skillService.ts 语义对齐（4090 冲突 → overwrite=true 重调、
+ * 删除回报 trashed 标记），仅面向浏览器 dev 预览/E2E，不落盘。 */
+
+/** 与 forge-ui bridge.ts SkillEntry 同构（mock 本地声明，不 import 避免类型环路） */
+interface MockSkillEntry {
+  name: string;
+  description: string;
+  scope: 'user' | 'project' | 'other';
+  dirPath: string;
+  filePath: string;
+  disableModelInvocation: boolean;
+}
+
+const SKILL_USER_ROOT = 'C:/Users/dev/.pi/agent/skills';
+
+function skillRootFor(scope: unknown, projectPath: string | undefined): string | null {
+  if (scope === 'user') return SKILL_USER_ROOT;
+  if (scope === 'project') return projectPath ? `${projectPath.replace(/\/+$/, '')}/.agents/skills` : null;
+  return null;
+}
+
+function mockSkillEntry(name: string, description: string, scope: 'user' | 'project', dirPath: string): MockSkillEntry {
+  return { name, description, scope, dirPath, filePath: `${dirPath}/SKILL.md`, disableModelInvocation: false };
+}
+
+/** 种子数据：演示分组展示/删除/导入冲突（真实端同名语义一致） */
+const mockSkills: MockSkillEntry[] = [
+  mockSkillEntry('pdf-report', '生成 PDF 周报（mock 种子）', 'user', `${SKILL_USER_ROOT}/pdf-report`),
+  mockSkillEntry('changelog', '按提交历史起草变更日志（mock 种子）', 'user', `${SKILL_USER_ROOT}/changelog`),
+  mockSkillEntry('db-migrate', '本项目数据库迁移流程（mock 种子）', 'project', 'D:/work/aiwork/forge/.agents/skills/db-migrate'),
+];
+
+function findMockSkill(dirPath: string): MockSkillEntry | undefined {
+  const key = dirPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return mockSkills.find((s) => s.dirPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === key);
+}
+
+function basenameOf(dir: string): string {
+  const segs = dir.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+  return segs[segs.length - 1] ?? '';
+}
+
 const bridge: ForgeBridge = {
   // 纯浏览器预览：非 Electron 环境，UI 按「无系统窗口控件」处理（不影响 mock 布局核对）
   platform: 'browser',
@@ -428,6 +494,20 @@ const bridge: ForgeBridge = {
           .filter((p): p is (typeof DB.projects)[number] => p !== undefined);
         DB.projects = next;
         return { code: 0, message: 'ok', data: null };
+      }
+      case 'project/clearSessions': {
+        // E2E：清空项目名下会话（保留项目），逐个广播 session.removed（同真实端）
+        const p = (params as { path?: string }).path ?? '';
+        const removed = DB.sessions.filter((s) => s.projectPath === p).map((s) => s.sessionId);
+        DB.sessions = DB.sessions.filter((s) => s.projectPath !== p);
+        for (const sid of removed) {
+          delete DB.subagents[sid];
+          sendScripts.delete(sid);
+          sendQueues.delete(sid);
+          emit('session.removed', { sessionId: sid });
+        }
+        persistSubagents();
+        return { code: 0, message: 'ok', data: { removedSessions: removed.length } };
       }
       case 'session/querySessionList':
         return {
@@ -722,6 +802,100 @@ const bridge: ForgeBridge = {
         emit('git.branchChanged', { path: sp, branch: sb });
         return { code: 0, message: 'ok', data: { branch: sb } };
       }
+      case 'git/getStatus': {
+        // GC-S11：与 getBranchInfo 同表；不在表内 = 非 git 项目全空值
+        const gp = (params as { path?: string }).path ?? '';
+        const g = DB.git[gp];
+        if (!g) {
+          return {
+            code: 0,
+            message: 'ok',
+            data: { isGitRepo: false, branch: null, detached: false, fileCount: 0, added: 0, removed: 0, stagedEmpty: true, stagedCount: 0, unpushedCount: null, hasHead: false },
+          };
+        }
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            isGitRepo: true,
+            branch: g.branch,
+            detached: false,
+            fileCount: g.fileCount ?? 0,
+            added: g.added ?? 0,
+            removed: g.removed ?? 0,
+            stagedEmpty: g.stagedEmpty ?? true,
+            stagedCount: g.stagedCount ?? 0,
+            unpushedCount: g.unpushedCount ?? null,
+            hasHead: g.hasHead ?? true,
+          },
+        };
+      }
+      case 'git/commit': {
+        // GC-S11：__fail__ 说明模拟 6006（含 git 原始 stderr）；成功后清空脏状态
+        const cp = params as { path?: string; message?: string; includeUnstaged?: boolean };
+        const cpath = cp.path ?? '';
+        const g = DB.git[cpath];
+        if (!g) return { code: 1002, message: '项目未注册: ' + cpath, data: null };
+        const msg = (cp.message ?? '').trim();
+        if (!msg) return { code: 1001, message: '参数错误：message 必须为非空字符串', data: null };
+        // 模拟真实 git 耗时（1.2s），让弹窗「提交中…」进行中态在浏览器 dev 可见
+        await new Promise((r) => setTimeout(r, 1200));
+        if (msg === '__fail__') {
+          return {
+            code: 6006,
+            message: 'git 提交失败',
+            data: { stderr: 'husky - pre-commit script failed (code 1)\nnpm test exited with 1' },
+          };
+        }
+        if ((cp.includeUnstaged ?? true) === false && (g.stagedEmpty ?? true)) {
+          return { code: 6006, message: '暂存区为空，无变更可提交', data: { stderr: '' } };
+        }
+        if ((g.fileCount ?? 0) === 0) {
+          return { code: 6006, message: '暂存区为空，无变更可提交', data: { stderr: '' } };
+        }
+        const fileCount = g.fileCount ?? 0;
+        const shortHash = 'm' + Math.floor(Math.random() * 0xfffff).toString(16).padStart(5, '0');
+        g.fileCount = 0;
+        g.stagedEmpty = true;
+        g.stagedCount = 0;
+        if (typeof g.unpushedCount === 'number') g.unpushedCount += fileCount;
+        g.dirty = false;
+        return { code: 0, message: 'ok', data: { shortHash, fileCount } };
+      }
+      case 'git/push': {
+        // GC-S11：分支为空模拟 6007（detached/不可解析）；__failpush__ 分支模拟远端拒绝
+        const pp = (params as { path?: string }).path ?? '';
+        const g = DB.git[pp];
+        if (!g) return { code: 1002, message: '项目未注册: ' + pp, data: null };
+        // 模拟真实 git 网络耗时（1.8s），让「推送中…」进行中态在浏览器 dev 可见
+        await new Promise((r) => setTimeout(r, 1800));
+        if (!g.branch) {
+          return { code: 6007, message: '无法推送：当前处于分离 HEAD 或分支不可解析', data: { stderr: '' } };
+        }
+        if (g.branch === '__failpush__') {
+          return {
+            code: 6007,
+            message: 'git 推送失败',
+            data: { stderr: "To https://github.com/acme/repo.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs" },
+          };
+        }
+        return { code: 0, message: 'ok', data: { branch: g.branch, remote: 'origin' } };
+      }
+      case 'git/generateCommitMessage': {
+        // GC-S11：mock 即时返回固定文案（无真 LLM 调用）；无变更演示 6008
+        const gp = (params as { path?: string; lang?: string }).path ?? '';
+        const lang = (params as { lang?: string }).lang === 'en' ? 'en' : 'zh';
+        const g = DB.git[gp];
+        if (!g) return { code: 1002, message: '项目未注册: ' + gp, data: null };
+        if ((g.fileCount ?? 0) === 0) {
+          return { code: 6008, message: '无变更可总结', data: null };
+        }
+        const msg =
+          lang === 'en'
+            ? `feat: update ${g.fileCount} files on ${g.branch} (mock generated)`
+            : `feat: 在 ${g.branch} 上更新 ${g.fileCount} 个文件（mock 生成）`;
+        return { code: 0, message: 'ok', data: { message: msg } };
+      }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };
       case 'model/getSessionModel':
@@ -762,6 +936,57 @@ const bridge: ForgeBridge = {
           message: 'ok',
           data: { status: 'idle', currentVersion: '0.1.0', latestVersion: null, downloadProgress: null, error: null },
         };
+      case 'skill/listSkills': {
+        // 枚举口径与真实端一致：projectPath 缺省时项目组自然为空（按路径归组在 UI 侧）
+        return { code: 0, message: 'ok', data: { cwd: (params as { projectPath?: string }).projectPath ?? '', skills: [...mockSkills], issues: [] } };
+      }
+      case 'skill/importSkill': {
+        const p = params as { scope?: string; sourceDir?: string; projectPath?: string; overwrite?: boolean };
+        const root = skillRootFor(p.scope, p.projectPath);
+        if (root === null || typeof p.sourceDir !== 'string' || p.sourceDir === '') {
+          return { code: 1001, message: '参数错误：scope/sourceDir 非法或项目作用域缺少 projectPath', data: null };
+        }
+        const dirName = basenameOf(p.sourceDir);
+        const dest = `${root}/${dirName}`;
+        const existing = findMockSkill(dest);
+        if (existing && !p.overwrite) {
+          return { code: 4090, message: `目标已存在同名 skill 目录：${dest}`, data: { conflictPath: dest, sourceDir: p.sourceDir } };
+        }
+        if (existing) mockSkills.splice(mockSkills.indexOf(existing), 1);
+        mockSkills.push(mockSkillEntry(dirName, `导入的 mock skill：${dirName}`, p.scope === 'project' ? 'project' : 'user', dest));
+        return { code: 0, message: 'ok', data: { path: dest, overwritten: existing !== undefined } };
+      }
+      case 'skill/createSkill': {
+        const p = params as { scope?: string; name?: string; description?: string; projectPath?: string; overwrite?: boolean };
+        const root = skillRootFor(p.scope, p.projectPath);
+        if (root === null) {
+          return { code: 1001, message: '参数错误：scope 非法或项目作用域缺少 projectPath', data: null };
+        }
+        if (typeof p.name !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(p.name) || p.name.length > 64) {
+          return { code: 1001, message: '名称不合法：仅小写字母/数字/连字符，以字母或数字开头，不超过 64 字符', data: null };
+        }
+        if (typeof p.description !== 'string' || p.description.trim() === '') {
+          return { code: 1001, message: '描述不能为空', data: null };
+        }
+        const dest = `${root}/${p.name}`;
+        const existing = findMockSkill(dest);
+        if (existing && !p.overwrite) {
+          return { code: 4090, message: `目标已存在同名 skill 目录：${dest}`, data: { conflictPath: dest } };
+        }
+        if (existing) mockSkills.splice(mockSkills.indexOf(existing), 1);
+        mockSkills.push(mockSkillEntry(p.name, p.description.trim(), p.scope === 'project' ? 'project' : 'user', dest));
+        return { code: 0, message: 'ok', data: { path: dest, name: p.name } };
+      }
+      case 'skill/deleteSkill': {
+        const p = params as { path?: string };
+        const target = typeof p.path === 'string' ? findMockSkill(p.path) : undefined;
+        if (!target) {
+          return { code: 1002, message: 'skill 目录不存在（可能已被外部删除），请刷新列表', data: null };
+        }
+        mockSkills.splice(mockSkills.indexOf(target), 1);
+        // mock 恒回收站成功（真实端降级语义 trashed=false 由 E2E seed 覆盖模拟）
+        return { code: 0, message: 'ok', data: { path: target.dirPath, trashed: true } };
+      }
       default:
         return { code: 0, message: 'ok', data: null };
     }
@@ -794,9 +1019,15 @@ const bridge: ForgeBridge = {
     // 浏览器 dev 下无原生对话框，返回默认示例路径（可直接回车创建）
     selectDirectory: async () => 'D:/work/aiwork',
     selectFiles: async () => [],
+    // 无原生保存对话框：一律视为用户取消（画布卡片据此不报错、静默返回）
+    saveFile: async () => null,
   },
   shell: {
     openPath: async () => true,
+    // 浏览器 dev 无系统浏览器：直接回失败（点击行为由拦截器静默处理，不报错）
+    openExternal: async () => false,
+    // 浏览器 dev 无主进程解析：回健康占位，shell 横幅只在 Electron 真机上出现
+    shellProbe: async () => ({ ok: true, shell: 'C:\\mock\\Git\\bin\\bash.exe' }),
   },
   theme: {
     // 浏览器 dev/e2e 无主进程：回写只对 Electron 窗口底色有意义，这里空实现
@@ -810,6 +1041,8 @@ const bridge: ForgeBridge = {
     savePasteImage: async () => null,
     savePastedText: async () => null,
     readImage: async () => null,
+    // 浏览器 dev 无写盘能力：返回 false，卡片按「保存失败」提示
+    writeText: async () => false,
     // 浏览器 dev/e2e 无真实盘：固定小清单，@ 补全链路可走通（本地过滤逻辑在渲染层）
     listProjectFiles: async () => [
       'D:/work/aiwork/forge/edu-community/README.md',

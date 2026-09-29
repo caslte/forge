@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue';
 import type { ConversationMessage } from '../types';
 import { renderMarkdown, hasOpenFence } from '@forge/core/markdown';
 import { parseUserContent, baseName, isImagePath } from '../attachmentText';
+import { onMarkdownContentClick, decorateMarkdownHtml } from '../utils/markdownLinks';
 import {
   extractCommandFromMessage,
   formatCommandLabel,
@@ -10,7 +11,11 @@ import {
   SOURCE_LABELS,
 } from '../utils/slashCommand';
 import MermaidBlock from './MermaidBlock.vue';
+import HtmlCanvasBlock from './HtmlCanvasBlock.vue';
 import ImageLightbox from './ImageLightbox.vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   message: ConversationMessage;
@@ -19,6 +24,8 @@ const props = defineProps<{
   showFooter?: boolean;
   /** 整轮复制文本（assistant 末卡覆盖同轮全部分片；缺省复制本条内容） */
   copyText?: string;
+  /** 该轮首张 assistant 卡：false = 轮内分片卡，不播入场动画（非 assistant 恒 undefined） */
+  firstOfTurn?: boolean;
 }>();
 
 const isUser = computed(() => props.message.role === 'user');
@@ -41,6 +48,57 @@ async function copy(): Promise<void> {
   } catch {
     copied.value = false;
   }
+}
+
+/** 收尾帧高度过渡时长（与 ConversationView 的思考行收拢保持一致，同帧启动同步完成） */
+const SETTLE_MS = 160;
+
+/**
+ * footer 挂载过渡（v3.85.0 底部跳动修复）：流式结束时 footer 随 !streaming 一帧挂载
+ * （实测高度 17px + margin-top 8px），与思考行摘除叠成收尾帧的一次性跳动。
+ * 从 0 高/0 透明/0 外边距展开到自然尺寸，结束后清掉内联样式交还 CSS（含基础 opacity 0.6）。
+ */
+function growFooter(el: Element, done: () => void): void {
+  const node = el as HTMLElement;
+  const cs = getComputedStyle(node);
+  const h = node.offsetHeight;
+  const mt = parseFloat(cs.marginTop) || 0;
+  const op = cs.opacity;
+  const reduce =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce || h === 0) {
+    done();
+    return;
+  }
+  const style = node.style;
+  style.overflow = 'hidden';
+  style.height = '0px';
+  style.opacity = '0';
+  style.marginTop = '0px';
+  void node.offsetHeight; // 强制回流，锁定起始状态
+  style.transition = `height ${SETTLE_MS}ms ease, opacity ${SETTLE_MS}ms ease, margin-top ${SETTLE_MS}ms ease`;
+  style.height = `${h}px`;
+  style.opacity = op;
+  style.marginTop = `${mt}px`;
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    node.removeEventListener('transitionend', onEnd);
+    style.transition = '';
+    style.height = '';
+    style.overflow = '';
+    style.marginTop = '';
+    style.opacity = '';
+    done();
+  };
+  // transitionend 会冒泡且每个过渡属性各触发一次：只认本元素事件，finished 去重
+  const onEnd = (e: TransitionEvent): void => {
+    if (e.target === node) finish();
+  };
+  node.addEventListener('transitionend', onEnd);
+  setTimeout(finish, SETTLE_MS + 80); // 兜底：transitionend 未触发时也要交还样式
 }
 
 /**
@@ -67,6 +125,83 @@ const userParsed = computed(() => {
 
 /** 用户正文按 /skill:name 引用切段（所有技能名样式性美化，执行语义归 pi） */
 const userSegments = computed(() => (isUser.value ? splitSkillRefs(userParsed.value.body) : []));
+
+/**
+ * 用户消息定高钳制：超高内容气泡内滚动（默认从头展示）；
+ * 检测到溢出后整块可点，点击开「完整消息」弹窗看全文。
+ */
+const USER_BUBBLE_MAX_H = 140;
+const bubbleRef = ref<HTMLElement | null>(null);
+const userOverflow = ref(false);
+const fullOpen = ref(false);
+/** 渐隐方向开关：仅在该方向真有可滚内容时出现（与会话树滚动边缘渐隐同口径，曲线见样式） */
+const fadeTop = ref(false);
+const fadeBottom = ref(false);
+
+function measureBubble(): void {
+  const el = bubbleRef.value;
+  if (!el || !isUser.value) {
+    userOverflow.value = false;
+    fadeTop.value = false;
+    fadeBottom.value = false;
+    return;
+  }
+  userOverflow.value = el.scrollHeight - el.clientHeight > 1;
+  fadeTop.value = el.scrollTop > 0;
+  fadeBottom.value = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+}
+
+/**
+ * 渐隐口径（参考图对齐）：文字淡进「气泡底色」，气泡轮廓始终完整——
+ * 用叠层而非 mask（mask 会把气泡背景一起淡成透明，浅色主题下边缘像被啃掉）。
+ * fadeTop/fadeBottom 只控制叠层显隐，哪侧有截断哪侧出现。
+ */
+const bubbleStyle = computed<Record<string, string> | undefined>(() => {
+  if (!isUser.value) return undefined;
+  return { maxHeight: `${USER_BUBBLE_MAX_H}px` };
+});
+
+let bubbleRo: ResizeObserver | null = null;
+watch(
+  bubbleRef,
+  (el) => {
+    bubbleRo?.disconnect();
+    bubbleRo = null;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      bubbleRo = new ResizeObserver(() => measureBubble());
+      bubbleRo.observe(el);
+    }
+    measureBubble();
+  },
+);
+// 钳制框高度封顶后内容增长不再触发 ResizeObserver，正文变化时手动补测一次
+watch(
+  () => [props.message.content, isUser.value],
+  () => void nextTick(measureBubble),
+);
+onUnmounted(() => bubbleRo?.disconnect());
+
+/** 弹窗全文：命令段存在时首行还原命令标签，后接正文 */
+const userFullText = computed(() => {
+  const { body, command } = userParsed.value;
+  return command ? `${formatCommandLabel(command.name)}\n${body}` : body;
+});
+
+function onBubbleClick(): void {
+  if (!userOverflow.value) return;
+  const sel = window.getSelection();
+  if (sel && sel.toString()) return; // 拖选文字不算"点击展开"
+  fullOpen.value = true;
+}
+
+function onFullKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') fullOpen.value = false;
+}
+watch(fullOpen, (open) => {
+  if (open) document.addEventListener('keydown', onFullKeydown);
+  else document.removeEventListener('keydown', onFullKeydown);
+});
+onUnmounted(() => document.removeEventListener('keydown', onFullKeydown));
 
 /** 图片路径 → data URL 缩略图（异步读，加载完成后渲染） */
 const userThumbs = ref<Record<string, string>>({});
@@ -184,9 +319,59 @@ const bodyHtml = computed(() => {
   // 末围栏未闭合时保留最后一个占位 pre（含转义源码，按普通代码块展示），其余照常摘除
   const keepLast = renderedOpenFence.value;
   const lastIdx = keepLast ? html.lastIndexOf('<pre class="md-mermaid-wrap">') : -1;
-  return html.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, (match, offset: number) =>
-    keepLast && offset === lastIdx ? match : '',
+  return decorateMarkdownHtml(
+    html.replace(/<pre class="md-mermaid-wrap">[\s\S]*?<\/pre>/g, (match, offset: number) =>
+      keepLast && offset === lastIdx ? match : '',
+    ),
   );
+});
+
+/** 正文分段：一段安全 HTML，或一个画布卡片槽位 */
+type Segment =
+  | { kind: 'html'; html: string }
+  | { kind: 'canvas'; key: string; encoded: string; blocked: boolean };
+
+/**
+ * 正文分段：把 canvas 占位从 HTML 流里切出来，换成组件槽位。
+ *
+ * 与 mermaid 的差别是刻意的：mermaid 图统一堆到气泡底部（历史行为，不动它），
+ * 而画布卡片是「夹在两段正文中间、给上文配图」的，切到底部就丢了语义——
+ * 用户按顺序读时图必须在它解释的那段话旁边。
+ */
+const segments = computed<Segment[]>(() => {
+  const html = bodyHtml.value;
+  const re = /<pre class="md-canvas-wrap"><code class="md-canvas" data-md-canvas="([^"]*)">[\s\S]*?<\/code><\/pre>/g;
+  const out: Segment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let i = 0;
+  while ((match = re.exec(html)) !== null) {
+    if (match.index > cursor) {
+      out.push({ kind: 'html', html: html.slice(cursor, match.index) });
+    }
+    const encoded = match[1] ?? '';
+    out.push({ kind: 'canvas', key: `c${i}-${encoded.slice(0, 8)}`, encoded, blocked: false });
+    cursor = match.index + match[0].length;
+    i += 1;
+  }
+  if (cursor < html.length) {
+    out.push({ kind: 'html', html: html.slice(cursor) });
+  }
+  // 末围栏未闭合（流式中卡片只写了一半）：只有最后那张换成骨架蒙版。
+  // 蒙版高度 == 终态高度，所以闭合瞬间既不跳变也不顶动下方正文。
+  // 仅流式期间生效：终态（结束/取消/历史）围栏仍未闭合时不会再有后续 token，
+  // 骨架会永远转圈——此时直接按占位内容渲染（残缺 HTML 交给浏览器补齐，
+  // 非 HTML 走代码块降级），宁可显示半成品也不挂假进度。
+  if (renderedOpenFence.value && props.streaming) {
+    for (let j = out.length - 1; j >= 0; j -= 1) {
+      const seg = out[j];
+      if (seg && seg.kind === 'canvas') {
+        seg.blocked = true;
+        break;
+      }
+    }
+  }
+  return out;
 });
 
 const timeLabel = computed(() => {
@@ -198,10 +383,21 @@ const timeLabel = computed(() => {
   }
 });
 
+/**
+ * 入场动画（方案一）：只给「真新消息」挂载播 rise——ts 距挂载超过 RISE_FRESH_MS 视为
+ * 历史加载/切会话批量重挂载，不播；一轮回复里非首张的 assistant 分片卡也不重播。
+ */
+const RISE_FRESH_MS = 2000;
+const riseIn = computed(() => {
+  if (isAssistant.value && props.firstOfTurn === false) return false;
+  const ts = Date.parse(props.message.ts);
+  return Number.isFinite(ts) && Date.now() - ts <= RISE_FRESH_MS;
+});
+
 </script>
 
 <template>
-  <div :class="['msg', `msg-${message.role}`, { streaming }]">
+  <div :class="['msg', `msg-${message.role}`, { streaming, 'rise-in': riseIn }]">
     <!-- 附件图片缩略图（统一给路径：图片不显示路径，点击放大）：渲染在气泡上方 -->
     <div
       v-if="userParsed.images.some((img) => userThumbs[img])"
@@ -228,7 +424,15 @@ const timeLabel = computed(() => {
         @click="lightboxSrc = src"
       />
     </div>
-    <div class="msg-bubble">
+    <!-- 外壳：仅作渐隐叠层的定位参照（叠层是气泡兄弟，悬浮在滚动内容之上、不随内容滚动） -->
+    <div class="msg-bubble-shell" :class="{ 'is-clamped': isUser && userOverflow }">
+      <div
+        ref="bubbleRef"
+        class="msg-bubble"
+        :style="bubbleStyle"
+        @click="onBubbleClick"
+        @scroll="measureBubble"
+      >
       <!-- CV-S08 命令美化段（与浮窗同款）：命令名 + 来源标签，后接剩余正文 -->
       <div v-if="userParsed.command" class="msg-cmd-head">
         <span
@@ -249,8 +453,14 @@ const timeLabel = computed(() => {
           v-else
         ><span class="msg-cmd-name is-skill">{{ formatCommandLabel(seg.text) }}</span><span
             class="msg-cmd-tag tag-skill"
-          >技能</span></template></template></div>
-      <div v-else class="msg-content" v-html="bodyHtml"></div>
+          >{{ t('chat.skillTag') }}</span></template></template></div>
+      <!-- 助手/系统/工具正文：分段渲染，画布卡片留在它原本的段落位置 -->
+      <template v-else>
+        <template v-for="(seg, i) in segments" :key="seg.kind === 'canvas' ? seg.key : `h${i}`">
+          <div v-if="seg.kind === 'html'" class="msg-content" v-html="seg.html" @click="onMarkdownContentClick"></div>
+          <HtmlCanvasBlock v-else :encoded="seg.encoded" :blocked="seg.blocked" />
+        </template>
+      </template>
       <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->
       <div v-if="userParsed.files.length > 0" class="msg-att-files">
         <span
@@ -278,20 +488,44 @@ const timeLabel = computed(() => {
       <div v-for="block in mermaidBlocks" :key="block.key" class="msg-mermaid">
         <MermaidBlock :encoded="block.encoded" />
       </div>
+      </div>
+      <div v-if="isUser && fadeTop" class="bubble-fade bubble-fade-top" />
+      <div v-if="isUser && fadeBottom" class="bubble-fade bubble-fade-bottom" />
     </div>
-    <div v-if="!streaming && showFooter !== false" class="msg-footer">
-      <button class="msg-copy" :title="copied ? '已复制' : '复制'" @click="copy">
-        <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12" />
-        </svg>
-        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2" />
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-        </svg>
-        <span>{{ copied ? '已复制' : '' }}</span>
-      </button>
-      <span class="msg-time">{{ timeLabel }}</span>
-    </div>
+    <!-- 完整消息弹窗：必须 Teleport 到 body（气泡祖先带 transform，fixed 会被劫持成气泡内定位） -->
+    <Teleport to="body">
+      <div v-if="fullOpen" class="msg-fullbox" @click.self="fullOpen = false">
+        <div class="msg-fullbox-card">
+          <div class="msg-fullbox-head">
+            <span class="msg-fullbox-title">{{ t('chat.fullMessage') }}</span>
+            <button class="msg-fullbox-close" :aria-label="t('canvas.close')" @click="fullOpen = false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div class="msg-fullbox-body">{{ userFullText }}</div>
+        </div>
+      </div>
+    </Teleport>
+    <!-- 收尾帧 footer 挂载过渡（v3.85.0 底部跳动修复）：随 !streaming 一帧挂载
+         （实测 17px 高 + 8px margin-top），与思考行摘除叠成收尾帧的一次性跳动；
+         JS 钩子把高度/透明度/外边距摊到 160ms，与思考行收拢同帧启动、同步完成 -->
+    <Transition :css="false" @enter="growFooter">
+      <div v-if="!streaming && showFooter !== false" class="msg-footer">
+        <button class="msg-copy" :title="copied ? t('chat.copied') : t('chat.copy')" @click="copy">
+          <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          <span>{{ copied ? t('chat.copied') : '' }}</span>
+        </button>
+        <span class="msg-time">{{ timeLabel }}</span>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -300,7 +534,6 @@ const timeLabel = computed(() => {
   border: none;
   padding: 2px 4px;
   background: transparent;
-  animation: rise 0.3s ease both;
   max-width: 100%;
   /* flex 子项（消息列表为 column flex）显式允许收缩：
      否则 min-width:auto 会被长代码块/长链接撑破窄窗格，代码块无法在容器内横向滚动 */
@@ -319,13 +552,71 @@ const timeLabel = computed(() => {
   max-width: 78%;
 }
 
+.msg-user .msg-bubble-shell {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
+  min-width: 0;
+  --bubble-bg: #3a3a3d;
+}
+
 .msg-user .msg-bubble {
   width: fit-content;
-  margin-left: auto;
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 16px;
-  background: #3a3a3d;
+  background: var(--bubble-bg);
+  transition: background-color var(--transition-fast);
+  /* 定高钳制（max-height 由模板内联给出）：超高内容气泡内滚动，滚动条不渲染 */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.msg-user .msg-bubble::-webkit-scrollbar {
+  display: none;
+}
+
+.msg-user .msg-bubble-shell.is-clamped {
+  cursor: pointer;
+}
+
+/* 可点开的反馈：悬停整体提亮一档（仅溢出态，普通短气泡无交互不给假暗示） */
+.msg-user .msg-bubble-shell.is-clamped:hover {
+  --bubble-bg: #4a4a4d;
+}
+
+/* 渐隐叠层：文字淡进气泡底色、轮廓完整；28px 内 smoothstep 曲线收色 */
+.bubble-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 28px;
+  pointer-events: none;
+}
+.bubble-fade-top {
+  top: 0;
+  border-radius: 16px 16px 0 0;
+  background: linear-gradient(
+    to top,
+    transparent 0,
+    color-mix(in srgb, var(--bubble-bg) 16%, transparent) 25%,
+    color-mix(in srgb, var(--bubble-bg) 50%, transparent) 50%,
+    color-mix(in srgb, var(--bubble-bg) 84%, transparent) 75%,
+    var(--bubble-bg) 100%
+  );
+}
+.bubble-fade-bottom {
+  bottom: 0;
+  border-radius: 0 0 16px 16px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    color-mix(in srgb, var(--bubble-bg) 16%, transparent) 25%,
+    color-mix(in srgb, var(--bubble-bg) 50%, transparent) 50%,
+    color-mix(in srgb, var(--bubble-bg) 84%, transparent) 75%,
+    var(--bubble-bg) 100%
+  );
 }
 
 .msg-user .msg-content {
@@ -342,7 +633,7 @@ const timeLabel = computed(() => {
 
 .msg-content {
   font-size: 14px;
-  line-height: 1.8;
+  line-height: 2;
   color: var(--foreground);
   word-break: break-word;
   user-select: text; /* 对话内容允许鼠标选择 */
@@ -523,6 +814,7 @@ const timeLabel = computed(() => {
 .msg-content :deep(blockquote),
 .msg-content :deep(hr),
 .msg-content :deep(pre),
+.msg-content :deep(.md-code-wrap),
 .msg-content :deep(ul),
 .msg-content :deep(ol),
 .msg-content :deep(table) {
@@ -530,12 +822,17 @@ const timeLabel = computed(() => {
   margin-block-end: 12px;
 }
 
-.msg-content :deep(.md-code-block) {
+/* md-ascii：字符画段落降级（renderMarkdown 的 paragraph 兜底），
+   与代码块同款容器形态；pre 默认空白规则保住对齐 */
+/* 块间距挂在 wrap 上：msg-content 的直接子元素现在是 wrap，pre 已退居其内，
+   首块去顶距 / 末块去底距的 :first-child / :last-child 规则只认得到 wrap */
+.msg-content :deep(.md-code-block),
+.msg-content :deep(.md-ascii) {
+  margin: 0; /* 块间距归 wrap，pre 自身不再参与（否则与 wrap 的 12px 叠成 24px） */
   background: color-mix(in oklab, var(--foreground) 8%, var(--background));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
-  margin: 12px 0;
+  padding: 10px 40px 10px 12px; /* 右侧留复制按钮的家，长代码行不至于压在它底下 */
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -579,7 +876,7 @@ const timeLabel = computed(() => {
 
 .msg-content :deep(li) {
   padding-left: 4px;
-  line-height: 1.8;
+  line-height: 2;
 }
 
 /* li 内部的段落/子列表不再产生块间距（marked 默认 <li><p>xxx</p></li> 会撑开） */
@@ -612,7 +909,7 @@ const timeLabel = computed(() => {
   border-collapse: collapse;
   margin: 12px 0;
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 2;
   display: block;
   max-width: 100%;
   overflow-x: auto;
@@ -638,8 +935,83 @@ const timeLabel = computed(() => {
   background: color-mix(in oklab, var(--muted) 40%, transparent);
 }
 
+/* 入场动画只挂 rise-in（判定逻辑见 script 段 riseIn） */
+.msg.rise-in {
+  animation: rise 0.3s ease both;
+}
+
 @keyframes rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- 完整消息弹窗（遮罩/卡片配方同 SettingsPanel 弹窗口径：--overlay + 10px 毛玻璃） ---------- */
+.msg-fullbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6vh 6vw;
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: fullbox-fade 0.15s ease;
+}
+.msg-fullbox-card {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: 100%;
+  border: none;
+  border-radius: var(--radius-3xl);
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.msg-fullbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 10px;
+  flex-shrink: 0;
+}
+.msg-fullbox-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.msg-fullbox-close {
+  display: inline-flex;
+  padding: 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  line-height: 1;
+}
+.msg-fullbox-close:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.msg-fullbox-close svg {
+  width: 16px;
+  height: 16px;
+}
+.msg-fullbox-body {
+  padding: 4px 18px 18px;
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+@keyframes fullbox-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 </style>

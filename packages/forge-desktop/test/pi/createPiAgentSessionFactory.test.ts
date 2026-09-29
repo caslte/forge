@@ -6,8 +6,11 @@ import path from 'node:path';
 
 import {
   createPiAgentSessionFactory,
+  resolveProjectTrustedForPi,
+  warmPiResourceLoader,
   type PiSessionHandle,
 } from '../../src/pi/createPiAgentSessionFactory.ts';
+import { ProjectTrustStore } from '@earendil-works/pi-coding-agent';
 import { PiConversationAdapter } from '../../src/pi/piConversationAdapter.ts';
 
 test('按 forge 会话 ID 创建并恢复持久化 pi 会话', async () => {
@@ -369,6 +372,77 @@ test('命令上报扩展随会话装载：session_start 后总线上报 slash-co
         `命令来源应为三值之一，实际：${String(command.source)}`,
       );
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ===== CV-TRUST-01：信任门禁接入执行链 =====
+
+test('resolveProjectTrustedForPi：未决 false / 信任后 true / 拒绝 false / 子目录继承 true', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-trust-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    // 未决（无 trust.json 记录）：保守视为未信任
+    assert.equal(resolveProjectTrustedForPi(projectDir, agentDir), false);
+
+    // 用户在 UI 点「信任」（写入 pi trust.json）后放行
+    new ProjectTrustStore(agentDir).set(projectDir, true);
+    assert.equal(resolveProjectTrustedForPi(projectDir, agentDir), true);
+
+    // 拒绝：不放行
+    new ProjectTrustStore(agentDir).set(projectDir, false);
+    assert.equal(resolveProjectTrustedForPi(projectDir, agentDir), false);
+
+    // 重新信任后子目录继承（ProjectTrustStore 自带语义）
+    new ProjectTrustStore(agentDir).set(projectDir, true);
+    const child = path.join(projectDir, 'sub');
+    fs.mkdirSync(child);
+    assert.equal(resolveProjectTrustedForPi(child, agentDir), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('warmPiResourceLoader：未信任项目跳过预热且不抛错，信任判定函数可注入', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-warmtrust-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const calls: string[] = [];
+    // 判定函数返回 false：跳过预热（resolve，不触发扩展加载）
+    await warmPiResourceLoader(projectDir, agentDir, (cwd) => {
+      calls.push(cwd);
+      return false;
+    });
+    assert.deepEqual(calls, [projectDir], '注入的判定函数应以预热 cwd 调用一次');
+
+    // 判定 true：正常预热（空项目无扩展，resolve）
+    await warmPiResourceLoader(projectDir, agentDir, () => true);
+    assert.ok(true, '信任项目预热 resolve');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('工厂注入 projectTrustedFor=false 时会话仍可创建（未信任项目基础会话可用）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-untrust-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const lease = await createPiAgentSessionFactory({
+      agentDir,
+      projectTrustedFor: () => false,
+    })({ cwd: projectDir, sessionId: 'forge-untrusted-1' });
+    assert.equal(lease.session.sessionId, 'forge-forge-untrusted-1');
+    lease.dispose();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

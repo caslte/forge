@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ref } from 'vue';
-import { createAskQuestionStore } from '../src/composables/askQuestionStore.ts';
+import { createAskQuestionStore, createAskQuestionTables } from '../src/composables/askQuestionStore.ts';
 import type { AskUserQuestionItem, AskUserQuestionRequestPayload } from '../src/bridge.ts';
 
 const QUESTIONS: AskUserQuestionItem[] = [
@@ -49,7 +49,7 @@ function payload(over: Partial<AskUserQuestionRequestPayload> = {}): AskUserQues
 test('【回归锁】deadline 在「首屏已求值」之后仍随 accept 更新（读秒恒 0 的根因）', () => {
   const sessions = ref<string | null>('s1');
   let clock = 1_000_000;
-  const store = createAskQuestionStore(() => sessions.value, () => clock);
+  const store = createAskQuestionStore(() => sessions.value, () => clock, createAskQuestionTables());
 
   // 面板常驻挂载：还没有问卷时三个 computed 就已经求值过一轮
   assert.equal(store.deadline.value, null);
@@ -66,7 +66,7 @@ test('【回归锁】deadline 在「首屏已求值」之后仍随 accept 更新
 test('【回归锁】再次 accept（新一轮问卷）时 deadline 重新求值', () => {
   const sessions = ref<string | null>('s1');
   let clock = 1_000_000;
-  const store = createAskQuestionStore(() => sessions.value, () => clock);
+  const store = createAskQuestionStore(() => sessions.value, () => clock, createAskQuestionTables());
   store.accept(payload({ timeoutMs: 60_000 }));
   assert.equal(store.deadline.value, 1_060_000);
 
@@ -80,7 +80,7 @@ test('【回归锁】再次 accept（新一轮问卷）时 deadline 重新求值
 
 test('按 sessionId 隔离；切换会话时三个 computed 跟随刷新，切回后原状还原', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 5_000);
+  const store = createAskQuestionStore(() => sessions.value, () => 5_000, createAskQuestionTables());
   store.accept(payload());
 
   assert.equal(store.request.value?.sessionId, 's1');
@@ -104,7 +104,7 @@ test('按 sessionId 隔离；切换会话时三个 computed 跟随刷新，切�
 
 test('accept 让上一轮已答摘要让位', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
   assert.notEqual(store.answered.value, null);
 
@@ -114,7 +114,7 @@ test('accept 让上一轮已答摘要让位', () => {
 
 test('accept 后 questionsOf / requestOf 可取到该会话的题目与请求', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
 
   assert.equal(store.questionsOf('s1')?.length, 2);
@@ -125,7 +125,7 @@ test('accept 后 questionsOf / requestOf 可取到该会话的题目与请求', 
 
 test('settle：落已答摘要并释放 request / deadline；题目保留（折叠摘要回显 n/N 用）', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   store.settle('s1', {
     answers: [
@@ -145,7 +145,7 @@ test('settle：落已答摘要并释放 request / deadline；题目保留（折�
 
 test('applyCompletion：权威 details 覆盖乐观摘要，并释放 request / deadline', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   // 乐观摘要（用户点了取消）先落，随后工具返回权威 details → 必须被覆盖
   store.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
@@ -172,7 +172,7 @@ test('applyCompletion：权威 details 覆盖乐观摘要，并释放 request / 
 
 test('applyCompletion：details 非法 / 含 error / 缺失时不产出摘要，但照样释放进行中请求', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
 
   // 校验失败：问卷从未投递到面板，不该弹一个空壳摘要
   store.accept(payload());
@@ -191,7 +191,7 @@ test('applyCompletion：details 非法 / 含 error / 缺失时不产出摘要，
 
 test('clearAnswered：清摘要但不动进行中的请求（避免孤儿化扩展侧 Promise）', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   store.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
   assert.notEqual(store.answered.value, null);
@@ -209,7 +209,7 @@ test('clearAnswered：清摘要但不动进行中的请求（避免孤儿化扩�
 
 test('【回归锁】dismissAnswered 后，迟到的 tool.completed 不得让面板重新弹出', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   // 乐观收尾：settle 先落摘要 → 面板亮一会儿 → 自动收起
   store.settle('s1', {
@@ -239,7 +239,7 @@ test('【回归锁】dismissAnswered 后，迟到的 tool.completed 不得让面
 
 test('dismissAnswered 只作用于该会话；不影响其他会话', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.settle('s2', {
     answers: [{ questionIndex: 0, question: QUESTIONS[0]!.question, kind: 'option', answer: 'Redis' }],
     cancelled: false,
@@ -253,7 +253,7 @@ test('dismissAnswered 只作用于该会话；不影响其他会话', () => {
 
 test('accept 解除已收起状态：新一轮问卷的摘要照常显示', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   store.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
   store.dismissAnswered('s1');
@@ -270,7 +270,7 @@ test('accept 解除已收起状态：新一轮问卷的摘要照常显示', () =
 
 test('clearAnswered 同样抑制迟到的权威摘要（用户已推进对话，摘要不该再回来）', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   store.settle('s1', {
     answers: [{ questionIndex: 0, question: QUESTIONS[0]!.question, kind: 'option', answer: 'Redis' }],
@@ -288,7 +288,7 @@ test('clearAnswered 同样抑制迟到的权威摘要（用户已推进对话，
 
 test('applyCompletion 保留 deliveryFailed：权威 details 不得抹掉「答案没送出去」这个事实', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   // 用户点了提交但回填失败（IPC 失败 / 扩展已不在等待）
   store.settle('s1', {
@@ -307,7 +307,7 @@ test('applyCompletion 保留 deliveryFailed：权威 details 不得抹掉「答�
 
 test('applyCompletion 不无中生有 deliveryFailed（正常送达的轮次不得被标成失败）', () => {
   const sessions = ref<string | null>('s1');
-  const store = createAskQuestionStore(() => sessions.value, () => 0);
+  const store = createAskQuestionStore(() => sessions.value, () => 0, createAskQuestionTables());
   store.accept(payload());
   store.settle('s1', {
     answers: [{ questionIndex: 0, question: QUESTIONS[0]!.question, kind: 'option', answer: 'Redis' }],
@@ -321,4 +321,49 @@ test('applyCompletion 不无中生有 deliveryFailed（正常送达的轮次不�
   });
 
   assert.equal(store.answered.value?.deliveryFailed, undefined);
+});
+
+// ===== 视图重建回归锁（生产用共享表组）=====
+
+test('【回归锁】共享表组时视图重建（进设置页再回来）问卷与已答摘要都不丢', () => {
+  // 生产路径：所有视图实例共用同一组表，只换绑自己的 getSessionId
+  const tables = createAskQuestionTables();
+  const sessions = ref<string | null>('s1');
+  const before = createAskQuestionStore(() => sessions.value, () => 0, tables);
+  before.accept(payload());
+
+  // 卸载 → 重建：新实例、新 computed，只共享表组
+  const after = createAskQuestionStore(() => sessions.value, () => 0, tables);
+
+  assert.equal(after.request.value?.sessionId, 's1', '待作答问卷必须还在（否则助手干等）');
+  assert.equal(after.deadline.value, 0 + payload().timeoutMs, '倒计时不因重建重置');
+  assert.equal(after.questionsOf('s1')?.length, 2, '已渲染的题目不丢');
+
+  // 重建后仍可正常提交
+  after.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
+  assert.equal(after.request.value, null, '提交后请求释放');
+  assert.equal(after.answered.value?.cancelled, true, '已答摘要对重建后的视图可见');
+});
+
+test('【回归锁】共享表组下「已收起」抑制跨重建生效（不因重建把摘要弹回来）', () => {
+  const tables = createAskQuestionTables();
+  const sessions = ref<string | null>('s1');
+  const before = createAskQuestionStore(() => sessions.value, () => 0, tables);
+  before.dismissAnswered('s1');
+
+  const after = createAskQuestionStore(() => sessions.value, () => 0, tables);
+  after.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
+
+  assert.equal(after.answered.value, null, '已收起的那轮，迟到摘要不得重新点亮');
+});
+
+test('表组默认跨实例共享（生产无需显式传参）', () => {
+  const sessions = ref<string | null>('s1');
+  const before = createAskQuestionStore(() => sessions.value, () => 0);
+  before.accept(payload());
+  const after = createAskQuestionStore(() => sessions.value, () => 0);
+  assert.equal(after.request.value?.sessionId, 's1', '默认共享 → 重建不丢');
+  // 收尾，避免污染后续用例
+  after.settle('s1', { answers: [], cancelled: true, questions: QUESTIONS });
+  after.dismissAnswered('s1');
 });

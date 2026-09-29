@@ -19,7 +19,7 @@ export interface FrameStats {
   sampled: number;
   /** 与左上角底色明显不同的采样点占比 —— 「这一帧上有东西」 */
   contentRatio: number;
-  /** 品牌蓝（#2563eb 标志块）采样点占比 —— 「splash 与否」的特征信号 */
+  /** 品牌蓝（#2563eb，spinner 顶弧等品牌像素）采样点占比 —— 诊断用特征信号 */
   brandRatio: number;
   /** 左上角采样到的底色，`#rrggbb` */
   background: string;
@@ -31,7 +31,7 @@ const SAMPLE_STEP = 4;
 /** 与底色判「不同」的通道阈值。留一点余量以吃下抗锯齿/次像素渲染的中间色 */
 const DIFF_THRESHOLD = 12;
 
-/** 品牌蓝 #2563eb（App 图标/标志块的填充色） */
+/** 品牌蓝 #2563eb（App 图标/spinner 顶弧的品牌色） */
 const BRAND_R = 0x25;
 const BRAND_G = 0x63;
 const BRAND_B = 0xeb;
@@ -113,7 +113,7 @@ export function statsFromBitmap(
 
 /**
  * 「这一帧上有内容」的判据：内容占比达到该下限。
- * 纯底色帧（空文档 / 只画了 backgroundColor）恒为 0；splash 的标志块 + 文案实测 ≥0.3%。
+ * 纯底色帧（空文档 / 只画了 backgroundColor）恒为 0；splash 的字标 + 文案实测 ≥0.3%。
  * 取 0.05% 作阈值——远低于真实值，只用来把「白板」与「有画面」分开，不用来判好坏。
  */
 export const FRAME_CONTENT_RATIO_MIN = 0.0005;

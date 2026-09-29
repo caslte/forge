@@ -3,20 +3,22 @@
  *
  * 产品语义：UI 只讲「forge 版本 + 组件更新」，内部实现为：
  * - forge 版本 = 应用版本（main.ts 注入 app.getVersion()）
- * - 插件 = ~/.pi/agent 共享扩展（settings.json packages 清单 + npm 工程实体），
- *   终端 pi 与 forge 共用同一份
+ * - 插件 = forge 自有 agent 目录（<userData>/agent，settings.json packages 清单 +
+ *   npm 工程实体）；与终端 pi 的 ~/.pi/agent 产品隔离，不再共用
  * - 更新 = 内置引擎 CLI 的 `pi update --extensions`（不依赖用户是否安装全局 pi：
- *   经 ELECTRON_RUN_AS_NODE 以 node 模式运行自带 dist/bundle/cli.js）
+ *   经 ELECTRON_RUN_AS_NODE 以 node 模式运行自带 dist/bundle/cli.js）。CLI 子进程
+ *   必须经 buildPiCliEnv 注入 PI_CODING_AGENT_DIR，否则组件会装回用户 ~/.pi 造成
+ *   与 in-process 读写根裂脑
  */
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { stripJsonComments } from './piModelsFileAdapter.ts';
+import { buildPiCliArgv, ensureConsoleHidePreload } from './consoleHidePreload.ts';
 
 const execFileAsync = promisify(execFile);
-const nodeRequire = createRequire(import.meta.url);
 
 /** 更新超时：npm 安装较慢（含网络），放宽到 10 分钟 */
 export const PI_UPDATE_TIMEOUT_MS = 10 * 60_000;
@@ -29,13 +31,12 @@ export interface PiPluginInfo {
   version: string | null;
 }
 
-/** 默认 pi agent 目录（与 createForgeCore/会话工厂的解析保持一致） */
-export function defaultPiAgentDir(): string {
-  return path.join(
-    process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(),
-    '.pi',
-    'agent',
-  );
+/**
+ * 内置 CLI 子进程统一环境变量：node 模式 + PI_CODING_AGENT_DIR 指向 forge 的 agent 目录。
+ * pi SDK 的 getAgentDir() 优先读该 env（dist/config.js），子进程据此与 in-process 同根。
+ */
+export function buildPiCliEnv(agentDir: string): NodeJS.ProcessEnv {
+  return { ...process.env, ELECTRON_RUN_AS_NODE: '1', PI_CODING_AGENT_DIR: agentDir };
 }
 
 /** 读取共享扩展清单与各自版本；settings.json 缺失/损坏返回 []（静默降级） */
@@ -71,8 +72,16 @@ function readInstalledVersion(agentDir: string, name: string): string | null {
 /** 解析内置引擎 CLI（dist/bundle/cli.js）；缺失返回 null（打包裁剪等场景） */
 export function resolveBundledPiCli(): string | null {
   try {
-    const pkg = nodeRequire.resolve('@earendil-works/pi-coding-agent/package.json');
-    const cli = path.join(path.dirname(pkg), 'dist', 'bundle', 'cli.js');
+    // 引擎包 0.84.x 起 exports 只留 import 条件、且不暴露 ./package.json：
+    // require.resolve（CJS 解析）两条路都必抛 ERR_PACKAGE_PATH_NOT_EXPORTED，
+    // 旧实现据此返回 null → 预装/联动/手动更新全体静默失效。必须走 ESM 解析，
+    // 由主入口上溯包根再拼 dist/bundle/cli.js。
+    let dir = path.dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
+    const cliRel = path.join('dist', 'bundle', 'cli.js');
+    while (path.dirname(dir) !== dir && !fs.existsSync(path.join(dir, cliRel))) {
+      dir = path.dirname(dir);
+    }
+    const cli = path.join(dir, cliRel);
     return fs.existsSync(cli) ? cli : null;
   } catch {
     return null;
@@ -94,21 +103,25 @@ function tail(s: string): string {
  * 更新共享扩展（等价终端 `pi update --extensions`）：
  * 用 Electron 主进程可执行文件以 node 模式跑内置 CLI，不依赖全局 pi。
  * --no-approve 忽略项目本地文件信任提示，避免子进程交互挂起。
+ * @param agentDir forge agent 目录（经 PI_CODING_AGENT_DIR 传给 CLI，与 in-process 同根）
  */
-export async function updatePiExtensions(): Promise<PiUpdateResult> {
+export async function updatePiExtensions(agentDir: string): Promise<PiUpdateResult> {
   const cli = resolveBundledPiCli();
   if (cli === null) {
     return { ok: false, output: '内置引擎 CLI 不存在，无法更新插件' };
   }
   try {
+    // 预加载注入 windowsHide 缺省值：引擎 spawnCommand 未传 windowsHide，其孙进程
+    // （cross-spawn → cmd.exe → npm）会弹可见控制台（外层 windowsHide 管不到孙进程）。
+    const preload = ensureConsoleHidePreload(agentDir);
     const { stdout } = await execFileAsync(
       process.execPath,
-      [cli, 'update', '--extensions', '--no-approve'],
+      buildPiCliArgv(cli, ['update', '--extensions', '--no-approve'], preload),
       {
         windowsHide: true,
         timeout: PI_UPDATE_TIMEOUT_MS,
         maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        env: buildPiCliEnv(agentDir),
       },
     );
     return { ok: true, output: tail(stdout) };

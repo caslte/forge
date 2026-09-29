@@ -6,8 +6,8 @@
 ## 本地打包
 
 ```bash
-npm run dist -w @forge/desktop      # 完整安装包：forge-<版本>-x64-setup.exe + latest.yml + app-update.yml
-npm run dist:dir -w @forge/desktop  # 免安装目录版：release/win-unpacked/forge.exe
+npm run dist -w @forge/desktop      # 完整安装包：Forge-<版本>-x64-setup.exe + latest.yml + app-update.yml
+npm run dist:dir -w @forge/desktop  # 免安装目录版：release/win-unpacked/Forge.exe
 ```
 
 产物位于 `packages/forge-desktop/release/`。本地构建带 `--publish never`（脚本已内置），不会误传 GitHub。
@@ -16,8 +16,8 @@ npm run dist:dir -w @forge/desktop  # 免安装目录版：release/win-unpacked/
 
 配置见 `packages/forge-desktop/electron-builder.yml`：
 
-- **NSIS 一键安装器**：安装/更新全程无向导页、零点击；per-user 免管理员
-- 自动更新时退出 App → 安装器显示进度窗（应用图标 + 进度动画）→ 装完自动重启（`main.ts` quitAndInstall 非静默；不要把 `isSilent` 改成 `true`，用户会只看到应用消失又突然跳出）
+- **NSIS 向导安装器**（`oneClick: false` + `allowToChangeInstallationDirectory: true`）：首装/手动重装显示「选择安装位置」页（默认目录预填、可更改；页顶文案经 `MUI_DIRECTORYPAGE_TEXT_TOP` 说明「所选路径不以 forge 结尾时自动安装到其下 forge 子目录」，与官方 instFilesPre 行为一致）；自动更新零点击（`--updated` 跳过目录页，`build/installer.nsh` 钩子跳过安装模式页/结束页并复刻 oneClick 收尾）；per-user 免管理员
+- 自动更新时退出 App → 安装器显示进度页 → 装完自动重启（`main.ts` quitAndInstall 非静默；不要把 `isSilent` 改成 `true`，用户会只看到应用消失又突然跳出）
 - v1 不做代码签名：Windows SmartScreen 会警告但不阻塞安装与更新；mac 未签名（`identity: null`），首次打开需「右键 → 打开」或 `xattr -cr`，且 mac 端自动更新不可用（Squirrel.Mac 要求签名）
 - 平台产物：Windows NSIS（本地默认当前架构）；mac 出 dmg + zip（zip 是 electron-updater 的 mac 更新载体）；Linux 出 AppImage + deb。多平台完整产物由 CI 出，见下节
 

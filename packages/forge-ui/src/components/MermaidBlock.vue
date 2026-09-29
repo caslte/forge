@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 /**
  * Mermaid 图表渲染组件（P2-C）。
@@ -36,7 +39,7 @@ let disposed = false;
 
 onMounted(async () => {
   if (!source.trim()) {
-    error.value = 'Mermaid 内容为空';
+    error.value = t('tool.mermaidEmpty');
     return;
   }
   try {
@@ -77,8 +80,8 @@ onBeforeUnmount(() => {
     <div v-if="svg" class="md-mermaid-svg" v-html="svg"></div>
     <!-- 渲染失败 / 空：降级显示原始代码 + 错误提示 -->
     <div v-else class="md-mermaid-fallback">
-      <div v-if="error" class="md-mermaid-error">Mermaid 渲染失败：{{ error }}</div>
-      <div v-else-if="notMermaid" class="md-mermaid-hint">内容不是 mermaid 语法，按代码块显示</div>
+      <div v-if="error" class="md-mermaid-error">{{ t('tool.mermaidFailed') }}{{ error }}</div>
+      <div v-else-if="notMermaid" class="md-mermaid-hint">{{ t('tool.mermaidNotDiagram') }}</div>
       <pre class="md-mermaid-source"><code>{{ source }}</code></pre>
     </div>
   </div>

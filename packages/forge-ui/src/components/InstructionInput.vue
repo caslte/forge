@@ -12,11 +12,13 @@ import {
 import { baseName, isImagePath } from '../attachmentText';
 import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
 import { shouldConvertPasteToFile } from '../utils/pasteText';
-import { computeSessionInputReset } from '../utils/sessionInputReset';
+import { draftKeyOf, loadDraft, saveDraft } from '../utils/composerDrafts';
 import { prependQueuedText } from '../utils/prependQueuedText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
+import { openGitCommitDialog } from '../composables/useGitCommitDialog';
+import { useI18n } from '../i18n/index.ts';
 import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
 import ImageLightbox from './ImageLightbox.vue';
 import BranchBadge from './BranchBadge.vue';
@@ -46,8 +48,8 @@ const props = defineProps<{
   projectPath?: string;
   /** git 分支徽标目标项目路径（PM-S05）；未传则不渲染徽标 */
   gitProjectPath?: string;
-  /** 项目忙（任一会话 streaming）：徽标禁用（AC-PM-016） */
-  gitBusy?: boolean;
+  /** 显式 false 时隐藏「提交或推送」入口（空会话 hero，2026-09-23 反馈）；缺省显示 */
+  commitEntry?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -181,7 +183,34 @@ let slashFetching = false;
 let slashLoadGen = 0;
 
 const { success: toastSuccess, error: toastError } = useToast();
-const { markCompacting, markDone, clear: clearCompactBanner } = useCompactBanner();
+const { t } = useI18n();
+
+/** 粘贴快捷键文案：mac 显示 ⌘V，其他平台 Ctrl+V（输入框占位用） */
+const pasteKey = window.forge?.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
+
+/** git 徽标/提交入口的忙态（2026-09-23 用户口径修正）：只看当前会话自身是否 streaming，
+ *  同项目其他会话执行中不锁本会话的提交/切分支（不同会话可以提交不同的代码） */
+const gitBusy = computed(() => props.sessionStatus === 'streaming');
+
+/** 状态行「提交或推送」入口（GC-S11）：busy 禁用，弹窗挂在 App.vue 根 */
+function openCommitDialog(): void {
+  if (gitBusy.value || !props.gitProjectPath) return;
+  openGitCommitDialog({
+    projectPath: props.gitProjectPath,
+    projectName: props.projectPicker?.currentName,
+    sessionId: props.sessionId,
+  });
+}
+/** 非 git 项目不渲染入口（AC：与 BranchBadge isGitRepo 语义一致）；真值由 BranchBadge git-repo 事件回填 */
+const gitIsRepo = ref(false);
+watch(
+  () => props.gitProjectPath,
+  () => {
+    gitIsRepo.value = false;
+  },
+  { immediate: true },
+);
+const { markCompacting, clear: clearCompactBanner } = useCompactBanner();
 
 // ===== MP-S05：思考级别切换器（模型选择旁紧凑下拉；非推理模型隐藏入口） =====
 /** 当前模型可用级别（来自 model/getModelThinkingLevels；仅 ["off"] 时隐藏切换器） */
@@ -189,9 +218,9 @@ const availableLevels = ref<ThinkingLevel[]>([]);
 /** 会话当前生效思考级别（来自 model/getSessionThinkingLevel） */
 const currentLevel = ref<ThinkingLevel | null>(null);
 const levelMenuOpen = ref(false);
-/** max 金色流光动画开关（纯视觉，不影响输入） */
-const shimmerOn = ref(false);
-let shimmerTimer: ReturnType<typeof setTimeout> | null = null;
+/** max 金色扫光动画开关（纯视觉，不影响输入）：见 flashMaxCell */
+const maxSweepOn = ref(false);
+let maxSweepTimer: ReturnType<typeof setTimeout> | null = null;
 /** 会话/模型切换竞态代际编号：只应用最新一次查询响应，避免交错覆盖 */
 let tlGen = 0;
 
@@ -265,12 +294,12 @@ const canSend = computed(
  */
 const compactDisabled = computed(() => compacting.value || autoCompacting.value || isStreaming.value);
 const compactLabel = computed(() =>
-  compacting.value || autoCompacting.value ? '压缩中…' : '压缩',
+  compacting.value || autoCompacting.value ? t('input.compacting') : t('input.compact'),
 );
 const compactTitle = computed(() => {
-  if (compacting.value || autoCompacting.value) return '压缩中…';
-  if (isStreaming.value) return '回答生成中，暂不支持压缩';
-  return '压缩上下文';
+  if (compacting.value || autoCompacting.value) return t('input.compacting');
+  if (isStreaming.value) return t('input.compact.streamingTitle');
+  return t('input.compact.context');
 });
 
 /**
@@ -281,10 +310,10 @@ function formatCompactToast(r: ConversationCompactResult): string {
   const pct = compactReductionPct(r.tokensBefore, r.tokensAfter);
   if (typeof r.tokensBefore === 'number' && typeof r.tokensAfter === 'number') {
     return pct !== null
-      ? `压缩完成：${r.tokensBefore} → ${r.tokensAfter} tokens（减少 ${pct}%）`
-      : `压缩完成：${r.tokensBefore} → ${r.tokensAfter} tokens`;
+      ? t('input.compact.doneTokensPct', { before: r.tokensBefore, after: r.tokensAfter, pct })
+      : t('input.compact.doneTokens', { before: r.tokensBefore, after: r.tokensAfter });
   }
-  return '压缩完成：上下文已更新';
+  return t('input.compact.done');
 }
 
 /** 拉取当前会话上下文用量（P3-A） */
@@ -302,7 +331,7 @@ async function refreshUsage(): Promise<void> {
   }
 }
 
-/** 手动压缩（P3-A）：压缩中锁定输入 + 持久横幅；结果走全局 toast（同切换模型款式） */
+/** 手动压缩（P3-A）：压缩中锁定输入 + 压缩中横幅；结果走全局 toast（同切换模型款式） */
 async function onCompact(): Promise<void> {
   if (!props.sessionId || compacting.value || autoCompacting.value || isStreaming.value) return;
   compacting.value = true;
@@ -313,7 +342,7 @@ async function onCompact(): Promise<void> {
     });
     const r = res.result;
     if (!r.ok) {
-      toastError(r.message ?? '压缩失败');
+      toastError(r.message ?? t('input.compact.failed'));
       clearCompactBanner(props.sessionId);
       return;
     }
@@ -333,9 +362,9 @@ async function onCompact(): Promise<void> {
       };
     }
     toastSuccess(formatCompactToast(r));
-    markDone(props.sessionId, r.tokensBefore ?? null, r.tokensAfter ?? null);
+    clearCompactBanner(props.sessionId);
   } catch (e) {
-    toastError(e instanceof Error ? e.message : '压缩失败');
+    toastError(e instanceof Error ? e.message : t('input.compact.failed'));
     clearCompactBanner(props.sessionId);
   } finally {
     compacting.value = false;
@@ -594,6 +623,9 @@ function onResizeDown(e: PointerEvent): void {
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 }
 function onResizeMove(e: PointerEvent): void {
+  // 流光高亮跟随鼠标 X：pointermove 在 hover 与拖拽（指针捕获）下都会触发
+  const band = e.currentTarget as HTMLElement;
+  band.style.setProperty('--seg-x', `${e.clientX - band.getBoundingClientRect().left}px`);
   if (rsStartH === 0) return;
   const el = inputBoxRef.value;
   if (!el) return;
@@ -715,17 +747,17 @@ function onKeydown(ev: KeyboardEvent): void {
 
 function onSend(): void {
   if (!canSend.value) return;
-  const t = text.value.trim();
+  const trimmed = text.value.trim();
   const atts = attachments.value;
   // CV-S09 队列上限：忙时入队前校验（软校验，双窗口极端并发可能超 1 条）
   if (isStreaming.value && queueList.value.length >= QUEUE_MAX) {
-    toastError(`待发送队列已满（最多 ${QUEUE_MAX} 条），请稍候`);
+    toastError(t('input.queueFull', { max: QUEUE_MAX }));
     return;
   }
   // 密钥嗅探确认：flagged 附件（路径对应文件含疑似凭据）出域前需确认
   const flagged = atts.filter((a) => a.flagged);
   if (flagged.length > 0 && !window.confirm(
-    `检测到疑似密钥/凭据：\n${flagged.map((a) => a.name).join('、')}\n\n附件会被模型读取并发送给模型服务商，确认仍要附带吗？`,
+    t('input.secretConfirm', { names: flagged.map((a) => a.name).join('、') }),
   )) {
     return;
   }
@@ -734,11 +766,11 @@ function onSend(): void {
   attachments.value = [];
   attachError.value = null;
   // 发送成功后入栈输入历史（未跳过验证 / 文本非空 / 有 sessionId）
-  pushHistory(t);
+  pushHistory(trimmed);
   nextTick(autoGrow);
   // 附件行追加在正文后（换行分隔），@ 前缀是附件协议标记：@开头=附件，
   // 手敲裸路径=正文，展示层零歧义；模型据此自行 read，纯附件消息就是纯附件行
-  emit('send', paths.length > 0 ? `${t}\n${paths.map((p) => `@${p}`).join('\n')}` : t);
+  emit('send', paths.length > 0 ? `${trimmed}\n${paths.map((p) => `@${p}`).join('\n')}` : trimmed);
 }
 
 /** 把一批路径加入待发区（格式白名单 + 主进程密钥嗅探后返回标记）；返回是否全部成功 */
@@ -748,14 +780,16 @@ async function addPaths(paths: string[]): Promise<boolean> {
   const accepted = paths.filter((p) => isAllowedAttachmentPath(p));
   const rejected = paths.filter((p) => !isAllowedAttachmentPath(p));
   if (rejected.length > 0) {
+    const names = rejected.slice(0, 3).map(baseName).join('、');
     showAttachError(
-      `不支持的文件格式：${rejected.slice(0, 3).map(baseName).join('、')}${rejected.length > 3 ? ` 等 ${rejected.length} 个` : ''}`,
+      t('input.unsupportedFormat', { names }) +
+        (rejected.length > 3 ? t('input.unsupportedFormatMore', { count: rejected.length }) : ''),
     );
   }
   if (accepted.length === 0) return false;
   const all = [...attachments.value, ...accepted];
   if (all.length > MAX_ATTACHMENTS) {
-    showAttachError(`附件最多 ${MAX_ATTACHMENTS} 个，已跳过`);
+    showAttachError(t('input.attach.maxSkipped', { max: MAX_ATTACHMENTS }));
     return false;
   }
   try {
@@ -770,7 +804,7 @@ async function addPaths(paths: string[]): Promise<boolean> {
     attachError.value = null;
     return true;
   } catch (e) {
-    showAttachError(e instanceof Error ? e.message : '附件嗅探失败');
+    showAttachError(e instanceof Error ? e.message : t('input.attach.scanFailed'));
     return false;
   }
 }
@@ -783,11 +817,11 @@ async function pickAttachments(): Promise<void> {
     if (files.length === 0) return;
     await addPaths(files);
   } catch (e) {
-    showAttachError(e instanceof Error ? e.message : '读取附件失败');
+    showAttachError(e instanceof Error ? e.message : t('input.attach.readFailed'));
   }
 }
 
-// ===== 截图/文件 粘贴（Ctrl+V）+ 拖拽：统一收集路径 =====
+// ===== 截图/文件 粘贴（Ctrl+V / ⌘V）+ 拖拽：统一收集路径 =====
 
 /** 待发图片预览弹窗（点击缩略图打开，null = 关闭） */
 const lightboxSrc = ref<string | null>(null);
@@ -804,10 +838,10 @@ function blobToBase64(blob: Blob): Promise<string> {
       if (typeof r === 'string' && r.includes(',')) {
         resolve(r.slice(r.indexOf(',') + 1));
       } else {
-        reject(new Error('图片读取失败'));
+        reject(new Error(t('input.image.readFailed')));
       }
     };
-    reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
+    reader.onerror = () => reject(reader.error ?? new Error(t('input.image.readFailed')));
     reader.readAsDataURL(blob);
   });
 }
@@ -824,7 +858,7 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
   }
   // 无盘文件：仅支持图片（剪贴板截图），先落盘临时文件；其余格式拒绝并提示
   if (!f.type.startsWith('image/')) {
-    showAttachError(`不支持的文件格式：${f.name || '未知文件'}`);
+    showAttachError(t('input.unsupportedFormat', { names: f.name || t('input.unknownFile') }));
     return;
   }
   const mimeType = f.type || 'image/png';
@@ -832,7 +866,7 @@ async function collectFile(f: File, paths: string[]): Promise<void> {
   const data = await blobToBase64(f);
   const saved = await window.forge.file.savePasteImage(data, ext);
   if (!saved) {
-    showAttachError('截图落盘失败，已跳过');
+    showAttachError(t('input.screenshotSaveFailed'));
     return;
   }
   // base64 已在手，缩略图直接本地拼 data URL，不再走 IPC 回读
@@ -868,7 +902,7 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
       try {
         await collectFile(f, diskPaths);
       } catch (e) {
-        showAttachError(e instanceof Error ? e.message : '图片读取失败');
+        showAttachError(e instanceof Error ? e.message : t('input.image.readFailed'));
       }
     }
     await addPaths(diskPaths);
@@ -892,12 +926,12 @@ async function convertPastedTextToFile(pastedText: string): Promise<void> {
   }
   if (!saved) {
     insertTextAtCaret(pastedText);
-    showAttachError('超长文本转附件失败，已直接粘贴');
+    showAttachError(t('input.pasteConvertFailed'));
     return;
   }
   const ok = await addPaths([saved.path]);
   if (!ok) {
-    showAttachError('附件已满或格式受限，超长文本未转存，请分段粘贴');
+    showAttachError(t('input.pasteNotSaved'));
   }
 }
 
@@ -948,7 +982,7 @@ async function onDrop(ev: DragEvent): Promise<void> {
     try {
       await collectFile(f, diskPaths);
     } catch (e) {
-      showAttachError(e instanceof Error ? e.message : '图片读取失败');
+      showAttachError(e instanceof Error ? e.message : t('input.image.readFailed'));
     }
   }
   await addPaths(diskPaths);
@@ -992,10 +1026,10 @@ function selectModel(m: string): void {
  * 草稿态（新会话未创建，sessionId 缺省）同样渲染切换器：级别列表只依赖模型
  * （草稿用全局默认模型）；级别回显传空参查全局默认（新会话继承全局，TD-MP-05）。
  * 仅当 currentModel 不存在时回退空态。
- * animateMax：切换模型触发的重载时传 true——刷新后级别仍为 max 则触发金色流光
- * （与手动切级别到 max 一致，确认新模型下最强推理仍在生效）。
+ * 金色扫光动画仅在用户主动选择切到 max 时触发（见 selectLevel）；
+ * 加载/重载（包括切换会话、切换模型）落出 max 不触发，避免每次进会话都闪一次。
  */
-async function loadThinkingState(animateMax = false): Promise<void> {
+async function loadThinkingState(): Promise<void> {
   const gen = ++tlGen;
   if (!props.currentModel) {
     availableLevels.value = [];
@@ -1023,8 +1057,6 @@ async function loadThinkingState(animateMax = false): Promise<void> {
     );
     if (gen !== tlGen) return;
     currentLevel.value = res.level ?? null;
-    // 切换模型后级别仍为 max：同样触发金色流光（displayLevel 兼容新模型不支持 max 的回退）
-    if (animateMax && displayLevel.value === 'max') triggerShimmer();
   } catch (e) {
     if (gen !== tlGen) return;
     console.warn('[thinkingLevel] 查询当前思考级别失败（降级回显）', e);
@@ -1046,29 +1078,113 @@ const displayLevel = computed<ThinkingLevel | null>(() => {
 
 function toggleLevelMenu(): void {
   levelMenuOpen.value = !levelMenuOpen.value;
+  if (levelMenuOpen.value) {
+    // 展开：重置方向基准，下一帧无动画贴到当前级别（浮窗已有入场动画，不再叠一次水滴），
+    // 并把焦点交给分段条
+    levelPillFrom = null;
+    void nextTick(() => {
+      moveLevelPill(false);
+      watchLevelSegSize();
+      levelSegEl.value?.focus({ preventScroll: true });
+    });
+  }
 }
 
-/** 触发输入框 max 动画（仅 MAX 浮现→停留→淡出，全程约 2.8s 后自移除，重入时重启动画） */
-function triggerShimmer(): void {
-  if (shimmerTimer) clearTimeout(shimmerTimer);
-  shimmerOn.value = false;
-  // 同一帧后再挂载，确保 CSS 动画能重新启动
-  requestAnimationFrame(() => {
-    shimmerOn.value = true;
-    shimmerTimer = setTimeout(() => {
-      shimmerOn.value = false;
-    }, 2900);
+/** 级别/挡位集在浮窗开着时变化（点击、键盘、会话重载、模型切换）→ 高亮块滑到新位置（带水滴）。
+    展开时（levelMenuOpen 变 true）不参与：首贴由 toggleLevelMenu 里的无动画分支处理。 */
+watch([displayLevel, () => availableLevels.value.length], () => {
+  if (!levelMenuOpen.value) return;
+  void nextTick(() => moveLevelPill(true));
+});
+
+/* 分段滑条浮窗（MP-S05 方案 D）：浮窗里是横向分段滑条，高亮块用「左右两条边分别动画」的水滴果冻
+   机制（与 App.vue 项目/任务切换同款），几何由 --pill-l / --pill-r 给出：
+   向前进方向那条边先行（带回弹），另一条边延迟 70ms 追随，途中被拉长成水滴。 */
+const levelSegEl = ref<HTMLElement | null>(null);
+/** 触发器（Esc 收起后归还焦点） */
+const levelTriggerEl = ref<HTMLButtonElement | null>(null);
+/** 上一次高亮块左边界（null = 本次展开的首贴，不判方向） */
+let levelPillFrom: number | null = null;
+
+/** 按 active 按钮实测几何贴高亮块；animate=false 用于首贴/重建（不播水滴） */
+function moveLevelPill(animate: boolean): void {
+  const seg = levelSegEl.value;
+  if (!seg) return;
+  const btn = seg.querySelector<HTMLElement>('.level-item.on');
+  if (!btn || btn.offsetWidth === 0) return;
+  const l = btn.offsetLeft;
+  const r = seg.clientWidth - l - btn.offsetWidth;
+  if (!animate) seg.classList.add('no-anim');
+  // 方向决定谁先动：向右滑 → 右边先行（fwd）；向左滑 → 回到基态（左边先行）
+  seg.classList.remove('fwd');
+  if (levelPillFrom !== null && l > levelPillFrom) {
+    void seg.offsetWidth; // 强制回流：让方向类变更重新触发 transition
+    seg.classList.add('fwd');
+  }
+  seg.style.setProperty('--pill-l', `${l}px`);
+  seg.style.setProperty('--pill-r', `${r}px`);
+  levelPillFrom = l;
+  if (!animate) requestAnimationFrame(() => seg.classList.remove('no-anim'));
+}
+
+/** 分段条键盘操作：←/→ 换挡、Home/End 首末档、Esc 收起并把焦点还给触发器 */
+function onLevelSegKey(e: KeyboardEvent): void {
+  const ls = availableLevels.value;
+  if (ls.length === 0) return;
+  const cur = displayLevel.value;
+  let idx = ls.indexOf(cur ?? 'off');
+  if (idx < 0) idx = 0;
+  const go = (n: number) => {
+    const lv = ls[Math.max(0, Math.min(ls.length - 1, n))];
+    if (lv) selectLevel(lv);
+  };
+  switch (e.key) {
+    case 'ArrowRight':
+    case 'ArrowUp':
+      go(idx + 1);
+      break;
+    case 'ArrowLeft':
+    case 'ArrowDown':
+      go(idx - 1);
+      break;
+    case 'Home':
+      go(0);
+      break;
+    case 'End':
+      go(ls.length - 1);
+      break;
+    case 'Escape':
+      levelMenuOpen.value = false;
+      levelTriggerEl.value?.focus();
+      return;
+    default:
+      return;
+  }
+  e.preventDefault();
+}
+
+/** max 反馈动画（方案 A，替代原悬浮「M A X」文字）：在 max 档位自身就地做一次
+ *  金色流光扫过 + 格子轻弹；全程锚在分段条内部，
+ *  不产生任何浮层（不再侵入输入正文区），重入时先清 class 再回流重启。 */
+function flashMaxCell(): void {
+  if (maxSweepTimer) clearTimeout(maxSweepTimer);
+  maxSweepOn.value = false;
+  void nextTick(() => {
+    maxSweepOn.value = true;
+    maxSweepTimer = setTimeout(() => {
+      maxSweepOn.value = false;
+    }, 1250);
   });
 }
 
 /** 选择思考级别：乐观更新本地 + 写当前会话（同步全局默认由后端处理）；
- *  草稿态（无 sessionId）仅本地记录，随会话创建由 ConversationView 落库（见其草稿发送分支）；切换 max 触发金色流光动画 */
+ *  草稿态（无 sessionId）仅本地记录，随会话创建由 ConversationView 落库（见其草稿发送分支）；
+ *  切到 max 触发就地金色扫光。浮窗保持展开（方便连续换挡、看清水滴滑动） */
 function selectLevel(level: ThinkingLevel): void {
-  levelMenuOpen.value = false;
   const prev = currentLevel.value;
   if (level === prev) return;
   currentLevel.value = level; // 乐观更新，不弹 toast
-  if (level === 'max') triggerShimmer();
+  if (level === 'max') flashMaxCell();
   if (!props.sessionId) return; // 草稿态：无会话可写，留给发送时随会话创建落库
   call('model/setSessionThinkingLevel', { sessionId: props.sessionId, level }).catch((e) => {
     console.warn('[thinkingLevel] 切换思考级别失败（静默降级）', e);
@@ -1106,13 +1222,15 @@ function focus(): void {
   textareaRef.value?.focus();
 }
 
-/** 只读当前输入文本（落地 hero 卸载时取未发送草稿用，v3.77） */
-function getText(): string {
-  return text.value;
+/** 点「新会话」时由上层显式调用：无输入内容且无附件才把拖高过的盒子/textarea 还原为自然高度 */
+function resetHeightIfEmpty(): void {
+  if (text.value !== '' || attachments.value.length > 0) return;
+  if (inputBoxRef.value) inputBoxRef.value.style.height = '';
+  if (textareaRef.value) textareaRef.value.style.height = '';
 }
 
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
-defineExpose({ focus, currentLevel, restoreQueuedText, getText });
+defineExpose({ focus, currentLevel, restoreQueuedText, resetHeightIfEmpty });
 
 /** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
 let unsubCompacted: (() => void) | null = null;
@@ -1132,7 +1250,7 @@ onMounted(() => {
     commands.value = [];
   });
   // 自动压缩（运行时按阈值/溢出触发）没有 RPC 入口，只能靠事件感知：
-  // compacting → 锁定输入 + 持久横幅；compacted → 解锁 + 刷新用量 + 横幅收尾
+  // compacting → 锁定输入 + 压缩中横幅；compacted → 解锁 + 刷新用量 + 收掉横幅
   unsubCompacting = subscribe('conversation.compacting', (payload) => {
     const p = payload as { sessionId?: string };
     if (p.sessionId !== props.sessionId) return;
@@ -1140,17 +1258,34 @@ onMounted(() => {
     if (props.sessionId) markCompacting(props.sessionId);
   });
   unsubCompacted = subscribe('conversation.compacted', (payload) => {
-    const p = payload as {
-      sessionId?: string;
-      tokensBefore?: number | null;
-      tokensAfter?: number | null;
-    };
+    const p = payload as { sessionId?: string };
     if (p.sessionId !== props.sessionId) return;
     autoCompacting.value = false;
     void refreshUsage();
-    // 自动压缩的横幅收尾在此统一处理（手动压缩 RPC 返回时也会再标记一次，幂等）
-    if (props.sessionId) markDone(props.sessionId, p.tokensBefore ?? null, p.tokensAfter ?? null);
+    // 压缩结束的反馈由内联分隔条 + toast 承担，横幅随事件收掉
+    // （手动压缩 RPC 返回时也会清一次，幂等）
+    if (props.sessionId) clearCompactBanner(props.sessionId);
   });
+});
+
+/** 浮窗开合时观察分段条尺寸：等宽字体异步加载 / 窗口缩放会改档位宽窄，
+ *  高亮块几何是从实测值写入的 CSS 变量，尺寸一变就得重贴（无动画，避免打断正在播的水滴）。
+ * 只在浮窗展开时挂在窗口上。 */
+let levelSegRO: ResizeObserver | null = null;
+function watchLevelSegSize(): void {
+  levelSegRO?.disconnect();
+  levelSegRO = null;
+  const seg = levelSegEl.value;
+  if (!seg || typeof ResizeObserver === 'undefined') return;
+  levelSegRO = new ResizeObserver(() => moveLevelPill(false));
+  levelSegRO.observe(seg);
+}
+
+watch(levelMenuOpen, (open) => {
+  if (!open) {
+    levelSegRO?.disconnect();
+    levelSegRO = null;
+  }
 });
 
 onUnmounted(() => {
@@ -1159,8 +1294,9 @@ onUnmounted(() => {
   unsubCompacting?.();
   unsubSlash?.();
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
-  if (shimmerTimer) clearTimeout(shimmerTimer);
+  if (maxSweepTimer) clearTimeout(maxSweepTimer);
   if (spinnerTimer) clearInterval(spinnerTimer);
+  levelSegRO?.disconnect();
 });
 
 // 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）。
@@ -1177,21 +1313,39 @@ watch(
   },
 );
 
-// 切换会话：重载输入历史（不同会话的历史独立存储）；已激活会话切走前清空输入框（防跨会话串味），草稿态保留。
+// 草稿实时落仓（flush post：会话切换 watch 的 pre 回填先跑，本 watch 只会把
+// 回填值原样再存一次，无副作用）。↑↓ 翻历史时 text 里是历史条目不是草稿，
+// 落仓用进历史前暂存的 pendingDraft。
+watch(
+  [text, () => attachments.value],
+  () => {
+    saveDraft(draftKeyOf(props.sessionId), {
+      text: historyCursor.value >= 0 ? pendingDraft : text.value,
+      attachments: attachments.value,
+    });
+  },
+  { flush: 'post' },
+);
+
+// 切换会话：重载输入历史（不同会话的历史独立存储）；输入缓冲改为按会话从
+// 草稿仓库回填（不再清空——修「跨会话串味/草稿被带跑」，也覆盖设置页往返、
+// 多窗口聚焦层等一切卸载重挂：卸载时仓库已是最新，immediate 回填即恢复）。
 watch(
   () => props.sessionId,
   (sid) => {
-    const next = computeSessionInputReset({
-      currentText: text.value,
-      pendingDraft,
-      historyCursor: historyCursor.value,
-      isDraft: sid === undefined,
-    });
-    if (next.text !== text.value || next.pendingDraft !== pendingDraft || next.historyCursor !== historyCursor.value) {
-      text.value = next.text;
-      pendingDraft = next.pendingDraft;
-      historyCursor.value = next.historyCursor;
-      nextTick(autoGrow); // 空文本 → 重置回默认高度
+    const d = loadDraft(draftKeyOf(sid));
+    const changed = d.text !== text.value || d.attachments.length !== attachments.value.length;
+    text.value = d.text;
+    attachments.value = d.attachments;
+    pendingDraft = '';
+    historyCursor.value = -1;
+    if (changed) {
+      // 切到新会话：textarea 自然回落（autoGrow 已处理）+ 手动拖高过的 compose-box 也回到自然高度，
+      // 否则下次打开会按上次拖的高度撑开。box-shadow / border 不用清，本身就没内联。
+      nextTick(() => {
+        autoGrow();
+        if (inputBoxRef.value) inputBoxRef.value.style.height = '';
+      });
     }
     loadHistory(sid);
   },
@@ -1220,13 +1374,12 @@ watch(
   },
 );
 
-// 会话 / 当前模型变化时重新加载思考级别状态（MP-S05）；模型变化时带 animateMax，
-// 刷新后仍为 max 则播放金色流光
+// 会话 / 当前模型变化时重新加载思考级别状态（MP-S05）
 watch(
   () => [props.currentModel, props.sessionId] as const,
-  ([model], [prevModel]) => {
+  () => {
     levelMenuOpen.value = false;
-    void loadThinkingState(model !== prevModel);
+    void loadThinkingState();
   },
 );
 </script>
@@ -1243,16 +1396,12 @@ watch(
     <!-- 上边沿：透明拖拽带，悬停显示 row-resize，可拖拽调整整个输入框高度 -->
     <div
       class="cb-resize"
-      title="拖动调整输入框高度"
+      :title="t('input.resizeHint')"
       @pointerdown="onResizeDown"
       @pointermove="onResizeMove"
       @pointerup="onResizeUp"
     ></div>
     <!-- 进行中：实线边框 + 呼吸效果（CSS 动画） -->
-    <!-- max 思考级别动画（仅 "M A X" 底部浮现 → 停留 → 淡出；纯视觉层 pointer-events:none 不阻塞输入） -->
-    <div v-if="shimmerOn" class="max-shimmer" aria-hidden="true">
-      <span class="max-text">M A X</span>
-    </div>
     <!-- 附件待发区（统一给路径）：图片 = 64px 缩略图（点击放大）；其他 = 胶囊 chip（icon+文件名）；可移除 -->
     <div ref="attachRowRef" class="attach-row">
       <template v-for="(att, i) in attachments" :key="att.path + i">
@@ -1264,7 +1413,7 @@ watch(
             draggable="false"
             @click="lightboxSrc = att.dataUrl ?? null"
           />
-          <button class="attach-remove" title="移除附件" @click.stop="removeAttachment(i)">
+          <button class="attach-remove" :title="t('input.attach.remove')" @click.stop="removeAttachment(i)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -1283,8 +1432,8 @@ watch(
               <polyline points="14 2 14 8 20 8" />
             </svg>
           </span>
-          <span class="attach-name" :title="att.flagged ? `${att.name}（疑似含密钥）` : att.name">{{ att.name }}</span>
-          <button class="attach-remove" title="移除附件" @click="removeAttachment(i)">
+          <span class="attach-name" :title="att.flagged ? t('input.attach.flaggedName', { name: att.name }) : att.name">{{ att.name }}</span>
+          <button class="attach-remove" :title="t('input.attach.remove')" @click="removeAttachment(i)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -1299,7 +1448,11 @@ watch(
       ref="textareaRef"
       v-model="text"
       class="compose-input"
-      :placeholder="isStreaming ? `${spinnerFrame} 助手回复中，Enter 排队发送…` : compacting || autoCompacting ? '正在压缩上下文，稍候…' : '今天聊点啥，/ 查看命令，@ 找文件，Enter 发送，Ctrl+V 粘贴截图'"
+      :placeholder="isStreaming
+        ? t('input.placeholder.streaming', { frame: spinnerFrame })
+        : compacting || autoCompacting
+          ? t('input.placeholder.compacting')
+          : t('input.placeholder.default', { pasteKey })"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"
@@ -1318,7 +1471,7 @@ watch(
       class="slash-menu"
       @mousedown.prevent
     >
-      <div v-if="commands.length === 0" class="slash-empty">无可用命令</div>
+      <div v-if="commands.length === 0" class="slash-empty">{{ t('input.slash.empty') }}</div>
       <template v-else>
         <button
           v-for="(item, i) in filteredCommands"
@@ -1334,7 +1487,7 @@ watch(
           </span>
           <span v-if="item.description" class="slash-desc">{{ item.description }}</span>
         </button>
-        <div v-if="filteredCommands.length === 0" class="slash-empty">无匹配命令</div>
+        <div v-if="filteredCommands.length === 0" class="slash-empty">{{ t('input.slash.noMatch') }}</div>
       </template>
     </div>
 
@@ -1344,7 +1497,7 @@ watch(
       class="slash-menu at-menu"
       @mousedown.prevent
     >
-      <div v-if="atFiltered.length === 0" class="slash-empty">无匹配文件</div>
+      <div v-if="atFiltered.length === 0" class="slash-empty">{{ t('input.at.noMatch') }}</div>
       <button
         v-for="(p, i) in atFiltered"
         :key="p"
@@ -1374,77 +1527,18 @@ watch(
 
     <div class="compose-bar">
       <div class="compose-links">
-        <!-- 项目选择器（SM-S01 v3.21）：草稿=选归属；会话中=同式样可点，信息态+定位 -->
-        <div v-if="projectPicker" class="proj-wrap">
-          <button
-            type="button"
-            class="meta-link proj-pill"
-            :class="{ 'proj-pill-static': projectPicker.mode === 'session' }"
-            :data-tooltip="projectPicker.mode === 'draft' ? '选择新会话归属项目' : '会话归属项目'"
-            @click="toggleProjMenu"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-            <span>{{ projectPicker.currentName }}</span>
-            <span v-if="projectPicker.mode === 'draft'" class="proj-caret" aria-hidden="true">▾</span>
-          </button>
-          <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
-            <template v-if="projectPicker.mode === 'draft'">
-              <div class="menu-hint">新会话归属项目</div>
-              <button
-                v-for="it in projectPicker.items"
-                :key="it.path"
-                type="button"
-                class="proj-item"
-                :class="{ active: it.path === projectPicker.currentPath }"
-                @click="onPickProject(it.path)"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                </svg>
-                <span class="proj-item-main">
-                  <span class="proj-item-name">{{ it.name }}</span>
-                  <span class="proj-item-path" :title="it.path">{{ it.path }}</span>
-                </span>
-                <span
-                  class="proj-item-del"
-                  :class="{ confirming: projDeleteConfirmPath === it.path }"
-                  :title="projDeleteConfirmPath === it.path ? '再次点击确认移除' : '移除项目（连同其下会话一并删除，源文件保留）'"
-                  role="button"
-                  @click.stop.prevent="onProjDelete(it.path)"
-                >
-                  <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">确认</span>
-                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </span>
-              </button>
-              <div class="proj-menu-sep"></div>
-              <button type="button" class="proj-item" @click="onOpenProjectPicker">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                <span class="proj-item-main"><span class="proj-item-name">打开项目…</span></span>
-              </button>
-            </template>
-          </div>
-          <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
-          <BranchBadge v-if="gitProjectPath" :project-path="gitProjectPath" :busy="gitBusy ?? false" />
-        </div>
-
         <!-- 附件 -->
         <button
           class="meta-link"
           :disabled="inputLocked"
-          data-tooltip="添加附件（图片 / 文本 / Office 文档）"
-          aria-label="附件"
+          :data-tooltip="t('input.attach.tooltip')"
+          :aria-label="t('input.attach.label')"
           @click="pickAttachments"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
-          <span>附件</span>
+          <span>{{ t('input.attach.label') }}</span>
         </button>
 
         <!-- 模型：点击字样弹浮窗切换 -->
@@ -1452,13 +1546,12 @@ watch(
           <button
             class="meta-link"
             type="button"
-            data-tooltip="会话模型 · 点击切换"
             @click.stop="toggleModelMenu"
           >
-            <span>{{ currentModel ?? '选择模型' }}</span>
+            <span>{{ currentModel ?? t('input.model.select') }}</span>
           </button>
           <div v-if="modelMenuOpen" class="model-menu">
-            <div class="menu-hint">本会话生效模型</div>
+            <div class="menu-hint">{{ t('input.model.hint') }}</div>
             <button
               v-for="m in models"
               :key="m"
@@ -1475,68 +1568,62 @@ watch(
         <!-- 思考级别：模型选择旁紧凑切换器
         显示条件：含任一非 off 挡位即显示（非推理模型 levels=["off"] 隐藏；
         推理模型即使只剩单个挡位如 ["max"] 也显示，MP-S07） -->
-        <div v-if="availableLevels.some((l) => l !== 'off')" class="level-wrap">
+        <div v-if="availableLevels.some((l) => l !== 'off')" class="level-wrap" :class="{ 'is-max': displayLevel === 'max', 'is-open': levelMenuOpen }">
           <button
+            ref="levelTriggerEl"
             class="meta-link"
             :class="{ 'is-max': displayLevel === 'max' }"
             type="button"
-            data-tooltip="思考级别 · 点击切换"
+            :aria-expanded="levelMenuOpen"
+            aria-haspopup="true"
             @click.stop="toggleLevelMenu"
           >
             <span>{{ displayLevel ?? 'off' }}</span>
+            <svg class="level-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
           </button>
-          <div v-if="levelMenuOpen" class="level-menu">
-            <button
-              v-for="lv in availableLevels"
-              :key="lv"
-              class="menu-item"
-              :class="{ active: lv === displayLevel }"
-              type="button"
-              @click="selectLevel(lv)"
+          <!-- max 反馈动画（方案 A）：金色流光扫过 max 档位自身，见 flashMaxCell -->
+          <!-- 浮窗：横向分段滑条（方案 D）。高亮块为水滴果冻块（左右两条边分别动画，同 App.vue 项目/任务切换），
+               JS 按 active 按钮实测几何写 --pill-l/--pill-r；几何在事件回调里直接写，不进响应式系统。 -->
+          <div v-if="levelMenuOpen" class="level-pop">
+            <div
+              ref="levelSegEl"
+              class="level-seg no-anim"
+              role="radiogroup"
+              tabindex="0"
+              :aria-label="t('input.level.aria', { level: displayLevel ?? 'off' })"
+              @keydown="onLevelSegKey"
             >
-              {{ lv }}
-            </button>
+              <span class="level-pill" aria-hidden="true"></span>
+              <button
+                v-for="lv in availableLevels"
+                :key="lv"
+                class="level-item"
+                :class="{ on: lv === displayLevel, 'off-only': lv === 'off', 'lv-max': lv === 'max', sweep: lv === 'max' && maxSweepOn }"
+                type="button"
+                role="radio"
+                :aria-checked="lv === displayLevel"
+                @click="selectLevel(lv)"
+              >
+                <span class="level-t">{{ lv }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="compose-actions">
-        <div class="ctx-wrap">
-          <div
-            class="ctx"
-            :class="{ 'ctx-warn': usageWarning }"
-            :title="usageError || '上下文用量，接近上限可压缩'"
-            data-tooltip="上下文用量"
-          >
-            <span class="ctx-num">{{ usageLabel }}</span>
-            <div class="ctx-track">
-              <div
-                class="ctx-fill"
-                :class="{ warn: usageWarning }"
-                :style="{ width: usagePct + '%' }"
-              ></div>
-            </div>
-            <span
-              class="ctx-cmp"
-              :class="{ disabled: compactDisabled }"
-              :title="compactTitle"
-              @click="onCompact"
-            >{{ compactLabel }}</span>
-          </div>
-        </div>
-
         <!-- CV-S09 待发送队列徽标 + 只读浮窗：忙时入队的消息在派发前暂存于此 -->
         <div v-if="queueList.length > 0" class="queue-wrap">
           <button
             class="queue-badge"
             type="button"
-            data-tooltip="待发送队列"
+            :data-tooltip="t('input.queue.tooltip')"
             @click.stop="queuePanelOpen = !queuePanelOpen"
           >
-            待发送 {{ queueList.length }}
+            {{ t('input.queue.badge', { count: queueList.length }) }}
           </button>
           <div v-if="queuePanelOpen" class="queue-panel">
-            <div class="menu-hint">待发送队列（忙完自动按序发出）</div>
+            <div class="menu-hint">{{ t('input.queue.hint') }}</div>
             <div v-for="(item, i) in queueList" :key="i" class="queue-item">{{ item }}</div>
           </div>
         </div>
@@ -1546,8 +1633,8 @@ watch(
           v-if="!isStreaming"
           class="send-btn"
           :disabled="!canSend"
-          aria-label="发送"
-          data-tooltip="发送（Enter）"
+          :aria-label="t('input.send.aria')"
+          :data-tooltip="t('input.send.tooltip')"
           @click="onSend"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1558,8 +1645,8 @@ watch(
         <button
           v-if="isStreaming && canSend"
           class="send-btn queue-send"
-          aria-label="排队发送"
-          data-tooltip="排队发送（Enter）"
+          :aria-label="t('input.queueSend.aria')"
+          :data-tooltip="t('input.queueSend.tooltip')"
           @click="onSend"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1567,7 +1654,7 @@ watch(
             <polygon points="22 2 15 22 11 13 2 9 22 2" />
           </svg>
         </button>
-        <button v-if="isStreaming" class="cancel-btn" aria-label="停止" data-tooltip="停止（清空待发送队列并回填输入框）" @click="onCancel">
+        <button v-if="isStreaming" class="cancel-btn" :aria-label="t('input.stop.aria')" :data-tooltip="t('input.stop.tooltip')" @click="onCancel">
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
         </button>
       </div>
@@ -1575,6 +1662,114 @@ watch(
 
     <!-- 图片预览弹窗（待发缩略图点击打开，滚轮缩放，Esc/点遮罩关闭） -->
     <ImageLightbox :src="lightboxSrc" @close="lightboxSrc = null" />
+  </div>
+
+  <!-- 输入框下方状态行：左=项目选择器（SM-S01 v3.21，草稿=选归属；会话中=信息态）+ git 分支徽标（PM-S05），
+       右=上下文用量+压缩。与 compose-box 为兄弟节点（组件多根 fragment），浮窗仍向上弹、盖在输入框之上 -->
+  <div class="compose-status">
+    <div v-if="projectPicker" class="proj-wrap">
+      <button
+        type="button"
+        class="meta-link proj-pill"
+        :class="{ 'proj-pill-static': projectPicker.mode === 'session' }"
+        :data-tooltip="projectPicker.mode === 'draft' ? t('input.project.draftTooltip') : t('input.project.sessionTooltip')"
+        @click="toggleProjMenu"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path v-if="projMenuOpen && projectPicker.mode === 'draft'" d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+          <path v-else d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        <span>{{ projectPicker.currentName }}</span>
+      </button>
+      <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
+        <div class="menu-hint">{{ t('input.project.hint') }}</div>
+        <button
+          v-for="it in projectPicker.items"
+          :key="it.path"
+          type="button"
+          class="proj-item"
+          :class="{ active: it.path === projectPicker.currentPath }"
+          @click="onPickProject(it.path)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          <span class="proj-item-main">
+            <span class="proj-item-name">{{ it.name }}</span>
+            <span class="proj-item-path" :title="it.path">{{ it.path }}</span>
+          </span>
+          <span
+            class="proj-item-del"
+            :class="{ confirming: projDeleteConfirmPath === it.path }"
+            :title="projDeleteConfirmPath === it.path ? t('input.project.removeConfirmTooltip') : t('input.project.removeTooltip')"
+            role="button"
+            @click.stop.prevent="onProjDelete(it.path)"
+          >
+            <span v-if="projDeleteConfirmPath === it.path" class="confirm-text">{{ t('common.confirm') }}</span>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </span>
+        </button>
+        <div class="proj-menu-sep"></div>
+        <button type="button" class="proj-item" @click="onOpenProjectPicker">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          <span class="proj-item-main"><span class="proj-item-name">{{ t('input.project.open') }}</span></span>
+        </button>
+      </div>
+      <!-- git 分支徽标（PM-S05）：非 git 项目组件内部不渲染 -->
+      <BranchBadge
+        v-if="gitProjectPath"
+        :project-path="gitProjectPath"
+        :busy="gitBusy"
+        :project-name="projectPicker?.currentName"
+        :session-id="sessionId"
+        @git-repo="gitIsRepo = $event"
+      />
+      <!-- 提交或推送入口（GC-S11）：与分支徽标同排，busy 禁用同款灰置；hero 空态隐藏 -->
+      <button
+        v-if="gitProjectPath && gitIsRepo && commitEntry !== false"
+        type="button"
+        class="meta-link push-pill"
+        :class="{ 'is-busy': gitBusy }"
+        :aria-disabled="gitBusy"
+        @click="openCommitDialog"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4" />
+          <line x1="12" y1="2" x2="12" y2="8" />
+          <line x1="12" y1="16" x2="12" y2="22" />
+        </svg>
+        <span>{{ t('git.entryLabel') }}</span>
+      </button>
+    </div>
+
+    <!-- 上下文用量 + 压缩：从框内操作条挪到状态行右侧 -->
+    <div class="ctx-wrap">
+      <div
+        class="ctx"
+        :class="{ 'ctx-warn': usageWarning }"
+        :title="usageError || t('input.ctx.hint')"
+        :data-tooltip="t('input.ctx.tooltip')"
+      >
+        <span class="ctx-num">{{ usageLabel }}</span>
+        <div class="ctx-track">
+          <div
+            class="ctx-fill"
+            :class="{ warn: usageWarning }"
+            :style="{ width: usagePct + '%' }"
+          ></div>
+        </div>
+        <span
+          class="ctx-cmp"
+          :class="{ disabled: compactDisabled }"
+          :title="compactTitle"
+          @click="onCompact"
+        >{{ compactLabel }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1602,9 +1797,49 @@ watch(
   z-index: 2;
 }
 
+/* 与侧栏右缘同款「流光」：110px 两端渐隐柔光段压在边框线上，中心前景色，--seg-x 由
+   pointermove 写入鼠标 X，停哪亮哪，不自动流动 */
+.cb-resize::after {
+  content: '';
+  position: absolute;
+  left: var(--seg-x, 50%);
+  top: 50%;
+  width: 110px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--foreground) 65%, transparent) 50%, transparent);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+}
+
+.cb-resize:hover::after,
+.cb-resize:active::after {
+  opacity: 1;
+}
+
 .compose-box:focus-within {
   border-color: var(--brand);
   /* 仅保留外圈边框；去掉内圈 3px 光环 */
+}
+
+/* 输入框下方状态行（左：项目+分支，右：上下文用量+压缩）：贴紧盒子下缘。
+   max-width 与过渡对齐 .compose-box（ConversationView hero 收窄），保证两行同步动画 */
+.compose-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100cqw;
+  margin-top: 2px;
+  padding: 0 8px;
+  transition: max-width var(--transition-decelerate);
+}
+
+/* ctx 恒靠右：窄窗格项目区缺失时（如多窗口无归属路径）也不跟着左移 */
+.compose-status .ctx-wrap {
+  margin-left: auto;
 }
 
 /* 进行中：实线边框 + 呼吸效果 */
@@ -1847,6 +2082,17 @@ watch(
   flex-shrink: 0;
 }
 
+/* 窄窗格（多窗口分屏）下禁止逐字换行：固定文案整体不折行，项目名见下方 ellipsis 截断 */
+.meta-link span {
+  white-space: nowrap;
+}
+
+/* 提交或推送入口 busy 禁用态：与 BranchBadge .git-pill.is-busy 同款 */
+.push-pill.is-busy {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* 模型浮窗菜单（对齐原型 .menu：向上弹、点外部关） */
 .model-wrap {
   position: relative;
@@ -1929,11 +2175,32 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* 允许在状态行内收缩，项目名超长时走 ellipsis 而不是挤压右侧按钮 */
+  min-width: 0;
 }
 
 .proj-pill {
   font-weight: 600;
-  color: var(--foreground);
+  min-width: 0;
+  /* 覆盖 .meta-link 的 line-height: 1：按钮内 SVG(13×13) > 1×font-size(12)，
+     否则 flex 容器会被父级 line-height 约束导致 icon 顶部与英文 ascender 一起被切 */
+  line-height: min-content;
+}
+
+/* 项目名可收缩截断（完整名见 data-tooltip）；「提交或推送」标签恒不收缩。
+   必须显式 line-height: normal——否则会继承 .meta-link 的 line-height:1，
+   12px 行盒装不下字体包围盒，overflow:hidden 把英文字下缘（如 y 的降部）裁掉。
+   注意：line-height 不接受 min-content 这类内在尺寸关键字，写了会被整条丢弃 */
+.proj-pill span {
+  display: block;
+  min-width: 0;
+  line-height: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.push-pill {
+  flex-shrink: 0;
 }
 
 /* 会话中归属只读：不弹浮窗、去除可点反馈 */
@@ -2234,74 +2501,192 @@ watch(
   position: relative;
 }
 
-.level-menu {
+/* 思考级别浮窗（MP-S05 方案 D）：向上弹出，只包一层皮，内容是横向分段滑条 */
+.level-pop {
   position: absolute;
   left: 0;
   bottom: calc(100% + 10px);
-  min-width: 150px;
+  min-width: 190px;
   background: var(--popover);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: var(--shadow-lg);
-  padding: 4px;
+  padding: 5px;
   z-index: 700;
   animation: menu-rise 0.15s ease both;
 }
 
-/* 思考级别胶囊：默认前景色（黑）；当前级别为 max 时金黄色，与 MAX 动画文字同色，提示已启用最强推理 */
+/* 分段滑条：档位等分，高亮块绝对定位覆盖在 active 档位上 */
+.level-seg {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+}
+
+.level-seg:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* 水滴果冻高亮块（与 App.vue .view-seg::before 同机制）：不做整体平移，而是左右两条边各自动画——
+   先行边带轻微回弹，另一条边延迟 70ms 追随，途中被拉长成水滴，落位时两头先后回弹。
+   几何由 JS 实测 active 按钮后写入 --pill-l / --pill-r。 */
+.level-pill {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: var(--pill-l, 3px);
+  right: var(--pill-r, calc(100% - 3px));
+  border-radius: 7px;
+  background: var(--surface-active);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+  transition:
+    left 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    right 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 滑向右 → 右边先行；滑向左 → 回到基态（左边先行） */
+.level-seg.fwd .level-pill {
+  transition:
+    right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 浅色主题：--surface-active 中灰贴在白色浮窗上是一块灰斑（用户反馈难看）——
+   高亮块改白底凸起（同 iOS 分段控件的白胶囊 + 浅灰轨道）；深色主题维持微亮灰块 */
+:root[data-theme='light'] .level-pill {
+  background: var(--background);
+}
+
+/* 首贴 / 挡位集重建：不播水滴动画 */
+.level-seg.no-anim .level-pill {
+  transition: none;
+}
+
+.level-item {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 34px;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.level-item:hover {
+  color: var(--foreground);
+  background: transparent;
+  border-color: transparent;
+}
+
+.level-item.on {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+/* 档位自身不出焦点环：当前位置已由水滴高亮块表达 */
+.level-item:focus,
+.level-item:focus-visible {
+  outline: none;
+}
+
+/* 最高思考级别：金色文字（--gold 系，与扫光同一套金）；描边金环已按用户要求去掉 */
+.level-wrap.is-max .level-item.on {
+  color: var(--gold);
+}
+
+/* 思考级别胶囊：默认前景色（黑）；当前级别为 max 时金黄色，与扫光同色，提示已启用最强推理 */
 .level-wrap .meta-link {
   color: var(--foreground);
 }
 .level-wrap .meta-link.is-max {
-  color: var(--logo-gradient-accent);
+  color: var(--gold);
 }
 
-/* max 动画：仅 "M A X" 文字浮现→停留→淡出；容器只负责裁剪与隔离 */
-.max-shimmer {
-  position: absolute;
-  inset: 0;
-  border-radius: 16px;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 3;
+/* 展开指示三角：随浮窗开合旋转（纯提示，不占位） */
+.level-chev {
+  width: 9px;
+  height: 9px;
+  opacity: 0.55;
+  transition: transform var(--transition-fast);
+}
+.level-wrap.is-open .level-chev {
+  transform: rotate(180deg);
 }
 
-/* "M A X" 文字：底部居中浮现，LOGO 同款金色渐变流动 + 金色光晕（等宽字体贴近 cli 终端质感） */
-.max-text {
-  position: absolute;
-  left: 50%;
-  bottom: 15px;
-  transform: translateX(-50%);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  background: linear-gradient(90deg,
-    var(--logo-gradient-base) 0%,
-    var(--logo-gradient-accent) 30%,
-    color-mix(in srgb, var(--logo-gradient-accent) 55%, white) 50%,
-    var(--logo-gradient-accent) 70%,
-    var(--logo-gradient-base) 100%);
+/* 档位文字的内层 span：扫光渐变挂在它身上而不是整个按钮——按钮比「max」三个字母宽 2 倍多，
+   渐变若铺在按钮上会得到一条比字形宽得多的宽带（看着不像「这几个字被点亮」）。 */
+.level-t {
+  display: inline-block;
+}
+
+/* max 反馈（方案 A，同 prototypes/thinking-level-max-shimmer-demo.html）：选到 max 时
+   在 max 档位自身就地做一次金色流光扫过 + 轻弹。
+   全部锚在分段条内部——不新增浮层、不侵入输入正文区，
+   也不依赖浮窗高度测量（原悬浮「M A X」文字方案已下线）。
+   高亮块金环脉冲已按用户要求去掉（金环本身也已移除，见 .level-wrap.is-max）。 */
+
+/* max 格未选中时也常驻金色渐变（原型 .goldtext）：展开浮窗即提示这是最高挡位。
+   中间高亮带走 --gold-hi：深色主题混白发亮、浅色主题混黑变暗（白底上白带不可见） */
+.level-seg .level-item.lv-max .level-t {
+  background-image: linear-gradient(90deg,
+    var(--gold-fade) 0%,
+    var(--gold) 30%,
+    var(--gold-hi) 50%,
+    var(--gold) 70%,
+    var(--gold-fade) 100%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  white-space: nowrap;
-  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--logo-gradient-accent) 45%, transparent));
-  animation: max-text-flow 2.4s linear infinite, max-in 0.45s ease-out 0.1s both, max-out 0.6s ease 2.2s both;
 }
-@keyframes max-text-flow {
-  0% { background-position: 0% 0%; }
-  100% { background-position: 200% 0%; }
+
+.level-item.on.sweep {
+  animation: level-cell-pop 0.32s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
-@keyframes max-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* 扫光态：流动的是下方静止态的三段渐变（background-position 0% → 200%，金带完整穿过
+   「max」三个字母）。方向随主题：深色主题「深灰尾 → 亮金」暗底反差最大；浅色主题白底上
+   白带不可见（用户反馈），尾色/高亮带走 --gold-fade/--gold-hi 的暗色值，暗带扫过金字。
+   这里只挂 animation：若再声明 background-image，会与下方等权重静止态规则互相顶掉。 */
+.level-wrap .level-item.on.sweep .level-t {
+  animation: level-max-flow 1.15s linear;
 }
-@keyframes max-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
+
+/* 扫光结束后停在 LOGO 同款三段渐变上，而非突然变回素色 */
+.level-wrap.is-max .level-item.on .level-t {
+  background-image: linear-gradient(90deg,
+    var(--gold-fade) 0%,
+    var(--gold) 50%,
+    var(--gold-fade) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+@keyframes level-max-flow {
+  0% { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes level-cell-pop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.14); }
+  100% { transform: scale(1); }
 }
 
 .compose-actions {
@@ -2363,6 +2748,8 @@ watch(
   font-size: 12px;
   color: var(--muted-foreground);
   cursor: pointer;
+  /* 暂时隐藏手动压缩入口（低使用率）；onCompact/超限自动压缩逻辑保留 */
+  display: none;
 }
 
 .ctx-cmp:hover {
@@ -2423,5 +2810,14 @@ watch(
 .cancel-btn svg {
   width: 14px;
   height: 14px;
+}
+</style>
+
+<!-- 暗色 --brand 接近纯白 (oklch 0.88)，常态边框只 0.32，直接切换会突兀。
+     压到 40% brand mix，让聚焦成为几乎看不出的轻微提亮而非跳变；1px 细线不会看出环状。
+     ponytail: 想再亮一点改 50、再压一点改 35。light 不动。 -->
+<style>
+:root[data-theme='dark'] .compose-box:focus-within {
+  border-color: color-mix(in oklab, var(--brand) 40%, transparent);
 }
 </style>

@@ -30,6 +30,22 @@ body {
   user-select: none;
 }
 
+/* 暗色 body：D 档光场（原型 bg-tone-options-demo.html，213.4° 对角线性光场 + 底部反光）。
+   通常被 .app-container 盖住不可见，这里保持同款是为了多窗口画布等透出 body 的场景
+   不出现第二套底色。光场本体画在 App.vue 的 .shell-sheen（盖顶层），此处仅兜底。 */
+:root[data-theme='dark'] body {
+  background:
+    linear-gradient(213.4deg,
+      rgba(205, 218, 235, 0.096) 0%,
+      rgba(205, 218, 235, 0.050) 28%,
+      rgba(205, 218, 235, 0.024) 47%,
+      rgba(205, 218, 235, 0.019) 60%,
+      rgba(205, 218, 235, 0.010) 72%,
+      rgba(205, 218, 235, 0.000) 82%),
+    linear-gradient(0deg, rgba(205, 218, 235, 0.005) 0%, rgba(205, 218, 235, 0) 14%),
+    var(--background);
+}
+
 button,
 input,
 textarea,
@@ -123,6 +139,16 @@ textarea:focus {
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand) 12%, transparent);
 }
 
+/* 暗色主题：--brand 接近纯白 (oklch 0.88)，常态边框只 0.32，直接换 + 3px 光环会"闪"。
+   把 border 压到 40% brand mix（贴近未聚焦的 0.32），让聚焦成为几乎看不出的轻微提亮；
+   光环在暗色下关掉，避免与细边框叠加成双圈。
+   ponytail: 想再亮一点改 50%，再压一点改 35%；border 同上，ring 直接 none 最稳。 */
+:root[data-theme='dark'] input:focus,
+:root[data-theme='dark'] textarea:focus {
+  border-color: color-mix(in oklab, var(--brand) 40%, transparent);
+  box-shadow: none;
+}
+
 /* 滚动条 */
 ::-webkit-scrollbar {
   width: 8px;
@@ -168,6 +194,64 @@ textarea:focus {
 
 .global-tooltip.is-visible {
   opacity: 1;
+}
+
+/* Markdown 代码块复制按钮（markup 由 forge-core renderMarkdown 输出，v-html 注入）。
+   图标用 CSS mask + 内联 SVG，不走 <svg> 标签：sanitize 白名单里没有 svg，
+   为一个小图标放开 svg/path/rect 不值得扩大 XSS 面。
+   常态隐藏、hover 代码块才浮现，点击后翻 is-copied 打勾。 */
+.md-code-wrap {
+  position: relative;
+}
+
+.md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  /* 底板照抄设置弹窗那套（半透明底 + 毛玻璃）：长代码行会一直铺到块右缘，
+     没有底板时图标等于直接压在字上，读起来像脏了一块 */
+  background: color-mix(in oklab, var(--background) 72%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.md-code-copy::before {
+  content: '';
+  width: 13px;
+  height: 13px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='9' width='13' height='13' rx='2'/%3E%3Cpath d='M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='9' width='13' height='13' rx='2'/%3E%3Cpath d='M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.md-code-copy.is-copied::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+.md-code-wrap:hover .md-code-copy,
+.md-code-copy.is-copied {
+  opacity: 1;
+}
+
+.md-code-copy:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.md-code-copy.is-copied {
+  color: var(--success);
 }
 
 /* 通用动画 */

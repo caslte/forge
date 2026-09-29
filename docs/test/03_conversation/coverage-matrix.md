@@ -143,6 +143,7 @@
 |---|---|---|---|---|---|---|---|---|
 | U-CV-009 | AC-CV-021 | 压缩结果归一化与失败收敛 | 错误反馈 | 已激活会话（lease 存在）/未激活会话；pi compaction_end 载荷 | 成功载荷（manual/threshold/overflow）；`errorMessage` 载荷；`aborted:true` 载荷；compact 抛错；会话不存在 | 驱动 handleEvent / compact | 成功→回调 onCompacted（manual→manual，其余→auto，带 tokensBefore/tokensAfter/summary）；失败→onError 上报；aborted→既不回调也不误报；抛错→ok:false 带原因 | 失败绝不静默；aborted 不误报为错误；压缩失败不破坏会话历史 |
 | U-CV-010 | AC-CV-020 | 压缩详情提取（pi CompactionResult） | 字段边界 | compact 返回体 | 完整载荷（summary/tokensBefore/estimatedTokensAfter）；缺字段；非对象 | compact() | 提取为 `{tokensBefore, tokensAfter, summary}`，缺失归一为 null | 不因 pi 无 message 字段而丢失详情；不产生 undefined |
+| U-CV-026 | AC-CV-052 | 历史加载在压缩会话上的口径（getBranch） | 数据一致性 | session JSONL 含 compaction 条目 / 不含 | 压缩点前 2 条 + compaction + 压缩点后 2 条；纯消息会话 | loadPiSessionHistory | 压缩点之前的消息按原时间序返回；compaction 条目落成 `{role:'system', compacted:true, content:摘要, ts}` 且恰好 1 条、位置在压缩前后之间；未压缩会话无 system 标记 | 不得退回 `buildContextEntries()`：那会让压缩点之前的对话整段消失 |
 
 #### unit（扩展 CV-S08）
 
@@ -209,6 +210,8 @@
 |---|---|---|---|---|---|---|---|
 | E-CV-012 | AC-CV-020/021/022 | 输入框用量区 | 会话已选中 | seed 覆盖 compact 成功/失败响应；emit statusChanged=streaming | mock-backend | 点「压缩」→观察提示；streaming 下观察入口状态 | 成功显示「压缩完成：before → after tokens」；失败显示原因原文；streaming 期间入口 disabled；无 pageerror |
 | E-CV-013 | AC-CV-023 | 消息区 | 会话已加载历史 | emit conversation.compacted（reason=auto） | mock-backend（emit 事件） | emit 压缩事件→观察提示条与历史重拉 | 出现「上下文已自动压缩」提示条；queryHistory 被重新调用；无 pageerror |
+| E-CV-029 | AC-CV-053 | 消息区 | 会话已加载历史 | seed queryHistory 返回「压缩前 2 条 + compacted 标记 + 压缩后 1 条」；emit compacted 触发重拉 | mock-backend（seed + emit） | 观察消息流与分隔条；点击摘要 | 压缩前消息仍在；`.compact-divider` 恰好 1 条且文案为「上下文已压缩」；摘要默认折叠、点击后展开；无 pageerror（本机无 Playwright 浏览器，待补跑） |
+| E-CV-030 | AC-CV-054 | 消息区 | 流式回复即将结束（autoFollow=true 贴底） | mock 流式回复；`--grep "repro L"` 布局后逐帧采样 | mock-backend（探针 `e2e/__repro-stream-end-jump.spec.ts`） | 观察收尾帧 `think` 行高度序列与 footer 高度序列、卸载帧 `dScrollH` | `think` 39px→0 连续收拢（不得卡在 20px = padding 之和）；footer 0→17px 同步展开；全过程 `dScrollH == dScrollTop` 恒成立且卸载帧位移 ≈0；单帧最大位移 ≤12px（修复前单帧 −30px）；回看态（已上滚）不出现强制滚底 |
 
 #### e2e（扩展 CV-S08；详设见 e2e.md）
 

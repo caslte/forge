@@ -2,15 +2,15 @@
   ask_user_question 内嵌问卷面板（Path 2，契约 docs/plan/ask-user-question-contract.md）。
 
   数据源与生命周期由 `useSessionConversation` 持有（按 sessionId 内存隔离）：
-  - `request` 非空 → **交互态**：N+1 tab（多题时）、选项单选/多选、自定义答案、
-    全局备注、左右分栏 preview、「推荐」标记、**超时倒计时**
+  - `request` 非空 → **交互态**：N tab（多题时，备注屏已移除）、选项单选/多选、
+    自定义答案、左右分栏 preview、「推荐」标记、**超时倒计时**
   - `request` 为空且 `answered` 非空 → **已答折叠态**：仅标题 + 「已回答」徽标 +
     「已答 n/N」摘要（不复渲染交互内容）
   - 两者皆空 → 不渲染（组件整体卸载）
 
   步骤导航（向导式，多题时）：**操作条整体挂在标题行**（标题右侧、状态徽标左侧），
-  依次为「已答 n/N」「上一题」「下一题」「取消」「提交答案」；导航按 `activeTab ± 1` 走
-  **完整 tab 序列**（题目 0..N-1 + 末位备注），「提交答案」**只在末步渲染**。
+  依次为「已答 n/N」「上一题」「下一题」「取消」「提交答案」；导航按 `activeTab ± 1`
+  走**题目序列**（0..N-1），「提交答案」**只在末题渲染**。
   理由：中间步就能提交时，用户在 `已答 0/N` 下误点提交会产出零段 envelope →
   模型收到 `DECLINE_MESSAGE`，与「点取消」**完全无法区分**（`envelope.ts:76`）。
   末步收敛后这条歧义路径消失。tab 仍可自由点击（不强制顺序），两种导航不冲突。
@@ -59,6 +59,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { renderMarkdown } from '@forge/core/markdown';
+import { onMarkdownContentClick, decorateMarkdownHtml } from '../utils/markdownLinks';
+import { useI18n } from '../i18n/index.ts';
 import type {
   AskUserQuestionAnswer,
   AskUserQuestionItem,
@@ -85,6 +87,8 @@ import {
   type AskDraft,
   type AskUserAnsweredState,
 } from '../utils/askUserQuestion';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 当前会话 id（仅用于调试/断言；归属判定在 composable 内完成） */
@@ -122,7 +126,6 @@ const emit = defineEmits<{
 
 const drafts = ref<Record<number, AskDraft>>({});
 const activeTab = ref(0);
-const globalNote = ref('');
 const collapsed = ref(false);
 const previewOptionIndex = ref<number | null>(null);
 /**
@@ -133,11 +136,8 @@ const customOpenByTab = ref<Record<number, boolean>>({});
 
 const questions = computed<AskUserQuestionItem[]>(() => props.request?.questions ?? []);
 const isMultiQuestion = computed(() => questions.value.length > 1);
-/** 备注 tab 的下标 = 题目数（仅多题时存在） */
-const noteTabIndex = computed(() => questions.value.length);
-const onNoteTab = computed(() => isMultiQuestion.value && activeTab.value === noteTabIndex.value);
 const activeQuestion = computed<AskUserQuestionItem | null>(() =>
-  onNoteTab.value ? null : (questions.value[activeTab.value] ?? null),
+  questions.value[activeTab.value] ?? null,
 );
 const activeDraft = computed<AskDraft>(
   () => drafts.value[activeTab.value] ?? emptyDraft(),
@@ -193,23 +193,21 @@ function setCustomOpen(tab: number, open: boolean): void {
 }
 
 function isAnsweredTab(index: number): boolean {
-  return index !== noteTabIndex.value && (drafts.value[index]?.selected.length ?? 0) > 0;
+  return (drafts.value[index]?.selected.length ?? 0) > 0;
 }
 function isAnsweredTabCustom(index: number): boolean {
   return (drafts.value[index]?.custom.trim() ?? '') !== '';
 }
 
-/** 提交/超时共用的载荷构造 */
+/** 提交/超时共用的载荷构造（备注通道保留在契约里，但交互态已无入口，恒不携带） */
 function collectPayload(cancelled: boolean): {
   answers: AskUserQuestionAnswer[];
   cancelled: boolean;
   globalNote?: string;
 } {
-  const note = globalNote.value.trim();
   return {
     answers: draftAnswers.value,
     cancelled,
-    ...(note !== '' ? { globalNote: note } : {}),
   };
 }
 
@@ -257,7 +255,6 @@ watch(
     settled = false;
     drafts.value = {};
     activeTab.value = 0;
-    globalNote.value = '';
     collapsed.value = false;
     previewOptionIndex.value = null;
     customOpenByTab.value = {};
@@ -303,7 +300,7 @@ const answeredSummary = computed(() => summarizeAskAnswers(props.answered?.answe
 const answeredTotal = computed(() => props.answered?.questions.length ?? 0);
 const answeredCountFinal = computed(() => props.answered?.answers.length ?? 0);
 const answeredHeading = computed(
-  () => props.answered?.questions[0]?.question ?? '问卷已作答',
+  () => props.answered?.questions[0]?.question ?? t('dialogs.ask.answeredHeading'),
 );
 
 const showInteractive = computed(() => props.request !== null);
@@ -311,7 +308,6 @@ const showAnswered = computed(() => props.request === null && props.answered !==
 const visible = computed(() => showInteractive.value || showAnswered.value);
 const headingText = computed(() => {
   if (showAnswered.value) return answeredHeading.value;
-  if (onNoteTab.value) return '备注';
   const q = activeQuestion.value;
   return q === null ? '' : q.question;
 });
@@ -354,7 +350,7 @@ watch(
 
 onBeforeUnmount(cancelAutoClose);
 
-// ===== 选项 / 自定义答案 / 备注 =====
+// ===== 选项 / 自定义答案 =====
 
 /** 单选作答后自动前进到下一步（多选与「自己答」不前进，见组件头注释） */
 function autoAdvance(): void {
@@ -496,7 +492,7 @@ onBeforeUnmount(() => {
         <!-- 操作条：折叠时随之隐藏（收起了就没有可操作的正文） -->
         <div v-if="showInteractive && !collapsed" class="ask-head-actions" @click.stop>
           <span class="ask-progress" data-testid="ask-progress">
-            已答 {{ answeredCount }}/{{ questions.length }}
+            {{ t('dialogs.ask.progress', { count: answeredCount, total: questions.length }) }}
           </span>
           <button
             v-if="isMultiQuestion && canStepPrev(activeTab)"
@@ -504,20 +500,20 @@ onBeforeUnmount(() => {
             class="ask-btn ask-btn-mini ask-btn-nav"
             data-testid="ask-prev"
             @click="stepPrev"
-          >上一题</button>
+          >{{ t('dialogs.ask.prev') }}</button>
           <button
             v-if="isMultiQuestion && canStepNext(activeTab, questions.length)"
             type="button"
             class="ask-btn ask-btn-mini ask-btn-nav"
             data-testid="ask-next"
             @click="stepNext"
-          >下一题</button>
+          >{{ t('dialogs.ask.next') }}</button>
           <button
             type="button"
             class="ask-btn ask-btn-mini"
             data-testid="ask-cancel"
             @click="submit(true)"
-          >取消</button>
+          >{{ t('common.cancel') }}</button>
           <button
             v-if="isLastStep(activeTab, questions.length)"
             type="button"
@@ -526,16 +522,16 @@ onBeforeUnmount(() => {
             :title="
               canSubmitAnswers(draftAnswers)
                 ? undefined
-                : '至少要作答一题；只想拒绝作答请点「取消」'
+                : t('dialogs.ask.submitDisabledHint')
             "
             data-testid="ask-submit"
             @click="submit(false)"
-          >提交答案</button>
+          >{{ t('dialogs.ask.submit') }}</button>
         </div>
 
-        <span v-if="showAnswered" class="ask-meta done" data-testid="ask-meta-done">已回答</span>
+        <span v-if="showAnswered" class="ask-meta done" data-testid="ask-meta-done">{{ t('dialogs.ask.answered') }}</span>
         <span v-else class="ask-meta live" data-testid="ask-meta-live">
-          等待回答 · {{ remaining }}s
+          {{ t('dialogs.ask.waiting', { seconds: remaining }) }}
         </span>
         <span v-if="!showAnswered" class="ask-chevron" aria-hidden="true">
           {{ collapsed ? '▸' : '▾' }}
@@ -545,12 +541,12 @@ onBeforeUnmount(() => {
       <!-- 已答折叠摘要 -->
       <div v-if="showAnswered" class="ask-answered" data-testid="ask-answered-summary">
         <span class="ask-pill">
-          已答 {{ answeredCountFinal }}/{{ answeredTotal }}
-          <template v-if="answered?.cancelled">（已取消）</template>
+          {{ t('dialogs.ask.progress', { count: answeredCountFinal, total: answeredTotal }) }}
+          <template v-if="answered?.cancelled">{{ t('dialogs.ask.cancelledTag') }}</template>
         </span>
         <span class="ask-answered-text">{{ answeredSummary }}</span>
         <span v-if="answered?.globalNote" class="ask-answered-note">
-          备注：{{ answered.globalNote }}
+          {{ t('dialogs.ask.noteValue', { note: answered.globalNote }) }}
         </span>
       </div>
 
@@ -558,7 +554,7 @@ onBeforeUnmount(() => {
       <div v-else class="ask-body">
         <div class="ask-body-inner">
           <div class="ask-body-content">
-            <!-- tab 栏（多题时；末位固定「备注」） -->
+            <!-- tab 栏（多题时；题目各一 tab，备注屏已移除） -->
             <div v-if="isMultiQuestion" class="ask-tabs" role="tablist">
               <button
                 v-for="(q, i) in questions"
@@ -574,34 +570,11 @@ onBeforeUnmount(() => {
                 <span class="ask-tab-dot" aria-hidden="true" />
                 <span class="ask-tab-label">{{ tabLabel(q.header || q.question) }}</span>
               </button>
-              <button
-                type="button"
-                class="ask-tab"
-                :class="{ active: onNoteTab }"
-                data-testid="ask-tab-note"
-                role="tab"
-                :aria-selected="onNoteTab"
-                @click="switchTab(noteTabIndex)"
-              >
-                <span class="ask-tab-dot" aria-hidden="true" />
-                <span class="ask-tab-label">备注</span>
-              </button>
-            </div>
-
-            <!-- 备注 tab：整块备注卡片 -->
-            <div v-if="onNoteTab" class="ask-note-card">
-              <textarea
-                v-model="globalNote"
-                class="ask-note-input"
-                data-testid="ask-global-note"
-                placeholder="备注…"
-                rows="3"
-              />
             </div>
 
             <!-- 题目 tab：多选提示 + 选项列表（带 preview 时左右分栏）+「自己答」选项 -->
-            <template v-else-if="activeQuestion">
-              <p v-if="activeQuestion.multiSelect" class="ask-multi-hint">可多选</p>
+            <template v-if="activeQuestion">
+              <p v-if="activeQuestion.multiSelect" class="ask-multi-hint">{{ t('dialogs.ask.multiHint') }}</p>
               <div class="ask-question-layout" :class="{ 'ask-split': previewMode }">
                 <div class="ask-option-list" data-testid="ask-option-list">
                   <button
@@ -625,7 +598,7 @@ onBeforeUnmount(() => {
                         class="ask-recommended"
                         :title="RECOMMENDED_SUFFIX.slice(1, -1)"
                         data-testid="ask-recommended-tag"
-                      >推荐</span>
+                      >{{ t('dialogs.ask.recommendedTag') }}</span>
                       <span class="ask-option-desc">{{ option.description }}</span>
                     </span>
                   </button>
@@ -645,9 +618,9 @@ onBeforeUnmount(() => {
                   >
                     <span class="ask-option-marker" aria-hidden="true" />
                     <span class="ask-option-label">
-                      <span class="ask-option-name">✎ 自己答</span>
+                      <span class="ask-option-name">{{ t('dialogs.ask.customOption') }}</span>
                       <span class="ask-option-desc">
-                        {{ activeQuestion.multiSelect === true ? '可与其他选项同时选' : '输入自定义答案' }}
+                        {{ activeQuestion.multiSelect === true ? t('dialogs.ask.customMultiDesc') : t('dialogs.ask.customInputPlaceholder') }}
                       </span>
                     </span>
                   </button>
@@ -656,7 +629,8 @@ onBeforeUnmount(() => {
                   <div class="ask-preview-caption">{{ previewOption ? displayLabel(previewOption.label) : '' }}</div>
                   <div
                     class="ask-preview-body"
-                    v-html="renderMarkdown(previewOption?.preview ?? '')"
+                    v-html="decorateMarkdownHtml(renderMarkdown(previewOption?.preview ?? ''))"
+                    @click="onMarkdownContentClick"
                   />
                 </div>
               </div>
@@ -667,21 +641,10 @@ onBeforeUnmount(() => {
                 ref="customRef"
                 class="ask-custom-input"
                 data-testid="ask-custom-input"
-                placeholder="输入自定义答案"
+                :placeholder="t('dialogs.ask.customInputPlaceholder')"
                 :value="activeDraft.custom"
                 @input="onCustomInput(($event.target as HTMLTextAreaElement).value)"
               />
-
-              <!-- 单题场景没有备注 tab：备注卡片直接跟在选项下方 -->
-              <div v-if="!isMultiQuestion" class="ask-note-card">
-                <textarea
-                  v-model="globalNote"
-                  class="ask-note-input"
-                  data-testid="ask-global-note"
-                  placeholder="备注…"
-                  rows="2"
-                />
-              </div>
             </template>
           </div>
         </div>
@@ -730,6 +693,12 @@ onBeforeUnmount(() => {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
+}
+
+/* 暗色压暗外圈；light 不动。
+   ponytail: 想再亮改 50、再压改 25。 */
+:root[data-theme='dark'] .ask-heading.is-toggle:focus-visible {
+  outline-color: color-mix(in oklab, var(--ring) 40%, transparent);
 }
 
 .ask-head-actions {
@@ -1053,6 +1022,7 @@ onBeforeUnmount(() => {
 }
 .ask-preview-body :deep(pre) {
   margin: 0;
+  padding-right: 34px; /* 右侧让位给代码块复制按钮 */
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1129,27 +1099,6 @@ onBeforeUnmount(() => {
   outline: none;
 }
 .ask-custom-input:focus {
-  border-color: var(--brand);
-}
-
-/* ===== 备注卡片 ===== */
-.ask-note-card {
-  margin: 6px 0 4px;
-}
-.ask-note-input {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--input);
-  border-radius: var(--radius-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-family: inherit;
-  font-size: 12.5px;
-  line-height: 1.5;
-  resize: vertical;
-  outline: none;
-}
-.ask-note-input:focus {
   border-color: var(--brand);
 }
 

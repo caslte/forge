@@ -248,38 +248,38 @@ test('tabLabel：超长截断加省略号（截 max-2 字符 + …，总长不�
   assert.equal(tabLabel('123456789012345'), '123456789012…');
 });
 
-// ===== 步骤导航（向导式：末步才出现「提交答案」）=====
+// ===== 步骤导航（向导式：末题才出现「提交答案」；备注屏已移除）=====
 
-test('stepCount：多题 = 题目数 + 1（末位备注），单题 = 1（无 tab 栏即无步骤）', () => {
-  assert.equal(stepCount(4), 5, '4 题 → 题0..题3 + 备注 = 5 步');
-  assert.equal(stepCount(2), 3);
+test('stepCount：多题 = 题目数（无备注步），单题 = 1（无 tab 栏即无步骤）', () => {
+  assert.equal(stepCount(4), 4, '4 题 → 题0..题3 共 4 步');
+  assert.equal(stepCount(2), 2);
   assert.equal(stepCount(1), 1, '单题不出 tab 栏，也就没有步骤概念');
   assert.equal(stepCount(0), 1, '防御：空问卷退化为 1');
 });
 
-test('isLastStep：只有末步为真（提交按钮的渲染条件）；单题恒为真', () => {
+test('isLastStep：只有末题为真（提交按钮的渲染条件）；单题恒为真', () => {
   assert.equal(isLastStep(0, 4), false);
-  assert.equal(isLastStep(3, 4), false, '第 4 题（下标 3）之后还有备注 tab，不是末步');
-  assert.equal(isLastStep(4, 4), true, '备注 tab 才是末步');
+  assert.equal(isLastStep(2, 4), false);
+  assert.equal(isLastStep(3, 4), true, '最后一题就是末步');
   assert.equal(isLastStep(5, 4), true, '越界下标按末步处理，不会漏出提交按钮');
   assert.equal(isLastStep(0, 1), true, '单题：提交按钮常驻，与改造前一致');
 });
 
-test('canStepPrev：首步不可用，其余可用（含末步的备注 tab）', () => {
+test('canStepPrev：首步不可用，其余可用（含末题）', () => {
   assert.equal(canStepPrev(0), false);
   assert.equal(canStepPrev(1), true);
-  assert.equal(canStepPrev(4), true, '末步仍可退回上一题');
+  assert.equal(canStepPrev(3), true, '末题仍可退回上一题');
 });
 
-test('canStepNext：末步不可用，其余可用；单题无「下一题」', () => {
+test('canStepNext：末题不可用，其余可用；单题无「下一题」', () => {
   assert.equal(canStepNext(0, 4), true);
-  assert.equal(canStepNext(3, 4), true, '第 4 题之后还有备注 tab');
-  assert.equal(canStepNext(4, 4), false);
+  assert.equal(canStepNext(2, 4), true);
+  assert.equal(canStepNext(3, 4), false, '最后一题没有下一步');
   assert.equal(canStepNext(0, 1), false, '单题：不出「下一题」');
 });
 
-test('末步时两个按钮互斥：只剩「上一题」+「提交答案」', () => {
-  const index = 4;
+test('末题时两个按钮互斥：只剩「上一题」+「提交答案」', () => {
+  const index = 3;
   const count = 4;
   assert.equal(canStepNext(index, count), false);
   assert.equal(canStepPrev(index), true);
@@ -299,9 +299,9 @@ test('shouldAutoAdvance：多选恒不前进（前进等于打断继续勾选）
 });
 
 test('shouldAutoAdvance：末步不前进（无路可走）', () => {
-  assert.equal(shouldAutoAdvance(false, 4, 4), false, '备注 tab 是末步');
+  assert.equal(shouldAutoAdvance(false, 3, 4), false, '最后一题是末步');
   assert.equal(shouldAutoAdvance(false, 0, 1), false, '单题无下一步');
-  assert.equal(shouldAutoAdvance(true, 4, 4), false);
+  assert.equal(shouldAutoAdvance(true, 3, 4), false);
 });
 
 // ===== details 归约（契约 §2.1）=====

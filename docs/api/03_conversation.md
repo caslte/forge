@@ -98,6 +98,11 @@ UI 据此渲染输入框工具区的「待发送 N」徽标与只读浮窗（无
 
 **tool 消息**：历史中的工具结果消息（`role=tool`）带 `toolEventId / toolName / status`，并尽可能带 `input`——从 pi 会话 assistant 消息的 toolCall.arguments 恢复；极旧会话或无匹配 toolCall 时不带该字段。`input` 供前端渲染工具卡 diff 与每轮「改动文件汇总卡片」，入参形状见 api/04_tool.md §2。
 
+**压缩分隔标记**：发生过上下文压缩的会话，在压缩点位置额外插入一条
+`{ "role": "system", "content": "<压缩摘要>", "ts": "...", "compacted": true }`。它不是真实消息，
+而是 pi `compaction` 条目在界面侧的替身，前端据此渲染「上下文已压缩」分隔条；压缩点**之前**
+的消息照常返回（历史读数走 pi 全量分支，见上面 `conversation.compacted` 的 UI 契约）。未压缩的会话不含此标记。
+
 **流式语义**：pi 仅在 `message_end` 时把 assistant 消息写入会话文件。轮次进行中查询历史时，
 响应末尾会额外包含一条**未完成 assistant 快照**（流式清洗后全文）；轮次结束后不再返回该快照，
 不会与已落盘的终态消息重复。这保证流式中切换会话再切回时，后续增量有正确的追加基点（界面不截断）。
@@ -270,9 +275,11 @@ UI 据此渲染输入框工具区的「待发送 N」徽标与只读浮窗（无
 | tokensAfter  | number? | 压缩后估算 token 数；未知为 null             |
 | summary      | string? | 压缩摘要；未知为 null                      |
 
-**UI 契约**：收到本事件必须重拉 `conversation/queryHistory`——压缩会把 transcript
-替换为摘要，不重拉则界面显示的仍是压缩前的旧内容，与真实上下文不一致。
-`reason: auto` 时还应给出可见提示（历史已被自动压缩）。
+**UI 契约**：收到本事件必须重拉 `conversation/queryHistory`——重拉是为了读到新产生的
+压缩分隔标记，**不是**因为历史被压缩删掉了：库目录中会话历史走 pi 全量分支
+（`getBranch()`），压缩点之前的消息原样保留，压缩点位置渲染成一条
+`compacted` 分隔条（PRD 03 CV-S07「历史口径」）。`reason: auto` 时还应给出可见提示
+（历史已被自动压缩）。
 
 > 自动压缩失败不会发射本事件，而是走 `conversation.error`（绝不静默）。
 

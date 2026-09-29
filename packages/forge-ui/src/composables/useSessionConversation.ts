@@ -8,16 +8,73 @@ import {
   type AskUserQuestionRequestPayload,
   type ConversationCompactedPayload,
 } from '../bridge.ts';
-import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
-import type { DisplayItem, ToolDiff } from '../components/MessageListItem.vue';
+import type { ConversationMessage, SessionStatus, Subagent, ForgeErrorInfo } from '../types.ts';
+import type { DisplayItem } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
-import { collectTurnChangedFiles, parseFileToolInput } from './useChangedFiles.ts';
+import { collectTurnChangedFiles } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
 import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
-import { createAskQuestionStore } from './askQuestionStore.ts';
+import { createAskQuestionStore, clearAskQuestionSession } from './askQuestionStore.ts';
+import { clearTodoPanelSessionState } from './todoPanelUiState.ts';
+import { i18n } from '../i18n/index.ts';
+import { SUGGEST_NEXT_STEPS_TOOL_NAME } from '../constants.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
+
+/**
+ * 各会话待办面板快照（模块级，跨视图实例共享）—— 与 turnStartAt 同一取舍。
+ *
+ * 为什么必须在模块级：进设置页时 App.vue 用 v-if 整块卸载 ConversationView，
+ * 实例级状态随组件一起被 GC，回来时 Map 空 → 待办面板消失。切会话本来就有
+ * resetForSession 保护，而「进设置页」是同一种「切走再切回」，语义必须一致。
+ *
+ * 生命周期 = 渲染进程：重启 APP 随进程消失（不做跨进程持久化，由 design 明确接受），
+ * 但开着 APP 期间的任何视图切换（设置页、多窗口聚焦、画布进出）都不丢。
+ * 无上限增长由 session.removed 订阅兜底删除（见 onSessionRemoved）。
+ */
+const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
+
+/** 会话被删除：清掉该会话的模块级内存表（快照 / 问卷 / 面板折叠态），避免长会话累积 */
+function onSessionRemoved(payload: unknown): void {
+  const p = payload as { sessionId?: string };
+  if (typeof p?.sessionId !== 'string') return;
+  const sid = p.sessionId;
+  todoSnapshots.delete(sid);
+  clearAskQuestionSession(sid);
+  clearTodoPanelSessionState(sid);
+}
+
+/**
+ * conversation.error 载荷解读（CV-ERR-01）——导出为纯函数以便直接单测。
+ *
+ * 载荷有两种互斥语义，这是最容易写错的一处：
+ * - `retry`：自动重试进行中，**轮次未终止**（不该当错误展示）
+ * - `error`：终态错误的结构化分类（横幅数据源）
+ * 旧链路（无新字段）只给 message：归为「无分类的终态错误」。
+ */
+export function interpretErrorPayload(payload: unknown): {
+  retry: { attempt: number; maxAttempts: number } | null;
+  error: ForgeErrorInfo | null;
+  message: string | null;
+} {
+  const p = payload as {
+    message?: string;
+    error?: ForgeErrorInfo;
+    retry?: { attempt?: number; maxAttempts?: number };
+  };
+  if (p?.retry !== undefined) {
+    return {
+      retry: {
+        attempt: typeof p.retry.attempt === 'number' ? p.retry.attempt : 0,
+        maxAttempts: typeof p.retry.maxAttempts === 'number' ? p.retry.maxAttempts : 0,
+      },
+      error: null,
+      message: p.message ?? null,
+    };
+  }
+  return { retry: null, error: p?.error ?? null, message: p?.message ?? null };
+}
 
 /**
  * 单会话对话状态机（单视图 ConversationView 与多窗口 MultiWindowConversation 共用）。
@@ -44,9 +101,19 @@ export function useSessionConversation(options: {
   const isStreaming = ref(false);
   const loadingHistory = ref(false);
   const errorMsg = ref<string | null>(null);
+  /** CV-ERR-01：终态错误的结构化分类（结论/色调/是否可重试）。
+   *  与 errorMsg 同生命周期：errorMsg 保留为本机/RPC 层失败（无分类）的通道，
+   *  有分类时以本字段为准（errorMsg 此时 === error.raw）。 */
+  const errorInfo = ref<ForgeErrorInfo | null>(null);
+  /** CV-ERR-01：自动重试进行中（轮次未终止）。与 errorInfo 互斥。 */
+  const retryInfo = ref<{ attempt: number; maxAttempts: number } | null>(null);
 
   /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
   const toolEventIndex = new Map<string, number>();
+  /** 工具行 started 到达时刻（ms）：给运行态一个最短可见停留，见 applyToolTerminal */
+  const toolStartedAt = new Map<string, number>();
+  /** 终态延迟落点定时器：会话重置/卸载时统一清掉 */
+  const toolDwellTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** 工具组折叠状态：key 为工具组稳定 id（首条工具 toolEventId/ts，聚组边界变化不漂移） */
   const toolGroupCollapsed = reactive(new Map<string, boolean>());
@@ -98,10 +165,10 @@ export function useSessionConversation(options: {
   /** 待二次确认的停止请求（结果视图头部"终止"） */
   const pendingStopAgentId = ref<string | null>(null);
 
-  // ===== Todo 面板快照（CV-S11；按 sessionId 内存隔离，切走再切回不丢，关闭 APP 随进程消失） =====
+  // ===== Todo 面板快照（CV-S11）=====
+  // 表已提到模块级（见文件头 todoSnapshots）：进设置页导致 ConversationView 卸载时不会丢。
   // Map 替代单 ref：切会话不清空，切换回历史会话时还原上次的 todo 视图。
   // "会话自己清理" 不需要主动 GC —— 自然清空（所有 task 被删）时 shouldRenderPanel=false 面板自动卸载。
-const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
 /** 当前会话 todo 快照（模板 v-bind 自动解包，外部消费接口不变） */
 const todoSnapshot = computed<TodoSnapshot | null>(() => {
   const sid = options.getSessionId();
@@ -158,24 +225,6 @@ function dismissAskAnswered(): void {
 
   // ===== 展示项组装（消息 / 连续 ≥2 工具聚组） =====
 
-  /** 从 ConversationMessage（role=tool）构造 ToolDiff 列表（edit 多 hunk 逐块一项；
-   *  入参形状判定共享 parseFileToolInput：pi 真实 {path,edits}/{path,content} 与旧形状全兼容） */
-  function toToolDiffs(message: ConversationMessage): ToolDiff[] {
-    const parsed = parseFileToolInput(message.input);
-    if (!parsed) return [];
-    const idBase = message.toolEventId ?? message.ts;
-    return parsed.parts.map((part, i) => ({
-      id: `${idBase}-${i}`,
-      filePath: parsed.path,
-      oldString: part.oldText,
-      newString: part.newText,
-    }));
-  }
-
-  function groupDiffs(tools: ConversationMessage[]): ToolDiff[] {
-    return tools.flatMap(toToolDiffs);
-  }
-
   /**
    * 稳定唯一 key：
    * - 消息：id ?? toolEventId ?? `ts-role`（不依赖列表位置，避免 idx 漂移导致 patch 错位）
@@ -196,49 +245,79 @@ function dismissAskAnswered(): void {
       const summary = turnFiles.get(pos);
       if (summary) out.push({ key: summary.key, kind: 'files-summary', summary });
     };
+    // 轮次品牌字标：挂在该轮 user 消息之后首个 assistant/tool 展示项头部；
+    // user 消息重新置位（每轮一次），压缩分隔条与 suggest 建议消息不消耗
+    let brandPending = true;
+    const takeBrand = (): boolean => {
+      if (!brandPending) return false;
+      brandPending = false;
+      return true;
+    };
     let i = 0;
     while (i < msgs.length) {
       const cur = msgs[i]!;
+      // CV-S07 压缩分隔条：compacted 标记不是消息，渲染成分界条——既保留压缩痕迹，
+      // 又不会挤占消息卡的位置。摘要全文不外显（2026-09-28 用户反馈），仍留在会话数据里
+      if (cur.compacted) {
+        out.push({
+          key: `compact-${cur.ts}-${i}`,
+          kind: 'compaction-divider',
+          ts: cur.ts,
+        });
+        i += 1;
+        continue;
+      }
       if (cur.role !== 'tool') {
         // 轮末插入点：上一轮的汇总卡片排在下一条 user 消息之前
         if (cur.role === 'user') pushFilesSummary(i);
         const footer = footers.get(i);
+        const turnBrand = cur.role === 'assistant' && takeBrand();
         out.push({
           key: itemKey(cur),
           kind: 'message',
           msg: cur,
           idx: i,
-          ...(footer ? { showFooter: footer.showFooter, copyText: footer.copyText } : {}),
+          ...(turnBrand ? { turnBrand: true } : {}),
+          ...(footer
+            ? { showFooter: footer.showFooter, copyText: footer.copyText, firstOfTurn: footer.firstOfTurn }
+            : {}),
         });
+        if (cur.role === 'user') brandPending = true;
+        i += 1;
+      } else if (cur.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {
+        // 契约 I1（v2）：建议工具消息不进消息流，由 turnSuggestion 提升到底部渲染
         i += 1;
       } else {
         const start = i;
         const tools: ConversationMessage[] = [];
-        while (i < msgs.length && msgs[i]!.role === 'tool') {
+        while (
+          i < msgs.length &&
+          msgs[i]!.role === 'tool' &&
+          msgs[i]!.toolName !== SUGGEST_NEXT_STEPS_TOOL_NAME
+        ) {
           tools.push(msgs[i]!);
           i += 1;
         }
         if (tools.length >= 2) {
           const first = tools[0]!;
           const groupKey = `${first.toolEventId ?? first.ts}-group`;
-          const counts = new Map<string, number>();
-          for (const t of tools) counts.set(t.toolName ?? 'tool', (counts.get(t.toolName ?? 'tool') ?? 0) + 1);
-          const toolCounts = Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
-          // 折叠状态只跟随用户操作；新增工具仅更新头部计数和外部 Diff。
-          const collapsed = toolGroupCollapsed.get(groupKey) ?? true;
+          // 尾部组 = 正在执行的组：默认展开；其后有新消息到达即视为历史组，默认折叠。
+          // 用户手动开合过（Map 有记录）则只跟随用户操作。
+          const collapsed = toolGroupCollapsed.get(groupKey) ?? !(i === msgs.length);
+          const turnBrand = takeBrand();
           out.push({
             key: groupKey,
             kind: 'tool-group',
             tools,
-            toolCounts,
             totalCount: tools.length,
             collapsed,
-            diffs: groupDiffs(tools),
+            ...(turnBrand ? { turnBrand: true } : {}),
           });
         } else {
           for (let j = 0; j < tools.length; j += 1) {
             const tm = tools[j]!;
-            out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: start + j });
+            const turnBrand = takeBrand();
+            out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: start + j, ...(turnBrand ? { turnBrand: true } : {}) });
           }
         }
       }
@@ -248,10 +327,33 @@ function dismissAskAnswered(): void {
     return out;
   });
 
-  function toggleGroup(key: string): void {
-    const cur = toolGroupCollapsed.get(key);
-    toolGroupCollapsed.set(key, !(cur ?? true));
+  /** currentCollapsed 为渲染层解析后的折叠态（含默认值）；用户意图 = 其反，记录后不再漂移 */
+  function toggleGroup(key: string, currentCollapsed: boolean): void {
+    toolGroupCollapsed.set(key, !currentCollapsed);
   }
+
+  /**
+   * 最新一轮的下一步建议（契约 I1 v2：锚定会话底部，不入流）。
+   * 口径：最后一条 user 消息**之后**最后出现的 suggest 工具消息且 status=completed；
+   * 用户发出新一轮后旧芯片自动消失（与成熟产品「建议只跟随当前轮」一致）。
+   */
+  const turnSuggestion = computed<ConversationMessage | null>(() => {
+    const msgs = messages.value;
+    let lastUser = -1;
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      if (msgs[i]!.role === 'user') {
+        lastUser = i;
+        break;
+      }
+    }
+    for (let i = msgs.length - 1; i > lastUser; i -= 1) {
+      const m = msgs[i]!;
+      if (m.role === 'tool' && m.toolName === SUGGEST_NEXT_STEPS_TOOL_NAME) {
+        return m.status === 'completed' ? m : null;
+      }
+    }
+    return null;
+  });
 
   // ===== 历史窗口化（v3.74 首帧卡顿：点大会话 221 项全量挂载 ≈ 4.3s 冻结主线程） =====
   //
@@ -343,10 +445,14 @@ function dismissAskAnswered(): void {
     // 拉取失败静默降级（横幅非关键路径，不阻塞历史加载）
     if (sid === options.getSessionId() && options.getStatusHint?.() === 'error') {
       try {
-        const res = await call<{ message: string | null }>('conversation/getLastError', {
-          sessionId: sid,
-        });
-        if (sid === options.getSessionId() && res.message) errorMsg.value = res.message;
+        const res = await call<{ message: string | null; error?: ForgeErrorInfo | null }>(
+          'conversation/getLastError',
+          { sessionId: sid },
+        );
+        if (sid === options.getSessionId() && res.message) {
+          errorMsg.value = res.message;
+          errorInfo.value = res.error ?? null;
+        }
       } catch {
         // 静默降级：不显示横幅即可
       }
@@ -357,13 +463,21 @@ function dismissAskAnswered(): void {
    * queueBySession 不清：队列镜像按事件全量维护，切走再切回徽标不丢（CV-S09）；
    * todoSnapshots 不清：按 sessionId 隔离，切回历史会话还原上次的 todo 视图（CV-S11 修正） */
   function resetForSession(): void {
+    // 平滑缓冲按会话隔离，切走后旧会话缓冲作废（权威内容以历史/最终消息为准）
+    smoothPending.clear();
+    stopSmoothTimer();
     messages.value = [];
     toolEventIndex.clear();
+    toolStartedAt.clear();
+    for (const t of toolDwellTimers.values()) clearTimeout(t);
+    toolDwellTimers.clear();
     toolGroupCollapsed.clear();
     historyWindow.value = HISTORY_INITIAL_ITEMS;
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
+    errorInfo.value = null;
+    retryInfo.value = null;
     stopElapsed();
   }
 
@@ -385,6 +499,8 @@ function dismissAskAnswered(): void {
       return;
     }
     errorMsg.value = null;
+    errorInfo.value = null;
+    retryInfo.value = null;
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
     clearAskAnswered(sid);
     isStreaming.value = true;
@@ -401,7 +517,28 @@ function dismissAskAnswered(): void {
     }
   }
 
-  /** 取消流式（CV-S09）：返回被清空的待发队列文本（FIFO 序），供输入框回填 */
+  /**
+   * 「立即重试」：重发本会话最后一条用户消息（CV-ERR-01）。
+   *
+   * 为什么是“重发”而不是“回退”：pi 只提供 prompt/followUp（都是新的一轮），
+   * 没有“重跑上一轮”的原语。因此重试在历史里会多出一条相同的用户消息 ——
+   * 这是重试语义的必然结果，调用方（视图）应在按钮上说明，而不是静默假装没发生过。
+   * 找不到用户消息（纯错误场景，如鉴权失败本轮没发消息）或正在流式时为 noop。
+   */
+  async function retryLastUserMessage(): Promise<void> {
+    if (isStreaming.value) return;
+    for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+      const m = messages.value[i];
+      if (m?.role === 'user' && m.content.trim() !== '') {
+        await send(m.content);
+        return;
+      }
+    }
+  }
+
+  /** 取消流式（CV-S09）：返回被清空的待发队列文本（FIFO 序），供输入框回填。
+   *  同时停掉读秒定时器：正常终态会经 statusChanged 停表，但无终态事件时（如调用方
+   *  主动中断）也得停，否则定时器空转到会话销毁。 */
   async function cancel(): Promise<string[]> {
     let clearedMessages: string[] = [];
     try {
@@ -443,8 +580,10 @@ function dismissAskAnswered(): void {
       scheduleScroll();
       return;
     }
-    // 流式阶段已通过 delta 构建了 assistant 占位消息，最终 message 到达时以其为权威内容覆盖，
-    // 避免"delta 累积 + 完整消息再推一条"成双
+    // 流式阶段已通过 delta（平滑缓冲）构建了 assistant 占位消息，最终 message 到达时
+    // 以其为权威内容覆盖，避免"delta 累积 + 完整消息再推一条"成双；
+    // 覆盖前丢掉未放完的平滑缓冲（权威内容已含全部文本，继续放字反而画蛇添足）
+    dropSmoothText(p.sessionId);
     const last = messages.value[messages.value.length - 1];
     if (last && last.role === 'assistant') {
       last.content = p.message.content;
@@ -456,20 +595,102 @@ function dismissAskAnswered(): void {
     scheduleScroll();
   }
 
-  function onDelta(payload: unknown): void {
-    // 契约：delta 为 { text, kind: 'text' }（docs/api/03_conversation.md §3）
-    const p = payload as { sessionId: string; delta: { text?: string } | string };
-    if (p.sessionId !== options.getSessionId()) return;
-    const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
-    if (text !== '') markOutputting();
+  // ===== 流式平滑输出（打字机）=====
+  // delta 不直接上屏：先入按 sessionId 隔离的缓冲，再按帧匀速放出。放字速度随积压
+  // 自适应（积压越多追越快），稳态落后约 1/3 秒，观感柔和又不至于越落越远。
+  // 缓冲按 sessionId 隔离：终态 flush 补齐尾字，会话切换/重置时丢弃（权威内容以
+  // 最终 message 事件与历史记录为准，缓冲只是展示节奏）。
+  const SMOOTH_TICK_MS = 16;
+  const SMOOTH_MIN_CHARS = 1; // 每 tick 保底输出字符数（最慢速度下限）
+  const SMOOTH_MAX_CHARS = 24; // 每 tick 输出上限（积压大时不一次跳一大段）
+  const SMOOTH_CATCHUP_DIVISOR = 20; // 放字速度 = 积压 / 该值（自平衡系数）
+
+  const smoothPending = new Map<string, string>();
+  let smoothTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopSmoothTimer(): void {
+    if (smoothTimer !== null) {
+      clearInterval(smoothTimer);
+      smoothTimer = null;
+    }
+  }
+
+  /** 流式占位消息的稳定 id 序号（口径见 applyDeltaText） */
+  let streamMsgSeq = 0;
+
+  /** delta 文本真正落到消息流（原 onDelta 的追加逻辑） */
+  function applyDeltaText(text: string): void {
     // 流式追加到最后一条 assistant 消息；无则新建
     const last = messages.value[messages.value.length - 1];
     if (last && last.role === 'assistant') {
       last.content += text;
     } else {
-      messages.value.push({ role: 'assistant', content: text, ts: new Date().toISOString() });
+      // 占位必须带稳定 id：终态 message 事件会用「消息完成时刻」覆盖 ts，而列表 key
+      // 取 `ts-role`，key 一变 Vue 就重挂整张卡（入场动画重播 + hljs/mermaid/画布
+      // iframe 子树重建），观感即「回复完成时刷一下」。有 id 后 key 与 ts 解耦。
+      streamMsgSeq += 1;
+      messages.value.push({
+        role: 'assistant',
+        content: text,
+        ts: new Date().toISOString(),
+        id: `stream-${streamMsgSeq}`,
+      });
     }
     scheduleScroll();
+  }
+
+  function drainSmooth(): void {
+    const sid = options.getSessionId();
+    if (sid === null) {
+      stopSmoothTimer();
+      return;
+    }
+    const pending = smoothPending.get(sid);
+    if (pending === undefined || pending === '') {
+      smoothPending.delete(sid);
+      stopSmoothTimer();
+      return;
+    }
+    const take = Math.min(
+      pending.length,
+      Math.min(
+        SMOOTH_MAX_CHARS,
+        Math.max(SMOOTH_MIN_CHARS, Math.ceil(pending.length / SMOOTH_CATCHUP_DIVISOR)),
+      ),
+    );
+    smoothPending.set(sid, pending.slice(take));
+    applyDeltaText(pending.slice(0, take));
+  }
+
+  function enqueueSmoothText(sid: string, text: string): void {
+    smoothPending.set(sid, (smoothPending.get(sid) ?? '') + text);
+    if (smoothTimer === null) smoothTimer = setInterval(drainSmooth, SMOOTH_TICK_MS);
+  }
+
+  /** 轮次终态：把缓冲里剩下的字一次补齐上屏（取消/出错也不丢已生成内容） */
+  function flushSmoothText(sid: string): void {
+    const pending = smoothPending.get(sid);
+    smoothPending.delete(sid);
+    if (pending !== undefined && pending !== '' && sid === options.getSessionId()) {
+      applyDeltaText(pending);
+    }
+    if (smoothPending.size === 0) stopSmoothTimer();
+  }
+
+  /** 权威内容到达（最终 message）/ 会话重置：缓冲作废（权威内容覆盖展示缓冲） */
+  function dropSmoothText(sid: string): void {
+    smoothPending.delete(sid);
+    if (smoothPending.size === 0) stopSmoothTimer();
+  }
+
+  function onDelta(payload: unknown): void {
+    // 契约：delta 为 { text, kind: 'text' }（docs/api/03_conversation.md §3）
+    const p = payload as { sessionId: string; delta: { text?: string } | string };
+    if (p.sessionId !== options.getSessionId()) return;
+    const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
+    if (text === '') return;
+    markOutputting();
+    enqueueSmoothText(p.sessionId, text);
   }
 
   function onStatus(payload: unknown): void {
@@ -482,12 +703,18 @@ function dismissAskAnswered(): void {
       startElapsed(p.sessionId);
       resetStreamPhase();
     } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
+      // 轮次终态：缓冲里剩余的文本一次补齐上屏（取消/出错也不丢已生成内容）
+      flushSmoothText(p.sessionId);
       turnStartAt.delete(p.sessionId);
       stopElapsed();
       isStreaming.value = false;
       // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
       // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
-      if (p.status !== 'error') errorMsg.value = null;
+      if (p.status !== 'error') {
+        errorMsg.value = null;
+        errorInfo.value = null;
+        retryInfo.value = null;
+      }
       // CV-S11 兜底：会话终态时把残留的 in_progress 标为 completed，避免 TodoPanel
       // 永远挂着呼吸点。快照按 sessionId 隔离，只动当前会话。无可恢复快照时 noop。
       const prevSnap = todoSnapshots.get(p.sessionId) ?? null;
@@ -497,11 +724,20 @@ function dismissAskAnswered(): void {
   }
 
   function onError(payload: unknown): void {
-    const p = payload as { sessionId: string; code?: number; message?: string };
+    const p = payload as { sessionId: string; code?: number };
     if (p.sessionId !== options.getSessionId()) return;
     // 不在此处置 isStreaming=false：终态错误必伴随 status='error' 事件收尾；
     // conversation.error 还承载自动重试提示（轮次仍在 streaming），此处置假会误断进行中状态
-    errorMsg.value = p.message ?? `对话错误（${p.code ?? 'unknown'}）`;
+    // CV-ERR-01：retry 与 error 互斥——前者是「轮次还在跑，正在重试」，
+    // 不是错误，UI 要显示进度而不是红色横幅（否则重试成功也留着一条红字）。
+    const { retry, error, message } = interpretErrorPayload(payload);
+    if (retry !== null) {
+      retryInfo.value = retry;
+      return;
+    }
+    retryInfo.value = null;
+    errorInfo.value = error;
+    errorMsg.value = message ?? i18n.t('chat.conversationError', { code: p.code ?? 'unknown' });
   }
 
   /**
@@ -596,6 +832,7 @@ function dismissAskAnswered(): void {
     if (toolEventIndex.has(p.toolEventId)) return;
     // 真实后端载荷为 tool:{name,input}（docs/api/04_tool.md §1），toolName 为 mock/旧格式兼容
     markTool(p.toolEventId, p.tool?.name ?? p.toolName ?? null);
+    toolStartedAt.set(p.toolEventId, Date.now());
     const msg: ConversationMessage = {
       role: 'tool',
       content: '',
@@ -608,6 +845,28 @@ function dismissAskAnswered(): void {
     messages.value.push(msg);
     toolEventIndex.set(p.toolEventId, messages.value.length - 1);
     scheduleScroll();
+  }
+
+  /** 「进行中」态最短可见停留（ms）：快工具 started/completed 可能同帧背靠背，spinner 还没来得及被看到就被终态顶掉 */
+  const TOOL_MIN_DWELL_MS = 300;
+
+  /** 终态（completed/error）落点：不足最短停留时间则延迟改状态；到点时按 id 重查，会话已切走/已重置则静默丢弃 */
+  function applyToolTerminal(toolEventId: string, mutate: (msg: ConversationMessage) => void): void {
+    const run = (): void => {
+      toolDwellTimers.delete(toolEventId);
+      const idx = toolEventIndex.get(toolEventId);
+      const msg = idx === undefined ? undefined : messages.value[idx];
+      if (!msg || msg.status !== 'started') return;
+      mutate(msg);
+    };
+    const startedAt = toolStartedAt.get(toolEventId);
+    const wait = startedAt === undefined ? 0 : TOOL_MIN_DWELL_MS - (Date.now() - startedAt);
+    toolStartedAt.delete(toolEventId);
+    if (wait > 0) {
+      toolDwellTimers.set(toolEventId, setTimeout(run, wait));
+      return;
+    }
+    run();
   }
 
   function onToolCompleted(payload: unknown): void {
@@ -641,15 +900,14 @@ function dismissAskAnswered(): void {
       const sid = options.getSessionId();
       if (sid !== null) askStore.applyCompletion(sid, p.result?.details);
     }
-    const idx = toolEventIndex.get(p.toolEventId);
-    if (idx === undefined) return;
+    if (!toolEventIndex.has(p.toolEventId)) return;
     markToolEnd(p.toolEventId);
-    const msg = messages.value[idx];
-    if (!msg) return;
-    msg.status = 'completed';
     // 真实后端为 result:{text}，summary 为 mock/旧格式兼容
     const text = p.result?.text ?? p.summary;
-    if (text) msg.content = text;
+    applyToolTerminal(p.toolEventId, (msg) => {
+      msg.status = 'completed';
+      if (text) msg.content = text;
+    });
   }
 
   function onToolError(payload: unknown): void {
@@ -661,15 +919,14 @@ function dismissAskAnswered(): void {
       message?: string;
     };
     if (p.sessionId !== undefined && p.sessionId !== options.getSessionId()) return;
-    const idx = toolEventIndex.get(p.toolEventId);
-    if (idx === undefined) return;
+    if (!toolEventIndex.has(p.toolEventId)) return;
     markToolEnd(p.toolEventId);
-    const msg = messages.value[idx];
-    if (!msg) return;
-    msg.status = 'error';
     // 真实后端为 error:{message}，summary/message 为 mock/旧格式兼容
     const text = p.error?.message ?? p.summary ?? p.message;
-    if (text) msg.content = text;
+    applyToolTerminal(p.toolEventId, (msg) => {
+      msg.status = 'error';
+      if (text) msg.content = text;
+    });
   }
 
   // ===== 子 Agent 处理 =====
@@ -804,6 +1061,8 @@ function dismissAskAnswered(): void {
       subscribe('subagent.removed', onSubagentRemoved),
       // Path 2：问卷请求（载荷带必需 sessionId，本窗格按它认领）
       onAskUserQuestionRequest(onAskUserQuestionRequested),
+      // 模块级内存表的回收口：会话删除后不再保留其快照 / 问卷 / 面板折叠态
+      subscribe('session.removed', onSessionRemoved),
     ];
   });
 
@@ -811,6 +1070,11 @@ function dismissAskAnswered(): void {
     unsubs.forEach((u) => u?.());
     unsubs = [];
     stopElapsed();
+    smoothPending.clear();
+    stopSmoothTimer();
+    for (const t of toolDwellTimers.values()) clearTimeout(t);
+    toolDwellTimers.clear();
+    toolStartedAt.clear();
   });
 
   return {
@@ -826,8 +1090,12 @@ function dismissAskAnswered(): void {
     isStreaming,
     loadingHistory,
     errorMsg,
+    errorInfo,
+    retryInfo,
+    retryLastUserMessage,
     isEmpty,
     displayItems,
+    turnSuggestion,
     windowedItems,
     historyWindowTruncated,
     expandHistoryWindow,

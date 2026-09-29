@@ -8,7 +8,7 @@
  * 抽取自 InstructionInput.vue 的 `restoreQueuedText`（CV-S09）。
  * 纯 TS 零依赖（Node type stripping 可直跑，先例 utils/pasteText.ts）。
  *
- * 运行：node --test（先例 sessionInputReset.test.ts）。
+ * 运行：node --test（先例 composerDrafts.test.ts）。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

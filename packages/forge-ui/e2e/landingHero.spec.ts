@@ -5,8 +5,8 @@
  * 语言：forge 字标 + 居中输入框（LandingHero），项目区仅「打开项目…」入口。
  *
  * 草稿直通链路：落地输入 → Enter（无项目，发送=先选目录）→ mock selectDirectory
- * 返回目录 → 项目自动注册并打开 → LandingHero 卸载，已输入文本经 carry-text
- * 暂存 → 分支切换后 post-flush 经 ConversationView.restoreDraft 回填草稿输入框。
+ * 返回目录 → 项目自动注册并打开 → LandingHero 卸载；输入文本经模块级草稿仓库
+ * （utils/composerDrafts，草稿态统一 key）在项目视图的输入框挂载时自动回填。
  */
 import { test, expect, type Page } from '@playwright/test';
 import { attachHealthGuards, seedSessions, seedProjects, waitForMock } from './helpers/index';
@@ -26,7 +26,7 @@ test('E-PM-LANDING-001 @mock-backend 零项目落地 hero：水印 + 居中输�
   await gotoLanding(page);
 
   await expect(page.locator('.landing-hero')).toBeVisible();
-  await expect(page.locator('.landing-wordmark')).toBeVisible();
+  await expect(page.locator('.landing-wordmark.wm-dark')).toBeVisible();
   const input = page.locator('.landing-hero .compose-input');
   await expect(input).toBeVisible();
   await expect(input).toBeEnabled();

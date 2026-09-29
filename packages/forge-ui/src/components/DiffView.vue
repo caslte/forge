@@ -6,6 +6,9 @@ import {
   highlightDiffLine,
   type SideBySideRow,
 } from '@forge/core/side-by-side-diff';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   filePath: string | null;
@@ -68,7 +71,7 @@ const highlightedRows = computed(() =>
       class="diff-expand"
       @click="truncated = false"
     >
-      展开全部 {{ rows.length }} 行
+      {{ t('tool.diffExpandAll', { n: rows.length }) }}
     </button>
   </div>
 </template>
@@ -77,6 +80,8 @@ const highlightedRows = computed(() =>
 .diff-view {
   border-radius: 8px;
   overflow: hidden;
+  /* body 全局禁选，diff 内容单独放开（与 .msg-content 同理）：支持鼠标框选复制 */
+  user-select: text;
 }
 
 .diff-file {
@@ -153,6 +158,7 @@ const highlightedRows = computed(() =>
   border-top: 1px solid var(--border);
   background: var(--muted);
   cursor: pointer;
+  user-select: none;
 }
 
 .diff-expand:hover {

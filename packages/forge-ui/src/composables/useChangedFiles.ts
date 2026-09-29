@@ -4,10 +4,9 @@ import type { ConversationMessage } from '../types';
 /**
  * 改动文件解析纯函数域（无 Vue 依赖，风格对齐 useTurnFooter.ts）。
  *
- * 三处消费方共享 parseFileToolInput：
+ * 两处消费方共享 parseFileToolInput：
  * - 本模块 collectTurnChangedFiles（每轮「改动文件汇总卡片」数据源）
- * - useSessionConversation.toToolDiffs（工具组外挂 diff）
- * - ToolCallCard（单工具卡 diff）
+ * - ToolCallCard（工具行行内展开 diff）
  *
  * 入参形状判定（不依赖工具名，避免 mock 旧名与 pi 工具名漂移）：
  * - pi edit：{ path, edits: [{ oldText, newText }] }（同文件可多 hunk）

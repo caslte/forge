@@ -8,6 +8,9 @@
  * - 拒绝：不加载项目资源，基础会话仍可用
  */
 import { ref } from 'vue';
+import { useI18n } from '../i18n/index.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 项目路径 */
@@ -38,16 +41,13 @@ function choose(decision: 'trust' | 'reject' | 'trustOnce'): void {
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
         </svg>
       </div>
-      <h3 id="trust-title" class="trust-title">信任此项目？</h3>
+      <h3 id="trust-title" class="trust-title">{{ t('dialogs.trustAsk.title') }}</h3>
       <p class="trust-path">{{ projectName }}</p>
-      <p class="trust-desc">
-        该项目包含本地项目资源（扩展 / 技能 / 提示词等）。信任后将加载并执行其中的配置；
-        拒绝后不加载项目资源，基础对话仍可使用。
-      </p>
+      <p class="trust-desc">{{ t('dialogs.trustAsk.desc') }}</p>
       <div class="trust-actions">
-        <button class="t-btn t-primary" :disabled="deciding" @click="choose('trust')">信任</button>
-        <button class="t-btn" :disabled="deciding" @click="choose('trustOnce')">信任一次</button>
-        <button class="t-btn" :disabled="deciding" @click="choose('reject')">拒绝</button>
+        <button class="t-btn t-primary" :disabled="deciding" @click="choose('trust')">{{ t('dialogs.trustAsk.trust') }}</button>
+        <button class="t-btn" :disabled="deciding" @click="choose('trustOnce')">{{ t('dialogs.trustAsk.trustOnce') }}</button>
+        <button class="t-btn" :disabled="deciding" @click="choose('reject')">{{ t('dialogs.trustAsk.reject') }}</button>
       </div>
     </div>
   </div>

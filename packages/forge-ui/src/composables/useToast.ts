@@ -1,5 +1,7 @@
 /**
  * Toast 通知 composable。全局单一 toast，success/info/error 三类。
+ * 自动消失/hover 暂停/退场动画由 ToastNotification.vue 自持（对齐右下角系统通知的
+ * 交互），这里只保存内容与类型；seq 供 App.vue 作为组件 key，同文案连发也能重置计时。
  */
 import { ref } from 'vue';
 
@@ -7,25 +9,15 @@ export type ToastType = 'success' | 'info' | 'error';
 
 const message = ref('');
 const type = ref<ToastType>('success');
-let hideTimer: ReturnType<typeof setTimeout> | null = null;
+const seq = ref(0);
 
 function show(msg: string, t: ToastType = 'success'): void {
   message.value = msg;
   type.value = t;
-  if (hideTimer !== null) {
-    clearTimeout(hideTimer);
-  }
-  hideTimer = setTimeout(() => {
-    message.value = '';
-    hideTimer = null;
-  }, 3000);
+  seq.value += 1;
 }
 
 function clear(): void {
-  if (hideTimer !== null) {
-    clearTimeout(hideTimer);
-    hideTimer = null;
-  }
   message.value = '';
 }
 
@@ -33,6 +25,7 @@ export function useToast() {
   return {
     message,
     type,
+    seq,
     show,
     clear,
     success: (msg: string) => show(msg, 'success'),

@@ -227,6 +227,77 @@ test('loadPiSessionHistory assistant 仅含 toolCall（正文空被跳过）仍�
   }
 });
 
+// ===== CV-S07 口径修正（2026-09-26 用户反馈「压缩后历史消息没了」）=====
+//
+// 压缩只该替换喂给**模型**的上下文；用户看到的 transcript 应完整保留。
+// pi 为此提供两个读取口：buildContextEntries() = 已应用压缩的上下文视图，
+// getBranch() = 叶子→根的全量分支。历史加载必须走后者，并把 compaction 条目
+// 渲染成 witness 标记，否则压缩点之前的对话在界面上会整段消失。
+
+/** 造一个「压缩点前 2 条 + 压缩 + 压缩点后 2 条」的会话文件 */
+function writeCompactedSession(file: string, root: string): void {
+  fs.writeFileSync(file, [
+    { type: 'session', version: 3, id: 'pi-session-compact', timestamp: '2026-01-01T00:00:00Z', cwd: root },
+    { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:01Z', message: { role: 'user', content: '旧提问', timestamp: Date.parse('2026-01-01T00:00:01Z') } },
+    { type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-01-01T00:00:02Z', message: { role: 'assistant', content: [{ type: 'text', text: '旧回答' }], stopReason: 'stop', usage: {}, api: 'openai-completions', provider: 'test', model: 'test-model', timestamp: Date.parse('2026-01-01T00:00:02Z') } },
+    { type: 'compaction', id: 'c1', parentId: 'm2', timestamp: '2026-01-01T00:00:03Z', summary: '旧对话摘要', firstKeptEntryId: 'm2', tokensBefore: 40000 },
+    { type: 'message', id: 'm3', parentId: 'c1', timestamp: '2026-01-01T00:00:04Z', message: { role: 'user', content: '新提问', timestamp: Date.parse('2026-01-01T00:00:04Z') } },
+    { type: 'message', id: 'm4', parentId: 'm3', timestamp: '2026-01-01T00:00:05Z', message: { role: 'assistant', content: [{ type: 'text', text: '新回答' }], stopReason: 'stop', usage: {}, api: 'openai-completions', provider: 'test', model: 'test-model', timestamp: Date.parse('2026-01-01T00:00:05Z') } },
+  ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+}
+
+test('loadPiSessionHistory 压缩后压缩点之前的消息仍在历史里（不再随上下文一起丢）', async () => {
+  const root = makeTempDir();
+  try {
+    const file = path.join(root, 'session.jsonl');
+    writeCompactedSession(file, root);
+
+    const history = await loadPiSessionHistory(file);
+    const texts = history.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => m.content);
+
+    assert.deepEqual(texts, ['旧提问', '旧回答', '新提问', '新回答'], '压缩点之前的 旧提问/旧回答 必须还在');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('loadPiSessionHistory compaction 条目产出压缩分隔标记（role=system + compacted）', async () => {
+  const root = makeTempDir();
+  try {
+    const file = path.join(root, 'session.jsonl');
+    writeCompactedSession(file, root);
+
+    const history = await loadPiSessionHistory(file);
+    const markers = history.filter((m) => m.role === 'system');
+
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0]!.compacted, true);
+    assert.equal(markers[0]!.content, '旧对话摘要', '摘要内容保留在标记上，供 UI 折叠展示');
+    assert.equal(markers[0]!.ts, '2026-01-01T00:00:03Z');
+    // 标记的位置必须落在「压缩前」与「压缩后」之间：顺序错位会让分隔条本身变成误导
+    const roles = history.map((m) => m.role);
+    assert.deepEqual(roles, ['user', 'assistant', 'system', 'user', 'assistant']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('loadPiSessionHistory 未压缩会话不产生任何 system 标记', async () => {
+  const root = makeTempDir();
+  try {
+    const file = path.join(root, 'session.jsonl');
+    fs.writeFileSync(file, [
+      { type: 'session', version: 3, id: 'pi-plain', timestamp: '2026-01-01T00:00:00Z', cwd: root },
+      { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:01Z', message: { role: 'user', content: 'hi', timestamp: Date.parse('2026-01-01T00:00:01Z') } },
+    ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+
+    const history = await loadPiSessionHistory(file);
+    assert.equal(history.some((m) => m.role === 'system'), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('loadPiSessionHistory 损坏 JSONL 给出可读错误（P2-D 异常降级）', async () => {
   const root = makeTempDir();
   try {

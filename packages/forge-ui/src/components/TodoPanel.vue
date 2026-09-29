@@ -47,6 +47,15 @@ import {
   TODO_AUTO_HIDE_DELAY_MS,
   type TodoSnapshot,
 } from '../utils/todoPanel';
+import { useI18n } from '../i18n/index.ts';
+// 折叠 / 自动隐藏表为模块级（见 todoPanelUiState.ts 注释）：视图重建不回初值
+import {
+  autoFoldedSessions,
+  collapsedBySession,
+  dismissedBySession,
+} from '../composables/todoPanelUiState.ts';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   /** 当前会话 id；面板可见性 = 快照有 visible task（不依赖 sessionId 显式校验，
@@ -56,9 +65,7 @@ const props = defineProps<{
   todoSnapshot: TodoSnapshot | null;
 }>();
 
-/** 折叠状态：按 sessionId 内存维护（Map 不持久化、不跨 IPC） */
-const collapsedBySession = ref<Map<string, boolean>>(new Map());
-/** 当前会话折叠态 */
+/** 折叠状态表见 todoPanelUiState.ts（模块级）；当前会话折叠态 */
 const collapsed = computed(() => {
   if (!props.sessionId) return false;
   return collapsedBySession.value.get(props.sessionId) ?? false;
@@ -73,7 +80,6 @@ watch(
     }
   },
 );
-
 /** 可见任务（过滤 deleted + 排序） */
 const visibleTasks = computed(() => selectVisibleTasks(props.todoSnapshot));
 /** 标题计数（completed / total） */
@@ -86,8 +92,7 @@ const counts = computed(() => {
 const isVisible = computed(() => shouldRenderPanel(visibleTasks.value));
 /** 全部完成（自动收起的触发条件：非空且全 completed） */
 const allCompleted = computed(() => isAllCompleted(visibleTasks.value));
-/** 自动隐藏态：按 sessionId 内存维护（true = 已播完隐藏动画并卸载） */
-const dismissedBySession = ref<Map<string, boolean>>(new Map());
+/** 自动隐藏态表见 todoPanelUiState.ts（模块级）；当前会话自动隐藏态 */
 const dismissed = computed(() => {
   if (!props.sessionId) return false;
   return dismissedBySession.value.get(props.sessionId) ?? false;
@@ -97,8 +102,7 @@ const effectiveVisible = computed(() => isVisible.value && !dismissed.value);
 /** 面板头部 chevron（折叠态 ▸ / 展开态 ▾） */
 const chevron = computed(() => (collapsed.value ? '▸' : '▾'));
 
-/** 由自动流程置起折叠的会话（用于区分手动折叠：仅自动折叠在新任务到达时自动展开） */
-const autoFoldedSessions = new Set<string>();
+/** autoFoldedSessions 见 todoPanelUiState.ts（模块级） */
 let collapseTimer: ReturnType<typeof setTimeout> | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -304,7 +308,7 @@ defineExpose({
       :aria-expanded="!collapsed"
       @click="toggleCollapsed"
     >
-      <span class="todo-heading-text">已完成 <span class="roll-num" data-testid="todo-completed-num"><Transition name="num-roll"><span :key="counts.completed" class="num-val">{{ counts.completed }}</span></Transition></span> / 共 {{ counts.total }} 个</span>
+      <span class="todo-heading-text">{{ t('panels.todo.completedPrefix') }} <span class="roll-num" data-testid="todo-completed-num"><Transition name="num-roll"><span :key="counts.completed" class="num-val">{{ counts.completed }}</span></Transition></span>{{ t('panels.todo.totalSuffix', { total: counts.total }) }}</span>
       <span class="todo-heading-chevron" aria-hidden="true">{{ chevron }}</span>
     </button>
     <Transition name="todo-collapse">
@@ -528,8 +532,9 @@ defineExpose({
   color: var(--muted-foreground, #888);
 }
 
+/* 待办文案与上方「已完成」标题统一 muted 灰色，整块面板视觉一致 */
 .todo-row :deep(.todo-subject) {
-  color: var(--foreground, currentColor);
+  color: var(--muted-foreground, #888);
 }
 
 .todo-row :deep(.todo-subject-active) {

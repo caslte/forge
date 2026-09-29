@@ -100,3 +100,8 @@
 | E-PM-LANDING-001 | （v3.77 增补：零项目落地 hero） | 落地首屏 | 零项目（mock setProjects([])） | - | mock-backend | 启动观察 + 点项目区 pill | forge 字标 + 居中输入框渲染可输入；项目区仅「打开项目…」入口；旧 no-session 卡片不复活；无 pageerror |
 | E-PM-LANDING-002 | （v3.77 增补：落地草稿直通） | 落地首屏→工作区 | 零项目 + 输入文本 | - | mock-backend（selectDirectory 返回目录） | 输入文本→Enter | 目录选择后项目自动注册打开；已输入文本回填项目视图草稿输入框（restoreDraft） |
 | E-PM-LANDING-003 | （v3.77 增补：取消不丢字） | 落地首屏 | 零项目 + 输入文本 | - | mock-backend（selectDirectory 返回空） | 输入文本→Enter（取消） | 仍在落地页；输入框文本保留 |
+| BOOT-HANDOFF-001 | （v3.85.2 增补：boot 假落地页闪现） | splash→BootWelcome→正式 UI | 有项目启动（mock 默认项目在场） | - | mock-backend | MutationObserver 全程监听 hero 挂载 | `.landing-hero` 在 `.conv-hero` 出现前不得挂载（正式 UI 首帧即终态） |
+| BOOT-HANDOFF-002 | （v3.85.2 增补：接管字标静态在场） | BootWelcome | 冻结门闩（bootState 恒 false） | - | mock-backend | 冻结门闩期取计算样式 | `.boot-wordmark` animation-name=none（无入场动画重放）、宽度 320 = hero 档 |
+| BOOT-HANDOFF-003 | （v3.85.2 增补：尺寸三处统一） | conv-hero | 门闩放行后 | - | mock-backend | 放行后取字标宽度 | `.conv-hero-wordmark` 宽 320（splash/BootWelcome/hero 同档） |
+| BOOT-HANDOFF-004 | （v3.85.2 增补：veil 必卸载、字标唯一） | 正式 UI | 门闩放行后 | - | mock-backend | 放行后等待接管完成 | `.boot-welcome` 卸载计数 0；`#app-boot-splash` 不在场；屏上可见 `img[alt="FORGE"]` 恰 1 份 |
+| BOOT-SPLASH-005 | （v3.85.2 增补：回执在解码后） | index.html splash | 冻结模块链 | - | mock-backend | 取 `__forgeSplashNotified` 观测位 | `wordLoaded=true` 才发 `splashReady`；字标 src 相对路径（非 `/` 开头，prod file:// 不裂图）；显式 width=320/height=42（不塌高） |

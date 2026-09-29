@@ -38,7 +38,7 @@ export const DEFAULT_REMOVE_RETRIES = 3;
 export const DEFAULT_REMOVE_RETRY_DELAY_MS = 50;
 
 export interface PiSessionAdapterOptions {
-  /** pi agent 目录；缺省 `~/.pi/agent`（与 createForgeCore 注入值一致） */
+  /** pi agent 目录（生产由 createForgeCore 注入同一根；未注入回退 resolvePiAgentDir 缺省，仅 dev/测试） */
   agentDir?: string;
   /** 删除失败重试次数（句柄瞬时占用）；缺省 3 */
   removeMaxRetries?: number;

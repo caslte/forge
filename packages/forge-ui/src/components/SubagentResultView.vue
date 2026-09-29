@@ -3,6 +3,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { call } from '../bridge';
 import { parseSubagentStream, stripDanglingFence, groupStreamNodes } from '../utils/subagentStream';
 import { renderMarkdown } from '@forge/core/markdown';
+import { decorateMarkdownHtml, onMarkdownContentClick } from '../utils/markdownLinks';
+import { formatElapsed } from '../utils/formatElapsed.ts';
+import { useI18n } from '../i18n/index.ts';
 import type { Subagent } from '../types';
 
 /**
@@ -26,6 +29,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'stop', agentId: string): void;
 }>();
+
+const { t } = useI18n();
 
 const now = ref<number>(Date.now());
 let tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -88,27 +93,31 @@ const elapsedMs = computed(() => {
 const elapsedText = computed(() => {
   const ms = elapsedMs.value;
   const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s} 秒`;
+  if (s < 60) return t('panels.subagent.elapsedSeconds', { seconds: s });
   const m = Math.floor(s / 60);
   const ss = s % 60;
-  if (m < 60) return `${m} 分 ${ss} 秒`;
+  if (m < 60) return t('panels.subagent.elapsedMinutes', { minutes: m, seconds: ss });
   const h = Math.floor(m / 60);
   const mm = m % 60;
-  return `${h} 小时 ${mm} 分`;
+  return t('panels.subagent.elapsedHours', { hours: h, minutes: mm });
 });
+
+/** 流式读秒（与主会话 conv-thinking 的 thinking-sec 同源） */
+const elapsedSec = computed(() => Math.floor(elapsedMs.value / 1000));
+const indicatorText = computed(() => streamItems.value.length > 0 ? t('panels.subagent.outputting') : t('panels.subagent.thinking'));
 
 function statusText(status: Subagent['status']): string {
   switch (status) {
     case 'queued':
-      return '排队中';
+      return t('panels.subagent.statusQueued');
     case 'running':
-      return '运行中';
+      return t('panels.subagent.statusRunning');
     case 'completed':
-      return '已完成';
+      return t('panels.subagent.statusCompleted');
     case 'failed':
-      return '失败';
+      return t('panels.subagent.statusFailed');
     case 'stopped':
-      return '已终止';
+      return t('panels.subagent.statusStopped');
   }
 }
 
@@ -162,9 +171,9 @@ onUnmounted(() => {
         v-if="isActive"
         type="button"
         class="srv-stop-btn"
-        data-tooltip="终止此子 Agent（不可逆，需二次确认）"
+        :data-tooltip="t('panels.subagent.stopTooltip')"
         @click="onStop"
-      >终止</button>
+      >{{ t('panels.subagent.stop') }}</button>
     </header>
 
     <div ref="streamTextEl" class="srv-body">
@@ -174,13 +183,14 @@ onUnmounted(() => {
           <div
             v-if="node.kind === 'text'"
             class="srv-stream-text"
-            v-html="renderMarkdown(node.text)"
+            v-html="decorateMarkdownHtml(renderMarkdown(node.text))"
+            @click="onMarkdownContentClick"
           ></div>
           <div v-else-if="node.kind === 'tool-group'" class="srv-tool-group">
             <button class="stg-head" @click="toggleGroup(node.start)">
               <svg class="stg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /><path d="M5 21l1.5-4.5" /></svg>
-              <span class="stg-label">工具调用</span>
-              <span class="stg-count">{{ node.total }} 次</span>
+              <span class="stg-label">{{ t('panels.subagent.toolCalls') }}</span>
+              <span class="stg-count">{{ t('panels.subagent.toolCallCount', { count: node.total }) }}</span>
               <span class="stg-names">
                 <span v-for="tc in node.counts" :key="tc.name" class="stg-chip">
                   {{ tc.name }}<span v-if="tc.count > 1" class="stg-chip-count">×{{ tc.count }}</span>
@@ -219,29 +229,21 @@ onUnmounted(() => {
 
       <!-- 无过程数据兑底：completed 用 result 全文（同源 markdown 渲染，与过程视图一致） -->
       <template v-else>
-        <div v-if="subagent.result" class="srv-stream-text" v-html="renderMarkdown(stripDanglingFence(subagent.result))"></div>
-        <div v-else-if="subagent.status === 'completed'" class="subagent-result-empty">无结果输出</div>
+        <div v-if="subagent.result" class="srv-stream-text" v-html="decorateMarkdownHtml(renderMarkdown(stripDanglingFence(subagent.result)))" @click="onMarkdownContentClick"></div>
+        <div v-else-if="subagent.status === 'completed'" class="subagent-result-empty">{{ t('panels.subagent.noResult') }}</div>
       </template>
 
-      <!-- 运行中指示（无边框，随内容滚动，与主会话一致） -->
+      <!-- 运行中指示（与主会话 conv-thinking 同结构：银色流光 + 读秒，无圆点） -->
       <div v-if="isActive" class="srv-indicator">
-        <span class="thinking-dot"></span>
-        <span class="thinking-dot"></span>
-        <span class="thinking-dot"></span>
-        <span>{{ streamItems.length > 0 ? '正在输出…' : '正在思考…' }}</span>
+        <span class="thinking-text thinking-shimmer">{{ indicatorText }}</span>
+        <span class="thinking-sec">{{ formatElapsed(elapsedSec) }}</span>
       </div>
       <!-- 失败 / 终止错误信息 -->
       <div v-if="subagent.status === 'failed' || subagent.status === 'stopped'" class="subagent-result-error">
-        <div class="srv-error-title">{{ subagent.status === 'failed' ? '执行失败' : '已终止' }}</div>
-        <div class="srv-error-msg">{{ subagent.error ?? '无错误信息' }}</div>
+        <div class="srv-error-title">{{ subagent.status === 'failed' ? t('panels.subagent.execFailed') : t('panels.subagent.statusStopped') }}</div>
+        <div class="srv-error-msg">{{ subagent.error ?? t('panels.subagent.noError') }}</div>
       </div>
 
-      <!-- 终态：token 用量 -->
-      <div v-if="!isActive && subagent.usage" class="subagent-result-usage">
-        <span>输入 {{ subagent.usage.inputTokens.toLocaleString() }} tokens</span>
-        <span class="srv-usage-sep">·</span>
-        <span>输出 {{ subagent.usage.outputTokens.toLocaleString() }} tokens</span>
-      </div>
     </div>
   </div>
 </template>
@@ -368,31 +370,37 @@ onUnmounted(() => {
   gap: 14px;
 }
 
-/* 运行中指示（无边框，与主会话同风格） */
+/* 运行中指示（与主会话 conv-thinking 同结构：银色流光文字 + 读秒，无圆点） */
 .srv-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 10px 14px;
   color: var(--muted-foreground);
-  font-size: 13px;
-  padding: 2px 0;
+  font-size: 14px;
 }
 
-.thinking-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--muted-foreground);
-  opacity: 0.4;
-  animation: dot-bounce 1.4s ease-in-out infinite;
+.srv-indicator .thinking-text { margin-left: 0; }
+.thinking-sec {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  margin-left: 2px;
 }
 
-.thinking-dot:nth-child(2) { animation-delay: 0.16s; }
-.thinking-dot:nth-child(3) { animation-delay: 0.32s; }
-
-@keyframes dot-bounce {
-  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-  40% { opacity: 1; transform: scale(1.1); }
+.thinking-shimmer {
+  display: inline-block;
+  font-weight: 500;
+  background: linear-gradient(90deg, #6b7280 0%, #f3f4f6 22%, #6b7280 42%, #e5e7eb 62%, #6b7280 82%, #ffffff 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+}
+@keyframes thinking-shimmer {
+  0% { background-position: 100% 0%; }
+  100% { background-position: 0% 0%; }
 }
 
 .subagent-result-empty {
@@ -426,23 +434,6 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.subagent-result-usage {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  align-self: flex-start;
-  padding: 4px 10px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
-.srv-usage-sep {
-  color: var(--border);
-}
-
 /* ===== 实时消息流（输出文件 JSONL → 正文 + 工具摘要行，无边框直接排版）===== */
 /* 正文条目：与主会话 assistant 消息同源的 markdown 渲染 */
 .srv-stream-text {
@@ -458,7 +449,7 @@ onUnmounted(() => {
   background: color-mix(in oklab, var(--muted) 12%, var(--card));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: 8px 34px 8px 10px; /* 右侧让位给代码块复制按钮 */
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12px;
