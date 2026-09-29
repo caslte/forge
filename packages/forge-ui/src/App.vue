@@ -278,7 +278,7 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 
 // 设置
 const { themeMode, setTheme } = useTheme();
-const { message: toastMessage, type: toastType, show: showToast, clear: clearToast } = useToast();
+const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
 
 // 模型列表与会话模型（ConversationView 消费）
 const models = ref<string[]>([]);
@@ -583,7 +583,7 @@ async function onModelChange(model: string): Promise<void> {
   // 草稿态（会话尚未创建）：仅本地回显预览；所选模型在创建会话时由
   // ConversationView 写入会话覆盖（见其草稿发送分支），发送即生效
   if (currentSessionId.value === null) {
-    // 不弹顶部 toast：模型选择器本身已回显所选模型，避免遮挡会话区
+    // 不弹 toast：模型选择器本身已回显所选模型，右下角提示此处无增量信息
     return;
   }
   try {
@@ -1062,6 +1062,7 @@ onUnmounted(() => {
 
     <ToastNotification
       v-if="toastMessage"
+      :key="toastSeq"
       :message="toastMessage"
       :type="toastType"
       @close="clearToast"
