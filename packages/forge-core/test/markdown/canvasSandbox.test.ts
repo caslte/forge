@@ -20,7 +20,9 @@ import {
   buildCanvasDocument,
   buildCanvasStandaloneFile,
   clearRenderCache,
+  judgeCanvasSource,
   looksLikeAsciiArt,
+  looksLikeCodeCanvas,
   looksLikeHtmlCanvas,
   looksLikeProseCanvas,
   renderMarkdown,
@@ -214,7 +216,9 @@ test('looksLikeProseCanvas：svg/img 是「画」，即使夹了长文也不降�
 });
 
 test('looksLikeProseCanvas：无标签 / 超短文本 / 样式占大头的卡片不归它管', () => {
-  // 无标签 → looksLikeHtmlCanvas 已判 false，走代码块降级，不归 prose 管
+  // 无标签但只有 33 字：不到 PROSE_MIN_TEXT，判不出是散文开头还是画图前言，判 false。
+  // （2026-09-29 截图修复后「无标签」不再是排除条件，够长的无标签散文一律判 prose，
+  //   见下方 judgeCanvasSource 截图回归用例。这条现在是被长度门槛挡住的。）
   assert.equal(looksLikeProseCanvas('就是一段说明文字，没有任何标签，顺便把长度凑到最短限制之上再说两句'), false);
   // 带标签但可见文本太短：带标题的小图示不值得降级
   assert.equal(looksLikeProseCanvas('<div class="k">登录接口防爆破机制 · 报告模型 vs 代码实际链路</div>'), false);
@@ -228,6 +232,95 @@ test('looksLikeProseCanvas：无标签 / 超短文本 / 样式占大头的卡片
 test('stripCanvasProse：块级闭标签还原段落边界，实体解码，script/style 整块丢弃', () => {
   const out = stripCanvasProse('<div><p>a&amp;b</p><p>第二段<br>折行</p><style>p{color:red}</style><script>alert(1)</script></div>');
   assert.equal(out, 'a&b\n\n第二段\n折行');
+});
+
+/* ------------------------------------------------------------------ *
+ * 2026-09-29 截图回归：模型把纯文字说明（无任何标签）塞进 ```canvas 围栏。
+ *
+ * 改前：looksLikeProseCanvas 在首行 `if (!looksLikeHtmlCanvas(s)) return false`
+ * 直接出局 → 落 canvas-fallback 代码框；流式期间还先挂一秒骨架（假进度），
+ * 闭合后突然变成黑底代码框。改后：无标签且不像源码 → prose 走正文流。
+ * ------------------------------------------------------------------ */
+
+/** 截图红框第一段：纯文字 + 「·」伪列表，源码里一个标签都没有 */
+const PLAIN_NO_LICENSE = `没有 LICENSE 时，GitHub 自动套用「保留所有权利」
+· 别人能读你的代码、能 fork —— 纯「阅读」不违法
+· 但复制一段代码用在自己项目里、拿去商用、改了再发布 —— 法律上不允许
+即使他们想做善意的贡献也只能提 PR，因为没有授权基础
+
+实际会发生什么
+· 有人想在自己的项目里 import 你的 @forge/core — 被法律挡住，只能 fork 后当私用代码用
+· 企业法务看到「无许可证」直接跳过 → 少掉一大半潜在使用者
+· GitHub 页面右侧会挂一个灰色的 "Unlicensed" 警告标签，看着就不专业`;
+
+/** 截图红框第二段：✓ 勾选式清单，同样无标签 */
+const PLAIN_MIT = `别人【可以】
+✓ 复制代码到自己项目里用
+✓ 拿去商用、闭源打包成自己的产品
+✓ 改造完成完全一样的样子发布
+
+别人【必须】
+· 保留你写的版权声明（不能抹掉"copyright 2026"）
+· 不能声称代码是自己写的
+· 不能拿你的名字担保他们的产品质量`;
+
+test('judgeCanvasSource：无标签纯文字判 prose（截图回归——改前落代码框）', () => {
+  assert.equal(judgeCanvasSource(PLAIN_NO_LICENSE), 'prose');
+  assert.equal(judgeCanvasSource(PLAIN_MIT), 'prose');
+});
+
+test('judgeCanvasSource：无标签真源码仍判 code（不得被 prose 吞掉）', () => {
+  assert.equal(
+    judgeCanvasSource('const total = list.reduce((a, b) => a + b, 0);\nif (total > 30) throw new Error("x");'),
+    'code',
+  );
+  // 无标签字符画：必须等宽保对齐，判 code 而非 prose（prose 会剥标签毁掉对齐）
+  assert.equal(judgeCanvasSource('| 阶段 | 动作 |\n| 构建 | 编译打包 |\n| 部署 | 发布上线 |'), 'code');
+});
+
+test('looksLikeCodeCanvas：句中出现的代码词不算源码（截图正文里就有 import）', () => {
+  // 「在自己的项目里 import 你的 @forge/core」——import 在句中，是中文技术写作的
+  // 普通名词用法。关键词必须锚行首，否则纯中文说明被误判成源码、照旧掉进代码框。
+  assert.equal(looksLikeCodeCanvas(PLAIN_NO_LICENSE), false);
+  assert.equal(looksLikeCodeCanvas(PLAIN_MIT), false);
+  // 行首才是源码
+  assert.equal(looksLikeCodeCanvas('import os\nprint(os.getcwd())'), true);
+  assert.equal(looksLikeCodeCanvas('for (const x of xs) {\n  f(x);\n}'), true);
+});
+
+test('judgeCanvasSource：真 HTML 卡片判 html，布局信号不被 prose 抢走', () => {
+  assert.equal(judgeCanvasSource('<div class="k">登录接口防爆破机制</div>'), 'html');
+  assert.equal(
+    judgeCanvasSource('<div style="display:flex;gap:8px"><div style="border:1px solid var(--c-border);padding:8px">网关</div><div style="border:1px solid var(--c-border);padding:8px">服务</div></div>'),
+    'html',
+  );
+  assert.equal(judgeCanvasSource('<table><tr><td>阶段</td><td>动作</td></tr></table>'), 'html');
+});
+
+test('judgeCanvasSource：undecided 只给「无标签且太短」，流式骨架据此挂不挂', () => {
+  // 太短判不出是不是散文开头：交给骨架占位
+  assert.equal(judgeCanvasSource('没有 LI'), 'undecided');
+  assert.equal(judgeCanvasSource(''), 'empty');
+  // 一旦够长就判死，且对无标签内容单调（文本只增不减）——
+  // 骨架不会在闭合瞬间翻面，这是提前撤骨架的前提
+  const half = PLAIN_NO_LICENSE.slice(0, Math.floor(PLAIN_NO_LICENSE.length / 2));
+  assert.equal(judgeCanvasSource(half), 'prose');
+  assert.equal(judgeCanvasSource(PLAIN_NO_LICENSE), 'prose');
+});
+
+test('stripCanvasProse：伪列表符还原成 markdown 列表（否则降级正文糊成一段话）', () => {
+  // 截图里的 `·` 与 `✓` 剥成纯文本后只是行内字面量，不还原会丢掉原列表结构
+  assert.equal(
+    stripCanvasProse(PLAIN_NO_LICENSE).split('\n')[1],
+    '- 别人能读你的代码、能 fork —— 纯「阅读」不违法',
+  );
+  assert.equal(stripCanvasProse(PLAIN_MIT).split('\n')[1], '- 复制代码到自己项目里用');
+  // 还原后过 renderMarkdown 出真 <ul>，不再出代码块
+  const html = renderMarkdown(stripCanvasProse(PLAIN_MIT));
+  assert.ok(html.includes('<ul>'));
+  assert.ok(!html.includes('<pre'));
+  // 行中的 · / ✓ 不受影响（只处理行首）
+  assert.ok(stripCanvasProse('<p>范围是 A · B 的并集</p>').includes('A · B'));
 });
 
 test('stripCanvasProse：行首排版缩进剥掉（防 renderMarkdown 顶成代码块），连续空行收敛', () => {

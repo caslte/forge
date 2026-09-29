@@ -3,12 +3,13 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   CANVAS_DEFAULT_HEIGHT,
   CANVAS_TALL_HEIGHT,
-  looksLikeHtmlCanvas,
-  looksLikeProseCanvas,
   stripCanvasProse,
+  judgeCanvasSource,
+  decodeCanvasSource,
   buildCanvasDocument,
   buildCanvasStandaloneFile,
   renderMarkdown,
+  type CanvasVerdict,
   type CanvasTokens,
 } from '@forge/core/markdown';
 import { useI18n } from '../i18n/index.ts';
@@ -34,15 +35,8 @@ const props = defineProps<{
 const { t } = useI18n();
 const { themeMode } = useTheme();
 
-/** base64 → UTF-8（仅 atob 会得到 Latin-1 二进制串，需 TextDecoder 还原） */
-const source = computed(() => {
-  try {
-    const binary = atob(props.encoded);
-    return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
-  } catch {
-    return '';
-  }
-});
+/** base64 → UTF-8（解码口径与流式骨架判决共用 @forge/core 的 decodeCanvasSource） */
+const source = computed(() => decodeCanvasSource(props.encoded));
 
 /**
  * 宿主令牌 → 沙箱语义色。
@@ -70,14 +64,38 @@ const tokens = computed<CanvasTokens>(() => {
 });
 
 const srcdoc = computed(() => buildCanvasDocument(source.value, tokens.value));
-const isHtml = computed(() => looksLikeHtmlCanvas(source.value));
+/**
+ * 四态判决走 @forge/core 的 judgeCanvasSource（唯一口径），本组件不再自己排
+ * 「先看 isHtml 还是先看 isProse」——那正是 2026-09-29 骨架闪完落到代码框的成因：
+ * 旧模板里 !isHtml 分支排在 isProse 前面，无标签的纯文字永远先被代码块截胡。
+ */
+const verdict = computed(() => judgeCanvasSource(source.value));
+/**
+ * 骨架只在「结论还会变」时挂。
+ *
+ * - undecided：判不出（无标签又太短），先占位；
+ * - html：已经确定是卡片，但源码只写了一半——绝不能把半成品塞进 iframe
+ *   （E-CA-003 契约），仍要挂骨架等闭合；
+ * - prose / code：结论已定且不会再变（无标签分支对文本单调：只会变长，判据
+ *   只会从 undecided 走到终态），此时挂骨架就是「假进度」——用户先看一秒
+ *   转圈再变成正文/代码框，正是 2026-09-29 截图的观感。直接出终态。
+ */
+const showSkeleton = computed(
+  () => props.blocked === true && (verdict.value === 'undecided' || verdict.value === 'html'),
+);
+/**
+ * 真正用来选模板分支的态：undecided 只在流式骨架期间成立，撑不到终态（终态不再有
+ * token 来闭合围栏）。它必须在模板里落到某个具体分支，故归一到 code——无标签内容
+ * 进 iframe 必然是空白卡，这正是 canvasSandbox 文件头要避免的。
+ */
+const shape = computed<CanvasVerdict>(() => (verdict.value === 'undecided' ? 'code' : verdict.value));
+const isHtml = computed(() => shape.value === 'html');
 /**
  * 「文字塞卡片」：模型把纯文字说明包进 canvas 围栏。不出 iframe（固定高卡片装
  * 一段文字 = 大片留白），摘出文字过 renderMarkdown（sanitize 白名单在内）按正文
  * 流渲染——安全面与普通 markdown 正文同一条线，卡片边框与工具栏都不出现。
  */
-const isProse = computed(() => looksLikeProseCanvas(source.value));
-const proseHtml = computed(() => (isProse.value ? renderMarkdown(stripCanvasProse(source.value)) : ''));
+const proseHtml = computed(() => (shape.value === 'prose' ? renderMarkdown(stripCanvasProse(source.value)) : ''));
 /** 蒙版与终态同高：闭合瞬间不产生跳变，下方正文不会被顶动 */
 const height = ref(CANVAS_DEFAULT_HEIGHT);
 const expanded = ref(false);
@@ -169,8 +187,10 @@ onUnmounted(() => {
 
 <template>
   <div class="md-canvas-block">
-    <!-- 流式中途：骨架蒙版。高度与终态一致，闭合瞬间零跳变 -->
-    <div v-if="blocked" class="canvas-frame canvas-skel" :style="{ height: `${CANVAS_DEFAULT_HEIGHT}px` }">
+    <!-- 流式中途：骨架蒙版。高度与终态一致，闭合瞬间零跳变。
+         但源码一旦能判出「不可能是 HTML」（无标签且已够长），骨架立刻撤掉直接出正文，
+         不让用户先看一秒假进度再变成别的形态——截图那类纯文字说明就是这么被误判的。 -->
+    <div v-if="showSkeleton" class="canvas-frame canvas-skel" :style="{ height: `${CANVAS_DEFAULT_HEIGHT}px` }">
       <div class="skel-bar skel-title" />
       <div class="skel-bar skel-sub" />
       <div class="skel-row"><span /><span /></div>
@@ -183,10 +203,14 @@ onUnmounted(() => {
     </div>
 
     <!-- 闭合但内容为空：不给 iframe，一句说明 -->
-    <div v-else-if="!source.trim()" class="canvas-frame canvas-empty">{{ t('canvas.empty') }}</div>
+    <div v-else-if="shape === 'empty'" class="canvas-frame canvas-empty">{{ t('canvas.empty') }}</div>
 
-    <!-- 闭合且不是 HTML 图示：降级代码块（蒙版期间用户看不到内容，此处必须兜底） -->
-    <div v-else-if="!isHtml" class="canvas-fallback">
+    <!-- 文字塞卡片（含无标签的纯文字）：标签只是排版壳，或压根没标签。
+         摘出文字按正文流渲染，不出卡片框、不给固定高 -->
+    <div v-else-if="shape === 'prose'" class="canvas-prose" v-html="proseHtml"></div>
+
+    <!-- 闭合且是源码/字符画：降级代码块（蒙版期间用户看不到内容，此处必须兜底） -->
+    <div v-else-if="shape === 'code'" class="canvas-fallback">
       <div class="canvas-tools">
         <button class="canvas-tool" :title="t('canvas.expand')" @click="expanded = true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -202,9 +226,6 @@ onUnmounted(() => {
       </div>
       <pre class="canvas-source" :style="sourceExpanded ? { maxHeight: `${CANVAS_TALL_HEIGHT}px` } : undefined"><code>{{ source }}</code></pre>
     </div>
-
-    <!-- 文字塞卡片：标签只是排版壳。摘出文字按正文流渲染，不出卡片框、不给固定高 -->
-    <div v-else-if="isProse" class="canvas-prose" v-html="proseHtml"></div>
 
     <!-- 正常态：沙箱 iframe -->
     <div v-else class="canvas-frame" :style="{ height: `${height}px` }">

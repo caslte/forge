@@ -7,7 +7,7 @@
  *   顶边框、左上角与面板齐平），开关 200ms 过渡。
  * - tab：终端图标 + 项目名 + hover 现形 ✕；＋ 新建（cwd 自动取当前会话项目根，
  *   无项目禁用+tooltip）。
- * - 面板右端两个动作键：终端配色档切换（暗/亮；未手选前跟随应用主题）、收起面板
+ * - 面板右端两个动作键：终端配色档切换（跟随应用主题 / 暗 / 亮 三态循环）、收起面板
  *   （等价顶栏终端按钮的「关」）。配色档落 `forge:terminal-tint`。
  *
  * 生命周期口径（TM-S04）：收起面板 pty 保活；关 tab 即 kill；组件卸载（窗口关闭/文档
@@ -25,6 +25,7 @@ import { invokeRaw, subscribe } from '../bridge';
 import type { TermCreateResult, TermDataPayload, TermExitPayload } from '../bridge';
 import { useI18n } from '../i18n/index.ts';
 import { usePreferences, clampTerminalHeight } from '../composables/usePreferences.ts';
+import type { TerminalTint } from '../composables/usePreferences.ts';
 import { useTheme } from '../composables/useTheme.ts';
 import { useToast } from '../composables/useToast.ts';
 
@@ -131,8 +132,11 @@ function cssVar(name: string, fallback: string): string {
  * 实际就是默认色，靠 `.term-body` 的 CSS 底色衬着才看不出）。取值 = 两档令牌换算后的 sRGB。
  */
 const TERM_PALETTE = {
-  dark: { background: '#15171d', foreground: '#ccced0', cursor: '#70ccae', selection: '#2a2c31' },
-  light: { background: '#f4f4f5', foreground: '#333333', cursor: '#46987e', selection: '#dfdede' },
+  // 暗档光标取纯白（用户 2026-09-29：不要品牌绿）
+  dark: { background: '#15171d', foreground: '#ccced0', cursor: '#ffffff', selection: '#2a2c31' },
+  // 亮档光标取纯黑（用户 2026-09-29）；暗档不能也用黑——会沉进 #15171d 底色看不见
+  // 亮档底色 = 纯白（用户 2026-09-29：去掉灰底，与 app 白底融为一体）
+  light: { background: '#ffffff', foreground: '#333333', cursor: '#000000', selection: '#dfdede' },
 } as const;
 
 /** 生效档：auto 跟随应用主题，dark/light 为用户手选 */
@@ -140,6 +144,21 @@ const termDark = computed(
   () => (terminalTint.value === 'auto' ? themeMode.value === 'dark' : terminalTint.value === 'dark'),
 );
 const termPalette = computed(() => (termDark.value ? TERM_PALETTE.dark : TERM_PALETTE.light));
+
+/** 点一下配色键要落到的下一档：auto 先钉到「逆着当前应用主题」那档（第一击必有可见变化），
+ *  逆档 → 顺档钉住 → 回 auto，保证三档在任一主题下都可达、且前两击都有反馈 */
+const nextTint = computed<TerminalTint>(() => {
+  if (terminalTint.value === 'auto') return termDark.value ? 'light' : 'dark';
+  if (terminalTint.value !== themeMode.value) return themeMode.value;
+  return 'auto';
+});
+
+/** 配色键 tooltip = 下一击会落到的档 */
+const TINT_TIP = {
+  auto: 'terminal.tintToAuto',
+  dark: 'terminal.tintToDark',
+  light: 'terminal.tintToLight',
+} as const;
 
 function xtermTheme() {
   const p = termPalette.value;
@@ -155,8 +174,8 @@ function buildTerminal(): Terminal {
   const term = new Terminal({
     fontFamily: cssVar('--font-mono', 'Consolas, Menlo, monospace'),
     fontSize: 12,
-    // 1.8 沿用 demo 静态文本的观感，真实终端里行距明显偏松（用户 2026-09-29 反馈）
-    lineHeight: 1.4,
+    // xterm 没有「光标高度」选项，块状光标高度 = 字号 × 行高；只能从行高收（1.8→1.4→1.25）
+    lineHeight: 1.25,
     scrollback: 1000,
     cursorBlink: true,
     theme: xtermTheme(),
@@ -207,9 +226,9 @@ watch([themeMode, terminalTint], () => {
   for (const tab of tabs.value) tab.term.options.theme = theme;
 });
 
-/** 手选档与生效档相反即切过去（auto 下第一击 = 逆着当前应用主题的那一档） */
+/** 三档循环：auto(跟随应用主题) → 钉住一档 → 另一档 → 回 auto */
 function toggleTint(): void {
-  setTerminalTint(termDark.value ? 'light' : 'dark');
+  setTerminalTint(nextTint.value);
 }
 
 /** 新建 tab：xterm 先行（占位渲染 + 真实尺寸），pty 随后按该尺寸 spawn */
@@ -531,15 +550,29 @@ defineExpose({ togglePanel });
         </svg>
       </button>
       <span class="spacer"></span>
-      <!-- 面板右侧动作键：终端配色档切换 + 收起面板（等价右上角终端按钮的关） -->
+      <!-- 面板右侧动作键：终端配色档切换（跟随/暗/亮 三态循环）+ 收起面板 -->
       <button
         class="term-act"
-        :data-tooltip="termDark ? t('terminal.tintToLight') : t('terminal.tintToDark')"
+        :data-tooltip="t(TINT_TIP[nextTint])"
         @click="toggleTint"
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <svg v-if="terminalTint === 'auto'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="8" />
           <path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" />
+        </svg>
+        <svg v-else-if="terminalTint === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a7 7 0 0 0 10.8 10.8z" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4" />
+          <line x1="12" y1="2" x2="12" y2="5" />
+          <line x1="12" y1="19" x2="12" y2="22" />
+          <line x1="2" y1="12" x2="5" y2="12" />
+          <line x1="19" y1="12" x2="22" y2="12" />
+          <line x1="4.9" y1="4.9" x2="7" y2="7" />
+          <line x1="17" y1="17" x2="19.1" y2="19.1" />
+          <line x1="4.9" y1="19.1" x2="7" y2="17" />
+          <line x1="17" y1="7" x2="19.1" y2="4.9" />
         </svg>
       </button>
       <button
@@ -601,10 +634,16 @@ defineExpose({ togglePanel });
   gap: 4px;
   padding: 6px 10px 0;
   font-size: 12.5px;
+  /* 连体压线的前提：tab 条整体画在 term-body 之后 —— term-body 的后画顺序
+     会把 1px 顶边框盖回活动 tab 底边（圆角已修但接缝仍露线），这里在层叠上翻回来 */
+  position: relative;
+  z-index: 1;
 }
 
 /* 连体 tab（D5 定稿）：底边压住面板顶边框、面板左上角直角 */
 .term-tab {
+  /* tab 自身实际底色：未激活 = 面板底色，激活 = 终端面（可能与面板底色相反） */
+  --tab-bg: var(--background);
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -621,10 +660,13 @@ defineExpose({ togglePanel });
 }
 
 .term-tab.on {
-  /* 与终端面同色（--term-surface 由 script 侧配色档绑定，手选暗色时 tab 一起变） */
+  /* 与终端面同色（--term-surface 由 script 侧配色档绑定，手选暗色时 tab 一起变）；
+     底部 1px 外扩同色阴影 = 非整数缩放下压住接缝残余，边框线不会从缝里透出来 */
+  --tab-bg: var(--term-surface);
   background: var(--term-surface);
   border-color: var(--border);
   border-bottom: 1px solid var(--term-surface);
+  box-shadow: 0 1px 0 0 var(--term-surface);
   color: var(--term-ink);
 }
 
@@ -662,7 +704,8 @@ defineExpose({ togglePanel });
 
 .term-tab .x:hover {
   opacity: 1;
-  background: var(--surface-hover);
+  /* 用 tab 自己的底色提亮：终端档与 app 主题相反时（暗主题 + 亮终端）也不会糊成一块深色斑 */
+  background: color-mix(in oklab, var(--foreground) 14%, var(--tab-bg));
 }
 
 .term-add {
@@ -731,6 +774,8 @@ defineExpose({ togglePanel });
   padding: 10px 14px;
   background: var(--term-surface);
   border: 1px solid var(--border);
+  /* 左上直角（demo 口径）：活动 tab 底边才能完整压住面板顶边框；
+     圆角弧线会把边框从 tab 底下露出来 = 钉暗色档时 tab 下那条线 */
   border-radius: 0 var(--radius-lg) var(--radius-lg) var(--radius-lg);
   overflow: hidden;
 }

@@ -45,9 +45,12 @@ export const CANVAS_TALL_HEIGHT = 560;
  */
 export function looksLikeHtmlCanvas(source: string): boolean {
   const s = source ?? '';
-  if (!/<[a-zA-Z!/][^>]*>/.test(s)) return false;
+  if (!HAS_TAG_RE.test(s)) return false;
   return !looksLikeAsciiArt(stripTagsToText(s));
 }
+
+/** 任意标签形态（<div>、<!DOCTYPE、<!-- 注释…）：卡片是 HTML 的最低要求。 */
+const HAS_TAG_RE = /<[a-zA-Z!/][^>]*>/;
 
 /** 取标签外的可见文本。先吃掉「标签间纯空白」（模型的排版缩进），缩进不是内容。 */
 function stripTagsToText(s: string): string {
@@ -112,13 +115,91 @@ function longestTextRun(s: string): number {
 }
 
 /**
- * 源码是否「文字塞卡片」：有标签（否则归 looksLikeHtmlCanvas 的代码块降级）、
+ * 源码形态：模型把一段代码（非 HTML）错塞进 canvas 围栏。
+ *
+ * 用来把「无标签」再分流一次——无标签不等于 prose（真代码照样无标签），
+ * 但也不等于「该按代码块降级」：截图那类纯文字说明（`·` 伪列表 + 中文长句）
+ * 无标签却不是代码，按代码块渲染是纯噪声。
+ *
+ * 判据只认代码独有的排版信号，且**关键词必须出现在行首**（`m` 标志 + `^`）：
+ * 截图正文里就有「在自己的项目里 import 你的 @forge/core」这种把代码词当普通
+ * 名词用的句子，全串搜 `import` 会把纯中文说明误判成源码、照旧掉进代码框。
+ * 行首 `const/for/if` 才是源码；句中 import 是散文。其余信号（花括号、分号、
+ * 赋值、箭头函数、调用后接标点）在中文正文里同样不会出现。
+ */
+const CODE_SHAPE_RE =
+  /^[ \t]*(?:const|let|var|function|class|def|import|from|export|package|if|else|for|while|return|throw|new|public|private|static)\b|[{};]|=>|[a-zA-Z_$][\w$]*\s*=(?!=)|\w+\s*\([^)]*\)\s*[:{;]/m;
+
+/** 源码形态判据的对外入口（供回归测试钉住误伤面） */
+export function looksLikeCodeCanvas(source: string): boolean {
+  return CODE_SHAPE_RE.test(source ?? '');
+}
+
+/* ------------------------------------------------------------------ *
+ * 四态判决（唯一口径）。
+ *
+ * 为什么要收成一个函数：流式骨架要不要撤（MessageCard）与终态渲染成什么
+ * （HtmlCanvasBlock）本来各判一遍，两边的顺序只要有一处不同就会出现「骨架闪一下
+ * 然后落到代码框」这种自相矛盾的结果——这正是 2026-09-29 实测到的现象。判定逻辑
+ * 只有一份，两边都读它。
+ */
+
+/** 卡片源码的终态（'undecided' 专用于流式中途：还判不出是不是 HTML） */
+export type CanvasVerdict = 'empty' | 'html' | 'prose' | 'code' | 'undecided';
+
+/**
+ * 卡片源码判成哪一态。
+ *
+ * 顺序即优先级：
+ * 1. 空 → 空态文案；
+ * 2. 有标签 → 是 HTML 图示候选，再由 looksLikeProseCanvas 挑出「标签只是排版壳」
+ *    的那部分降级成正文（带布局信号的仍留在 iframe）；
+ * 3. 无标签 → 不是 HTML。字符画与源码都按代码块降级（等宽保对齐/着色），其余
+ *    按 prose 降级成正文流——模型把纯文字说明塞进围栏是高频行为，出代码框是噪声。
+ *
+ * 'undecided'：无标签且文本还没到 PROSE_MIN_TEXT。此时既可能是散文开头，也可能是
+ * 模型正要画图的前言，判早了会在闭合瞬间翻面（正文↔卡片），故交给流式骨架占位。
+ * 已经判成 prose/code 的不再回退到 undecided——文本只会变长，判据单调。
+ */
+export function judgeCanvasSource(source: string): CanvasVerdict {
+  const s = source ?? '';
+  if (s.trim() === '') return 'empty';
+  if (HAS_TAG_RE.test(s)) {
+    return looksLikeProseCanvas(s) ? 'prose' : 'html';
+  }
+  // 无标签：源码与字符画先判——它们从第一个字符起就有排版信号（import/for/分号/
+  // 管道），不需要等长度门槛，否则流式刚开始写代码时会被误判成 undecided 挂骨架。
+  if (looksLikeCodeCanvas(s) || looksLikeAsciiArt(s, 2)) return 'code';
+  // 剩下的是「可能是散文」：太短判不出是散文开头还是画图前言，交给骨架占位。
+  if (s.trim().length < PROSE_MIN_TEXT) return 'undecided';
+  return 'prose';
+}
+
+/** base64 → UTF-8（前端与流式判决共用一份解码；atob 只给 Latin-1，需 TextDecoder 还原） */
+export function decodeCanvasSource(encoded: string): string {
+  try {
+    const binary = atob(encoded);
+    return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 源码是否「文字塞卡片」（prose 降级）：有标签（否则归 looksLikeHtmlCanvas 的代码块降级）、
  * 非图形（svg/img 不碰），且命中其一——
  * 1. 长句路径：任一标签间文本 ≥ PROSE_LONG_RUN（无视布局信号）；
  * 2. 薄壳路径：可见文本占源码六成以上、且无任何布局特征（flex/grid/定位/图元/制表符）。
  */
 export function looksLikeProseCanvas(source: string): boolean {
   const s = source ?? '';
+  // 无标签：prose 与源码在此分岔（截图那类纯文字说明走 prose，代码走代码块降级）。
+  // 字符画不进 prose——它要等宽保对齐，剥标签会毁掉它。
+  if (!HAS_TAG_RE.test(s)) {
+    if (s.trim().length < PROSE_MIN_TEXT) return false;
+    if (looksLikeAsciiArt(s, 2)) return false;
+    return !looksLikeCodeCanvas(s);
+  }
   if (!looksLikeHtmlCanvas(s)) return false;
   if (GRAPHIC_RE.test(s)) return false;
   const text = stripTagsToText(s).trim();
@@ -150,7 +231,16 @@ export function stripCanvasProse(source: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&');
+    .replace(/&amp;/g, '&')
+    // 伪列表符还原成 markdown 列表：模型在卡片里手写 `·` / `✓` 排版（截图里
+    // 「· 别人能读你的代码」「✓ 复制代码到自己项目里用」），剥成纯文本后这些字符
+    // 只是行内字面量，一段话全糊成一行。不还原的话降级出来的正文丢掉了原列表结构。
+    .replace(/^([ \t]*)[·•·‧∙◦▪]\s+/gm, '$1- ')
+    .replace(/^([ \t]*)√[ \t]?/gm, '$1- ')
+    .replace(/^([ \t]*)[✓✔☑]\s*/gm, '$1- ')
+    // 还原后连续两行是同一列表项的续行还是两个列表项，markdown 自己会按缩进判定；
+    // 只需保证列表项之间有空行不会粘连（renderMarkdown 的 loose list 行为一致）。
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 /**

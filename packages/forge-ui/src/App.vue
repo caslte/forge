@@ -990,7 +990,7 @@ onUnmounted(() => {
             </button>
           </template>
           <span class="app-toolbar-space"></span>
-          <!-- 终端开关（模块 10 D5 定稿）：纯图标 + 1px 外框，激活态描边品牌色 -->
+          <!-- 终端开关（模块 10 D5 定稿）：纯图标无边框，激活态品牌色底 -->
           <button
             class="app-toolbar-btn term-toggle"
             :class="{ 'is-active': terminalOpen }"
@@ -1605,11 +1605,11 @@ onUnmounted(() => {
   flex: 1;
 }
 
-/* 终端开关（demo .term-toggle 定稿）：覆盖 .app-toolbar-btn 的无边框胶囊形——
-   纯图标 + 1px 外框方形按钮；激活描边品牌色由 .is-active 既有规则接管 */
+/* 终端开关：纯图标方形按钮，无边框（用户 2026-09-29 去掉 1px 外框）；
+   激活态底色/字色由 .is-active 既有规则接管 */
 .app-toolbar-btn.term-toggle {
-  padding: 5px;
-  border: 1px solid var(--border);
+  padding: 6px;
+  border: none;
   border-radius: var(--radius-md);
 }
 

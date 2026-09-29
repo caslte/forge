@@ -8,7 +8,7 @@
  * 非 HTML 降级、```html 不被劫持、工具栏与放大浮层。
  */
 import { test, expect } from '@playwright/test';
-import { attachHealthGuards, seedHistory, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, seedHistory, seedSendScript, seedSessions, waitForMock } from './helpers/index';
 
 const PROJECT = 'D:/work/aiwork/forge';
 
@@ -167,6 +167,79 @@ test('E-CA-004 @P1 @mock-backend：围栏里不是 HTML → 降级代码块，�
   await expect(lightbox).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(lightbox).toHaveCount(0);
+});
+
+/**
+ * 截图回归（2026-09-29）：模型把纯文字说明（源码里一个标签都没有）塞进 canvas
+ * 围栏。改前判 looksLikeHtmlCanvas=false → 落 canvas-fallback 代码框（黑底方块），
+ * 正是用户截图里那两块。改后判 prose → 按正文流渲染，与普通段落无异。
+ */
+const PLAIN_NO_LICENSE = `没有 LICENSE 时，GitHub 自动套用「保留所有权利」
+· 别人能读你的代码、能 fork —— 纯「阅读」不违法
+· 但复制一段代码用在自己项目里、拿去商用、改了再发布 —— 法律上不允许
+即使他们想做善意的贡献也只能提 PR，因为没有授权基础
+
+实际会发生什么
+· 有人想在自己的项目里 import 你的 @forge/core — 被法律挡住，只能 fork 后当私用代码用
+· 企业法务看到「无许可证」直接跳过 → 少掉一大半潜在使用者
+· GitHub 页面右侧会挂一个灰色的 "Unlicensed" 警告标签，看着就不专业`;
+
+test('E-CA-008 @P0 @mock-backend：无标签纯文字按正文流渲染，不落代码框（截图回归）', async ({ page }) => {
+  await seedAndOpen(
+    page,
+    'sess-canvas-8',
+    '画布纯文字',
+    `先说结论。\n\n\`\`\`canvas\n${PLAIN_NO_LICENSE}\n\`\`\`\n\n需要我把 LICENSE 模板也写出来吗？`,
+  );
+
+  const block = page.locator('.md-canvas-block');
+  // 降级成正文流：出 canvas-prose，且绝不出代码框 / iframe / 骨架
+  await expect(block.locator('.canvas-prose')).toBeVisible();
+  await expect(block.locator('.canvas-fallback')).toHaveCount(0);
+  await expect(block.locator('iframe')).toHaveCount(0);
+  await expect(block.locator('.canvas-skel')).toHaveCount(0);
+
+  // 伪列表符 `·` 必须还原成真 <ul>，否则降级出来是一段糊在一起的散文
+  await expect(block.locator('.canvas-prose ul')).toHaveCount(1);
+  await expect(block.locator('.canvas-prose li').first()).toContainText('别人能读你的代码');
+
+  // 内容不丢：正文里仍在（截图那段的中文原文）
+  await expect(block).toContainText('GitHub 自动套用「保留所有权利」');
+  // 不出代码块容器
+  await expect(block.locator('pre')).toHaveCount(0);
+
+  // 夹排位置不变：卡片槽位仍在两段正文之间
+  const order = await page.locator('.msg-assistant .msg-bubble').first().evaluate((el) =>
+    [...el.children].map((c) => (c.classList.contains('md-canvas-block') ? 'card' : 'text')),
+  );
+  expect(order).toEqual(['text', 'card', 'text']);
+});
+
+test('E-CA-009 @P0 @mock-backend：流式中纯文字不挂骨架（假进度），真 HTML 半成品仍挂', async ({ page }) => {
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-canvas-9', '画布流式判据')]);
+  // 先播纯文字（够长 → 判据已定 prose），再闭栏
+  await seedSendScript(page, 'sess-canvas-9', [
+    { type: 'message', payload: { role: 'user', content: '许可证怎么选' } },
+    { type: 'delta', payload: { delta: { text: '```canvas\n' + PLAIN_NO_LICENSE, kind: 'text' } } },
+  ]);
+  await openSession(page, '画布流式判据');
+
+  const block = page.locator('.md-canvas-block');
+  // 判据已定 prose：不该再挂 320px 假进度
+  await expect(block.locator('.canvas-prose')).toBeVisible();
+  await expect(block.locator('.canvas-skel')).toHaveCount(0);
+
+  // 闭栏后仍是正文流（不翻面成代码框/卡片）
+  await page.evaluate(() => {
+    window.__forgeMock!.emit('sess-canvas-9', 'conversation.delta', {
+      delta: { text: '\n```', kind: 'text' },
+    });
+  });
+  await expect(block.locator('.canvas-fallback')).toHaveCount(0);
+  await expect(block.locator('iframe')).toHaveCount(0);
+  await expect(block.locator('.canvas-prose')).toBeVisible();
 });
 
 test('E-CA-005 @P1 @mock-backend：```html 围栏不被劫持（模型展示 HTML 代码示例是常态）', async ({ page }) => {

@@ -98,6 +98,15 @@ test('内容宽度：新会话首屏（hero）输入框恒为 640px，标准模�
 
   expect(await heroBoxW(), '默认标准：首屏输入框收窄 640px').toBe(640);
 
+  // 字标图片必须真的解码成功（naturalWidth > 0）：资源被删 / 引用后缀写错都会退化成破图，
+  // 只断言「元素可见」抓不到这类问题
+  const wordmark = await page.evaluate(() => {
+    const img = document.querySelector('.conv-hero-wordmark.wm-dark') as HTMLImageElement | null;
+    return { src: img?.getAttribute('src') ?? null, naturalWidth: img?.naturalWidth ?? 0 };
+  });
+  expect(wordmark.src, '首屏字标应指向 svg 资源').toMatch(/\.svg$/);
+  expect(wordmark.naturalWidth, '首屏字标图片应加载成功（naturalWidth > 0）').toBeGreaterThan(0);
+
   await setContentWidth(page, '宽');
   expect(await heroBoxW(), '切宽后首屏输入框仍为 640px（hero 不随偏好变宽）').toBe(640);
 
