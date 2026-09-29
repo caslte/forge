@@ -34,11 +34,61 @@ export const CANVAS_TALL_HEIGHT = 560;
  *
  * 用途是闭合那一刻的降级判定：蒙版期间用户看不到内容，若模型误把一段 JS / 纯文本
  * 塞进 canvas 围栏，无条件塞进 iframe 会得到一张空白卡片，用户等半天什么也没得到。
- * 判据取「存在任意标签形态」——残缺但确是 HTML 的（模型写到一半就闭合）仍判 true，
- * 交给浏览器自动补齐未闭合标签，这比退回代码块更接近用户预期。
+ *
+ * 判据分两层：
+ * 1. 存在任意标签形态——残缺但确是 HTML 的（模型写到一半就闭合）仍可进 iframe，
+ *    交给浏览器自动补齐未闭合标签；
+ * 2. 但「有一个标签」不等于「是一张有布局的图」：模型常拿一个薄壳（如
+ *    `<div style="font:...">`）包住 ASCII 字符画。字符画进 iframe 会被 HTML 空白
+ *    规则压成一坨（换行丢、连续空格折叠、对齐全毁），比降级代码块差得多。
+ *    故剥掉标签取可见文本，文本呈字符画形态时判 false（降级代码块，等宽保对齐）。
  */
 export function looksLikeHtmlCanvas(source: string): boolean {
-  return /<[a-zA-Z!/][^>]*>/.test(source ?? '');
+  const s = source ?? '';
+  if (!/<[a-zA-Z!/][^>]*>/.test(s)) return false;
+  return !looksLikeAsciiArt(stripTagsToText(s));
+}
+
+/** 取标签外的可见文本。先吃掉「标签间纯空白」（模型的排版缩进），缩进不是内容。 */
+function stripTagsToText(s: string): string {
+  return s
+    .replace(/>\s+</g, '><')
+    .replace(/<[^>]*>/g, '');
+}
+
+/**
+ * 文本是否呈 ASCII 字符画形态。
+ *
+ * 行级判据（命中其一即算一行「画」）：
+ * 1. 制表字符（┌─│ 等）——字符画的强特征，单独成立；
+ * 2. ≥2 个管道符且行中（非行尾）有 ≥2 连续空格——「竖线分栏 + 空格对齐」；
+ *    排除行尾是避开 markdown 硬换行的尾随双空格习惯；
+ * 3. ≥2 个管道符且带下划线长跑——`|__|__|` 式表格线；
+ * 4. ≥3 个管道符——密集分栏（「off | low | high」式的两管道单空格写法不误伤）；
+ * 5. 同行出现 ≥2 段 `___` 级下划线长跑——横线分隔。
+ *    单段 `___` 可能是强调记号，不单独计。
+ *
+ * 整体判据：非空行数 ≥ minArt，且「画」≥ minArt 行、占非空行一半以上——
+ * 少量 `|` 分隔的正文（如「off | low | high」单空格写法）不误伤。
+ * minArt 传 2 供 markdown 正文段落用（段落行数天然少），围栏降级用默认 3。
+ */
+export function looksLikeAsciiArt(text: string, minArt = 3): boolean {
+  const lines = (text ?? '').split(/\r?\n/).filter((l) => l.trim() !== '');
+  if (lines.length < minArt) return false;
+  let art = 0;
+  for (const line of lines) {
+    if (asciiArtLine(line)) art += 1;
+  }
+  return art >= minArt && art * 2 >= lines.length;
+}
+
+function asciiArtLine(line: string): boolean {
+  if (/[─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩═║]/.test(line)) return true;
+  const pipes = (line.match(/\|/g) ?? []).length;
+  if (pipes >= 3) return true;
+  if (pipes >= 2 && / {2,}\S/.test(line)) return true;
+  if (pipes >= 2 && /_{2,}/.test(line)) return true;
+  return (line.match(/_{3,}/g) ?? []).length >= 2;
 }
 
 /** 注入沙箱文档的语义色令牌（由渲染进程从 :root 计算样式读出，随主题切换重算） */

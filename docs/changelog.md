@@ -1,5 +1,33 @@
 # 变更日志
 
+## v3.85.4 (改进：max 反馈动画改为「就地金色扫光」，下线悬浮 M A X 文字)
+
+> 来源：2026-09-28 用户反馈——思考级别改成分段滑条浮窗后，「切 max 的金色动画」浮在浮窗上方、飘进输入框正文区压住文字，很不好看。方案对比原型在 `prototypes/thinking-level-max-shimmer-demo.html`（0 现状 / A 就地扫光 / B 浮窗内文字 / C 收起后播 / D 光柱 五方案可切换对比），**A 方案定稿**。
+
+- **根因**：`M A X` 文字是锚在级别胶囊正上方的**外挂层**（`.max-shimmer { bottom: 100% }`）。原选择器点选即收起，胶囊上方就是输入正文区的空白；改成浮窗且选完保持展开后，为不被浮窗盖住而加的 `.is-open { bottom: calc(100% + 12px + var(--level-pop-h)) }` 把它顶到浮窗上方——于是它飘进正文区压住占位符/输入内容，还和触发源断开。控件形态一变，这个外挂层就得重测一次（还要挂 `ResizeObserver` 测浮窗高）。
+- **改动（`packages/forge-ui/src/components/InstructionInput.vue`）**：
+  - 删除：`.max-shimmer` 元素与样式、`max-text-flow` / `max-in` / `max-out` 三个 keyframes、`--level-pop-h` 及其展开时的实测写入、`levelPopEl` / `levelWrapEl` 两个 ref、`shimmerOn` + `triggerShimmer()`。反馈不再产生任何浮层，也不依赖浮窗高度测量。
+  - 新增 `flashMaxCell()`：选到 max 时给 max 档位挂 `.sweep`、给高亮块挂 `.pulse`，950ms 后摘除（重入先摘再挂，确保动画重启）。
+  - 新增样式：档位文字包一层 `.level-t`，**扫光渐变挂在文字紧包围盒上而不是整个按钮**——按钮比「max」三个字母宽 2 倍多，渐变铺在按钮上会变成一条比字形宽得多的宽带，看着不像「这几个字被点亮」（原型与实现的第一版差异即出在这里）。`.level-item.on.sweep` 走格子 `scale` 轻弹 0.32s（`level-cell-pop`），`.level-t` 走 LOGO 同款金色渐变 `background-clip: text` 流过 0.9s（`level-max-flow`），`.level-pill.pulse` 走高亮块金环脉冲 ×2（`level-pill-pulse`）。扫光结束后 active 的 max 文字停在金色渐变上（`.level-wrap.is-max .level-item.on .level-t`），与旧 M A X 动画同色系，不突然变回素色。
+  - 业务规则不变：`selectLevel` 仍是唯一的动画触发点（加载/重载落出 max 不触发）、乐观更新 + 静默降级、浮窗保持展开。
+- **e2e（`e2e/thinkingLevel.spec.ts` TLEVEL-E2E-004）**：断言从 `.max-shimmer` 换成 `.level-item.sweep`，时长窗口 `[2200,3400]ms` → `[850,1300]ms`；新增三条回归——① `.max-shimmer` 恒为 0 且扫光元素**完全落在 `.level-pop` 内**（越出即失败，正是这次的 bug）；② 三个动画名分别为 `level-max-flow`（文字）/ `level-cell-pop`（格子）/ `level-pill-pulse`（高亮块）；③ **扫光渐变的实际宽度必须小于按钮宽度**（即渐变挂在 `.level-t` 文字盒上，而非铺满按钮——这条正是「实现与原型不一致」的回归防线）。帧率 ≥30fps 断言保留。
+- **视觉核对**：Playwright 抓真机与原型页面同一时刻（150/400/750/1400ms）帧逐一比对，扫光落点、金色带宽度、格子弹动、高亮块脉冲一致（临时 spec 与对比帧已清理）。
+- **文档同步**：`prd/05_model_provider.md`（§3.5 反馈措辞 + AC-MP-014 + 交互描述改为分段滑条浮窗）、`test/05_model/coverage-matrix.md`（U-MP-008 / E-MP-008）「约 2-3s 金色流光」→「约 1s 金色扫光（档位内就地播放，不侵入输入正文区）」。
+
+## v3.85.3 (改进：思考级别切换器改为「分段滑条浮窗 + 水滴高亮」)
+
+> 来源：2026-09-28 用户反馈——文字下拉换挡太慢、要打开才能看全部档位，期望参考 Codex 的分段滑条。原型在 `prototypes/thinking-level-slider-demo.html`（A~E 五方案横向对比，D 方案定稿）。
+
+- **改动（均在 `packages/forge-ui`）**：
+  - `InstructionInput.vue`：`.level-menu`（文字下拉列表）→ `.level-pop` 浮窗 + `.level-seg` 横向分段滑条。触发器保持现状纯文字（`.meta-link` + chevron，无胶囊边框），只在末尾加展开指示三角（随浮窗开合旋转）。选完档位浮窗**保持展开**（方便连续换挡），Esc / 点外部收起。
+  - 高亮块 `.level-pill` 复刻 `App.vue` 项目/任务切换的水滴果冻机制：不整体平移，而是左右两条边分别动画（`--pill-l` / `--pill-r` 为 JS 实测 active 按钮 `offsetLeft/offsetWidth` 写入的几何），先行边 `240ms cubic-bezier(0.34,1.45,0.64,1)` 带回弹、另一条边 `260ms … 70ms` 追上去，途中被拉成水滴，落位时两头先后回弹；向右滑加 `.fwd` 让右边先行，向左回基态。
+  - 几何不猜：展开时下一帧实测贴位（`.no-anim` 免叠一次动画），改挡位带水滴，`ResizeObserver` 监听分段条尺寸（等宽字体异步加载 / 窗口缩放会改档位宽窄）重贴无动画。切模型导致挡位集重建同样走无动画重贴。
+  - 键盘：`←/→`（含 `↑/↓`）换挡、`Home/End` 首末档、`Esc` 收起并把焦点归还触发器；`role="radiogroup"` / `role="radio"` / `aria-checked` / `aria-label`（新增 i18n 键 `input.level.aria`）。档位按钮自身不画焦点环（当前位置已由高亮块表达）。
+  - `max` 金色联动：`.level-wrap.is-max` 令高亮块加金环、当前档位文字转金（`--logo-gradient-accent`）。`M A X` 流光动画在浮窗展开时上移到浮窗上方（`--level-pop-h` 为实测浮窗高，不靠魔法数字），保持「切 max 有庆祝动画」。
+  - 业务规则不变：`availableLevels` 仅 `off` 时隐藏入口、推理模型只剩 `max` 仍显示、会话级乐观更新 + 草稿态回显全局默认、切 max 播放流光（E-MP-008 行为未回退）。
+- **验证**：`e2e/thinkingLevel.spec.ts` 选择器随 DOM 迁移（`.level-menu .menu-item` → `.level-seg .level-item`），新增 TLEVEL-E2E-005 覆盖：高亮块几何与 active 档位误差 ≤1px、向右滑行中实测拉伸比 >1.15（真水滴）、`←/→`/`Home`/`End` 换挡、`Esc` 收起并归还焦点、`is-max` 金色态。回归：该 spec **5/5**、forge-ui 单测 **294/294**、`vue-tsc` 0 错；真机（mock bridge，1280×820）暗/亮双主题目检：暗色高亮块改用 `--surface-active`（与 `.view-seg::before` 同令牌）后与项目/任务切换器观感一致。
+- **踩坑**：① 浮窗不再随选档关闭 → `M A X` 动画文字被浮窗盖住（若直接跳过动画则 `E-MP-008` 行为回退），改为按实测浮窗高上移；② 等宽字体异步 swap 后档位宽窄变化，`--pill-*` 变陈旧（实测偏 1.3px），加 `ResizeObserver` 重贴；③ `.level-seg` 不能挂 Vue `:class` 绑定（`patchClass` 会整串覆写 `className`，冲掉 JS 侧加的 `.fwd/.no-anim`），故这两个类一律命令式切换。
+
 ## v3.85.2 (修复：启动 FORGE 字样「闪一下」+ 接管新会话时「跳一下」)
 
 > 来源：2026-09-27 用户反馈两条——①「app 加载页的 FORGE 字样会闪一下」；②「加载完成跳到新会话时，forge 字样会调整一下高度，这个调整过程用户能明显感知，就是跳了一下」。

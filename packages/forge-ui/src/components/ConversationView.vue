@@ -121,7 +121,7 @@ const {
  */
 const { isCompacting } = useCompactBanner();
 /** 个性化：对话框 diff 展示开关（设置页个性化 Tab，localStorage 持久） */
-const { showDiff } = usePreferences();
+const { showDiff, contentWidth } = usePreferences();
 const compactingNow = computed(() => isCompacting(props.sessionId));
 
 /**
@@ -862,10 +862,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="viewRef" class="conv-view">
+  <div ref="viewRef" class="conv-view" :class="{ 'col-standard': contentWidth === 'standard' }">
     <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。整行与结果视图 v-show 互斥
          （结果视图激活时隐藏整行，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
-    <div class="conv-main-row" v-show="!showResultView">
+    <div class="conv-main-row" :class="{ 'has-rail': hasTimeline }" v-show="!showResultView">
       <ConversationTimelineRail
         v-if="hasTimeline"
         v-show="!showResultView"
@@ -1113,6 +1113,25 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--background);
+
+  /* 内容列宽（个性化偏好 settings.personal.contentWidth）：
+     wide = 100%（现有行为，铺满）；standard = 固定列宽居中。
+     列宽数值走 token --content-col-std，改一处即全局生效（HMR 实时可调）。 */
+  --conv-col: 100%;
+  /* 输入框/状态行/浮窗宽度：跟随所在形态（hero 首屏收窄居中，见 .hero-mode） */
+  --conv-box-w: 100cqw;
+}
+
+/* 标准宽度：正文列与输入区同宽居中；min() 保证窄窗格自动退化为满宽 */
+.conv-view.col-standard {
+  --conv-col: min(var(--content-col-std, 920px), 100%);
+}
+
+/* 左缘时间线窄条占掉消息区左侧，标准宽度下若不补右侧对称 padding，
+   内容列会以「消息区」而非「整列视口」为中心，整体右移半个窄条宽，
+   与下方输入框错开。补齐后两者严格同轴。 */
+.conv-view.col-standard .conv-main-row.has-rail .conv-messages {
+  padding-right: calc(38px + var(--timeline-rail-w, 28px));
 }
 
 /* 左缘时间线 + 消息区横排容器（CV-S06）：时间线窄条在左，消息流占满余宽；
@@ -1170,6 +1189,19 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 16px;
   flex: 1;
+  /* 内容列收拢（标准宽度）：居中 + 宽度过渡，与输入框同步动画。
+     width:100% 必须显式写：margin-inline:auto 会取消 flex 的 stretch 对齐，
+     只留 max-width 时列会塌成 fit-content（宽模式也被压窄）。 */
+  width: 100%;
+  max-width: var(--conv-col);
+  margin-inline: auto;
+  transition: max-width var(--transition-decelerate);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conv-messages-inner {
+    transition: none;
+  }
 }
 
 /* 加载态 */
@@ -1365,8 +1397,11 @@ onUnmounted(() => {
    避免 percentage ↔ px 插值在 Chromium 上的不确定行为 */
 /* InstructionInput 为多根 fragment（compose-box + 状态行），不再继承父组件 scopeId，
    父作用域规则必须经 :deep() 才能命中 .compose-box */
+/* 宽度统一取 --conv-box-w：默认 100cqw（= 原有 100cqw），hero 态收窄，
+   标准宽度偏好下由 .conv-view.col-standard 改写为内容列宽（三种形态一致，不跳宽） */
 .conv-input-wrap :deep(.compose-box) {
-  max-width: 100cqw;
+  max-width: var(--conv-box-w);
+  margin-inline: auto;
   transition:
     border-color var(--transition-fast),
     box-shadow var(--transition-fast),
@@ -1374,15 +1409,18 @@ onUnmounted(() => {
 }
 
 /* hero 收窄居中（状态行同宽跟随，保证项目/分支左缘贴着输入框左缘） */
-.conv-input-wrap.hero-mode :deep(.compose-box) {
-  max-width: min(640px, 100cqw);
-  margin: 0 auto;
+.conv-input-wrap.hero-mode {
+  --conv-box-w: min(640px, 100cqw);
 }
 
-/* 状态行用 margin-inline 而非 margin 简写：保留 InstructionInput 自带的 2px 上间距 */
-.conv-input-wrap.hero-mode :deep(.compose-status) {
-  max-width: min(640px, 100cqw);
+.conv-input-wrap :deep(.compose-status) {
+  max-width: var(--conv-box-w);
   margin-inline: auto;
+}
+
+/* 标准宽度：输入框整体（输入框 + 状态行）跟随正文列宽 */
+.conv-view.col-standard .conv-input-wrap {
+  --conv-box-w: var(--conv-col);
 }
 
 /*
@@ -1391,7 +1429,7 @@ onUnmounted(() => {
  * scoped CSS 里 :deep() 只能往下穿透、不能往上选祖先）。TodoPanel.vue 不重复定义。
  */
 .conv-input-wrap.hero-mode :deep(.todo-panel) {
-  max-width: min(640px, 100cqw);
+  max-width: var(--conv-box-w);
   /* 保留 -10px 底 margin：面板底部仍塞进输入框背后，保持延伸一体感 */
   margin: 0 auto -10px;
 }
@@ -1399,8 +1437,16 @@ onUnmounted(() => {
 /* Path 2：问卷面板与 compose-box 同宽居中（与上面 TodoPanel 规则同理，写在
    ConversationView 才能往上选 .conv-input-wrap 祖先）。 */
 .conv-input-wrap.hero-mode :deep(.ask-panel) {
-  max-width: min(640px, 100cqw);
+  max-width: var(--conv-box-w);
   margin: 0 auto -10px;
+}
+
+/* 非 hero 态：Todo / 问卷浮窗（挂在输入框上方）跟随输入框同宽居中，
+   否则标准宽度下浮窗仍铺满，与收窄的输入框错位 */
+.conv-input-wrap:not(.hero-mode) :deep(.todo-panel),
+.conv-input-wrap:not(.hero-mode) :deep(.ask-panel) {
+  max-width: var(--conv-box-w);
+  margin-inline: auto;
 }
 
 /* 模型切换横幅：带左右横线的居中提示 */

@@ -359,7 +359,10 @@ const segments = computed<Segment[]>(() => {
   }
   // 末围栏未闭合（流式中卡片只写了一半）：只有最后那张换成骨架蒙版。
   // 蒙版高度 == 终态高度，所以闭合瞬间既不跳变也不顶动下方正文。
-  if (renderedOpenFence.value) {
+  // 仅流式期间生效：终态（结束/取消/历史）围栏仍未闭合时不会再有后续 token，
+  // 骨架会永远转圈——此时直接按占位内容渲染（残缺 HTML 交给浏览器补齐，
+  // 非 HTML 走代码块降级），宁可显示半成品也不挂假进度。
+  if (renderedOpenFence.value && props.streaming) {
     for (let j = out.length - 1; j >= 0; j -= 1) {
       const seg = out[j];
       if (seg && seg.kind === 'canvas') {
@@ -819,9 +822,12 @@ const riseIn = computed(() => {
   margin-block-end: 12px;
 }
 
+/* md-ascii：字符画段落降级（renderMarkdown 的 paragraph 兜底），
+   与代码块同款容器形态；pre 默认空白规则保住对齐 */
 /* 块间距挂在 wrap 上：msg-content 的直接子元素现在是 wrap，pre 已退居其内，
    首块去顶距 / 末块去底距的 :first-child / :last-child 规则只认得到 wrap */
-.msg-content :deep(.md-code-block) {
+.msg-content :deep(.md-code-block),
+.msg-content :deep(.md-ascii) {
   margin: 0; /* 块间距归 wrap，pre 自身不再参与（否则与 wrap 的 12px 叠成 24px） */
   background: color-mix(in oklab, var(--foreground) 8%, var(--background));
   border: 1px solid var(--border);

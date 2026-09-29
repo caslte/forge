@@ -152,10 +152,11 @@ onUnmounted(() => {
 <style scoped>
 /* 窄条纵列（约 28px），与消息区同高；无右边框、透明背景——融入消息区，不做视觉切割。
    条目少时整列垂直居中（safe center：溢出时回退顶部并保持可滚动）。
-   内容宽度预留波峰伸长空间（22px），overflow 裁剪不会切掉伸长段 */
+   内容宽度预留波峰伸长空间（22px），overflow 裁剪不会切掉伸长段。
+   宽度取 token：ConversationView「标准」宽度用它给消息区补对称 padding */
 .history-rail {
   position: relative;
-  width: 28px;
+  width: var(--timeline-rail-w, 28px);
   flex-shrink: 0;
   min-height: 0;
   display: flex;

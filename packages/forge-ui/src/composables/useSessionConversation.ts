@@ -196,12 +196,11 @@ function dismissAskAnswered(): void {
     while (i < msgs.length) {
       const cur = msgs[i]!;
       // CV-S07 压缩分隔条：compacted 标记不是消息，渲染成分界条——既保留压缩痕迹，
-      // 又不会挤占消息卡的位置
+      // 又不会挤占消息卡的位置。摘要全文不外显（2026-09-28 用户反馈），仍留在会话数据里
       if (cur.compacted) {
         out.push({
           key: `compact-${cur.ts}-${i}`,
           kind: 'compaction-divider',
-          summary: cur.content,
           ts: cur.ts,
         });
         i += 1;

@@ -10,7 +10,7 @@
  *   重拉历史、横幅随完成收掉（自动压缩没有 RPC 入口，事件是 UI 感知它的唯一通道）；
  * - 压缩后百分比：压缩完成即显示压缩后的上下文占用百分比（不再"? tokens"）；
  * - 压缩后历史不丢（2026-09-26 反馈）：压缩点**之前**的对话仍留在消息流里，
- *   压缩点位置出现「上下文已压缩」分隔条 + 可展开摘要（CV-S07 口径修正）。
+ *   压缩点位置出现「上下文已压缩」分隔条（摘要全文不外显，2026-09-28 反馈）。
  *
  * 自动化等级：mock-backend（window.__forgeMock 种子 + emit 受控事件）。
  * > 待办：本机未安装 Playwright 浏览器（无 ~/.cache/ms-playwright），本文件新增的
@@ -152,7 +152,8 @@ test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重�
 
 // CV-S07 口径修正：压缩只替换喂给模型的上下文，用户看到的 transcript 必须完整，
 // 历史加载走 pi getBranch()（而非 buildContextEntries()），压缩点之上保留原文。
-test('压缩后历史不丢：压缩点之前消息仍在流里 +「上下文已压缩」分隔条 + 摘要可展开', async ({ page }) => {
+// 2026-09-28 用户反馈：分隔条下不再外显压缩摘要预览。
+test('压缩后历史不丢：压缩点之前消息仍在流里 +「上下文已压缩」分隔条（无摘要预览）', async ({ page }) => {
   const guard = attachHealthGuards(page);
   await boot(page);
 
@@ -187,13 +188,9 @@ test('压缩后历史不丢：压缩点之前消息仍在流里 +「上下文已
   await expect(page.locator('.compact-divider')).toHaveCount(1);
   await expect(page.locator('.compact-divider .cd-text')).toContainText('上下文已压缩');
 
-  // 摘要默认折叠（两行钳制），点击展开
-  const summary = page.locator('.cd-summary');
-  await expect(summary).toHaveCount(1);
-  await expect(summary).toContainText('自动压缩摘要全文');
-  await expect(summary).not.toHaveClass(/open/);
-  await summary.click();
-  await expect(summary).toHaveClass(/open/);
+  // 摘要全文不外显（2026-09-28 用户反馈）：分隔条下不再渲染摘要预览
+  await expect(page.locator('.cd-summary')).toHaveCount(0);
+  await expect(page.locator('.conv-messages')).not.toContainText('自动压缩摘要全文');
   guard.assertHealthy();
 });
 

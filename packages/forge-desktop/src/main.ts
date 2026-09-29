@@ -32,7 +32,8 @@ import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, list
 import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode } from './theme.ts';
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { createNotifyToastManager } from './notifyToast.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -326,6 +327,27 @@ const splashReady = new Promise<void>((resolve) => {
 
 let mainWindow: BrowserWindow | null = null;
 
+/**
+ * 生效语言镜像（zh-CN|en）：渲染进程经 forge:locale:set 回报（localStorage['forge.locale']
+ * 是唯一事实来源，主进程读不到），系统通知小窗（notifyToast.ts）标题文案取词用。
+ * 缺省 zh-CN（应用源语言，与 i18n 兜底一致）。
+ */
+let uiLocale: 'zh-CN' | 'en' = 'zh-CN';
+
+/**
+ * 通知小窗应用图标：读 forge-ui 构建产物（public/ 整体拷贝到 dist/）的 logo-main.png
+ * 转 data URI（37KB 级，每进程读一次）。读不到（dev 未构建 UI 等）返回 null——
+ * 通知页回退字母方块，不影响功能。
+ */
+function resolveToastLogoSrc(): string | null {
+  try {
+    const p = path.join(__dirname, '../../forge-ui/dist/logo-main.png');
+    return `data:image/png;base64,${fs.readFileSync(p).toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
 /** 创建主窗口（无边框，自定义标题栏）；dev 模式自动挂 DevTools + F12/Ctrl+Shift+I 快捷键 */
 function createWindow(isDev: boolean, theme: ThemeMode): BrowserWindow {
   const win = new BrowserWindow({
@@ -571,6 +593,10 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
     }
     mainWindow?.setBackgroundColor(backgroundFor(mode));
   });
+  // 语言回报（系统通知标题取词用）：与主题通道同构，非 'zh-CN'/'en' 一律忽略
+  ipcMain.on(IPC_LOCALE_SET, (_e, mode: unknown) => {
+    if (mode === 'zh-CN' || mode === 'en') uiLocale = mode;
+  });
   // 附件密钥嗅探：文本文件命中凭据特征 → flagged（发送前 UI 弹确认，出域防线）
   ipcMain.handle(IPC_ATTACHMENT_SCAN, (_e, paths: unknown) => {
     if (!Array.isArray(paths)) {
@@ -778,6 +804,89 @@ app.whenReady().then(async () => {
   });
   coreEventBus = eventBus;
   registerCoreIpc(invoke, methodTable, eventBus);
+
+  // ===== 系统通知（AI 回复完成提示；方案 A：Win11 通知风格自绘小窗，原型
+  // prototypes/ai-reply-toast-demo.html）=====
+  // 触发：conversation.statusChanged 到达终态（done/canceled/error）且主窗口非前台——
+  // 用户在别的窗口干活时回复悄悄完成，通知从右下角滑入；点击聚焦主窗口并跳转会话。
+  const notifyToast = createNotifyToastManager({
+    getMainWindow: () => mainWindow,
+    getLocale: () => uiLocale,
+    logoSrc: resolveToastLogoSrc(),
+  });
+  win.on('closed', () => notifyToast.disposeAll());
+
+  // 同会话去重状态：
+  // - lastToastedAt：任意终态通知后的短冷却（重复终态只弹第一条）
+  // - lastInterruptAt：cancel 编排（createForgeCore）会先 setStatus('canceled') 再经
+  //   done 门控补发一次 'done'——5s 内跟随中断/出错到达的 done 视为同一轮收尾，
+  //   不用「回复已完成」覆盖「回复被中断/出错」通知
+  const lastToastedAt = new Map<string, number>();
+  const lastInterruptAt = new Map<string, number>();
+  eventBus.on('conversation.statusChanged', (raw) => {
+    const p = raw as { sessionId?: unknown; status?: unknown };
+    if (typeof p?.sessionId !== 'string' || typeof p?.status !== 'string') return;
+    const kind =
+      p.status === 'done' ? 'done' : p.status === 'canceled' ? 'interrupt' : p.status === 'error' ? 'error' : null;
+    if (kind === null) return;
+    // 窗口前台聚焦时不打扰（最小化视为离开，会弹）；两种情况都留一行日志方便排查
+    const w = mainWindow;
+    if (!w || w.isDestroyed() || (w.isFocused() && w.isVisible())) {
+      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口前台 → 不弹通知`);
+      return;
+    }
+    const now = Date.now();
+    if (now - (lastToastedAt.get(p.sessionId) ?? 0) < 3000) {
+      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，3s 冷却内 → 不重复弹`);
+      return;
+    }
+    if (kind === 'done' && now - (lastInterruptAt.get(p.sessionId) ?? 0) < 5000) {
+      console.log(`[notify] 会话 ${p.sessionId} done 紧随中断/出错 → 不覆盖原通知`);
+      return;
+    }
+    console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口非前台 → 弹系统通知`);
+    lastToastedAt.set(p.sessionId, now);
+    if (kind !== 'done') lastInterruptAt.set(p.sessionId, now);
+    const sessionId = p.sessionId;
+    // 正文取最后一条用户消息（「任务：…」摘要）。直接发送路径的 user 气泡由渲染层
+    // 乐观插入、不经 eventBus 的 conversation.message（该事件只有队列补发跟进才带
+    // role=user），故此处从历史接口现取，勿依赖事件缓存。
+    const en = uiLocale === 'en';
+    const queryHistory = methodTable['conversation/queryHistory'];
+    if (!queryHistory) return;
+    void Promise.resolve()
+      .then(() => queryHistory({ sessionId }))
+      .then((res) => {
+        const messages = (res as { code?: number; data?: { messages?: unknown } } | null)?.data?.messages;
+        let task = '';
+        if (Array.isArray(messages)) {
+          for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const m = messages[i] as { role?: unknown; content?: unknown } | null;
+            if (m?.role === 'user' && typeof m.content === 'string' && m.content.trim() !== '') {
+              task = m.content;
+              break;
+            }
+          }
+        }
+        task = task.replace(/\s+/g, ' ').trim();
+        let body: string;
+        if (task === '') {
+          body =
+            kind === 'done'
+              ? en
+                ? 'The reply has finished.'
+                : '回复已生成。'
+              : en
+                ? 'The reply did not complete.'
+                : '本轮回复未完成。';
+        } else {
+          const full = `${en ? 'Task: ' : '任务：'}${task}`;
+          body = full.length > 160 ? `${full.slice(0, 160)}…` : full;
+        }
+        notifyToast.notify({ kind, sessionId, body });
+      })
+      .catch((err) => console.log(`[notify] 取会话历史失败，通知正文回退默认：${err instanceof Error ? err.message : String(err)}`));
+  });
 
   // ===== 预热入口（v3.78 上移到 boot.ready 之前；boot 前主路径 + boot 后 fallback 共用）=====
   let warmCwd: string | null = null;

@@ -5,7 +5,7 @@ import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
 import { call, subscribe } from '../bridge';
 import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
-import { usePreferences } from '../composables/usePreferences';
+import { usePreferences, type ContentWidth } from '../composables/usePreferences';
 import { useUpdater } from '../composables/useUpdater';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import SkillsSection from './SkillsSection.vue';
@@ -73,8 +73,14 @@ const languageOptions: { value: LocalePreference; labelKey: MessageKey }[] = [
   { value: 'system', labelKey: 'settings.language.system' },
 ];
 
+/** 个性化：对话内容宽度两态（wide = 现有铺满行为，standard = 收拢居中） */
+const contentWidthOptions: { value: ContentWidth; labelKey: MessageKey }[] = [
+  { value: 'standard', labelKey: 'settings.personal.contentWidthStandard' },
+  { value: 'wide', labelKey: 'settings.personal.contentWidthWide' },
+];
+
 const toast = useToast();
-const { showDiff, setShowDiff } = usePreferences();
+const { showDiff, setShowDiff, contentWidth, setContentWidth } = usePreferences();
 
 const canSubmitForm = computed(() => {
   return (
@@ -748,8 +754,27 @@ onUnmounted(() => {
       </section>
     </div>
 
-    <!-- 个性化 Tab：用户个性化偏好（首个：对话框 diff 展示开关） -->
+    <!-- 个性化 Tab：用户个性化偏好（内容宽度分段控件 / 对话框 diff 展示开关） -->
     <div class="personal-body" v-if="activeTab === 'personal'">
+      <section class="settings-section">
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">{{ t('settings.personal.contentWidthTitle') }}</span>
+            <span class="pref-desc">{{ t('settings.personal.contentWidthDesc') }}</span>
+          </div>
+          <div class="width-options" role="radiogroup" :aria-label="t('settings.personal.contentWidthTitle')">
+            <button
+              v-for="opt in contentWidthOptions"
+              :key="opt.value"
+              class="width-option"
+              :class="{ active: contentWidth === opt.value }"
+              role="radio"
+              :aria-checked="contentWidth === opt.value"
+              @click="setContentWidth(opt.value)"
+            >{{ t(opt.labelKey) }}</button>
+          </div>
+        </div>
+      </section>
       <section class="settings-section">
         <div class="pref-row">
           <div class="pref-text">
@@ -1093,6 +1118,35 @@ onUnmounted(() => {
   background: var(--card);
   box-shadow: var(--shadow-sm);
   transition: transform 0.2s;
+}
+
+/* 内容宽度分段控件（标准 / 宽）：与「语言」行同款胶囊单选 */
+.width-options {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.width-option {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--foreground);
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.width-option:hover {
+  border-color: var(--muted-foreground);
+}
+
+.width-option.active {
+  border-color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 6%, var(--card));
 }
 
 .pref-switch.on .pref-knob {

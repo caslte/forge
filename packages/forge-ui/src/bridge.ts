@@ -91,7 +91,10 @@ export type ForgeEvent =
   | 'git.branchChanged'
   | 'updater.stateChanged'
   // v3.76 启动门闩：forge-core 组装完成后主进程推送一次（拉通道见 getBootState）
-  | 'boot.ready';
+  | 'boot.ready'
+  // 系统通知点击跳转（主进程 notifyToast 直发，不经 core eventBus）：payload { sessionId }，
+  // UI 收到后切换到该会话（App.vue onSelectSession）
+  | 'notify.focusSession';
 
 /**
  * 启动状态（与 @forge/desktop ipc-contract.ts BootState 同构，本地声明惯例）。
@@ -367,6 +370,14 @@ export interface ForgeBridge {
      * 启动的第一帧底色。取值同 types.ts 的 ThemeMode。
      */
     set(mode: 'light' | 'dark'): void;
+  };
+  /**
+   * 生效语言回报主进程（与主题通道同构，localStorage['forge.locale'] 唯一事实来源）。
+   * 仅系统通知小窗（主进程 notifyToast.ts）标题文案取词用。可选：浏览器 mock 不实现，
+   * 旧 preload 亦无此方法，调用侧一律 `window.forge.locale?.set(...)`。
+   */
+  locale?: {
+    set(mode: 'zh-CN' | 'en'): void;
   };
   file: {
     /** 拖拽/粘贴 File 对象 → 磁盘绝对路径；无盘文件（剪贴板截图）返回空串 */

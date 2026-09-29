@@ -72,6 +72,13 @@
   --logo-gradient-base: oklch(0.35 0 0);
   --logo-gradient-accent: oklch(0.65 0.14 85);
 
+  /* 思考级别 max 金色（扫光/描边专用，见 prototypes/thinking-level-max-shimmer-demo.html）：
+     --gold 主金、--gold-deep 描边金、--gold-fade 渐变尾色（贴近背景，扫光时「暗尾→亮金」反差最大）。
+     浅底用深金保证可读，尾色取浅灰 */
+  --gold: oklch(0.68 0.14 85);
+  --gold-deep: oklch(0.6 0.14 85);
+  --gold-fade: oklch(0.92 0.008 286.3);
+
   /* 字体 */
   --font-sans: "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -91,6 +98,15 @@
   --motion-icon-in: 520ms cubic-bezier(0.22, 1, 0.36, 1);
   --motion-check-draw: 680ms cubic-bezier(0.4, 0, 0.2, 1);
   --motion-head-swap: 220ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 对话内容列宽（个性化偏好「内容宽度 = 标准」时生效）：
+     正文列与输入框同宽居中，两侧留白。改动此值即全局生效（dev HMR 实时可调）。
+     「宽」模式不使用本 token（直接铺满窗口）。 */
+  --content-col-std: 920px;
+
+  /* 左缘时间线窄条宽（历史导航条）：ConversationView 在「标准」宽度下用它
+     给消息区补一份对称右侧 padding，使居中内容列与输入框严格同轴 */
+  --timeline-rail-w: 28px;
 }
 
 /* 暗色主题：底色/光场复刻设计稿（原型 bg-tone-options-demo.html D 档，v6 定稿）。
@@ -148,4 +164,9 @@
 
   --logo-gradient-base: oklch(0.92 0.008 286.3);
   --logo-gradient-accent: oklch(0.83 0.12 95);
+
+  /* 思考级别 max 金色（深底用原型 demo 实测值：亮金主色 + 深金描边 + 深灰尾色） */
+  --gold: oklch(0.83 0.12 95);
+  --gold-deep: oklch(0.68 0.14 85);
+  --gold-fade: oklch(0.35 0 0);
 }
