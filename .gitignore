@@ -7,15 +7,23 @@ dist/
 *.log
 .DS_Store
 .sisyphus/run-continuation/
-docs/plan/
 test-results/
 playwright-report/
 
-# 打包产物
+# 打包与测试产物
 release/
-.workbuddy/memory/
 packages/forge-ui/e2e-report/
-.trae/documents/changed-files-summary-card.md
+
+# ── 内部资料：不随公开仓库分发 ──────────────────────
+# docs/plan/        内部计划、评审纪要、一次性 spike 脚本
+# prototypes/       原型页面（仅本地视觉对齐用）
+# AGENT.MD          个人开发规约
+# .workbuddy/       agent 记忆
+# .trae/documents/  IDE 生成的变更摘要
+docs/plan/
+**/docs/plan/          ← 注意：不带前导 / 时只匹配根目录，嵌套路径需显式 **
 prototypes/
+AGENT.MD
 .workbuddy/
 .trae/documents/
+.sisyphus/

@@ -5,6 +5,7 @@
   "description": "Forge",
   "homepage": "https://github.com/caslte/forge",
   "author": "caslte <caslte@users.noreply.github.com>",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/main.js",
   "types": "./dist/index.d.ts",
