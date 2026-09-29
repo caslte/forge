@@ -199,8 +199,9 @@ test('E-CA-008 @P0 @mock-backend：无标签纯文字按正文流渲染，不落
   await expect(block.locator('iframe')).toHaveCount(0);
   await expect(block.locator('.canvas-skel')).toHaveCount(0);
 
-  // 伪列表符 `·` 必须还原成真 <ul>，否则降级出来是一段糊在一起的散文
-  await expect(block.locator('.canvas-prose ul')).toHaveCount(1);
+  // 伪列表符 `·` 必须还原成真 <ul>，否则降级出来是一段糊在一起的散文。
+  // 原文有两组 `·` 列表（结论段 + 「实际会发生什么」段），故出两个 <ul>。
+  await expect(block.locator('.canvas-prose ul')).toHaveCount(2);
   await expect(block.locator('.canvas-prose li').first()).toContainText('别人能读你的代码');
 
   // 内容不丢：正文里仍在（截图那段的中文原文）
@@ -215,19 +216,23 @@ test('E-CA-008 @P0 @mock-backend：无标签纯文字按正文流渲染，不落
   expect(order).toEqual(['text', 'card', 'text']);
 });
 
-test('E-CA-009 @P0 @mock-backend：流式中纯文字不挂骨架（假进度），真 HTML 半成品仍挂', async ({ page }) => {
+test('E-CA-009 @P0 @mock-backend：流式中纯文字不挂骨架（假进度），闭栏后也不翻面', async ({ page }) => {
   await page.goto('/');
   await waitForMock(page);
   await seedSessions(page, [mkSession('sess-canvas-9', '画布流式判据')]);
-  // 先播纯文字（够长 → 判据已定 prose），再闭栏
-  await seedSendScript(page, 'sess-canvas-9', [
-    { type: 'message', payload: { role: 'user', content: '许可证怎么选' } },
-    { type: 'delta', payload: { delta: { text: '```canvas\n' + PLAIN_NO_LICENSE, kind: 'text' } } },
-  ]);
+  // 会话树是启动时读的：seed 完必须重载，否则列表里没有这条会话
+  await page.reload();
+  await waitForMock(page);
   await openSession(page, '画布流式判据');
 
+  // 半截纯文字（围栏未闭合）：判据已定 prose，不该挂 320px 假进度
+  await seedSendScript(page, 'sess-canvas-9', [
+    { type: 'delta', delayMs: 20, payload: { text: '```canvas\n' + PLAIN_NO_LICENSE, kind: 'text' } },
+  ]);
+  await page.locator('.compose-input').fill('许可证怎么选');
+  await page.locator('.compose-input').press('Enter');
+
   const block = page.locator('.md-canvas-block');
-  // 判据已定 prose：不该再挂 320px 假进度
   await expect(block.locator('.canvas-prose')).toBeVisible();
   await expect(block.locator('.canvas-skel')).toHaveCount(0);
 

@@ -1597,7 +1597,7 @@ watch(
             aria-haspopup="true"
             @click.stop="toggleLevelMenu"
           >
-            <span>{{ displayLevel ?? 'off' }}</span>
+            <span class="level-t">{{ displayLevel ?? 'off' }}</span>
             <svg class="level-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
           </button>
           <!-- max 反馈动画（方案 A）：金色流光扫过 max 档位自身，见 flashMaxCell -->
@@ -2720,11 +2720,27 @@ watch(
 .level-wrap .meta-link.is-max {
   color: var(--gold);
 }
+/* 胶囊上的 max 与浮窗静止态（.level-wrap.is-max .level-item.on .level-t）同一套金色渐变 */
+.level-wrap .meta-link.is-max .level-t {
+  background-image: linear-gradient(90deg,
+    var(--gold-fade) 0%,
+    var(--gold) 50%,
+    var(--gold-fade) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
 
-/* 展开指示三角：随浮窗开合旋转（纯提示，不占位） */
+/* 展开指示三角：随浮窗开合旋转（纯提示，不占位）。
+   下移 1px：flex 居中按 em 盒算，而小写「max」的视觉中心低于 em 盒中心，
+   三角看着贴在字上方。用 relative 而非 transform，避免与 is-open 的 rotate 顶掉。 */
 .level-chev {
   width: 9px;
   height: 9px;
+  position: relative;
+  top: 1px;
   opacity: 0.55;
   transition: transform var(--transition-fast);
 }
