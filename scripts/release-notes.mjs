@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const RELEASE_NOTES_REL = 'packages/forge-desktop/release-notes.md';
+export const RELEASE_NOTES_REL = 'packages/forge-desktop/release-notes.md';
 
 /** 噪音提交过滤（整条提交不进说明）。需要忽略新的噪音模式时在 这里加。 */
 const NOISE_PATTERNS = [
