@@ -373,7 +373,9 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
   font-family: var(--font-mono);
   font-size: 7.5px;
   font-weight: 700;
-  line-height: 1;
+  /* 行高必须等于方标高度：line-height:1 的负 half-leading 会把字形整体顶到方标上方（实测偏上 1.5px），
+     行高等于 14px 时 half-leading 正好抵消字体 ascent/descent 的不对称，字标才真正垂直居中 */
+  line-height: 14px;
   letter-spacing: -0.3px;
   color: #fff;
   user-select: none;

@@ -3,6 +3,41 @@
  * 与 @forge/core / @forge/desktop 的 ipc-contract 保持一致。
  */
 
+/**
+ * 对话错误分类结果（CV-ERR-01）。
+ *
+ * 本地声明而非 import @forge/core：与 bridge.ts 保持同一惯例（避免浏览器打包引入
+ * node:events）。字段必须与 forge-core `ClassifiedError` 逐一同名同型。
+ */
+export interface ForgeErrorInfo {
+  category:
+    | 'auth'
+    | 'quota'
+    | 'context'
+    | 'local-env'
+    | 'rate-limit'
+    | 'busy'
+    | 'provider'
+    | 'network'
+    | 'unknown';
+  source:
+    | 'user-config'
+    | 'user-account'
+    | 'session-state'
+    | 'host-environment'
+    | 'model-provider'
+    | 'local-network'
+    | 'undetermined';
+  /** provider / 底层原始错误文本（横幅第一行冒号后原样展示） */
+  raw: string;
+  /** 重试是否可能成功（决定是否给「立即重试」） */
+  retryable: boolean;
+  /** 本轮已产出可见内容、仅收尾报错 → 降级为最轻语气 */
+  degraded: boolean;
+  httpStatus?: number;
+  providerCode?: string;
+}
+
 export interface ProjectItem {
   path: string;
   alias: string | null;

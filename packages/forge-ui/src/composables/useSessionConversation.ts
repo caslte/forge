@@ -8,18 +8,73 @@ import {
   type AskUserQuestionRequestPayload,
   type ConversationCompactedPayload,
 } from '../bridge.ts';
-import type { ConversationMessage, SessionStatus, Subagent } from '../types.ts';
+import type { ConversationMessage, SessionStatus, Subagent, ForgeErrorInfo } from '../types.ts';
 import type { DisplayItem } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
 import { collectTurnChangedFiles } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
 import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
-import { createAskQuestionStore } from './askQuestionStore.ts';
+import { createAskQuestionStore, clearAskQuestionSession } from './askQuestionStore.ts';
+import { clearTodoPanelSessionState } from './todoPanelUiState.ts';
 import { i18n } from '../i18n/index.ts';
 import { SUGGEST_NEXT_STEPS_TOOL_NAME } from '../constants.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
+
+/**
+ * 各会话待办面板快照（模块级，跨视图实例共享）—— 与 turnStartAt 同一取舍。
+ *
+ * 为什么必须在模块级：进设置页时 App.vue 用 v-if 整块卸载 ConversationView，
+ * 实例级状态随组件一起被 GC，回来时 Map 空 → 待办面板消失。切会话本来就有
+ * resetForSession 保护，而「进设置页」是同一种「切走再切回」，语义必须一致。
+ *
+ * 生命周期 = 渲染进程：重启 APP 随进程消失（不做跨进程持久化，由 design 明确接受），
+ * 但开着 APP 期间的任何视图切换（设置页、多窗口聚焦、画布进出）都不丢。
+ * 无上限增长由 session.removed 订阅兜底删除（见 onSessionRemoved）。
+ */
+const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
+
+/** 会话被删除：清掉该会话的模块级内存表（快照 / 问卷 / 面板折叠态），避免长会话累积 */
+function onSessionRemoved(payload: unknown): void {
+  const p = payload as { sessionId?: string };
+  if (typeof p?.sessionId !== 'string') return;
+  const sid = p.sessionId;
+  todoSnapshots.delete(sid);
+  clearAskQuestionSession(sid);
+  clearTodoPanelSessionState(sid);
+}
+
+/**
+ * conversation.error 载荷解读（CV-ERR-01）——导出为纯函数以便直接单测。
+ *
+ * 载荷有两种互斥语义，这是最容易写错的一处：
+ * - `retry`：自动重试进行中，**轮次未终止**（不该当错误展示）
+ * - `error`：终态错误的结构化分类（横幅数据源）
+ * 旧链路（无新字段）只给 message：归为「无分类的终态错误」。
+ */
+export function interpretErrorPayload(payload: unknown): {
+  retry: { attempt: number; maxAttempts: number } | null;
+  error: ForgeErrorInfo | null;
+  message: string | null;
+} {
+  const p = payload as {
+    message?: string;
+    error?: ForgeErrorInfo;
+    retry?: { attempt?: number; maxAttempts?: number };
+  };
+  if (p?.retry !== undefined) {
+    return {
+      retry: {
+        attempt: typeof p.retry.attempt === 'number' ? p.retry.attempt : 0,
+        maxAttempts: typeof p.retry.maxAttempts === 'number' ? p.retry.maxAttempts : 0,
+      },
+      error: null,
+      message: p.message ?? null,
+    };
+  }
+  return { retry: null, error: p?.error ?? null, message: p?.message ?? null };
+}
 
 /**
  * 单会话对话状态机（单视图 ConversationView 与多窗口 MultiWindowConversation 共用）。
@@ -46,6 +101,12 @@ export function useSessionConversation(options: {
   const isStreaming = ref(false);
   const loadingHistory = ref(false);
   const errorMsg = ref<string | null>(null);
+  /** CV-ERR-01：终态错误的结构化分类（结论/色调/是否可重试）。
+   *  与 errorMsg 同生命周期：errorMsg 保留为本机/RPC 层失败（无分类）的通道，
+   *  有分类时以本字段为准（errorMsg 此时 === error.raw）。 */
+  const errorInfo = ref<ForgeErrorInfo | null>(null);
+  /** CV-ERR-01：自动重试进行中（轮次未终止）。与 errorInfo 互斥。 */
+  const retryInfo = ref<{ attempt: number; maxAttempts: number } | null>(null);
 
   /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
   const toolEventIndex = new Map<string, number>();
@@ -104,10 +165,10 @@ export function useSessionConversation(options: {
   /** 待二次确认的停止请求（结果视图头部"终止"） */
   const pendingStopAgentId = ref<string | null>(null);
 
-  // ===== Todo 面板快照（CV-S11；按 sessionId 内存隔离，切走再切回不丢，关闭 APP 随进程消失） =====
+  // ===== Todo 面板快照（CV-S11）=====
+  // 表已提到模块级（见文件头 todoSnapshots）：进设置页导致 ConversationView 卸载时不会丢。
   // Map 替代单 ref：切会话不清空，切换回历史会话时还原上次的 todo 视图。
   // "会话自己清理" 不需要主动 GC —— 自然清空（所有 task 被删）时 shouldRenderPanel=false 面板自动卸载。
-const todoSnapshots = reactive(new Map<string, TodoSnapshot | null>());
 /** 当前会话 todo 快照（模板 v-bind 自动解包，外部消费接口不变） */
 const todoSnapshot = computed<TodoSnapshot | null>(() => {
   const sid = options.getSessionId();
@@ -384,10 +445,14 @@ function dismissAskAnswered(): void {
     // 拉取失败静默降级（横幅非关键路径，不阻塞历史加载）
     if (sid === options.getSessionId() && options.getStatusHint?.() === 'error') {
       try {
-        const res = await call<{ message: string | null }>('conversation/getLastError', {
-          sessionId: sid,
-        });
-        if (sid === options.getSessionId() && res.message) errorMsg.value = res.message;
+        const res = await call<{ message: string | null; error?: ForgeErrorInfo | null }>(
+          'conversation/getLastError',
+          { sessionId: sid },
+        );
+        if (sid === options.getSessionId() && res.message) {
+          errorMsg.value = res.message;
+          errorInfo.value = res.error ?? null;
+        }
       } catch {
         // 静默降级：不显示横幅即可
       }
@@ -411,6 +476,8 @@ function dismissAskAnswered(): void {
     isStreaming.value = false;
     loadingHistory.value = false;
     errorMsg.value = null;
+    errorInfo.value = null;
+    retryInfo.value = null;
     stopElapsed();
   }
 
@@ -432,6 +499,8 @@ function dismissAskAnswered(): void {
       return;
     }
     errorMsg.value = null;
+    errorInfo.value = null;
+    retryInfo.value = null;
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
     clearAskAnswered(sid);
     isStreaming.value = true;
@@ -448,7 +517,28 @@ function dismissAskAnswered(): void {
     }
   }
 
-  /** 取消流式（CV-S09）：返回被清空的待发队列文本（FIFO 序），供输入框回填 */
+  /**
+   * 「立即重试」：重发本会话最后一条用户消息（CV-ERR-01）。
+   *
+   * 为什么是“重发”而不是“回退”：pi 只提供 prompt/followUp（都是新的一轮），
+   * 没有“重跑上一轮”的原语。因此重试在历史里会多出一条相同的用户消息 ——
+   * 这是重试语义的必然结果，调用方（视图）应在按钮上说明，而不是静默假装没发生过。
+   * 找不到用户消息（纯错误场景，如鉴权失败本轮没发消息）或正在流式时为 noop。
+   */
+  async function retryLastUserMessage(): Promise<void> {
+    if (isStreaming.value) return;
+    for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+      const m = messages.value[i];
+      if (m?.role === 'user' && m.content.trim() !== '') {
+        await send(m.content);
+        return;
+      }
+    }
+  }
+
+  /** 取消流式（CV-S09）：返回被清空的待发队列文本（FIFO 序），供输入框回填。
+   *  同时停掉读秒定时器：正常终态会经 statusChanged 停表，但无终态事件时（如调用方
+   *  主动中断）也得停，否则定时器空转到会话销毁。 */
   async function cancel(): Promise<string[]> {
     let clearedMessages: string[] = [];
     try {
@@ -620,7 +710,11 @@ function dismissAskAnswered(): void {
       isStreaming.value = false;
       // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
       // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
-      if (p.status !== 'error') errorMsg.value = null;
+      if (p.status !== 'error') {
+        errorMsg.value = null;
+        errorInfo.value = null;
+        retryInfo.value = null;
+      }
       // CV-S11 兜底：会话终态时把残留的 in_progress 标为 completed，避免 TodoPanel
       // 永远挂着呼吸点。快照按 sessionId 隔离，只动当前会话。无可恢复快照时 noop。
       const prevSnap = todoSnapshots.get(p.sessionId) ?? null;
@@ -630,11 +724,20 @@ function dismissAskAnswered(): void {
   }
 
   function onError(payload: unknown): void {
-    const p = payload as { sessionId: string; code?: number; message?: string };
+    const p = payload as { sessionId: string; code?: number };
     if (p.sessionId !== options.getSessionId()) return;
     // 不在此处置 isStreaming=false：终态错误必伴随 status='error' 事件收尾；
     // conversation.error 还承载自动重试提示（轮次仍在 streaming），此处置假会误断进行中状态
-    errorMsg.value = p.message ?? i18n.t('chat.conversationError', { code: p.code ?? 'unknown' });
+    // CV-ERR-01：retry 与 error 互斥——前者是「轮次还在跑，正在重试」，
+    // 不是错误，UI 要显示进度而不是红色横幅（否则重试成功也留着一条红字）。
+    const { retry, error, message } = interpretErrorPayload(payload);
+    if (retry !== null) {
+      retryInfo.value = retry;
+      return;
+    }
+    retryInfo.value = null;
+    errorInfo.value = error;
+    errorMsg.value = message ?? i18n.t('chat.conversationError', { code: p.code ?? 'unknown' });
   }
 
   /**
@@ -958,6 +1061,8 @@ function dismissAskAnswered(): void {
       subscribe('subagent.removed', onSubagentRemoved),
       // Path 2：问卷请求（载荷带必需 sessionId，本窗格按它认领）
       onAskUserQuestionRequest(onAskUserQuestionRequested),
+      // 模块级内存表的回收口：会话删除后不再保留其快照 / 问卷 / 面板折叠态
+      subscribe('session.removed', onSessionRemoved),
     ];
   });
 
@@ -985,6 +1090,9 @@ function dismissAskAnswered(): void {
     isStreaming,
     loadingHistory,
     errorMsg,
+    errorInfo,
+    retryInfo,
+    retryLastUserMessage,
     isEmpty,
     displayItems,
     turnSuggestion,

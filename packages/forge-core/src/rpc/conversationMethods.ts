@@ -40,6 +40,35 @@ import type {
   AskUserQuestionReplyParams,
   AskUserQuestionAnswer,
 } from '../conversation/conversationService.ts';
+import type { ClassifiedError } from '../errors/errorClassifier.ts';
+
+/**
+ * 自动重试进度（CV-ERR-01）。轮次仍在运行，不是错误终态：
+ * 主进程对可重试错误触发 pi 的 auto_retry 时随 conversation.error 一同下发，
+ * 让 UI 能展示「正在重试第 N/M 次」而不是把它当错误横幅。
+ */
+export interface ConversationRetryInfo {
+  attempt: number;
+  maxAttempts: number;
+}
+
+/** conversation.error 事件载荷（CV-ERR-01）
+ *
+ * 旧载荷 { sessionId, code, message } 保持不变（兼容既有消费方），
+ * 新增两个互斥的语义化字段：
+ * - error：终态错误的结构化分类（UI 据此生成结论句/色调/是否给重试）
+ * - retry：重试进行中（无 error）
+ */
+export interface ConversationErrorPayload {
+  sessionId: string;
+  code: number;
+  /** 原始错误文本（与 error.raw 一致；未分类时即全部信息） */
+  message: string;
+  /** 终态错误分类；未分类（旧链路/重试中）时缺省 */
+  error?: ClassifiedError;
+  /** 重试进行中；缺省表示这是终态错误 */
+  retry?: ConversationRetryInfo;
+}
 
 /** 构造成功信封 */
 function ok<T>(data: T): RpcResult<T> {
@@ -184,13 +213,20 @@ export class ConversationApi {
    * 前端 errorMsg 横幅是瞬态内存态，切走再切回/后台会话出错后丢失；红点
    * （session.status='error'）持久——切到 error 会话时经本方法拉取横幅数据。
    * 无错误记录返回 message=null（不报错）。
+   * error 为结构化分类（CV-ERR-01），message 保留原文；旧消费方只读 message 仍可用。
    */
   private getLastError(params: unknown): RpcResult {
     const sessionId = requireString(params, 'sessionId');
     if (sessionId === null) {
       return fail(1001, '参数错误：sessionId 必须为非空字符串');
     }
-    return ok({ message: this.service.getLastError(sessionId) });
+    return ok({
+      message: this.service.getLastError(sessionId),
+      // 无分类时**不出现** error 字段（而非 error: null）：旧消费方的载荷形状保持原样
+      ...(this.service.getLastErrorInfo(sessionId) !== null
+        ? { error: this.service.getLastErrorInfo(sessionId) }
+        : {}),
+    });
   }
 
   /** conversation/getContextUsage：查询上下文用量（P3-A，CV-S06） */
@@ -310,8 +346,21 @@ export class ConversationApi {
    * @param message 错误信息
    * @returns 无返回值；触发事件 conversation.error { sessionId, code, message }
    */
-  emitError(sessionId: string, code: number, message: string): void {
-    this.events.emit('conversation.error', { sessionId, code, message });
+  /**
+   * 推送 conversation.error 事件（向 UI）。
+   * @param sessionId 会话 ID
+   * @param code 错误码（沿用旧契约，5000 = 对话处理异常）
+   * @param message 原始错误文本
+   * @param extra 语义化补充（CV-ERR-01）：error=终态分类；retry=重试进行中
+   */
+  emitError(
+    sessionId: string,
+    code: number,
+    message: string,
+    extra?: { error?: ClassifiedError; retry?: ConversationRetryInfo },
+  ): void {
+    const payload: ConversationErrorPayload = { sessionId, code, message, ...extra };
+    this.events.emit('conversation.error', payload);
   }
 
   /**

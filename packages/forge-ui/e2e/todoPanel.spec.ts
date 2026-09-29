@@ -122,6 +122,11 @@ test('TSC-E2E-008 @P0 @mock-backend E-CV-021：任务行按状态字符渲染', 
     (el) => getComputedStyle(el).color,
   );
   expect(inProgressColor).toBe(completedColor);
+  // 待办（pending）文案同样用 muted 灰色，与上方「已完成」标题一致
+  const pendingColor = await rows.nth(2).locator('.todo-subject').evaluate(
+    (el) => getComputedStyle(el).color,
+  );
+  expect(pendingColor).toBe(completedColor);
 });
 
 test('TSC-E2E-009 @P0 @mock-backend E-CV-022：点击头部切换折叠', async ({ page }) => {
@@ -450,4 +455,52 @@ test('TSC-E2E-011 @P1 @mock-backend E-CV-024：details 非法静默忽略，不�
   // 快照仍不变（read 工具不是 todo，不消费 details）
   const headingFinal = await page.locator('[data-testid="todo-heading"]').textContent();
   expect(headingFinal).toContain('已完成 0 / 共 1 个');
+});
+/**
+ * 回归锁：进设置页 → 返回，待办面板与折叠态都不丢。
+ *
+ * 根因：App.vue 用 v-if/v-else 在设置页与会话视图间整块切换，进设置页时
+ * ConversationView 连同 TodoPanel 一起卸载。此前快照表与折叠表都声明在
+ * composable / 组件实例体内，随组件 GC 而失，回来后 Map 为空 → 面板消失
+ * （问卷表同病，见 askQuestionStore）。修复：两表均提到模块级。
+ *
+ * 用例同时锁「不弹回来」方向：自动隐藏的待办，重建后不能重新出现。
+ */
+test('TSC-E2E-030 @P0 @mock-backend 视图重建（进出设置页）后待办面板与折叠态不丢', async ({ page }) => {
+  await boot(page);
+
+  await emitTodoCompleted(page, {
+    action: 'list',
+    tasks: [
+      { id: 1, subject: '把 pi 自动重试事件透给 UI', status: 'pending' },
+      { id: 2, subject: 'UI 改两行错误横幅并加立即重试', status: 'pending' },
+    ],
+    nextId: 3,
+  });
+  await expect(page.locator('[data-testid="todo-list"]')).toBeVisible();
+
+  // 用户手动折叠：折叠态是视图态，卸载后同样不能丢
+  await page.locator('[data-testid="todo-heading"]').click();
+  await expect(page.locator('[data-testid="todo-list"]')).toBeHidden();
+
+  // 进设置页 → 返回（v-if 整块卸载 ConversationView 的真实路径）
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
+  await expect(page.locator('.settings-stage')).toBeVisible();
+  await expect(page.locator('.compose-box')).toBeHidden();
+  await page.locator('.settings-back').click();
+  await expect(page.locator('.compose-box')).toBeVisible();
+
+  // 数据不丢：面板还在，计数仍是 0 / 共 2
+  const panel = page.locator('[data-testid="todo-panel"]');
+  await expect(panel).toBeVisible();
+  await expect(page.locator('[data-testid="todo-heading"]')).toContainText('已完成 0 / 共 2 个');
+
+  // UI 态不丢：仍是折叠态（chevron ▸，任务行不渲染）——不被重建弹回展开
+  await expect(page.locator('[data-testid="todo-heading"]')).toContainText('▸');
+  await expect(page.locator('[data-testid="todo-list"]')).toBeHidden();
+
+  // 展开后任务行内容完整
+  await page.locator('[data-testid="todo-heading"]').click();
+  await expect(page.locator('[data-testid="todo-list"]')).toBeVisible();
+  await expect(page.locator('[data-testid="todo-list"]')).toContainText('把 pi 自动重试事件透给 UI');
 });

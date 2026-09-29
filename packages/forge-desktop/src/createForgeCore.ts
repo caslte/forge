@@ -22,6 +22,7 @@ import {
   createSessionApi,
   ConversationService,
   createConversationApi,
+  classifyError,
   createToolApi,
   ModelService,
   createModelApi,
@@ -432,10 +433,18 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
     onError: (sessionId, error) => {
       pokeMainTurnActivity(sessionId);
-      const message = error?.message ?? '对话处理失败';
-      // lastError 随 error 状态记录（红点会话切回后错误横幅的数据源）
-      conversationService.setStatus(sessionId, 'error', { lastError: message });
-      conversationApi.emitError(sessionId, 5000, message);
+      // CV-ERR-01：归因与文案生成收口到分类器。本层只做「原文 + 本轮是否已有内容」的
+      // 传递，不再各自加工文案（旧逻辑散在 adapter 4 处，导致同一错误在不同路径下说法不一）。
+      const raw = error?.raw ?? error?.message ?? '对话处理失败';
+      const classified = classifyError(raw, {
+        hasVisibleContent: error?.hasVisibleContent ?? false,
+      });
+      // lastError/lastErrorInfo 随 error 状态记录（红点会话切回后错误横幅的数据源）
+      conversationService.setStatus(sessionId, 'error', {
+        lastError: raw,
+        lastErrorInfo: classified,
+      });
+      conversationApi.emitError(sessionId, 5000, raw, { error: classified });
     },
     onAutoRetryStart: (sessionId, info) => {
       pokeMainTurnActivity(sessionId); // 重试等待期也是会话活动，刷新看门狗
@@ -444,10 +453,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       // status 事件不清提示条，顺序不能反
       retryRestorePending.add(sessionId);
       conversationService.setStatus(sessionId, 'streaming');
+      // retry 字段标明「这不是终态错误」（CV-ERR-01）：UI 据此显示重试进度而非错误横幅
       conversationApi.emitError(
         sessionId,
         5000,
         `模型连接中断，正在自动重试（第 ${info.attempt}/${info.maxAttempts} 次）…`,
+        { retry: { attempt: info.attempt, maxAttempts: info.maxAttempts } },
       );
     },
     // CV-S09：队列变更 → conversation.queueUpdated，UI 据此渲染待发送徽标/浮窗。

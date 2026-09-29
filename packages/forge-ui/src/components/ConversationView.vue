@@ -19,6 +19,7 @@ import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTim
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
 import { formatElapsed } from '../utils/formatElapsed.ts';
+import { toErrorBannerModel } from '../utils/errorPresentation.ts';
 import { useI18n } from '../i18n/index.ts';
 
 // v3.85.2：字标与 splash/BootWelcome 同一 URL（public 资产，dev '/'、prod './' 均可解析）——
@@ -71,6 +72,9 @@ const {
   isStreaming,
   loadingHistory,
   errorMsg,
+  errorInfo,
+  retryInfo,
+  retryLastUserMessage,
   todoSnapshot,
   isEmpty,
   displayItems,
@@ -123,6 +127,21 @@ const { isCompacting } = useCompactBanner();
 /** 个性化：对话框 diff 展示开关（设置页个性化 Tab，localStorage 持久） */
 const { showDiff, contentWidth } = usePreferences();
 const compactingNow = computed(() => isCompacting(props.sessionId));
+
+/**
+ * 错误横幅展示模型（CV-ERR-01）：有结构化分类时由分类决定结论句/色调/是否给重试；
+ * 无分类（本机或 RPC 层失败，只有原文）时走 .conv-error--plain 单行样式。
+ * 不在视图里拼文案——文案规则集中在 utils/errorPresentation.ts，便于单测与调改。
+ */
+const errorBanner = computed(() =>
+  errorInfo.value === null ? null : toErrorBannerModel(errorInfo.value),
+);
+
+/** 「立即重试」：重发本会话最后一条用户消息（pi 无重跑上一轮的原语，
+ *  重试会在历史里多一条相同的用户消息——按钮文案与解释句均已说明这一点）。 */
+function onRetryError(): void {
+  void retryLastUserMessage();
+}
 
 /**
  * shell 健康横幅（全局单例，非按会话隔离——shell 是机器属性）。
@@ -970,9 +989,51 @@ onUnmounted(() => {
             <span class="sb-line"></span>
           </div>
 
-          <!-- 错误提示 -->
-          <div v-if="errorMsg" class="conv-error">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <!-- 错误横幅（CV-ERR-01）：两行结构——第一行结论 + 原始错误原文，
+               第二行解释 +（仅可重试时）立即重试。色调三档：需用户处理/可自愈/已完整。 -->
+          <div v-if="errorBanner" class="conv-error" :class="`conv-error--${errorBanner.tone}`">
+            <svg class="ce-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <div class="ce-body">
+              <div class="ce-line1">
+                <span class="ce-verdict">{{ errorBanner.title }}</span><span
+                  v-if="errorBanner.raw !== ''"
+                  class="ce-raw"
+                  >：{{ errorBanner.raw }}</span
+                >
+              </div>
+              <div class="ce-line2">
+                <span class="ce-detail">{{ errorBanner.detail }}</span>
+                <button
+                  v-if="errorBanner.showRetry"
+                  class="ce-retry"
+                  type="button"
+                  :disabled="isStreaming"
+                  @click="onRetryError"
+                >
+                  <span class="ce-retry-ico" aria-hidden="true">↻</span>
+                  {{ t('chat.errorRetry') }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- 自动重试进行中（CV-ERR-01）：轮次未终止，不是错误——独立于横幅显示进度 -->
+          <div v-else-if="retryInfo" class="conv-error conv-error--info">
+            <span class="ce-spinner" aria-hidden="true"></span>
+            <div class="ce-body">
+              <div class="ce-line1">
+                <span class="ce-verdict">{{
+                  t('chat.errorRetrying', { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
+                }}</span>
+              </div>
+            </div>
+          </div>
+          <!-- 无分类的本机/RPC 失败：保持单行原文（分类器只管 provider/网络层错误） -->
+          <div v-else-if="errorMsg" class="conv-error conv-error--plain">
+            <svg class="ce-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10" />
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -1532,24 +1593,138 @@ onUnmounted(() => {
   text-decoration: none;
 }
 
-/* 错误提示 */
+/* 错误横幅（CV-ERR-01）：色调三档 + 单行 fallback。
+   红色只给「用户不动它就不行」的类（凭据/额度/上下文/本机依赖），
+   可自愈与未识别用 warning——不把红色当常态，红才有信号价值。 */
 .conv-error {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 10px 14px;
   border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--destructive) 8%, var(--card));
-  border: 1px solid color-mix(in oklab, var(--destructive) 24%, transparent);
-  color: var(--destructive);
   font-size: 12.5px;
   animation: fadeIn 0.2s ease-out;
+  --ce-tone: var(--muted-foreground);
+  background: color-mix(in oklab, var(--ce-tone) 8%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--ce-tone) 24%, transparent);
+  color: var(--ce-tone);
 }
 
-.conv-error svg {
+.conv-error--destructive {
+  --ce-tone: var(--destructive);
+}
+
+.conv-error--warning {
+  --ce-tone: var(--warning);
+}
+
+.conv-error--info {
+  --ce-tone: var(--info);
+}
+
+.conv-error--plain {
+  --ce-tone: var(--muted-foreground);
+  align-items: center;
+}
+
+.ce-icon {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ce-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ce-line1 {
+  min-width: 0;
+  /* 原文可能很长（整段 JSON 错误体）：限两行并允许在任意字符断行，
+     不让一条 provider 长错误把输入框顶下去 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+}
+
+.ce-verdict {
+  font-weight: 600;
+}
+
+/* 原始错误原文：等宽、不加粗、略暗——它在“解释结论”，不该抢结论的视觉重量 */
+.ce-raw {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: color-mix(in oklab, var(--ce-tone) 72%, var(--muted-foreground));
+  overflow-wrap: anywhere;
+}
+
+.ce-line2 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: color-mix(in oklab, var(--ce-tone) 78%, var(--muted-foreground));
+  line-height: 1.45;
+}
+
+.ce-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid color-mix(in oklab, var(--ce-tone) 34%, transparent);
+  background: color-mix(in oklab, var(--ce-tone) 10%, transparent);
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease-out;
+}
+
+.ce-retry:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ce-tone) 20%, transparent);
+}
+
+.ce-retry:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ce-retry-ico {
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* 自动重试指示：转圈只表示“还在等”，不表示死锁 */
+.ce-spinner {
+  width: 12px;
+  height: 12px;
+  margin: 3px 2px 0;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in oklab, var(--ce-tone) 30%, transparent);
+  border-top-color: var(--ce-tone);
+  animation: ce-spin 0.9s linear infinite;
+}
+
+@keyframes ce-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ce-spinner {
+    animation: none;
+  }
 }
 
 /* 结果视图：与消息流 v-show 互斥，独立占据消息区位置 */

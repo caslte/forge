@@ -165,6 +165,11 @@ function onClearClick(): void {
 </template>
 
 <style scoped>
+/* 列宽跟随个性化「内容宽度」偏好（--conv-col 由 .conv-view 定义：
+   wide=100%，standard=min(--content-col-std,100%)）。本栏是 .conv-view 的直接子项，
+   不在 .conv-messages-inner / .conv-input-wrap 内，若不限宽会在标准宽度下仍铺满，
+   与已收拢的正文列、输入框左右错开。宽度取 100% + max-width（单写 max-width 会塌成
+   fit-content），过渡与正文列同步。 */
 .subagent-tabbar {
   display: flex;
   align-items: center;
@@ -172,6 +177,17 @@ function onClearClick(): void {
   padding: 6px 22px 2px;
   background: var(--background);
   flex-shrink: 0;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--conv-col, 100%);
+  margin-inline: auto;
+  transition: max-width var(--transition-decelerate);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-tabbar {
+    transition: none;
+  }
 }
 
 .subagent-tab-scroll {
