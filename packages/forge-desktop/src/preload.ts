@@ -143,6 +143,8 @@ function ensureIpcEventListening(): void {
   ipcEventListening = true;
   // 单例监听，避免每个 window.forge.on 都往 IpcRenderer 追加监听导致 MaxListenersExceededWarning（10 上限）
   ipcRenderer.on(IPC_EVENT, (_e: Electron.IpcRendererEvent, arg: { event: string; payload: unknown }) => {
+    // 临时诊断（模块10 term:data 断链排查，定位后删除）
+    if (arg.event === 'term:data') console.log('[term-diag] preload received IPC_EVENT');
     const listeners = eventListeners.get(arg.event as ForgeEvent);
     if (listeners === undefined || listeners.size === 0) return;
     for (const fn of listeners) {

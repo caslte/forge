@@ -663,6 +663,8 @@ function registerCoreIpc(
   for (const event of FORGE_EVENTS) {
     const e: ForgeEvent = event;
     eventBus.on(e, (payload: unknown) => {
+      // 临时诊断（模块10 term:data 断链排查，定位后删除）
+      if (e === 'term:data') console.log(`[term-diag] eventBus -> send (mainWindow=${mainWindow !== null})`);
       mainWindow?.webContents.send(IPC_EVENT, { event: e, payload });
     });
   }
@@ -794,7 +796,7 @@ app.whenReady().then(async () => {
   });
 
   const { createForgeCore, invoke } = await import('./createForgeCore.ts');
-  const { methodTable, eventBus } = createForgeCore(storePath, {
+  const { methodTable, eventBus, killAllPtys } = createForgeCore(storePath, {
     keychain,
     // pi 数据域根注入（缺省会回退 ~/.pi/agent，生产禁止依赖缺省）
     piAgentDir: forgeAgentDir,
@@ -821,7 +823,19 @@ app.whenReady().then(async () => {
     getLocale: () => uiLocale,
     logoSrc: resolveToastLogoSrc(),
   });
-  win.on('closed', () => notifyToast.disposeAll());
+  win.on('closed', () => {
+    notifyToast.disposeAll();
+    // 模块 10（TM-S04）：窗口关闭全部回收 pty——macOS 关窗不退出进程时同样生效
+    killAllPtys();
+  });
+
+  // ===== 模块 10：内嵌终端 pty 生命周期兜底（TM-F03 异常与边界）=====
+  // - before-quit：全量回收，关 forge 后系统无残留 shell 进程（AC-10-07）。
+  // - did-navigate（含开发期 HMR 整页 reload）：tab 列表与终端内容按 PRD 不持久化，
+  //   文档重载后渲染层不再引用任何旧 ptyId——残留 pty 即孤儿，一律 kill。
+  //   初次加载的 did-navigate 发生在本注册之前，且此刻注册表为空，killAll 无害。
+  app.on('before-quit', () => killAllPtys());
+  win.webContents.on('did-navigate', () => killAllPtys());
 
   // 同会话去重状态：
   // - lastToastedAt：任意终态通知后的短冷却（重复终态只弹第一条）

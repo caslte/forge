@@ -20,8 +20,8 @@ import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
 
-const wmDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
-const wmLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
+const wmDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
+const wmLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 /**
  * 轮换文案：纯前端节奏，与主进程进度无关联（避免虚假进度条）。

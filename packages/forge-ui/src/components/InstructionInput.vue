@@ -55,6 +55,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'send', text: string): void;
   (e: 'cancel'): void;
+  /** 「↵立即」：立即发送队列第 index 条（打断语义），上层补 user 气泡并调 RPC */
+  (e: 'queue-send-now', index: number): void;
   (e: 'model-change', model: string): void;
   /** 草稿态选中归属项目（上层切当前项目，草稿保留） */
   (e: 'pick-project', path: string): void;
@@ -771,6 +773,23 @@ function onSend(): void {
   // 附件行追加在正文后（换行分隔），@ 前缀是附件协议标记：@开头=附件，
   // 手敲裸路径=正文，展示层零歧义；模型据此自行 read，纯附件消息就是纯附件行
   emit('send', paths.length > 0 ? `${trimmed}\n${paths.map((p) => `@${p}`).join('\n')}` : trimmed);
+}
+
+// ===== CV-S09 队列编辑：删除 / 「↵立即」（打断当前轮并直发该条） =====
+
+/** 删除第 i 条；失败（UI 镜像过期等）toast 提示，队列以 queueUpdated 事件全量自愈 */
+async function onQueueRemove(i: number): Promise<void> {
+  if (!props.sessionId) return;
+  try {
+    await call('conversation/queueRemove', { sessionId: props.sessionId, index: i });
+  } catch (e) {
+    toastError(e instanceof Error ? e.message : t('input.queue.editFailed'));
+  }
+}
+
+/** 「↵立即」：立即发送第 i 条，交给上层（user 气泡要本地补进会话消息列表，输入框够不着） */
+function onQueueSendNow(i: number): void {
+  emit('queue-send-now', i);
 }
 
 /** 把一批路径加入待发区（格式白名单 + 主进程密钥嗅探后返回标记）；返回是否全部成功 */
@@ -1612,7 +1631,8 @@ watch(
       </div>
 
       <div class="compose-actions">
-        <!-- CV-S09 待发送队列徽标 + 只读浮窗：忙时入队的消息在派发前暂存于此 -->
+        <!-- CV-S09 待发送队列徽标 + 浮窗：忙时入队的消息在派发前暂存于此；
+             队列编辑（删除 / 「↵立即」-打断当前轮）经 conversation/queue* RPC -->
         <div v-if="queueList.length > 0" class="queue-wrap">
           <button
             class="queue-badge"
@@ -1624,7 +1644,28 @@ watch(
           </button>
           <div v-if="queuePanelOpen" class="queue-panel">
             <div class="menu-hint">{{ t('input.queue.hint') }}</div>
-            <div v-for="(item, i) in queueList" :key="i" class="queue-item">{{ item }}</div>
+            <div
+              v-for="(item, i) in queueList"
+              :key="`${i}-${item}`"
+              class="queue-item"
+            >
+              <span class="queue-item-text">{{ item }}</span>
+              <span class="queue-item-actions">
+                <button type="button" class="queue-act queue-act-now" @click.stop="onQueueSendNow(i)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 10 4 15 9 20" />
+                    <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+                  </svg>
+                  <span>{{ t('input.queue.sendNow') }}</span>
+                </button>
+                <button type="button" class="queue-act queue-act-danger" :data-tooltip="t('input.queue.remove')" @click.stop="onQueueRemove(i)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                </button>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -2138,13 +2179,79 @@ watch(
 }
 
 .queue-item {
-  padding: 6px 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 4px 6px 10px;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--foreground);
+  border-radius: 6px;
+}
+
+.queue-item-text {
+  flex: 1;
+  min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  border-radius: 6px;
+}
+
+/* 队列编辑动作（↵立即 / ✕删除）：悬停浮现，不打扰默认阅读 */
+.queue-item-actions {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.queue-item:hover .queue-item-actions,
+.queue-item:focus-within .queue-item-actions {
+  display: inline-flex;
+}
+
+.queue-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.queue-act svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 「↵ 立即」：带文字的动作，宽度随文字 */
+.queue-act-now {
+  width: auto;
+  padding: 0 6px;
+  gap: 3px;
+  font-size: 11.5px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.queue-act-now svg {
+  width: 12px;
+  height: 12px;
+}
+
+.queue-act:hover {
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  color: var(--foreground);
+}
+
+.queue-act-danger:hover {
+  background: color-mix(in oklab, var(--destructive) 14%, transparent);
+  color: var(--destructive);
 }
 
 .queue-item + .queue-item {

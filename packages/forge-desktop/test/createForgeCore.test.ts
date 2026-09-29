@@ -1495,3 +1495,61 @@ test('CV08：slashCommandResources 注入后草稿态查询（无 sessionId）�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ===== 热切换模型的 modelsPath 接线（回归：模型仅在 Forge models.json 配置时热切换报「模型未配置或不可用」）=====
+
+test('已有会话热切换模型经注入的 modelsPath 解析（不回退 ~/.pi/agent/models.json）', async () => {
+  const { root, storeFile, projectDir } = makeTempProject();
+  try {
+    // 模型只存在于 piModelsPath 指向的 models.json（生产即 <userData>/agent/models.json）；
+    // ~/.pi/agent/models.json 是终端 pi CLI 的配置，不含该模型 → 走缺省实现必然解析失败
+    const piModelsPath = path.join(root, 'agent-models.json');
+    fs.writeFileSync(
+      piModelsPath,
+      JSON.stringify({
+        providers: {
+          'forge-test-provider': {
+            baseUrl: 'https://example.invalid/v1',
+            api: 'openai-completions',
+            apiKey: 'sk-test',
+            models: [{ id: 'forge-only-model', contextWindow: 128000 }],
+          },
+        },
+      }),
+      'utf8',
+    );
+    const factoryModels: unknown[] = [];
+    const factory: PiAgentSessionFactory<FakePiSession> = async (options: PiAgentSessionFactoryOptions) => {
+      factoryModels.push(options.model);
+      return { session: new FakePiSession(), dispose: () => undefined };
+    };
+    const core = createForgeCore(storeFile, {
+      ...(await seededModelDeps()),
+      piModelsPath,
+      piAgentSessionFactory: factory,
+    });
+    await invoke(core.methodTable, 'project/addProject', { path: projectDir });
+    const created = await invoke(core.methodTable, 'session/createSession', { projectPath: projectDir });
+    const sessionId = (created.data as { session: { sessionId: string } }).session.sessionId;
+
+    // 首轮：无模型覆盖（走 factory 建会话，不经 resolveModel）
+    const first = await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: '你好' });
+    assert.equal(first.code, 0, `首轮发送应成功，message: ${first.message}`);
+
+    // 会话内切到「仅在注入 modelsPath 配置」的模型 → 适配器 applyModelChange 必须解析成功
+    const setModel = await invoke(core.methodTable, 'model/setSessionModel', {
+      sessionId,
+      model: 'forge-only-model',
+    });
+    assert.equal(setModel.code, 0, `setSessionModel 应成功，message: ${setModel.message}`);
+    const switched = await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: '换模型' });
+
+    assert.equal(switched.code, 0, `热切换后发送应成功，message: ${switched.message}`);
+    // fake 会话无 setModel → 适配器销毁重建，重建时把解析出的 pi Model 对象传给 factory
+    const resolved = factoryModels[factoryModels.length - 1] as { id?: string; provider?: string };
+    assert.equal(resolved?.id, 'forge-only-model', '重建会话应收到注入 modelsPath 解析出的模型对象');
+    assert.equal(resolved?.provider, 'forge-test-provider');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

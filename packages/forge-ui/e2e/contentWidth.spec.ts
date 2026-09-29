@@ -84,6 +84,29 @@ test('内容宽度：默认标准 = 收拢居中；切宽 = 铺满且仍与输�
   health.assertHealthy();
 });
 
+test('内容宽度：新会话首屏（hero）输入框恒为 640px，标准模式不撑宽 @regression', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto('/');
+  await page.locator('.app-toolbar-btn', { hasText: '新会话' }).click();
+  await expect(page.locator('.conv-input-wrap.hero-mode')).toBeVisible();
+
+  const heroBoxW = async () => {
+    await page.waitForTimeout(700);
+    return page.evaluate(() => Math.round((document.querySelector('.compose-box') as HTMLElement).getBoundingClientRect().width));
+  };
+
+  expect(await heroBoxW(), '默认标准：首屏输入框收窄 640px').toBe(640);
+
+  await setContentWidth(page, '宽');
+  expect(await heroBoxW(), '切宽后首屏输入框仍为 640px（hero 不随偏好变宽）').toBe(640);
+
+  await setContentWidth(page, '标准');
+  expect(await heroBoxW(), '切回标准后首屏输入框仍为 640px').toBe(640);
+
+  health.assertHealthy();
+});
+
 test('内容宽度：子 Agent Tab 栏跟随列宽（标准模式不铺满） @regression', async ({ page }) => {
   const health = attachHealthGuards(page);
   await page.setViewportSize({ width: 1600, height: 900 });
@@ -101,6 +124,11 @@ test('内容宽度：子 Agent Tab 栏跟随列宽（标准模式不铺满） @r
   await expect(page.locator('.tree-panel')).toBeVisible();
   await page.locator('.tree-session', { hasText: '会话CW' }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
+  // 先发一条消息离开首屏 hero（空会话输入框恒 640px，与列宽无关，见下方 hero 用例），
+  // 否则本例量到的是 hero 宽度而非内容列宽
+  await page.locator('.compose-input').fill('检查列宽对齐');
+  await page.locator('.compose-input').press('Enter');
+  await expect(page.locator('.conv-messages-inner .msg').first()).toBeVisible();
 
   // mock：派发一个子 agent，使 Tab 栏渲染出来
   await page.evaluate((sid) => {

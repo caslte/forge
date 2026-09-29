@@ -1080,11 +1080,28 @@ class QueuedFakePiSession extends FakePiSession {
   isStreaming = true;
   clearQueueCalls = 0;
   queueContent: string[] = [];
+  /** followUp/steer 直入队记录（CV-S09 队列编辑走真实 pi 同路径） */
+  followUpCalls: string[] = [];
+  steerCalls: string[] = [];
   clearQueue(): { steering: string[]; followUp: string[] } {
     this.clearQueueCalls += 1;
     const followUp = [...this.queueContent];
     this.queueContent = [];
     return { steering: [], followUp };
+  }
+  /** 对齐真实 pi：followUp 为同步 push（队尾追加），失败仅当命令不可排队 */
+  async followUp(text: string): Promise<void> {
+    this.followUpCalls.push(text);
+    this.queueContent.push(text);
+  }
+  /** 对齐真实 pi：steer 直入 steering 队列（本 fake 只记录，不参与 followUp 镜像） */
+  async steer(text: string): Promise<void> {
+    this.steerCalls.push(text);
+  }
+  /** 对齐真实 pi：abort 结束在途轮次，isStreaming 翻 false */
+  override async abort(): Promise<void> {
+    await super.abort();
+    this.isStreaming = false;
   }
 }
 
@@ -1170,6 +1187,155 @@ test('CV-S09：cancelStream 清空队列并返回文本，清空不派发（无 
   const userAfterClear = userMessages.length;
   fake.emit({ type: 'message_start', message: { role: 'user', content: 'q1' } } as MinimalEvent);
   assert.equal(userMessages.length, userAfterClear, '取消后 user message_start 不再转发');
+});
+
+// ===== CV-S09 队列编辑：删除 / 按位插入 / 立即发送（steer 插队） =====
+
+test('队列编辑：removeQueuedMessage 删中间一条，剩余按原序回灌', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  await adapter.sendMessage('s1', '第一轮'); // 建 lease（直发路径）
+  fake.queueContent = ['a', 'b', 'c'];
+
+  const next = await adapter.removeQueuedMessage('s1', 1);
+
+  assert.deepEqual(next, ['a', 'c']);
+  assert.deepEqual(fake.queueContent, ['a', 'c'], '重建后队列应等于返回值');
+  assert.deepEqual(fake.followUpCalls, ['a', 'c'], '回灌走 session.followUp（与真实 pi 同路径）');
+});
+
+test('队列编辑：removeQueuedMessage index 越界抛错且队列原样保留', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  await adapter.sendMessage('s1', '第一轮');
+  fake.queueContent = ['a', 'b'];
+
+  await assert.rejects(() => adapter.removeQueuedMessage('s1', 5), /队列已变化/);
+  assert.deepEqual(fake.queueContent, ['a', 'b'], '软失败必须恢复原队列，不得吞掉待发消息');
+});
+
+test('队列编辑：sendQueuedMessageNow 打断当前轮，摘出条目立即直发，剩余回灌', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  await adapter.sendMessage('s1', '第一轮'); // 在途轮次（fake isStreaming=true）
+  fake.queueContent = ['a', 'b', 'c'];
+
+  const next = await adapter.sendQueuedMessageNow('s1', 1);
+
+  assert.deepEqual(next, ['a', 'c']);
+  assert.equal(fake.abortCalls, 1, '在途轮次应被中止（不等 AI 跑完）');
+  assert.equal(fake.isStreaming, false, 'abort 后轮次结束');
+  // 摘出的 'b' 以全新轮次直发（空闲路径 prompt），'a'/'c' 回灌排在其后 FIFO
+  assert.deepEqual(fake.promptCalls, ['第一轮', 'b']);
+  assert.deepEqual(fake.followUpCalls, ['a', 'c']);
+  assert.deepEqual(fake.queueContent, ['a', 'c']);
+});
+
+test('队列编辑：sendQueuedMessageNow index 越界抛错且不打断当前轮', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  await adapter.sendMessage('s1', '第一轮');
+  fake.queueContent = ['a', 'b'];
+
+  await assert.rejects(() => adapter.sendQueuedMessageNow('s1', 9), /队列已变化/);
+  assert.equal(fake.abortCalls, 0, '软失败不得中止在途轮次');
+  assert.deepEqual(fake.queueContent, ['a', 'b'], '软失败必须恢复原队列');
+});
+
+test('队列编辑：sendQueuedMessageNow 会话空闲时直接直发不 abort', async () => {
+  const fake = new QueuedFakePiSession();
+  fake.isStreaming = false; // 竞态窗口：点击时轮次恰好已收尾
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  await adapter.sendMessage('s1', '第一轮');
+  fake.queueContent = ['a', 'b'];
+
+  const next = await adapter.sendQueuedMessageNow('s1', 0);
+
+  assert.deepEqual(next, ['b']);
+  assert.equal(fake.abortCalls, 0, '空闲时无需中止');
+  assert.deepEqual(fake.promptCalls, ['第一轮', 'a']);
+  assert.deepEqual(fake.queueContent, ['b']);
+});
+
+/** abort 时模拟 pi 发出 aborted 错误事件 + 被打断轮的收尾 assistant 消息 */
+class AbortNoisyFakePiSession extends QueuedFakePiSession {
+  override async abort(): Promise<void> {
+    await super.abort();
+    this.emit({ type: 'agent_end', errorMessage: 'This operation was aborted' } as MinimalEvent);
+    this.emit({
+      type: 'message_end',
+      message: { role: 'assistant', content: '', stopReason: 'error', errorMessage: 'This operation was aborted' },
+    } as MinimalEvent);
+    this.emit({
+      type: 'message_end',
+      message: { role: 'assistant', content: '被打断轮的半截文本', stopReason: 'aborted' },
+    } as MinimalEvent);
+  }
+}
+
+test('打断抑制窗：cancelStream / sendQueuedMessageNow 期间 aborted 错误事件不上报', async () => {
+  const fake = new AbortNoisyFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  const errors: string[] = [];
+  const assistantMessages: string[] = [];
+  adapter.setEventHandlers({
+    onError: (_sid, error) => errors.push(error.message),
+    onMessage: (_sid, message) => {
+      if (message.role === 'assistant') assistantMessages.push(message.content);
+    },
+  });
+  await adapter.sendMessage('s1', '第一轮');
+  fake.queueContent = ['a', 'b'];
+  const msgCountBefore = assistantMessages.length;
+
+  await adapter.cancelStream('s1');
+  assert.deepEqual(errors, [], '停止的 abort 收尾不该弹错误横幅');
+  assert.equal(
+    assistantMessages.length, msgCountBefore,
+    '被打断轮的收尾消息不转发 UI（流式占位已展示同文）',
+  );
+
+  fake.isStreaming = true; // 模拟新一轮在途
+  fake.queueContent = ['c'];
+  await adapter.sendQueuedMessageNow('s1', 0);
+  assert.deepEqual(errors, [], '立即发送的 abort 收尾同样不上报');
+  // 摘出条目直发的新轮次自身收尾照常转发（+1），被打断轮的收尾不转发
+  assert.equal(assistantMessages.length, msgCountBefore + 1);
+  assert.ok(
+    !assistantMessages.includes('被打断轮的半截文本'),
+    '被打断轮的收尾消息不得出现在消息流',
+  );
+});
+
+test('打断抑制窗只盖住 abort 窗口，之后的真错误与正常收尾照常转发', async () => {
+  const fake = new QueuedFakePiSession();
+  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
+  const errors: string[] = [];
+  const assistantMessages: string[] = [];
+  adapter.setEventHandlers({
+    onError: (_sid, error) => errors.push(error.message),
+    onMessage: (_sid, message) => {
+      if (message.role === 'assistant') assistantMessages.push(message.content);
+    },
+  });
+  await adapter.sendMessage('s1', '第一轮');
+  await adapter.cancelStream('s1');
+  // 窗口已撤：后续真错误（如鉴权失败）必须照常透传
+  fake.emit({
+    type: 'agent_end',
+    errorMessage: 'No API key found for the selected model',
+  } as MinimalEvent);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0] ?? '', /No API key/);
+  // 窗口已撤：正常完成的 assistant 消息照常转发
+  fake.emit({
+    type: 'message_end',
+    message: { role: 'assistant', content: '正常回复', stopReason: 'stop' },
+  } as MinimalEvent);
+  assert.ok(
+    assistantMessages.includes('正常回复'),
+    '窗口外的正常收尾消息不受抑制窗影响',
+  );
 });
 
 /** 模拟 pi 直发 preflight 窗口的 fake：prompt 先挂起（鉴权/压缩预检，isStreaming 尚 false），

@@ -120,6 +120,9 @@ export class ConversationApi {
     this.methods = {
       'conversation/sendMessage': (params) => this.sendMessage(params),
       'conversation/cancelStream': (params) => this.cancelStream(params),
+      // CV-S09 队列编辑：删除 / 立即发送（打断当前轮并直发该条）
+      'conversation/queueRemove': (params) => this.queueRemove(params),
+      'conversation/queueSendNow': (params) => this.queueSendNow(params),
       'conversation/queryHistory': (params) => this.queryHistory(params),
       'conversation/getLastError': (params) => this.getLastError(params),
       'conversation/getContextUsage': (params) => this.getContextUsage(params),
@@ -197,6 +200,40 @@ export class ConversationApi {
       return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
     }
     return this.call('cancelStream', () => this.service.cancelStream(sessionId));
+  }
+
+  /**
+   * 队列编辑公共参数解析（CV-S09 队列编辑）：sessionId 必填非空字符串，index 必填
+   * 非负整数。合法返回 { sessionId, index }，否则返回错误信封。
+   */
+  private parseQueueParams(params: unknown): { sessionId: string; index: number } | RpcResult {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return fail(1001, '参数错误：sessionId 必须为非空字符串');
+    }
+    const index = isRecord(params) ? params.index : undefined;
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+      return fail(1001, '参数错误：index 必须为非负整数');
+    }
+    return { sessionId, index };
+  }
+
+  /** conversation/queueRemove：删除待发队列第 index 条（CV-S09 队列编辑） */
+  private queueRemove(params: unknown): Promise<RpcResult> {
+    const parsed = this.parseQueueParams(params);
+    if ('code' in parsed) return Promise.resolve(parsed);
+    return this.call('queueRemove', () =>
+      this.service.removeQueuedMessage(parsed.sessionId, parsed.index),
+    );
+  }
+
+  /** conversation/queueSendNow：立即发送第 index 条（打断当前轮并直发，CV-S09 队列编辑） */
+  private queueSendNow(params: unknown): Promise<RpcResult> {
+    const parsed = this.parseQueueParams(params);
+    if ('code' in parsed) return Promise.resolve(parsed);
+    return this.call('queueSendNow', () =>
+      this.service.sendQueuedMessageNow(parsed.sessionId, parsed.index),
+    );
   }
 
   /** conversation/queryHistory：查询消息历史（CV-S05），按 ts 升序 */

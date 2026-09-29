@@ -4,8 +4,11 @@ import {
   CANVAS_DEFAULT_HEIGHT,
   CANVAS_TALL_HEIGHT,
   looksLikeHtmlCanvas,
+  looksLikeProseCanvas,
+  stripCanvasProse,
   buildCanvasDocument,
   buildCanvasStandaloneFile,
+  renderMarkdown,
   type CanvasTokens,
 } from '@forge/core/markdown';
 import { useI18n } from '../i18n/index.ts';
@@ -15,7 +18,7 @@ import { useTheme } from '../composables/useTheme.ts';
  * 画布卡片（```canvas 围栏）：把模型手写的 HTML 图示渲染在气泡内。
  *
  * 输入是 base64 编码的 HTML 源码（来自 renderMarkdown 的 md-canvas 占位）。
- * 三态：blocked=骨架蒙版 / 非 HTML=降级代码块 / 其余=iframe 沙箱。
+ * 四态：blocked=骨架蒙版 / 非 HTML=降级代码块 / 文字塞卡片=降级正文 / 其余=iframe 沙箱。
  *
  * 沙箱口径（不可放宽）：`sandbox=""` 全关。不给 allow-scripts，模型 HTML 里的
  * <script> 与 on* 一律不执行；不给 allow-same-origin，srcdoc 是独立 origin，
@@ -68,6 +71,13 @@ const tokens = computed<CanvasTokens>(() => {
 
 const srcdoc = computed(() => buildCanvasDocument(source.value, tokens.value));
 const isHtml = computed(() => looksLikeHtmlCanvas(source.value));
+/**
+ * 「文字塞卡片」：模型把纯文字说明包进 canvas 围栏。不出 iframe（固定高卡片装
+ * 一段文字 = 大片留白），摘出文字过 renderMarkdown（sanitize 白名单在内）按正文
+ * 流渲染——安全面与普通 markdown 正文同一条线，卡片边框与工具栏都不出现。
+ */
+const isProse = computed(() => looksLikeProseCanvas(source.value));
+const proseHtml = computed(() => (isProse.value ? renderMarkdown(stripCanvasProse(source.value)) : ''));
 /** 蒙版与终态同高：闭合瞬间不产生跳变，下方正文不会被顶动 */
 const height = ref(CANVAS_DEFAULT_HEIGHT);
 const expanded = ref(false);
@@ -192,6 +202,9 @@ onUnmounted(() => {
       </div>
       <pre class="canvas-source" :style="sourceExpanded ? { maxHeight: `${CANVAS_TALL_HEIGHT}px` } : undefined"><code>{{ source }}</code></pre>
     </div>
+
+    <!-- 文字塞卡片：标签只是排版壳。摘出文字按正文流渲染，不出卡片框、不给固定高 -->
+    <div v-else-if="isProse" class="canvas-prose" v-html="proseHtml"></div>
 
     <!-- 正常态：沙箱 iframe -->
     <div v-else class="canvas-frame" :style="{ height: `${height}px` }">
@@ -366,6 +379,68 @@ onUnmounted(() => {
   background: color-mix(in oklab, var(--foreground) 3%, var(--background));
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ---------- 文字塞卡片降级：正文流渲染 ---------- */
+/* MessageCard 的 .msg-content 系列是 scoped 样式，穿不进本组件，这里镜像必要口径：
+   统一块间距、标题上距、内联代码胶囊、表格描边。prose 降级里基本只有段落与列表。 */
+.canvas-prose {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 2;
+  color: var(--foreground);
+  word-break: break-word;
+  user-select: text;
+}
+.canvas-prose :deep(p),
+.canvas-prose :deep(h1),
+.canvas-prose :deep(h2),
+.canvas-prose :deep(h3),
+.canvas-prose :deep(h4),
+.canvas-prose :deep(h5),
+.canvas-prose :deep(h6),
+.canvas-prose :deep(blockquote),
+.canvas-prose :deep(hr),
+.canvas-prose :deep(ul),
+.canvas-prose :deep(ol),
+.canvas-prose :deep(table) {
+  margin: 0;
+  margin-block-end: 12px;
+}
+.canvas-prose :deep(h1),
+.canvas-prose :deep(h2),
+.canvas-prose :deep(h3),
+.canvas-prose :deep(h4),
+.canvas-prose :deep(h5),
+.canvas-prose :deep(h6) {
+  margin-block-start: 18px;
+}
+.canvas-prose :deep(:first-child) {
+  margin-block-start: 0;
+}
+.canvas-prose :deep(:last-child) {
+  margin-block-end: 0;
+}
+.canvas-prose :deep(ul),
+.canvas-prose :deep(ol) {
+  padding-left: 0;
+  list-style-position: inside;
+}
+.canvas-prose :deep(.md-inline-code) {
+  background: var(--muted);
+  color: var(--foreground);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.canvas-prose :deep(table) {
+  border-collapse: collapse;
+}
+.canvas-prose :deep(th),
+.canvas-prose :deep(td) {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
 }
 
 /* ---------- 工具栏 ---------- */

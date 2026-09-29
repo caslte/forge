@@ -56,6 +56,103 @@ function stripTagsToText(s: string): string {
     .replace(/<[^>]*>/g, '');
 }
 
+/* ------------------------------------------------------------------ *
+ * 「文字塞卡片」判据（prose 降级）。
+ *
+ * looksLikeHtmlCanvas 只挡「没有标签」和「ASCII 字符画」，`<div>` 包一段纯文字
+ * 会畅通进 iframe——固定 320px 高的卡片装着几百字说明，底部大片留白，用户读的
+ * 还是不带 markdown 语义的裸文本。模型把 prose 塞进 ```canvas 围栏是实测高频
+ * 行为（提示词已于 2026-09 收紧，仍需宿主兜底），故加第二道降级：判出「标签只是
+ * 排版壳、内容是文章」的卡片，摘出文字按正文流渲染，不出 iframe。
+ */
+
+/**
+ * 布局特征（命中任一即不判 prose）——只认「真排版」，不认「内容像图」。
+ *
+ * 教训（2026-09-29 真机漏网）：初版把箭头 → ← 和边框线型也算特征，结果
+ * 「正文里夹内联箭头的伪流程卡」（origin → 你的 fork ← 拉新提交…）畅通进
+ * iframe。行文里的 A → B → C 是标点不是布局，中文技术写作里极常见；带边框的
+ * 薄壳 wrapper 同理（callout 式排版壳）。这里只留布局信号：flex/grid/绝对定位/
+ * 浮动（模型按契约画图必用其中之一）、table/svg/img 图元、制表字符。
+ * 误伤方向也核实过：纯文字序列被降级成正文不丢信息，可接受。
+ */
+const VISUAL_CUE_RE =
+  /display\s*:\s*(flex|grid)|position\s*:\s*absolute|float\s*:|<(table|svg|img)\b|[─│┌┐└┘├┤┬┴┼]/i;
+
+/** 可见文本占源码的比例上限：超过才算「标签只是壳」。真图示的样式文本通常占一半以上。 */
+const PROSE_TEXT_RATIO = 0.6;
+
+/** 可见文本最短长度：低于它不判 prose（带个标题的小图示不值得降级）。 */
+const PROSE_MIN_TEXT = 40;
+
+/**
+ * 长句阈值：单个标签间文本片段的字符数超过它就是句子。
+ *
+ * 真图示的文本节点是短标签（「网关」「服务」「API Gateway」），几十字的连续长句
+ * 不可能住在图示的节点里——所以长句是无视布局信号的 prose 铁证。第二轮真机漏网
+ * 正是反例：P0/P1/P2 分级列表套着 grid 壳、每条一个带样式 div，布局信号全齐，
+ * 本质仍是文字堆。
+ */
+const PROSE_LONG_RUN = 80;
+
+/**
+ * 图形兜底：含 svg/img 的卡片是「画」，文字判据对它无权重——降级路径靠剥标签取文，
+ * 会把整张图拆没。宁可留着卡片（哪怕它还带了段长文），也不做不可逆的破坏。
+ */
+const GRAPHIC_RE = /<(svg|img)\b/i;
+
+/** 逐个取标签间的文本片段（trim 后），返回最长片段的字符数。 */
+function longestTextRun(s: string): number {
+  let max = 0;
+  for (const frag of s.split(/<[^>]*>/)) {
+    const len = frag.trim().length;
+    if (len > max) max = len;
+  }
+  return max;
+}
+
+/**
+ * 源码是否「文字塞卡片」：有标签（否则归 looksLikeHtmlCanvas 的代码块降级）、
+ * 非图形（svg/img 不碰），且命中其一——
+ * 1. 长句路径：任一标签间文本 ≥ PROSE_LONG_RUN（无视布局信号）；
+ * 2. 薄壳路径：可见文本占源码六成以上、且无任何布局特征（flex/grid/定位/图元/制表符）。
+ */
+export function looksLikeProseCanvas(source: string): boolean {
+  const s = source ?? '';
+  if (!looksLikeHtmlCanvas(s)) return false;
+  if (GRAPHIC_RE.test(s)) return false;
+  const text = stripTagsToText(s).trim();
+  if (text.length < PROSE_MIN_TEXT) return false;
+  if (longestTextRun(s) >= PROSE_LONG_RUN) return true;
+  if (text.length / s.length <= PROSE_TEXT_RATIO) return false;
+  return !VISUAL_CUE_RE.test(s);
+}
+
+/**
+ * 「文字塞卡片」的降级还原：把 HTML 片段摘成可读纯文本，交给渲染层过
+ * renderMarkdown（sanitize 白名单在内）按正文流渲染。
+ *
+ * 顺序敏感：先整块丢弃 script/style（其内容不配出现在正文里），再剥标签，最后才
+ * 解码实体——反过来先解码，`&lt;script&gt;` 会复活成真标签。块级闭标签还原成段落
+ * 边界防文字粘连；行首空白剥掉，防 renderMarkdown 把模型排版缩进顶成代码块。
+ */
+export function stripCanvasProse(source: string): string {
+  return (source ?? '')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|ul|ol|h[1-6]|table|tr|blockquote|pre|section|article)>/gi, '\n\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/^[ \t]+/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
+}
+
 /**
  * 文本是否呈 ASCII 字符画形态。
  *

@@ -51,6 +51,9 @@ export type ForgeMethod =
   // conversation（03）
   | 'conversation/sendMessage'
   | 'conversation/cancelStream'
+  // CV-S09 队列编辑：删除 / 立即发送（打断当前轮并直发该条）
+  | 'conversation/queueRemove'
+  | 'conversation/queueSendNow'
   | 'conversation/queryHistory'
   | 'conversation/getContextUsage'
   | 'conversation/compact'
@@ -78,6 +81,12 @@ export type ForgeMethod =
   | 'skill/importSkill'
   | 'skill/createSkill'
   | 'skill/deleteSkill'
+  // term（10：内嵌终端，docs/prd/10_embedded_terminal.md）
+  // 安全口径：cwd 由主进程按已注册项目路径校验（AC-10-06）；spawn 目标固定系统 shell
+  | 'term/create'
+  | 'term/write'
+  | 'term/kill'
+  | 'term/resize'
   // pi（07）
   | 'pi/getInfo'
   | 'pi/updatePlugins'
@@ -253,6 +262,9 @@ export type ForgeEvent =
   | 'subagent.updated'
   | 'subagent.removed'
   | 'updater.stateChanged'
+  // term（10）：pty 下行数据/退出（TD-TM-03，按 ptyId 广播）
+  | 'term:data'
+  | 'term:exit'
   // v3.76 启动门闩：forge-core 组装完成后由 main 手动 send 一次。
   // 注意：不进 FORGE_EVENTS 数组（那是 eventBus 转发注册表，core 未就绪时 eventBus
   // 不存在、注册不了）；渲染端通过 forge:boot-state 拉取兜底防错过。
@@ -286,6 +298,9 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'subagent.updated',
   'subagent.removed',
   'updater.stateChanged',
+  // 主进程不转发未登记事件：term:data/term:exit 漏登记 → 渲染进程收不到 → 终端无输出
+  'term:data',
+  'term:exit',
 ];
 
 /** 子 Agent 信息（API 06 §0 业务对象；与 forge-ui types.ts 的 Subagent 字段一致） */
@@ -373,6 +388,13 @@ export interface SubagentRemovedPayload {
  * overwrite=true 重调）。
  */
 export type { SkillScope, SkillEntry, SkillIssue, ListSkillsResult } from './pi/skillService.ts';
+
+/**
+ * 内嵌终端（10）契约类型（事实来源在 ./term/ptyService.ts；type-only 再导出，
+ * 不会把 node-pty/@forge/core 拉进 preload 运行时 bundle）。forge-ui 按仓库惯例
+ * 在 bridge.ts 独立声明同形类型。
+ */
+export type { TermCreateResult, TermDataPayload, TermExitPayload } from './term/ptyService.ts';
 
 /** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json） */
 export interface PiGetInfoResult {

@@ -1,0 +1,19 @@
+{
+  "wu_id": "wu-01-rpc",
+  "type": "unit",
+  "summary": {
+    "status": "PASS",
+    "total": 0,
+    "passed": 0,
+    "failed": 0
+  },
+  "started_at": "2026-08-09T03:12:40.008Z",
+  "finished_at": "2026-08-09T03:12:40.496Z",
+  "duration_ms": 488,
+  "details": [
+    {
+      "stdout_tail": "✔ listProjects：按 lastOpenedAt 降序，null 排最后 (24.0447ms)\n✔ settings：set/get 往返并持久化（重新加载后仍在） (5.8163ms)\n✔ 原子写：成功后无 .tmp 残留，文件为合法 JSON (7.6316ms)\n✔ schemaVersion：未知新版本（>1）抛 SCHEMA_VERSION_TOO_NEW (2.6118ms)\n✔ schemaVersion：非法版本（<1）抛 SCHEMA_VERSION_INVALID (2.402ms)\n✔ schemaVersion：文件缺少版本字段时重新播种 (3.713ms)\n✔ 损坏 JSON：抛 STORE_CORRUPT (2.4713ms)\n✔ normalizeProjectPath：返回规范化绝对路径，无效路径抛 PATH_INVALID (4.3231ms)\nℹ tests 54\nℹ suites 0\nℹ pass 54\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 379.7715\n",
+      "stderr_tail": ""
+    }
+  ]
+}

@@ -24,8 +24,8 @@ import { useI18n } from '../i18n/index.ts';
 
 // v3.85.2：字标与 splash/BootWelcome 同一 URL（public 资产，dev '/'、prod './' 均可解析）——
 // 全链路共享同一次加载/解码，接管时不再有「新图解码前塌高」的闪动
-const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
-const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 /**
  * 对话主视图。
@@ -93,6 +93,7 @@ const {
   resetForSession: resetConvForSession,
   loadHistory,
   send: sendTurn,
+  sendQueuedNow,
   cancel: cancelTurn,
   subagents,
   activeAgentId,
@@ -1129,6 +1130,7 @@ onUnmounted(() => {
         :commit-entry="!isEmpty"
         @send="onSend"
         @cancel="onCancelTurn"
+        @queue-send-now="sendQueuedNow"
         @model-change="onModelChange"
         @pick-project="emit('pick-project', $event)"
         @open-project-picker="emit('open-project-picker')"
@@ -1459,7 +1461,7 @@ onUnmounted(() => {
 /* InstructionInput 为多根 fragment（compose-box + 状态行），不再继承父组件 scopeId，
    父作用域规则必须经 :deep() 才能命中 .compose-box */
 /* 宽度统一取 --conv-box-w：默认 100cqw（= 原有 100cqw），hero 态收窄，
-   标准宽度偏好下由 .conv-view.col-standard 改写为内容列宽（三种形态一致，不跳宽） */
+   标准宽度偏好下由 .conv-view.col-standard 改写为内容列宽（首条消息发出前后两种形态一致，不跳宽） */
 .conv-input-wrap :deep(.compose-box) {
   max-width: var(--conv-box-w);
   margin-inline: auto;
@@ -1474,13 +1476,21 @@ onUnmounted(() => {
   --conv-box-w: min(640px, 100cqw);
 }
 
+/* 子 agent Tab 栏直接挂在 .conv-view 下、读不到 --conv-box-w，hero 态需显式同宽，
+   否则标准宽度下 Tab 栏 920px、输入框 640px，两者左缘错开。数值同上面 hero-mode。 */
+.conv-view:has(.conv-input-wrap.hero-mode) :deep(.subagent-tabbar) {
+  max-width: min(640px, 100%);
+}
+
 .conv-input-wrap :deep(.compose-status) {
   max-width: var(--conv-box-w);
   margin-inline: auto;
 }
 
-/* 标准宽度：输入框整体（输入框 + 状态行）跟随正文列宽 */
-.conv-view.col-standard .conv-input-wrap {
+/* 标准宽度：输入框整体（输入框 + 状态行）跟随正文列宽。
+   hero（空会话首屏）排除在外——首屏输入框固定收窄 640px（与启动落地页 LandingHero
+   同宽），若这里一并改写成 920px，「标准」反而会把新会话首屏输入框撑得比「宽」还宽。 */
+.conv-view.col-standard .conv-input-wrap:not(.hero-mode) {
   --conv-box-w: var(--conv-col);
 }
 

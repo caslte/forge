@@ -5,6 +5,7 @@ import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } fro
 import { projectTagOf } from './utils/sessionView';
 import { dropDraft } from './utils/composerDrafts';
 import { useTheme } from './composables/useTheme';
+import { usePreferences } from './composables/usePreferences';
 import { useToast } from './composables/useToast';
 import { useI18n } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
@@ -17,6 +18,7 @@ import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import GitCommitDialog from './components/GitCommitDialog.vue';
+import TerminalPanel from './components/TerminalPanel.vue';
 import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
 import logoMain from './assets/logo-main.png';
@@ -279,6 +281,27 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 // 设置
 const { themeMode, setTheme } = useTheme();
 const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
+const { terminalOpen, setTerminalOpen } = usePreferences();
+
+// ===== 内嵌终端（模块 10）入口状态 =====
+// tab 标题的项目显示名：别名优先，回退目录名（与会话归属标签同口径）
+const terminalProjectName = computed(() => {
+  const p = currentProject.value;
+  if (p === null) return '';
+  return p.alias ?? basename(p.path);
+});
+
+/**
+ * Ctrl+` 全局开合（TM-S01，与 VSCode 一致：输入框聚焦时同样生效）。
+ * 只拦 ctrl+反引号这一组合（不吞普通反引号输入，Ctrl 组合本就不产出字符），
+ * 故无需聚焦豁免逻辑；key 与 code 双判覆盖键盘布局差异。
+ */
+function onTerminalHotkey(ev: KeyboardEvent): void {
+  if (!ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
+  if (ev.key !== '`' && ev.code !== 'Backquote') return;
+  ev.preventDefault();
+  setTerminalOpen(!terminalOpen.value);
+}
 
 // 模型列表与会话模型（ConversationView 消费）
 const models = ref<string[]>([]);
@@ -520,6 +543,10 @@ function onSessionCreated(sessionId: string): void {
 async function onSelectSession(id: string): Promise<void> {
   currentSessionId.value = id;
   draftMode.value = false;
+  // 会话归属项目要跟手：终端等「以当前项目为 cwd」的入口读的是 currentProjectPath，
+  // 只从项目树点入才会更新——从会话树点入时必须按会话的 projectPath 对齐
+  const owner = sessions.value.find((s) => s.sessionId === id)?.projectPath ?? null;
+  if (owner !== null && owner !== currentProjectPath.value) currentProjectPath.value = owner;
   // 设置在设置页时，点击会话应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
   try {
@@ -754,6 +781,9 @@ onMounted(() => {
       }
     })
     .catch(() => startPostBootInit());
+
+  // 终端快捷键（TM-S01）：window 级 keydown，捕获阶段即可——Ctrl+` 在任何焦点下生效
+  window.addEventListener('keydown', onTerminalHotkey);
 });
 
 onUnmounted(() => {
@@ -763,6 +793,7 @@ onUnmounted(() => {
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
   unsubNotifyFocus?.();
+  window.removeEventListener('keydown', onTerminalHotkey);
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
 </script>
@@ -959,6 +990,18 @@ onUnmounted(() => {
             </button>
           </template>
           <span class="app-toolbar-space"></span>
+          <!-- 终端开关（模块 10 D5 定稿）：纯图标 + 1px 外框，激活态描边品牌色 -->
+          <button
+            class="app-toolbar-btn term-toggle"
+            :class="{ 'is-active': terminalOpen }"
+            :data-tooltip="t('terminal.toggle')"
+            @click="setTerminalOpen(!terminalOpen)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 17 10 11 4 5" />
+              <line x1="12" y1="19" x2="20" y2="19" />
+            </svg>
+          </button>
         </div>
 
         <section v-if="activeView === 'settings'" class="settings-stage">
@@ -1040,6 +1083,14 @@ onUnmounted(() => {
             @remove-project="onRemoveProject"
           />
         </template>
+
+        <!-- 内嵌终端面板（模块 10 D1）：.content 底部、session-stage 之后的兄弟节点；
+             设置视图只 v-show 隐藏——组件保持挂载，tab/pty 在切设置往返间存活（收起保活同款语义） -->
+        <TerminalPanel
+          v-show="activeView !== 'settings'"
+          :project-path="currentProjectPath"
+          :project-name="terminalProjectName"
+        />
       </main>
       </div>
     </section>
@@ -1552,6 +1603,19 @@ onUnmounted(() => {
 
 .app-toolbar-space {
   flex: 1;
+}
+
+/* 终端开关（demo .term-toggle 定稿）：覆盖 .app-toolbar-btn 的无边框胶囊形——
+   纯图标 + 1px 外框方形按钮；激活描边品牌色由 .is-active 既有规则接管 */
+.app-toolbar-btn.term-toggle {
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.app-toolbar-btn.term-toggle svg {
+  width: 14px;
+  height: 14px;
 }
 
 .session-stage {

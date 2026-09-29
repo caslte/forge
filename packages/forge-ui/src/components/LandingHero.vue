@@ -4,8 +4,8 @@ import type { ProjectPickerDescriptor } from '../types';
 import InstructionInput from './InstructionInput.vue';
 
 // v3.85.2：字标与 splash/BootWelcome/conv-hero 同一 URL、同一档尺寸（320px）
-const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
-const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 /**
  * 落地 hero（v3.77）：零项目时的启动首屏，替换旧「选择项目」卡片。

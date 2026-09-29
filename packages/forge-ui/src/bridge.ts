@@ -25,6 +25,9 @@ export type ForgeMethod =
   | 'session/detachSessionWindow'
   | 'conversation/sendMessage'
   | 'conversation/cancelStream'
+  // CV-S09 队列编辑：删除 / 立即发送（打断当前轮并直发该条）
+  | 'conversation/queueRemove'
+  | 'conversation/queueSendNow'
   | 'conversation/queryHistory'
   | 'conversation/getLastError'
   | 'conversation/getContextUsage'
@@ -50,6 +53,11 @@ export type ForgeMethod =
   | 'skill/importSkill'
   | 'skill/createSkill'
   | 'skill/deleteSkill'
+  // term（10：内嵌终端，docs/prd/10_embedded_terminal.md）
+  | 'term/create'
+  | 'term/write'
+  | 'term/kill'
+  | 'term/resize'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
   // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
@@ -91,6 +99,9 @@ export type ForgeEvent =
   | 'subagent.removed'
   | 'git.branchChanged'
   | 'updater.stateChanged'
+  // term（10）：pty 下行数据/退出（按 ptyId 归属各 tab）
+  | 'term:data'
+  | 'term:exit'
   // v3.76 启动门闩：forge-core 组装完成后主进程推送一次（拉通道见 getBootState）
   | 'boot.ready'
   // 系统通知点击跳转（主进程 notifyToast 直发，不经 core eventBus）：payload { sessionId }，
@@ -449,6 +460,31 @@ export interface ListSkillsResult {
 export interface SkillConflictData {
   conflictPath: string;
   sourceDir?: string;
+}
+
+/**
+ * ===== 内嵌终端（10）类型 =====
+ * 事实来源在 @forge/desktop term/ptyService.ts；按本文件惯例本地声明同形类型。
+ */
+
+/** term/create 响应 data */
+export interface TermCreateResult {
+  ptyId: string;
+  /** 实际 spawn 的系统 shell 绝对路径（tab 内首行展示用） */
+  shell: string;
+  pid: number;
+}
+
+/** term:data 事件 payload（data = pty 原始输出含 ANSI，直接 xterm.write 不转义） */
+export interface TermDataPayload {
+  ptyId: string;
+  data: string;
+}
+
+/** term:exit 事件 payload（exit 即发：用户退出/kill/崩溃；tab 内显示退出码） */
+export interface TermExitPayload {
+  ptyId: string;
+  exitCode: number;
 }
 
 /**

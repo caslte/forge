@@ -1,5 +1,38 @@
 # 变更日志
 
+## v3.87.0 (新增：CV-S09 队列编辑——每条待发消息可删除 / ⚡立即发送（打断当前轮并直发）)
+
+> 来源：2026-09-29 用户需求「排队消息不能只是干等，要能删、能插队」。交互先经 `docs/demos/queue-demo.html` 定稿；初版 ⚡ 采用 pi 原生 `steer`（等当前轮结束在边界插入），用户复核后明确要**真打断**（「AI 分析好长时间我不还是要等很久」），终版改为摘出条目 → abort 当前轮 → 立即直发。pi 原生无按条操作 API，按条编辑用 `clearQueue + 重建` 实现（`clearQueue/followUp` 内部均为同步 push，clear 与回灌之间无事件循环空窗，agent 循环观察不到中间空队列态）。
+
+- **adapter（`packages/forge-desktop/src/pi/piConversationAdapter.ts`）**：`MinimalPiSession` 增可选 `steer()/followUp()`（真实 AgentSession 均有；fake 缺失时经 `prompt+streamingBehavior` 降级）；新增 `removeQueuedMessage(index)`（clearQueue + 原序回灌；index 越界原样恢复后抛错）与 `sendQueuedMessageNow(index)`（**打断语义**，用户定稿「= 按停止 + 发一条新消息，队列其他保持不动，跑完接着跑队列」：先 clear 再 abort（队列已空 pi 不会自动续跑）→ **剩余队列先回灌** → sendMessage 直发摘出条目起全新轮次，pi 循环在轮次边界按 FIFO 自动续跑剩余——回灌必须在起轮**之前**（sendMessage await 整轮，之后再入队就是无人消费的死队列，首版真机 bug 2 根因）；会话已空闲则跳过 abort；越界不打断当前轮）；**打断抑制窗** `abortingTurns`（对停止按钮同样生效）：① abort 期间 pi 发的 "This operation was aborted" 错误事件是正常收尾，不上报（真机 bug 1 根因——错误横幅 +「立即重试」）；② 被 abort 轮的最终 assistant 消息（`message_end(stopReason=aborted)`）不转发 UI 但记账照做——它到达时打断新轮次的 user 气泡已本地入列，转发会落在气泡之后，观感即「上一轮的文本接到新消息上」（真机 bug 3 根因：⚡发 5 后「收到 2。……」整段落在 5 下面）；③ 被 abort 轮次不发 mainTurnEnd（done 门控会把状态压成 done，而新轮次在 adapter 内直发、不走 service.setStatus(streaming)，状态会被压 done 直到新轮次结束）；私有 `mutateFollowUpQueue` 统一「clear → mutate（软失败原样恢复再抛错）→ 回灌（单条失败不中断其余）」。
+- **forge-core**：`PiConversationAdapter` port 增两个可选方法；`ConversationService.removeQueuedMessage`（校验 1001/1002，适配器不支持/越界 5000）；`sendQueuedMessageNow` 带状态驱动（非 streaming 先置 streaming，结束后兜底置 done——adapter 内直发不经 service.sendMessage，状态必须此层负责）；`ConversationApi` 注册 `conversation/queueRemove|queueSendNow`，返回 `{ followUp }` 新队列。
+- **前端（`packages/forge-ui`）**：队列浮窗条目悬停浮现两动作（⚡立即发送 / ✕删除，样式对齐定稿 demo：`--primary`/`--destructive` token）；**⚡ 的 user 气泡必须本地补**（真机 bug：直发路径后端不转发 user 气泡——`pendingDelivery` 只服务队列派发确认、直发起点即清空，导致「回复凭空提到没发过的 6 和 5」）：`useSessionConversation.sendQueuedNow(index)` 本地 push 气泡（文本取自队列镜像）+ 调 RPC，`InstructionInput` ⚡ 改 emit `queue-send-now` 由 ConversationView 接线；流式读秒/阶段由 statusChanged(streaming) 事件自动重启，无需额外处理；mock-bridge sendNow 去掉 user 气泡 emit（与真实后端对齐，避免 mock 下双气泡），HISTORY 照写（切会话回显）；`bridge.ts` ForgeMethod 增两方法；i18n `input.queue.*` 中英双语（⚡ tooltip 明示「打断当前回答，马上开始这条」）。
+- **不做的**：用户复核后砍掉「在此前插入」（初版做过，语义与立即发送混淆）；停止语义不变——全停 + 队列回填输入框。
+- **验证**：adapter 新增 7 用例（删中间/越界恢复/打断直发+剩余先回灌/越界不 abort/空闲跳过 abort/打断抑制窗×2——错误事件与被打断轮收尾消息均不外发、窗外照常）全过；demo 浏览器实测完整时序 `当前轮(被打断) → 立即直发条 → 队列逐条续跑 → 空闲`（用户定稿语义）；forge-core 服务层新增 4 用例全过；forge-core 450/450、forge-ui 318/318、三包 typecheck 0 错；desktop 全量 337/344——6 红全部为改动前已存在（`shellProbe` 环境相关 5 + 错误文案遗留 1，stash 对比确认）。
+- **真机待确认**：①打断后瞬态状态——abort 使在途轮以 `stopReason=aborted` 收尾（partial 保留），新轮次全程保持 streaming（旧轮 done 已抑制），观察状态灯/停止按钮是否无缝；②被打断轮的流式占位文本保留在原位（不再被收尾消息重排），确认观感。
+- **真机待确认**：打断后瞬态状态——abort 使在途轮以 `stopReason=aborted` 收尾（与停止按钮同款，partial 保留），随后新轮次立起 streaming；`streaming→canceled/done→streaming` 之间可能有毫秒级状态灯闪烁，待真机观察是否可感。
+
+## v3.86.0 (新增：模块 10 内嵌终端——pty 服务 + term/* IPC + xterm 连体 tab 面板)
+
+> 来源：PRD `docs/prd/10_embedded_terminal.md`（已确认），视觉按 `prototypes/terminal-git-prototype.html` 定稿 demo 对齐（2026-09-23 用户验收「按照这个demo对齐」）。模块 11（Git 提交推送）已先行交付，本次补终端。
+
+- **后端（`packages/forge-desktop`）**：
+  - 新增 `src/term/ptyService.ts`：node-pty（`@lydell/node-pty`，N-API 预编译，免 rebuild）封装为四个 RPC——`term/create`（cwd 必须 realpath 归一后命中已注册项目根，否则 1002；spawn 固定系统 shell `COMSPEC`/`SHELL`，不接受渲染层传任意可执行路径）、`term/write`/`term/resize`/`term/kill`（死/未知 ptyId 静默返回 0，PRD F04）。node-pty **懒加载**（首次 spawn 才 dynamic import，不拖累启动链）；`spawnPty/resolveShell/logger` 全部可注入，纯 TS 可测。
+  - `ipc-contract.ts`：`ForgeMethod` 增 4 方法、`ForgeEvent`/`FORGE_EVENTS` 增 `term:data`/`term:exit`（漏登记 = 主进程静默不转发，`ipcEventContract.test.ts` 的同款防线）；`createForgeCore.ts` 把 termService 方法表并入 methodTable、事件走 core eventBus，并导出 `killAllPtys`。
+  - `main.ts`：`before-quit`、窗口 `closed`、`did-navigate`（HMR/reload 孤儿对账）三处全量回收 pty（AC-10-07）。
+- **前端（`packages/forge-ui`）**：
+  - 新增 `components/TerminalPanel.vue`：xterm（`@xterm/xterm` + fit 插件）连体 tab 面板，主题/字体从 design tokens 取（深浅切换即时应用）；每 tab 存活独立 Terminal，后台 tab 不断流；tab ✕ 或**鼠标中键**关闭；面板高默认 240px、拖拽 clamp 120–520px、`forge:terminal-height`/`forge:terminal-open` 持久化；tab 软上限 20（超出一次性 toast）；pty 退出 tab 内保留 `[进程已退出 code=N]`；≥300ms 的 create 往返显示「连接中…」防御态；**有选区时 Ctrl/Cmd+C = 复制**（无选区仍是 SIGINT 中断），右键亦复制选区。
+  - 面板右端两个动作键（用户 2026-09-29 追加）：**配色档切换**（暗/亮，未手选前跟随应用主题，手选后不再跟随，落 `forge:terminal-tint`；活动 tab 与面板底同步换色）+ **收起面板**（等价顶栏终端按钮的「关」）。行高 `lineHeight` 1.8→**1.4**（12px 字下单元格高 29px→22px，demo 静态文本的 1.8 放进真实终端明显偏松）。
+  - **拖高上限改为随窗口高度走**（用户 2026-09-29：固定 520 拉不够高）：区间 120px ~ (窗口高度 − 280px)、绝对上限 1200px，`clampTerminalHeight`/`termHeightMax` 为唯一口径（拖拽、恢复、窗口 resize 三条路径共用）；窗口变矮只做内存内 clamp、**不写 localStorage**，窗口拉回去时用户记着的那个数还在。PRD F01 业务规则同步修订。
+  - **配色取值缺陷修正（同一轮）**：原先把 design tokens 的 `--muted`/`--foreground` 原样喂给 xterm，而令牌是 `oklch()`/`color-mix()` 串——xterm 颜色解析只认 `#hex`/`rgb()`，判非法后**静默回退默认色**（浅色档 `--foreground: #333333` 恰是 hex 才让亮色主题看着正常，暗色主题实际一直在用 xterm 默认字色）。改为面板内置两档 hex 常量（`#15171d/#ccced0` 与 `#f4f4f5/#333333`，即两档令牌的 sRGB 换算值），同一份常量同时供 xterm 与 CSS 变量 `--term-surface`/`--term-ink` 使用，两侧不可能再错位。
+  - App.vue：工具栏纯图标入口 + `Ctrl+\`` 全局开关；面板 `v-show` 常驻（切设置页不断流、pty 不回收）。i18n 新增 `terminal` 域中英双语。
+  - mock-bridge：假 pty 行缓冲 mini-shell（echo/ls/pwd/exit/^C/退格），300ms 延迟应答复刻真实时序，浏览器 dev 可全流程演示。
+  - **四处时序修正**（真机/浏览器实测发现）：① `tabs` 是 shallowRef，直接改 `tab.creating` 不触发重渲染——「连接中」永挂，改经 `patchTab()` 重排数组强制求值；② 主进程 spawn 后立即推数据、而 ptyId 要等 create 应答回传，首块输出（shell prompt）可能先于归属到位——新增未能认领事件的按 ptyId 暂存队列，应答确认后回放；③ **尺寸握手**：面板高度带 0↔240 过渡，途中 fit 出的是中间态行列，拿它 spawn 再连发 resize，ConPTY 每次重排都把 banner 顶出可视区（真机表现＝「上面空一块、往上滚才有字」）——改为开关/尺寸变化统一等落定（260ms）后量一次、**仅在行列真变化时才发 resize**、拖高松手立刻重测（fit 与 resize 必须成对，只 sync 不 fit 会让 xterm 停在旧行列）；④ ③ 的防抖把「开面板要自动建 tab」的意图冲掉了——过渡期间 ResizeObserver 连着回调、各自重排那个 260ms 定时器，默认不建 tab 的几次会顶掉带建 tab 的那一次，于是**点顶栏按钮只开了个空面板**；意图改由独立位 `wantAutoCreate` 记账（开面板/冷启动恢复时置位），谁最后落定都算数。
+- **附带修正（`packages/forge-ui/src/App.vue`）**：`onSelectSession` 此前只改 `currentSessionId`、不对齐 `currentProjectPath`，导致**从会话树点入后新建终端 tab 的 cwd 停在旧项目**（从项目树点入才正确）；现按会话的 `projectPath` 同步，tab 标题一并跟手。
+- **验证**：`term/ptyService.test.ts` 9/9（含 AC-10-06 伪造 cwd 三例、AC-10-07 killAll、shell 解析矩阵）；forge-ui 单测 318/318、vue-tsc 0 错；desktop typecheck 0 错；桌面全量 330/337——6 个红全部为**先前已存在**的 `test/pi/shellProbe`（环境相关）与 `test/pi/piConversationAdapter`（2d5de25 错误文案改动遗留），与本模块无关。浏览器（mock）实测：面板 240px/连体 tab 压边框 1px/拖拽 340→520→120 clamp+持久化/Ctrl+` 开关/ls-exit 回环/退出行/中英空态/深浅主题前景色联动；④ 修复后冷刷新复测——收起且零 tab 时点顶栏按钮 → 面板展开并自动出现当前项目 tab（名称与 cwd 均对），期间只有一条 `term/create`、无多余 resize；动作键复测（`getComputedStyle` 逐值）：tint=auto+暗主题 → 面板底 `rgb(21,23,29)`，第一击 → `rgb(244,244,245)` 且 `forge:terminal-tint=light`，第二击 → 回到 `rgb(21,23,29)`/`dark`，收起键点击后面板 `open` 类移除且 `forge:terminal-open=0`；行高改后单元格实测 22px（改前 29px）；拖高区间实测（视口 1625 高 → 上限 1200）：上抛 4000px → `--h`/localStorage 同为 1200px，下压 4000px → 120px。
+- **文档**：新增 `docs/api/10_terminal.md`（§0 安全口径 + 四方法参数/错误表 + 事件 + 渲染层约定）。
+- **真机待办**：主进程部分需重启 Electron dev app 生效——vim/top 全屏应用（AC-10-05）、任务管理器确认无残留进程（AC-10-07）、真实 COMSPEC/SHELL。
+
 ## v3.85.6 (修复：系统通知小窗 LOGO 过期且模糊)
 
 > 来源：2026-09-29 用户反馈（截图）——回复完成通知左上角的 LOGO 是旧版带锤铁砧图且分辨率很低，与当前品牌 LOGO 不符。
@@ -123,7 +156,7 @@
   - `ipc-contract.ts`：`ShellProbeResult` 的 ok 分支加 `autoFixed?: boolean`（＝本次是自动写配置后复探恢复的，配置刚落盘、已存在会话仍持旧解析结果）。
 - **前端（forge-ui）**：`useShellHealth` 增加 `autoFixed` / `busy` / `reprobe()`（重测绕过首挂载幂等闸门，探测中禁按钮）；对话区横幅三态——**自动修复成功**（`autoFixed`，muted 色提示「已自动识别 Git Bash（路径）并写入配置，重启应用后新会话生效」）、**仍不可用**（原错误色 + 「重新检测」+「打开配置文件所在目录」双入口）、正常（无横幅）；i18n 新增 `chat.shellReprobe/Reprobing/AutoFixed` 并改写 `chat.shellFixHint`（中英全键，`sb-actions`/`sb-ok`/`.sb-fix:disabled` 样式同源）。
 - **文档**：新增 `docs/knowledge/git-bash-autofix.md`（+ index.json 登记）记录候选链、时机纪律与五个易错点；本条目。
-- **真机验证（本机 Windows + Git 装 `D:\work\tools\Git`，PATH 只有 `<root>\cmd`）**：确认旧链路三级全落空的根因（PATH 里没有 `bin\bash.exe`），新链路由 `where git.exe` 反推出 `D:\work\tools\Git\bin\bash.exe` 并成功合并写进 `<userData>/agent/settings.json`（`packages` 7 项原样保留），复探 `ok=true`。
+- **真机验证（本机 Windows + Git 装 `<Git 安装目录>`，PATH 只有 `<root>\cmd`）**：确认旧链路三级全落空的根因（PATH 里没有 `bin\bash.exe`），新链路由 `where git.exe` 反推出 `<Git 安装目录>\bin\bash.exe` 并成功合并写进 `<userData>/agent/settings.json`（`packages` 7 项原样保留），复探 `ok=true`。
   - 过程中踩到并加固：**落盘前 `path.normalize`**。候选若带重复分隔符（如 `D:////work////Git////bin////bash.exe`），Windows 视作合法路径（`existsSync` 通过、连复探也通过），但 spawn 行为不稳——属于「看起来修好了、实际还是坏的」一类最难查的配置；补单测锁住。
 - **验证**：新增 `test/pi/gitBashResolver.test.ts` 10 例（候选链全部依赖注入驱动，不依赖测试机装没装 Git）+ `shellProbe.test.ts` 追加 5 例（已可用零副作用 / 解析不到不动配置 / 修复成功且 packages 不丢 / 候选路径形态不规范须规范化 / 候选不可用不谎报）；`@forge/desktop` 311 过·0 挂·1 skip，`@forge/ui` 294 过·0 挂，两包 typecheck 0 错。
 

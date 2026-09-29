@@ -15,7 +15,8 @@
  *   **绝不能过本文件的 sanitize 白名单**（白名单不含 style，会把卡片样式剥光），
  *   故走 base64 占位绕开；安全边界由 iframe 的 sandbox 全关承担，两条线互斥。
  *   注意 ` ```html ` 仍走 hljs 高亮展示源码（模型给项目写 HTML 示例是常态），
- *   不可劫持——画布围栏只用 canvas 这一个语言名。
+ *   不可劫持——画布围栏只用 canvas 这一个语言名。模型把纯文字包进 canvas 围栏时
+ *   （looksLikeProseCanvas），前端不出 iframe，改按正文流渲染，见 canvasSandbox。
  * - 统一渲染：流式与结束后均用本函数完整渲染，保证两种状态样式一致
  *   （曾用流式简化渲染导致紧凑/正常样式跳变，已移除）。
  * - 代码块复制：每个 ``` 围栏套一层 `.md-code-wrap`，内含一枚空的 `.md-code-copy`
@@ -38,7 +39,9 @@ export {
   CANVAS_DEFAULT_HEIGHT,
   CANVAS_TALL_HEIGHT,
   looksLikeHtmlCanvas,
+  looksLikeProseCanvas,
   looksLikeAsciiArt,
+  stripCanvasProse,
   buildCanvasDocument,
   buildCanvasStandaloneFile,
   type CanvasTokens,

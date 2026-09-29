@@ -60,6 +60,33 @@ class MockPiConversationAdapter implements PiConversationAdapter {
     this.cancelCalls.push(sessionId);
     return this.clearedOnCancel;
   }
+
+  // ===== CV-S09 队列编辑（可选 port 实现） =====
+  /** 队列镜像（sessionId -> FIFO 文本），队列编辑测试的数据源 */
+  queueMirror: Map<string, string[]> = new Map();
+  queueCalls: Array<{ op: 'remove' | 'sendNow'; sessionId: string; index: number }> = [];
+  /** 置为非 null 时队列操作抛出该异常（模拟 UI 镜像过期 / 适配器失败） */
+  failNextQueueOp: Error | null = null;
+
+  async removeQueuedMessage(sessionId: string, index: number): Promise<string[]> {
+    this.queueCalls.push({ op: 'remove', sessionId, index });
+    if (this.failNextQueueOp !== null) throw this.failNextQueueOp;
+    const q = this.queueMirror.get(sessionId) ?? [];
+    if (index >= q.length) throw new Error('队列已变化，删除未生效，请展开队列后重试');
+    q.splice(index, 1);
+    this.queueMirror.set(sessionId, q);
+    return [...q];
+  }
+
+  async sendQueuedMessageNow(sessionId: string, index: number): Promise<string[]> {
+    this.queueCalls.push({ op: 'sendNow', sessionId, index });
+    if (this.failNextQueueOp !== null) throw this.failNextQueueOp;
+    const q = this.queueMirror.get(sessionId) ?? [];
+    if (index >= q.length) throw new Error('队列已变化，发送未生效，请展开队列后重试');
+    q.splice(index, 1);
+    this.queueMirror.set(sessionId, q);
+    return [...q];
+  }
 }
 
 /** 构造服务 + mock adapter（可选注入构造选项） */
@@ -571,4 +598,62 @@ test('clearSessionCommands：会话删除清理缓存，之后降级回 port 查
     assert.deepEqual(result.data.commands, resources.commands, '清理后降级轻量查询');
   }
   assert.deepEqual(resources.calls, [undefined]);
+});
+
+// ===== CV-S09 队列编辑：删除 / 按位插入 / 立即发送 =====
+
+test('队列编辑：removeQueuedMessage 委托 adapter 并返回新队列', async () => {
+  const { service, adapter } = makeService({ sessionExists: () => true });
+  adapter.queueMirror.set('sess-1', ['a', 'b', 'c']);
+
+  const result = await service.removeQueuedMessage('sess-1', 1);
+
+  assert.ok(result.ok);
+  if (result.ok) assert.deepEqual(result.data.followUp, ['a', 'c']);
+  assert.deepEqual(adapter.queueCalls, [{ op: 'remove', sessionId: 'sess-1', index: 1 }]);
+});
+
+test('队列编辑：index 非法返回 1001，adapter 不被调用', async () => {
+  const { service, adapter } = makeService({ sessionExists: () => true });
+  for (const index of [-1, 0.5]) {
+    const result = await service.removeQueuedMessage('sess-1', index);
+    assert.ok(!result.ok);
+    if (!result.ok) assert.equal(result.code, 1001);
+  }
+  assert.equal(adapter.queueCalls.length, 0);
+});
+
+test('队列编辑：会话不存在返回 1002；适配器缺实现返回 5000', async () => {
+  const { service, adapter } = makeService({ sessionExists: (id) => id === 'known' });
+  const missing = await service.removeQueuedMessage('ghost', 0);
+  assert.ok(!missing.ok);
+  if (!missing.ok) assert.equal(missing.code, 1002);
+
+  const bare = new ConversationService(
+    { sendMessage: async () => undefined, loadHistory: async () => [], cancelStream: async () => [] },
+    { sessionExists: () => true },
+  );
+  const unsupported = await bare.removeQueuedMessage('known', 0);
+  assert.ok(!unsupported.ok);
+  if (!unsupported.ok) assert.equal(unsupported.code, 5000);
+  assert.equal(adapter.queueCalls.length, 0);
+});
+
+test('队列编辑：sendQueuedMessageNow adapter 抛错映射 5000', async () => {
+  const { service, adapter } = makeService({ sessionExists: () => true });
+  adapter.failNextQueueOp = new Error('队列已变化，发送未生效');
+  const failed = await service.sendQueuedMessageNow('sess-1', 0);
+  assert.ok(!failed.ok);
+  if (!failed.ok) assert.equal(failed.code, 5000);
+});
+
+test('队列编辑：sendQueuedMessageNow 委托 adapter 并返回剩余队列', async () => {
+  const { service, adapter } = makeService({ sessionExists: () => true });
+  adapter.queueMirror.set('sess-1', ['a', 'b']);
+
+  const result = await service.sendQueuedMessageNow('sess-1', 0);
+
+  assert.ok(result.ok);
+  if (result.ok) assert.deepEqual(result.data.followUp, ['b']);
+  assert.deepEqual(adapter.queueCalls, [{ op: 'sendNow', sessionId: 'sess-1', index: 0 }]);
 });

@@ -124,7 +124,11 @@ const RULES: Rule[] = [
     source: 'model-provider',
     retryable: true,
     // 5xx / 网关 / 上游内部错误 / 流内未知错误帧（含 MiniMax 的 "unknown error, NNN (1000)"）
-    test: /\b5\d\d\b|internal (?:server )?error|unknown error|bad gateway|service unavailable|gateway timeout|upstream[_\s-]?error|overloaded|server_error|api_error|error code:?\s*\d+/i,
+    // 以及 OpenRouter 把上游错误**注入 SSE 流**的三种原文（真机 2026-09-29 stealth/space-bunny-alpha）：
+    //   - "JSON error injected into SSE stream"（流被注入 JSON 错误帧）
+    //   - "Provider returned an empty response"（上游返回空补全，OpenRouter 错误码 1001）
+    //   - "Stream ended without finish_reason"（流提前断开）
+    test: /\b5\d\d\b|internal (?:server )?error|unknown error|bad gateway|service unavailable|gateway timeout|upstream[_\s-]?error|overloaded|server_error|api_error|error code:?\s*\d+|json error injected into sse stream|provider returned an empty response|stream ended without finish_reason/i,
   },
 ];
 

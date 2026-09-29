@@ -518,6 +518,29 @@ function dismissAskAnswered(): void {
   }
 
   /**
+   * ⚡立即发送（CV-S09 队列编辑，打断语义）：中止当前轮并直发队列第 index 条。
+   * user 气泡必须 UI 本地补——直发路径的气泡由本层渲染（后端只在「队列派发确认」
+   * 时转发 user 气泡，直发起点会清空 pendingDelivery 不转发），不补的话对话区
+   * 会出现「回复凭空提到没发过的消息」。流式读秒/阶段由 statusChanged(streaming)
+   * 事件（新轮次起点）自动重启，无需在此处理。
+   */
+  async function sendQueuedNow(index: number): Promise<void> {
+    const sid = options.getSessionId();
+    const t = queueItems.value[index]?.trim();
+    if (!t || sid === null) return;
+    errorMsg.value = null;
+    errorInfo.value = null;
+    retryInfo.value = null;
+    messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
+    scheduleScroll();
+    try {
+      await call<null>('conversation/queueSendNow', { sessionId: sid, index });
+    } catch (e) {
+      errorMsg.value = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /**
    * 「立即重试」：重发本会话最后一条用户消息（CV-ERR-01）。
    *
    * 为什么是“重发”而不是“回退”：pi 只提供 prompt/followUp（都是新的一轮），
@@ -1111,6 +1134,7 @@ function dismissAskAnswered(): void {
     loadHistory,
     resetForSession,
     send,
+    sendQueuedNow,
     cancel,
     // 子 Agent
     subagents,

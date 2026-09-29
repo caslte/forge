@@ -94,7 +94,7 @@
 ## 九、AI 开发约束
 
 - **允许改动**：forge 自有代码（forge-core/desktop/ui/extensions）；docs/。
-- **禁止改动**：pi 源码（`D:\work\aiwork\pi`，作 npm 依赖）；不 fork。
+- **禁止改动**：pi 源码（作为 npm 依赖引入）；不 fork。
 - **编码约束**：遵循 `docs/specs/`（vue.md / common/coding-style.md 等）；TypeScript；pi 扩展遵循 pi 扩展规范。
 - **架构约束**：forge-core 不得引入 Electron 专有 API；Electron 逻辑仅限 forge-desktop。
 
