@@ -497,10 +497,11 @@ onUnmounted(() => {
       <div>
         <h1 class="settings-title">{{ t('settings.title') }}</h1>
       </div>
-      <button class="ghost settings-close" :aria-label="t('settings.closeSettings')" @click="emit('close')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <path d="M6 6l12 12M18 6L6 18" />
+      <button class="ghost settings-back" :aria-label="t('settings.backToWorkspace')" @click="emit('close')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 12H5M12 19l-7-7 7-7" />
         </svg>
+        <span>{{ t('settings.backToWorkspace') }}</span>
       </button>
     </header>
 
@@ -896,18 +897,19 @@ onUnmounted(() => {
   margin-top: 3px;
 }
 
-.settings-close {
-  width: 32px;
+.settings-back {
   height: 32px;
-  padding: 0;
+  padding: 0 12px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  border-radius: 8px;
 }
 
-.settings-close svg {
-  width: 17px;
-  height: 17px;
+.settings-back svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* Tab：通用 / 关于 —— 分段控件 + 滑动选中块（方案 A，原型确认） */

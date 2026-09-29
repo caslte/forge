@@ -1,5 +1,25 @@
 # 变更日志
 
+## v3.85.6 (修复：系统通知小窗 LOGO 过期且模糊)
+
+> 来源：2026-09-29 用户反馈（截图）——回复完成通知左上角的 LOGO 是旧版带锤铁砧图且分辨率很低，与当前品牌 LOGO 不符。
+
+- **根因**：`main.ts` 的 `resolveToastLogoSrc()` 只读 `forge-ui/dist/logo-main.png`（vite build 时从 `public/` 拷入）。该文件是 gitignore 的构建产物，本机 dist 停留在换 LOGO 之前的构建，通知就一直弹旧图；且旧图本身只有 64px 级，16px 显示下发糊。
+- **改动（`packages/forge-desktop/src/main.ts`）**：`resolveToastLogoSrc()` 改为按序尝试两个候选——先 `forge-ui/src/assets/logo-main.png`（品牌 LOGO 唯一事实来源，1024px 高清，dev 下 dist 过期也不再错），读不到（生产包不含 src）回退 `dist` 产物；全部失败仍返回 null 走字母方块兜底。
+- **构建产物刷新**：重新执行 forge-ui `vite build`，`dist/logo-main.png` 已与 `public/` 最新 LOGO 逐位一致（md5 校验）；生产包经 extraResources 打入的也是新图。
+
+## v3.85.5 (调整：思考级别 max 去金环、停脉冲，浅色主题高亮块改白底)
+
+> 来源：2026-09-29 用户反馈（看截图逐条）——①切到 max 时高亮块金环脉冲闪烁先停掉；②max 高亮块外层的金色描边去掉；③浅色主题下高亮块的中灰底难看。
+
+- **改动（`packages/forge-ui/src/components/InstructionInput.vue`）**：
+  - 删除 `.level-wrap.is-max .level-pill` 的金色描边环（`0 0 0 1px color-mix(--gold-deep 42%)`）与 `.level-pill.max-sweep` 的金环脉冲动画（`level-pill-pulse` keyframes 一并删除）——金环没了，脉冲（脉冲的对象就是金环）随之整个下线；max 反馈只剩文字金色扫光 + 格子轻弹。
+  - 浅色主题新增覆盖 `:root[data-theme='light'] .level-pill { background: var(--background) }`：原 `--surface-active` 中灰（L≈90%）贴在白色浮窗上是一块灰斑，改白底后与 App.vue 项目/任务切换器同款 iOS 分段控件观感（白胶囊 + 浅灰轨道 + `--shadow-sm`）；深色主题维持微亮灰块不变。
+  - 浅色主题金字渐变随之改暗色扫（同批用户反馈「白光扫看不清」）：`--gold-fade` 浅色值 `oklch(0.92 …)` 浅灰尾在白底上不可见 → 改深铜 `oklch(0.40 0.07 85)`；新增 `--gold-hi` 扫光高亮带令牌（深色混白提亮 / 浅色混黑变暗），`.lv-max` 常驻五段渐变的中间带从写死 `color-mix(--gold 55%, white)` 换用该令牌。深色主题所有取值不变。
+  - max 金色文字（常驻渐变 + 扫光停驻渐变）保留，浅底金字（`--gold: oklch(0.68 0.14 85)`）在白胶囊上可读。
+- **e2e（`e2e/thinkingLevel.spec.ts` TLEVEL-E2E-004）**：断言 ③ `level-pill-pulse` 改为高亮块 `animation-name === 'none'`（脉冲下线的回归防线）；文字 `level-max-flow` / 格子 `level-cell-pop` 断言不变。该 spec 5/5 通过。
+- **视觉核对**：mock-backend + Playwright 实截深/浅两主题浮窗——深色：max 金字、高亮块无金环；浅色：白胶囊凸起、无灰块、金字可读（临时 spec 与截图已清理）。
+
 ## v3.85.4 (改进：max 反馈动画改为「就地金色扫光」，下线悬浮 M A X 文字)
 
 > 来源：2026-09-28 用户反馈——思考级别改成分段滑条浮窗后，「切 max 的金色动画」浮在浮窗上方、飘进输入框正文区压住文字，很不好看。方案对比原型在 `prototypes/thinking-level-max-shimmer-demo.html`（0 现状 / A 就地扫光 / B 浮窗内文字 / C 收起后播 / D 光柱 五方案可切换对比），**A 方案定稿**。

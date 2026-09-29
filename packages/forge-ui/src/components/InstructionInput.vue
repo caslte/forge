@@ -1164,7 +1164,7 @@ function onLevelSegKey(e: KeyboardEvent): void {
 }
 
 /** max 反馈动画（方案 A，替代原悬浮「M A X」文字）：在 max 档位自身就地做一次
- *  金色流光扫过 + 格子轻弹，高亮块同步金色描边脉冲；全程锚在分段条内部，
+ *  金色流光扫过 + 格子轻弹；全程锚在分段条内部，
  *  不产生任何浮层（不再侵入输入正文区），重入时先清 class 再回流重启。 */
 function flashMaxCell(): void {
   if (maxSweepTimer) clearTimeout(maxSweepTimer);
@@ -1581,7 +1581,7 @@ watch(
             <span>{{ displayLevel ?? 'off' }}</span>
             <svg class="level-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
           </button>
-          <!-- max 反馈动画（方案 A）：金色流光扫过 max 档位自身 + 高亮块脉冲，见 flashMaxCell -->
+          <!-- max 反馈动画（方案 A）：金色流光扫过 max 档位自身，见 flashMaxCell -->
           <!-- 浮窗：横向分段滑条（方案 D）。高亮块为水滴果冻块（左右两条边分别动画，同 App.vue 项目/任务切换），
                JS 按 active 按钮实测几何写 --pill-l/--pill-r；几何在事件回调里直接写，不进响应式系统。 -->
           <div v-if="levelMenuOpen" class="level-pop">
@@ -1593,7 +1593,7 @@ watch(
               :aria-label="t('input.level.aria', { level: displayLevel ?? 'off' })"
               @keydown="onLevelSegKey"
             >
-              <span class="level-pill" :class="{ 'max-sweep': maxSweepOn }" aria-hidden="true"></span>
+              <span class="level-pill" aria-hidden="true"></span>
               <button
                 v-for="lv in availableLevels"
                 :key="lv"
@@ -2556,6 +2556,12 @@ watch(
     left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
 }
 
+/* 浅色主题：--surface-active 中灰贴在白色浮窗上是一块灰斑（用户反馈难看）——
+   高亮块改白底凸起（同 iOS 分段控件的白胶囊 + 浅灰轨道）；深色主题维持微亮灰块 */
+:root[data-theme='light'] .level-pill {
+  background: var(--background);
+}
+
 /* 首贴 / 挡位集重建：不播水滴动画 */
 .level-seg.no-anim .level-pill {
   transition: none;
@@ -2595,11 +2601,7 @@ watch(
   outline: none;
 }
 
-/* 最高思考级别：金色描边 / 金色文字（--gold 系，与扫光同一套金） */
-.level-wrap.is-max .level-pill {
-  box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in oklab, var(--gold-deep) 42%, transparent);
-}
-
+/* 最高思考级别：金色文字（--gold 系，与扫光同一套金）；描边金环已按用户要求去掉 */
 .level-wrap.is-max .level-item.on {
   color: var(--gold);
 }
@@ -2630,16 +2632,18 @@ watch(
 }
 
 /* max 反馈（方案 A，同 prototypes/thinking-level-max-shimmer-demo.html）：选到 max 时
-   在 max 档位自身就地做一次金色流光扫过 + 轻弹，高亮块同步金色描边脉冲。
+   在 max 档位自身就地做一次金色流光扫过 + 轻弹。
    全部锚在分段条内部——不新增浮层、不侵入输入正文区，
-   也不依赖浮窗高度测量（原悬浮「M A X」文字方案已下线）。 */
+   也不依赖浮窗高度测量（原悬浮「M A X」文字方案已下线）。
+   高亮块金环脉冲已按用户要求去掉（金环本身也已移除，见 .level-wrap.is-max）。 */
 
-/* max 格未选中时也常驻金色渐变（原型 .goldtext）：展开浮窗即提示这是最高挡位 */
+/* max 格未选中时也常驻金色渐变（原型 .goldtext）：展开浮窗即提示这是最高挡位。
+   中间高亮带走 --gold-hi：深色主题混白发亮、浅色主题混黑变暗（白底上白带不可见） */
 .level-seg .level-item.lv-max .level-t {
   background-image: linear-gradient(90deg,
     var(--gold-fade) 0%,
     var(--gold) 30%,
-    color-mix(in srgb, var(--gold) 55%, white) 50%,
+    var(--gold-hi) 50%,
     var(--gold) 70%,
     var(--gold-fade) 100%);
   background-size: 200% 100%;
@@ -2653,10 +2657,10 @@ watch(
   animation: level-cell-pop 0.32s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
 
-/* 扫光态：流动的是下方静止态的「深灰 → 亮金 → 深灰」三段渐变
-   （background-position 0% → 200%，亮金带完整穿过「max」三个字母，深灰尾色在暗底上
-   隐没、反差最大——原型 demo 的可见效果即此写法）。这里只挂 animation：
-   若再声明 background-image，会与下方等权重静止态规则互相顶掉。 */
+/* 扫光态：流动的是下方静止态的三段渐变（background-position 0% → 200%，金带完整穿过
+   「max」三个字母）。方向随主题：深色主题「深灰尾 → 亮金」暗底反差最大；浅色主题白底上
+   白带不可见（用户反馈），尾色/高亮带走 --gold-fade/--gold-hi 的暗色值，暗带扫过金字。
+   这里只挂 animation：若再声明 background-image，会与下方等权重静止态规则互相顶掉。 */
 .level-wrap .level-item.on.sweep .level-t {
   animation: level-max-flow 1.15s linear;
 }
@@ -2674,11 +2678,6 @@ watch(
   -webkit-text-fill-color: transparent;
 }
 
-/* 高亮块金环脉冲 ×2（方案 A 的「落位」信号，与原型 pillpulse 同参数） */
-.level-pill.max-sweep {
-  animation: level-pill-pulse 0.45s ease-out 2;
-}
-
 @keyframes level-max-flow {
   0% { background-position: 0% 0; }
   100% { background-position: 200% 0; }
@@ -2688,18 +2687,6 @@ watch(
   0% { transform: scale(1); }
   45% { transform: scale(1.14); }
   100% { transform: scale(1); }
-}
-
-@keyframes level-pill-pulse {
-  0%, 100% {
-    box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in oklab, var(--gold-deep) 42%, transparent);
-  }
-  40% {
-    box-shadow:
-      var(--shadow-sm),
-      0 0 0 3px color-mix(in oklab, var(--gold) 55%, transparent),
-      0 0 14px color-mix(in oklab, var(--gold) 40%, transparent);
-  }
 }
 
 .compose-actions {

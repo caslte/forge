@@ -335,17 +335,24 @@ let mainWindow: BrowserWindow | null = null;
 let uiLocale: 'zh-CN' | 'en' = 'zh-CN';
 
 /**
- * 通知小窗应用图标：读 forge-ui 构建产物（public/ 整体拷贝到 dist/）的 logo-main.png
- * 转 data URI（37KB 级，每进程读一次）。读不到（dev 未构建 UI 等）返回 null——
- * 通知页回退字母方块，不影响功能。
+ * 通知小窗应用图标：读 forge-ui 的 logo-main.png 转 data URI（37KB 级，每进程读一次）。
+ * 优先读 src/assets（品牌 LOGO 的唯一事实来源；dev 下 dist 产物可能过期——曾因此
+ * 弹出旧版 LOGO）；生产包不含 src，回退 dist 产物（public/ 随 vite build 拷入）。
+ * 都读不到（dev 未构建 UI 等）返回 null——通知页回退字母方块，不影响功能。
  */
 function resolveToastLogoSrc(): string | null {
-  try {
-    const p = path.join(__dirname, '../../forge-ui/dist/logo-main.png');
-    return `data:image/png;base64,${fs.readFileSync(p).toString('base64')}`;
-  } catch {
-    return null;
+  const candidates = [
+    path.join(__dirname, '../../forge-ui/src/assets/logo-main.png'),
+    path.join(__dirname, '../../forge-ui/dist/logo-main.png'),
+  ];
+  for (const p of candidates) {
+    try {
+      return `data:image/png;base64,${fs.readFileSync(p).toString('base64')}`;
+    } catch {
+      // 换下一个候选路径
+    }
   }
+  return null;
 }
 
 /** 创建主窗口（无边框，自定义标题栏）；dev 模式自动挂 DevTools + F12/Ctrl+Shift+I 快捷键 */

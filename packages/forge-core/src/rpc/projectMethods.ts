@@ -110,6 +110,7 @@ export class ProjectApi {
     this.methods = {
       'project/addProject': (params) => this.addProject(params),
       'project/removeProject': (params) => this.removeProject(params),
+      'project/clearSessions': (params) => this.clearSessions(params),
       'project/queryProjectList': (params) => this.queryProjectList(params),
       'project/openProject': (params) => this.openProject(params),
       'project/updateProjectAlias': (params) => this.updateProjectAlias(params),
@@ -169,6 +170,32 @@ export class ProjectApi {
       return fail(result.code, result.message);
     } catch (err) {
       console.error('[removeProject] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /** project/clearSessions：清空项目名下全部会话（保留项目）；未注册项目视为成功（幂等，同 removeProject） */
+  private async clearSessions(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    try {
+      const result = await this.service.clearProjectSessions(path);
+      if (result.ok) {
+        // 逐个通知会话删除（与 session/deleteSession 同事件，多窗口同步依赖）
+        for (const sessionId of result.data.removedSessions) {
+          this.events.emit('session.removed', { sessionId });
+        }
+        return ok({ removedSessions: result.data.removedSessions.length });
+      }
+      // 幂等客户端行为：未注册项目视为成功（同 removeProject，PRD PM-S03 重复操作无副作用）
+      if (result.code === 1002) {
+        return ok({ removedSessions: 0 });
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[clearSessions] internal error', err);
       return fail(5000, 'internal error');
     }
   }

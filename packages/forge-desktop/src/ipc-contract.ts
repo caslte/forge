@@ -26,6 +26,7 @@ export type ForgeMethod =
   // project（01）
   | 'project/addProject'
   | 'project/removeProject'
+  | 'project/clearSessions'
   | 'project/queryProjectList'
   | 'project/openProject'
   | 'project/updateProjectAlias'

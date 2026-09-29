@@ -461,6 +461,22 @@ async function onRenameProject(path: string, alias: string): Promise<void> {
   }
 }
 
+/** 清理项目下所有会话（保留项目）；当前会话被清时退出选中态（session.removed 订阅兜底） */
+async function onClearProjectSessions(path: string): Promise<void> {
+  try {
+    const res = await call<{ removedSessions: number }>('project/clearSessions', { path });
+    await loadSessions();
+    showToast(
+      res.removedSessions > 0
+        ? t('app.projectSessionsCleared', { count: res.removedSessions })
+        : t('app.projectSessionsAlreadyEmpty'),
+      'success',
+    );
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** 项目拖拽排序：全量新顺序落盘后刷新列表 */
 async function onReorderProjects(paths: string[]): Promise<void> {
   try {
@@ -859,6 +875,7 @@ onUnmounted(() => {
             :opened-session-ids="openedSessionIds"
             @select-project="selectProject"
             @remove-project="onRemoveProject"
+            @clear-sessions="onClearProjectSessions"
             @rename-project="onRenameProject"
             @reorder-project="onReorderProjects"
             @create-session="onCreateSession"

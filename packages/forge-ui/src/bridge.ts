@@ -9,6 +9,7 @@
 export type ForgeMethod =
   | 'project/addProject'
   | 'project/removeProject'
+  | 'project/clearSessions'
   | 'project/queryProjectList'
   | 'project/openProject'
   | 'project/updateProjectAlias'

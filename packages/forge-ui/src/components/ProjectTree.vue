@@ -21,6 +21,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select-project', path: string): void;
   (e: 'remove-project', path: string): void;
+  (e: 'clear-sessions', path: string): void;
   (e: 'rename-project', path: string, alias: string): void;
   (e: 'create-session', projectPath?: string): void;
   (e: 'select-session', id: string): void;
@@ -60,6 +61,10 @@ let deleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 // 项目删除两阶段确认（菜单内）
 const projectDeleteConfirmPath = ref<string | null>(null);
 let projectDeleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+
+// 清理所有会话两阶段确认（菜单内；确认文案与删除独立，避免语义混淆）
+const clearSessionsConfirmPath = ref<string | null>(null);
+let clearSessionsConfirmTimer: ReturnType<typeof setTimeout> | null = null;
 
 // 项目拖拽排序：视觉反馈 + 落点（before/after）
 const draggedPath = ref<string | null>(null);
@@ -240,23 +245,34 @@ function clearDeleteConfirmTimer(): void {
 function openProjectMenu(p: ProjectItem, ev: MouseEvent): void {
   menuOpenPath.value = p.path;
   const w = 184;
-  const h = 144;
+  const h = 184;
   menuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
   menuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
   clearProjectDeleteTimer();
   projectDeleteConfirmPath.value = null;
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = null;
 }
 
 function closeMenu(): void {
   menuOpenPath.value = null;
   clearProjectDeleteTimer();
   projectDeleteConfirmPath.value = null;
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = null;
 }
 
 function clearProjectDeleteTimer(): void {
   if (projectDeleteConfirmTimer) {
     clearTimeout(projectDeleteConfirmTimer);
     projectDeleteConfirmTimer = null;
+  }
+}
+
+function clearClearSessionsTimer(): void {
+  if (clearSessionsConfirmTimer) {
+    clearTimeout(clearSessionsConfirmTimer);
+    clearSessionsConfirmTimer = null;
   }
 }
 
@@ -318,6 +334,24 @@ function onMenuOpenDir(): void {
   const path = menuOpenPath.value;
   closeMenu();
   if (path) void window.forge.shell.openPath(path);
+}
+
+// 清理所有会话两阶段：首次点击菜单项变红“确认清理”，3 秒内再次点击才 emit
+function onMenuClearSessions(): void {
+  const path = menuOpenPath.value;
+  if (!path) return;
+  if (clearSessionsConfirmPath.value === path) {
+    clearClearSessionsTimer();
+    clearSessionsConfirmPath.value = null;
+    closeMenu();
+    emit('clear-sessions', path);
+    return;
+  }
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = path;
+  clearSessionsConfirmTimer = setTimeout(() => {
+    clearSessionsConfirmPath.value = null;
+  }, 3000);
 }
 
 function onMenuRename(): void {
@@ -492,6 +526,7 @@ onUnmounted(() => {
   fadeObserver = null;
   clearDeleteConfirmTimer();
   clearProjectDeleteTimer();
+  clearClearSessionsTimer();
 });
 </script>
 
@@ -793,6 +828,20 @@ onUnmounted(() => {
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
           {{ t('project.rename') }}
+        </button>
+        <button
+          type="button"
+          class="project-action-menu-item danger"
+          :class="{ confirming: clearSessionsConfirmPath === menuOpenPath }"
+          @click="onMenuClearSessions"
+        >
+          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <line x1="10" y1="11" x2="10" y2="17" />
+            <line x1="14" y1="11" x2="14" y2="17" />
+          </svg>
+          {{ clearSessionsConfirmPath === menuOpenPath ? t('project.confirmClear') : t('project.clearSessions') }}
         </button>
         <button
           type="button"

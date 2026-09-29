@@ -495,6 +495,20 @@ const bridge: ForgeBridge = {
         DB.projects = next;
         return { code: 0, message: 'ok', data: null };
       }
+      case 'project/clearSessions': {
+        // E2E：清空项目名下会话（保留项目），逐个广播 session.removed（同真实端）
+        const p = (params as { path?: string }).path ?? '';
+        const removed = DB.sessions.filter((s) => s.projectPath === p).map((s) => s.sessionId);
+        DB.sessions = DB.sessions.filter((s) => s.projectPath !== p);
+        for (const sid of removed) {
+          delete DB.subagents[sid];
+          sendScripts.delete(sid);
+          sendQueues.delete(sid);
+          emit('session.removed', { sessionId: sid });
+        }
+        persistSubagents();
+        return { code: 0, message: 'ok', data: { removedSessions: removed.length } };
+      }
       case 'session/querySessionList':
         return {
           code: 0,

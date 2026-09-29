@@ -117,6 +117,20 @@ const FILE_TYPE_ICONS: Record<string, { label: string; cls: string }> = {
   scss: { label: '#', cls: 'ft-scss' },
   html: { label: '<>', cls: 'ft-html' },
   py: { label: 'PY', cls: 'ft-py' },
+  java: { label: 'JAVA', cls: 'ft-java' },
+  go: { label: 'GO', cls: 'ft-go' },
+  c: { label: 'C', cls: 'ft-c' },
+  h: { label: 'C', cls: 'ft-c' },
+  cpp: { label: 'CPP', cls: 'ft-cpp' },
+  cc: { label: 'CPP', cls: 'ft-cpp' },
+  cxx: { label: 'CPP', cls: 'ft-cpp' },
+  hpp: { label: 'CPP', cls: 'ft-cpp' },
+  cs: { label: 'CS', cls: 'ft-cs' },
+  rs: { label: 'RS', cls: 'ft-rs' },
+  rb: { label: 'RB', cls: 'ft-rb' },
+  php: { label: 'PHP', cls: 'ft-php' },
+  kt: { label: 'KT', cls: 'ft-kt' },
+  kts: { label: 'KT', cls: 'ft-kt' },
 };
 
 /** 文件名 pill 的类型图标：取 basename 末段扩展名（.spec.ts → TS）；仅文件类参数，命令/搜索 pill 不显示 */
@@ -374,6 +388,17 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
 .ft-scss { background: #cd6799; }
 .ft-html { background: #e37933; }
 .ft-py { background: #3572a5; }
+
+/* 后端/系统语言：色值取 GitHub Linguist 语言色；JAVA 四字母用 17px 宽标；GO/RS 浅底配深字标（同 JS 黄的做法） */
+.ft-java { background: #b07219; width: 17px; }
+.ft-go { background: #00add8; color: #083d4d; }
+.ft-c { background: #555555; }
+.ft-cpp { background: #f34b7d; }
+.ft-cs { background: #178600; }
+.ft-rs { background: #dea584; color: #5a3417; }
+.ft-rb { background: #701516; }
+.ft-php { background: #4f5d95; }
+.ft-kt { background: #7f52ff; }
 
 /* 命令/搜索类参数：等宽但无底，避免整行都是灰块 */
 .arg.plain {

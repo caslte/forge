@@ -314,7 +314,8 @@ test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现就地金色�
     `扫光元素必须完全落在浮窗内（不得上浮到输入正文区）：sweep.y=${sweepBox.y} vs pop.y=${popBox.y}`,
   ).toBeGreaterThanOrEqual(popBox.y - 1);
 
-  // 合成器友好（附加断言）：扫光动画名 level-max-flow（渐变流动，挂在文字紧包围盒上）+ 格子轻弹 + 高亮块脉冲
+  // 合成器友好（附加断言）：扫光动画名 level-max-flow（渐变流动，挂在文字紧包围盒上）+ 格子轻弹。
+  // 高亮块金环脉冲已按用户要求下线（金环本身也已移除）：pill 不再有任何 animation。
   const animInfo = await page.evaluate(() => {
     const el = document.querySelector('.level-item.sweep');
     const txt = el?.querySelector('.level-t');
@@ -329,7 +330,7 @@ test('TLEVEL-E2E-004 @P1 @mock-backend E-MP-008：切到 max 出现就地金色�
   expect(animInfo).not.toBeNull();
   expect(animInfo!.textAnimationName).toContain('level-max-flow');
   expect(animInfo!.cellAnimationName).toContain('level-cell-pop');
-  expect(animInfo!.pillAnimationName).toContain('level-pill-pulse');
+  expect(animInfo!.pillAnimationName).toBe('none');
 
   // 扫光渐变必须挂在文字自身（.level-t）而不是整个按钮：按钮比「max」宽 2 倍多，
   // 渐变铺在按钮上会变成一条比字形宽得多的宽带（与 demo 不一致的根因）

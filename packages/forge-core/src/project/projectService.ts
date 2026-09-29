@@ -214,6 +214,28 @@ export class ProjectService {
   }
 
   /**
+   * 清空项目会话（v0.2.0 用户需求：「更多操作 → 清理所有会话」）：级联删除项目名下
+   * 全部会话（同 removeProject 的级联语义：停运行+删 pi 会话文件+删 forge 记录），
+   * 但保留项目本身。
+   * @param input 项目路径
+   * @returns 成功返回删除的会话 id 列表；项目未注册返回 1002
+   */
+  async clearProjectSessions(input: string): Promise<ProjectResult<{ removedSessions: string[] }>> {
+    const key = this.resolveProjectKey(input);
+    if (this.store.getProject(key) === null) {
+      return { ok: false, code: 1002, message: `项目不存在: ${key}` };
+    }
+    const removedSessions: string[] = [];
+    if (this.sessions !== null) {
+      for (const session of this.store.listSessions(key)) {
+        await this.sessions.deleteSession(session.sessionId);
+        removedSessions.push(session.sessionId);
+      }
+    }
+    return { ok: true, data: { removedSessions } };
+  }
+
+  /**
    * 查询项目列表（PM-S01 列表页）：按最近打开时间倒序（未打开过排最后）。
    * @returns 项目记录列表（store 已排序）
    */

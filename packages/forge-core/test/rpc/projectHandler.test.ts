@@ -343,6 +343,88 @@ test('异常隔离：store 落盘失败返回 5000，不泄漏异常', () => {
   }
 });
 
+// ===== 清理所有会话（project/clearSessions，保留项目本身） =====
+
+test('project/clearSessions：path 缺失/非字符串返回 1001', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { api } = makeApi(tmp);
+    assert.equal((await api.methods['project/clearSessions']({})).code, 1001);
+    assert.equal((await api.methods['project/clearSessions']({ path: 123 })).code, 1001);
+    assert.equal((await api.methods['project/clearSessions']({ path: '   ' })).code, 1001);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('project/clearSessions：清空名下会话并逐个发射 session.removed，项目保留', async () => {
+  const tmp = makeTempDir();
+  try {
+    const store = new ForgeStore(path.join(tmp, 'forge-store.json'));
+    const events = new EventEmitter();
+    const api = new ProjectApi(
+      new ProjectService(store, undefined, {
+        deleteSession: async (sessionId) => {
+          store.removeSession(sessionId);
+        },
+      }),
+      events,
+    );
+    const dir = makeProjectDir(tmp, 'proj-clear');
+    api.methods['project/addProject']({ path: dir });
+    for (const sid of ['sess-1', 'sess-2']) {
+      store.saveSession({
+        sessionId: sid,
+        projectPath: dir,
+        alias: null,
+        lastActiveAt: '2026-01-01T00:00:00.000Z',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        modelOverride: null,
+      });
+    }
+    const removedSessions: unknown[] = [];
+    const removedProjects: unknown[] = [];
+    events.on('session.removed', (payload) => removedSessions.push(payload));
+    events.on('project.removed', (payload) => removedProjects.push(payload));
+    const result = await api.methods['project/clearSessions']({ path: dir });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.data, { removedSessions: 2 });
+    assert.deepEqual(
+      removedSessions,
+      [{ sessionId: 'sess-1' }, { sessionId: 'sess-2' }],
+      '清理应逐个发射 session.removed',
+    );
+    assert.equal(removedProjects.length, 0, '清理会话不删项目，不发射 project.removed');
+    assert.ok(store.getProject(dir) !== null, '项目记录应保留');
+    assert.deepEqual(store.listSessions(dir), [], '名下会话应清空');
+    // 清理后项目仍可用：可再注册新会话（保存即等价可用）
+    store.saveSession({
+      sessionId: 'sess-3',
+      projectPath: dir,
+      alias: null,
+      lastActiveAt: '2026-01-02T00:00:00.000Z',
+      createdAt: '2026-01-02T00:00:00.000Z',
+      modelOverride: null,
+    });
+    assert.equal(store.listSessions(dir).length, 1);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('project/clearSessions 幂等：未注册项目返回 0 且无副作用', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { api } = makeApi(tmp);
+    const dir = makeProjectDir(tmp, 'proj-clear-idem');
+    const result = await api.methods['project/clearSessions']({ path: dir });
+    assert.equal(result.code, 0, '幂等客户端行为：未注册项目视为成功');
+    assert.deepEqual(result.data, { removedSessions: 0 });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ===== 项目拖拽排序（project/reorderProjects） =====
 
 test('project/reorderProjects：paths 非字符串数组 -> 1001', () => {
