@@ -49,7 +49,7 @@ test('looksMonospace：普通句子与短消息 → 不等宽', () => {
   assert.equal(looksMonospace('src/main.ts 改好了吗'), false);
 });
 
-test('QUEUE_TEXT_CLAMP_LINES：收趟态一行（2026-09-29 用户定调「不要换行」）', () => {
+test('QUEUE_TEXT_CLAMP_LINES：每条固定一行（2026-09-29 用户定调「不要换行」）', () => {
   assert.equal(QUEUE_TEXT_CLAMP_LINES, 1);
 });
 
@@ -59,14 +59,10 @@ function fakeEl(over: Partial<{ sw: number; cw: number; sh: number; ch: number }
   return { scrollWidth: sw, clientWidth: cw, scrollHeight: sh, clientHeight: ch } as HTMLElement;
 }
 
-test('isQueueItemClamped：收趟态横向溢出（nowrap + 省略号）算截断', () => {
+test('isQueueItemClamped：横向溢出（nowrap + 省略号）算截断 → 挂 title', () => {
   assert.equal(isQueueItemClamped(fakeEl({ sw: 420, cw: 300 })), true);
-  // 纵向也看：展开态是 pre-wrap，两个方向任一溢出都要给「展开」
+  // 纵向也看：样式再变（比如换回折行）时标题不会悄悄失效
   assert.equal(isQueueItemClamped(fakeEl({ sh: 90, ch: 20 })), true);
-  // 恰好一行放得下 → 不给「展开」，短消息不许多出一行底栏
+  // 恰好一行放得下 → 不挂 title，短消息不多一层无意义的悬停
   assert.equal(isQueueItemClamped(fakeEl({ sw: 100, cw: 100 })), false);
-});
-
-test('isQueueItemClamped：已展开的条目恒为 true（否则「收起」按钮会自己消失）', () => {
-  assert.equal(isQueueItemClamped(fakeEl({ sw: 100, cw: 100 }), true), true);
 });

@@ -6,7 +6,8 @@
  * - QC-002：队列上限 5 条，第 6 条拒绝并 toast 提示，输入框内容保留
  * - QC-003：停止 = 清空队列 + 文本回填输入框（pi TUI ESC 同款，\n\n 拼接）
  * - QC-005：面板重设计（2026-09-29）：宽度对齐输入框文字列、每条一行不换行 +
- *   真溢出才给「展开」、序号、动作常驻不靠 hover、「✏ 取回编辑」
+ *   超出用省略号 + 原生 title 提示全文、序号、动作常驻不靠 hover、「✏ 取回编辑」
+ * - QC-006：5 条超长代码仍是一行紧凑列表，面板不顶出窗口
  *
  * 注：面板 DOM 断言一律配 SLOW_SCRIPT（8s 回复）。旧脚本 900ms 下队列会在断言
  * 途中被自动派发、条目消失，QC-001/QC-003 长期红就是这个原因（已确认非产品缺陷）。
@@ -190,7 +191,7 @@ const CODE_PURE = [
  *  「切不等宽」与「要不要截断」是两件独立的事，测试要分开钉） */
 const CODE_WITH_CJK = `把这个函数改一下，超时也重试：\n${CODE_PURE}`;
 
-test('QC-005 @P0 面板宽度对齐输入框 + 每条一行不换行 + 溢出才给「展开」', async ({ page }) => {
+test('QC-005 @P0 面板宽度对齐输入框 + 每条一行 + 超出用省略号与 title', async ({ page }) => {
   const guard = attachHealthGuards(page);
   await boot(page, SLOW_SCRIPT);
   await startTurn(page, '首条消息');
@@ -226,13 +227,22 @@ test('QC-005 @P0 面板宽度对齐输入框 + 每条一行不换行 + 溢出才
   await expect(panel.locator('.queue-item').nth(3).locator('.queue-item-text')).not.toHaveClass(/\bmono\b/);
   await expect(panel.locator('.queue-item').nth(4).locator('.queue-item-text')).not.toHaveClass(/\bmono\b/);
 
-  // 一行截断：只有真溢出的条目才有底栏与「展开」——长路径 / 短句 / 一行中文在
-  // 收趟态都塞得进一行，空底栏会给短条目凭空多出一行
-  await expect(panel.locator('.queue-item').nth(1).locator('.queue-more')).toHaveText('展开');
-  await expect(panel.locator('.queue-item').nth(4).locator('.queue-more')).toHaveText('展开');
-  await expect(panel.locator('.queue-item').nth(0).locator('.queue-item-foot')).toHaveCount(0);
-  await expect(panel.locator('.queue-item').nth(2).locator('.queue-item-foot')).toHaveCount(0);
-  await expect(panel.locator('.queue-item').nth(3).locator('.queue-item-foot')).toHaveCount(0);
+  // 没有「展开/收起」按钮（2026-09-29 反馈去掉），超出的内容改用原生 title 提示全文。
+  // 只有真溢出的条目才有 title：能一行读完的不该再悬停出一模一样的全文
+  await expect(panel.locator('.queue-more')).toHaveCount(0);
+  await expect(panel.locator('.queue-item-text[title]')).toHaveCount(2);
+  await expect(panel.locator('.queue-item').nth(1).locator('.queue-item-text')).toHaveAttribute(
+    'title',
+    CODE_PURE,
+  );
+  await expect(panel.locator('.queue-item').nth(4).locator('.queue-item-text')).toHaveAttribute(
+    'title',
+    CODE_WITH_CJK,
+  );
+  await expect(panel.locator('.queue-item').nth(0).locator('.queue-item-text')).not.toHaveAttribute(
+    'title',
+    /.*/,
+  );
 
   // 收趟态不换行：nowrap + 横向省略，高度恒为 1 行
   const single = await panel.locator('.queue-item').nth(1).locator('.queue-item-text').evaluate((el) => {
@@ -256,19 +266,6 @@ test('QC-005 @P0 面板宽度对齐输入框 + 每条一行不换行 + 溢出才
   );
   for (const h of rows) expect(h).toBeLessThanOrEqual(24);
 
-  // 展开 / 收起：展开才换行，全文可读
-  await panel.locator('.queue-item').nth(1).locator('.queue-more').click();
-  await expect(panel.locator('.queue-item').nth(1)).toHaveClass(/\bopen\b/);
-  await expect(panel.locator('.queue-item').nth(1).locator('.queue-more')).toHaveText('收起');
-  const opened = await panel.locator('.queue-item').nth(1).locator('.queue-item-text').evaluate((el) => {
-    const lh = parseFloat(getComputedStyle(el).lineHeight);
-    return { lines: Math.round(el.clientHeight / lh), whiteSpace: getComputedStyle(el).whiteSpace };
-  });
-  expect(opened.whiteSpace).toBe('pre-wrap');
-  expect(opened.lines).toBeGreaterThan(1);
-  await panel.locator('.queue-item').nth(1).locator('.queue-more').click();
-  await expect(panel.locator('.queue-item').nth(1).locator('.queue-more')).toHaveText('展开');
-
   // 动作常驻：静止态 0 < opacity < 1（旧的 display:none + hover 浮现）
   const restingOpacity = await panel.locator('.queue-item').nth(0).locator('.queue-item-actions').evaluate(
     (el) => Number(getComputedStyle(el).opacity),
@@ -287,7 +284,7 @@ test('QC-005 @P0 面板宽度对齐输入框 + 每条一行不换行 + 溢出才
   guard.assertHealthy();
 });
 
-test('QC-006 @P1 面板总高封顶：5 条超长代码一屏可见、面板不顶出窗口', async ({ page }) => {
+test('QC-006 @P1 5 条超长代码不撑开面板：仍是一行列表，且不出视口', async ({ page }) => {
   await boot(page, SLOW_SCRIPT);
   await startTurn(page, '首条消息');
   for (let i = 0; i < 5; i += 1) await queueMessage(page, `${CODE_PURE}\n// 第 ${i} 段`);
@@ -307,8 +304,11 @@ test('QC-006 @P1 面板总高封顶：5 条超长代码一屏可见、面板不�
   expect(box.bottom).toBeLessThanOrEqual(box.inputTop + 1);
   expect(box.top).toBeGreaterThanOrEqual(0);
 
-  // 5 条各自独立可展开（互不串状态）
-  await panel.locator('.queue-item').nth(0).locator('.queue-more').click();
-  await expect(panel.locator('.queue-item').nth(0)).toHaveClass(/\bopen\b/);
-  await expect(panel.locator('.queue-item').nth(1)).not.toHaveClass(/\bopen\b/);
+  // 5 条超长代码：面板仍是 5 行紧凑列表（封顶内），每行都挂了 title
+  expect(box.h).toBeLessThan(220);
+  const titles = await panel.locator('.queue-item-text[title]').evaluateAll((els) =>
+    els.map((el) => el.getAttribute('title') ?? ''),
+  );
+  expect(titles).toHaveLength(5);
+  for (const t of titles) expect(t).toContain('withRetry');
 });

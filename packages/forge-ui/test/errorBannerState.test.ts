@@ -17,6 +17,7 @@ import { ref } from 'vue';
 
 import {
   interpretErrorPayload,
+  reduceErrorBanner,
   useSessionConversation,
 } from '../src/composables/useSessionConversation.ts';
 import { classifyError } from '../../forge-core/src/errors/errorClassifier.ts';
@@ -161,6 +162,70 @@ test('CV-ERR-UI-106b 取消后回到非流式，且读秒定时器已注销', as
   await conv.cancel();
   assert.equal(conv.isStreaming.value, false);
   assert.equal(clock.count(), 0, 'cancel 必须停表，否则定时器泄漏到会话销毁之后');
+});
+
+const TERMINAL_ERROR = {
+  sessionId: 's1',
+  code: 5000,
+  message: '529: {"type":"overloaded_error"}',
+  error: classifyError('529: {"type":"overloaded_error"}'),
+};
+const FALLBACK = '对话出错（5000）';
+
+test('CV-ERR-UI-108 新轮次起点（streaming）清错误横幅：恢复中的轮次不再挂着旧错误', () => {
+  const failed = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    { kind: 'event', payload: TERMINAL_ERROR, fallbackMessage: FALLBACK },
+  );
+  assert.notEqual(failed.info, null, '前置条件：先产生终态错误横幅');
+
+  const recovered = reduceErrorBanner(failed, { kind: 'status', status: 'streaming' });
+  assert.equal(recovered.info, null, '新一轮开始即视为恢复，旧错误必须消失');
+  assert.equal(recovered.message, null);
+  assert.equal(recovered.retry, null);
+});
+
+test('CV-ERR-UI-109 自动重试事件与错误分类互斥：只留重试进度', () => {
+  const failed = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    { kind: 'event', payload: TERMINAL_ERROR, fallbackMessage: FALLBACK },
+  );
+  const retrying = reduceErrorBanner(failed, {
+    kind: 'event',
+    payload: { sessionId: 's1', code: 5000, message: '正在自动重试…', retry: { attempt: 2, maxAttempts: 3 } },
+    fallbackMessage: FALLBACK,
+  });
+  assert.deepEqual(retrying.retry, { attempt: 2, maxAttempts: 3 });
+  assert.equal(retrying.info, null, '重试中不得同时挂错误分类（横幅 v-if 优先级会盖住进度）');
+  assert.equal(retrying.message, null);
+});
+
+test('CV-ERR-UI-110 status=error 保留横幅：等下一次发送/重试再替换', () => {
+  const failed = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    { kind: 'event', payload: TERMINAL_ERROR, fallbackMessage: FALLBACK },
+  );
+  assert.deepEqual(reduceErrorBanner(failed, { kind: 'status', status: 'error' }), failed);
+});
+
+test('CV-ERR-UI-111 旧链路错误事件回落到无分类单行文案', () => {
+  const next = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    { kind: 'event', payload: { sessionId: 's1', code: 5000, message: 'boom' }, fallbackMessage: FALLBACK },
+  );
+  assert.equal(next.message, 'boom');
+  assert.equal(next.info, null);
+  assert.equal(next.retry, null);
+});
+
+test('CV-ERR-UI-112 轮次正常终态（done/idle/canceled）清横幅与重试进度', () => {
+  for (const status of ['done', 'idle', 'canceled']) {
+    const next = reduceErrorBanner(
+      { message: 'x', info: { category: 'unknown', raw: 'x', tone: 'warning', title: 't', detail: 'd', showRetry: true }, retry: { attempt: 1, maxAttempts: 3 } },
+      { kind: 'status', status },
+    );
+    assert.deepEqual(next, { message: null, info: null, retry: null }, `${status} 应清空`);
+  }
 });
 
 test('CV-ERR-UI-107 切回 error 会话：连同分类一起恢复横幅', async () => {

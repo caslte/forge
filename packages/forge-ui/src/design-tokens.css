@@ -39,6 +39,14 @@
   --warning: oklch(0.75 0.16 85);
   --info: oklch(0.45 0 0);
 
+  /* 「进行中」状态点的扫过色（会话树盲文点阵，v6.5；原型 prototypes/status-sweep-theme.html C 档）。
+     拆成两枚是因为扫过元素必须相对**本地底色**有最大反差：亮带扫光（thinking-shimmer）
+     靠「比底色更亮」被看见，所以那套在白底上成立；点阵是亮点在**浅色点阵**上移动，
+     浅色主题下同色相的「深一档」根本拉不开差距、方向感消失 → 浅底改用**暗点扫过**。
+     浅色主题选深琥珀棕而不是纯墨：保住「暖色 = 运行中」这一层语义。 */
+  --status-run-rest: oklch(0.93 0.045 85); /* 静息点：淡琥珀，在白底上只当底纹 */
+  --status-run-peak: oklch(0.46 0.11 62); /* 扫过点：深琥珀棕，影子扫过 */
+
   /* 边框/输入/聚焦环 */
   --border: oklch(0.92 0.004 286.32);
   --input: oklch(0.92 0.004 286.32);
@@ -58,6 +66,33 @@
   --shadow-md: 0 4px 12px oklch(0 0 0 / 6%);
   --shadow-lg: 0 18px 50px oklch(0 0 0 / 6%);
   --shadow-destructive: 0 10px 30px color-mix(in oklab, var(--destructive) 14%, transparent);
+
+  /* 抬升层级（elevation scale，v3.86 输入框悬浮感）：
+     浮层沿用上面的 --shadow-*，这里补的是「常驻控件」和「焦点面板」两档。
+     投影色相单独给一个令牌：浅色主题用冷灰（纯黑投影在白底上发脏），深色主题用纯黑。 */
+  --shade: 22 24 29;
+  /* level 1：常驻控件静息态（输入框、与其同材质的面板）。
+     两层——1px 接触阴影定「贴着页面」，4px 柔光定「离开一点」；
+     inset 0 1px 0 白线是上缘受光面，没有它盒子看着是「贴上去的纸」而不是「浮起的一层」。 */
+  --elev-1:
+    inset 0 1px 0 rgb(255 255 255 / 70%),
+    0 1px 1px rgb(var(--shade) / 4%),
+    0 4px 10px rgb(var(--shade) / 5%);
+  /* level 2：焦点面板（输入框聚焦态）。四段——接触 + 过渡 + 环境 + 上缘高光，
+     比 level 1 多一段更散的环境阴影，读起来是「同一个盒子被抬高了」而不是「换了张皮」。 */
+  --elev-2:
+    inset 0 1px 0 rgb(255 255 255 / 70%),
+    0 1px 1px rgb(var(--shade) / 4%),
+    0 6px 16px rgb(var(--shade) / 7%),
+    0 16px 34px rgb(var(--shade) / 6%);
+  /* level 2 · 呼吸峰值：流式「进行中」的抬升上限（stream-breathe 在 --elev-2 ↔ 本档之间摆动）。
+     与 --elev-2 的差别只在「环境阴影更远更深」——读起来是盒子被抬得更高，而不是影子变黑了；
+     接触阴影保持不动，底面始终贴着页面。 */
+  --elev-2-active:
+    inset 0 1px 0 rgb(255 255 255 / 70%),
+    0 1px 1px rgb(var(--shade) / 5%),
+    0 8px 22px rgb(var(--shade) / 11%),
+    0 22px 48px rgb(var(--shade) / 10%);
 
   /* 滚动条 */
   --scrollbar-thumb: oklch(0 0 0 / 12%);
@@ -161,6 +196,12 @@
   --warning: oklch(0.8 0.14 85);
   --info: oklch(0.76 0.01 286.3);
 
+  /* 扫过色在深色主题是**反着来**的（和浅色不能共用一套值）：
+     静息点压到能看见但不抢戏，扫过点抬到接近白——深底上的「亮」才是焦点。
+     若沿用浅色的深琥珀，深底上会变成一个比静息点还暗的黑点，方向感同样消失。 */
+  --status-run-rest: oklch(0.42 0.07 85);
+  --status-run-peak: oklch(0.85 0.14 92);
+
   --border: rgba(255, 255, 255, 0.115);
   --input: rgba(255, 255, 255, 0.115);
   --ring: oklch(0.78 0.02 286.3);
@@ -171,6 +212,28 @@
   --shadow-md: 0 4px 12px oklch(0 0 0 / 30%);
   --shadow-lg: 0 24px 60px oklch(0 0 0 / 30%);
   --shadow-destructive: 0 12px 38px color-mix(in oklab, var(--destructive) 30%, transparent);
+
+  /* 抬升层级（深色主题是**反着来**的，不能和浅色共用一套值）：
+     浅色靠「底色差」制造深度，深色底本身已有层次，深度只能靠**投影变黑**；
+     而「受光感」在浅色靠 70% 白线，深色必须压到 6~7%——否则白线会变成一根发光条。
+     投影色相在深底上用纯黑，alpha 比浅色各抬一档抵消底色抬升。 */
+  --shade: 0 0 0;
+  --elev-1:
+    inset 0 1px 0 rgb(255 255 255 / 6%),
+    0 1px 2px rgb(var(--shade) / 28%),
+    0 4px 10px rgb(var(--shade) / 30%);
+  --elev-2:
+    inset 0 1px 0 rgb(255 255 255 / 6%),
+    0 1px 1px rgb(var(--shade) / 28%),
+    0 6px 16px rgb(var(--shade) / 34%),
+    0 16px 34px rgb(var(--shade) / 30%);
+  /* level 2 · 呼吸峰值（流式进行中）：同样只推环境阴影，接触阴影不动。
+     深色下环境阴影加深到 46%/42%——再高就会「影子糊成一片」，看不出盒子边界。 */
+  --elev-2-active:
+    inset 0 1px 0 rgb(255 255 255 / 8%),
+    0 1px 1px rgb(var(--shade) / 30%),
+    0 8px 20px rgb(var(--shade) / 46%),
+    0 22px 46px rgb(var(--shade) / 42%);
 
   --scrollbar-thumb: oklch(1 0 0 / 18%);
   --scrollbar-thumb-hover: oklch(1 0 0 / 30%);

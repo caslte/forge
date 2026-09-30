@@ -1,5 +1,73 @@
 # 变更日志
 
+## v6.7 (修复：自动重试期间不再弹「回复出错」系统通知——出错先挂起，宽限期后再判定)
+
+> 来源：2026-09-30 用户反馈（附对话区截图：正文栏正显示「正在自动重试（第 1/3 次）…」）——「刚才应该是重试的时候，给我右下角弹出了一个窗口，说是 AI 回复失败的窗口，错误提示是对的，但是像这种情况，应该比如 3 次重试之后还不行再弹那个提示框，而不是第一次不行，自己还在重试的时候就弹出来」。
+
+- **根因（不是文案问题，是事件顺序问题）**：pi 在 `message_end(stopReason=error)` 的瞬间就把轮次状态打成 `error`，**之后**才判断这个错误可不可重试——可重试就紧接着发 `auto_retry_start`（`createForgeCore` 的 `onAutoRetryStart` 随即 `setStatus('streaming')` 把状态改回进行中，对话区因此正确显示成「正在自动重试（第 1/3 次）」）。而右下角系统通知（`main.ts` 里 `conversation.statusChanged` 的监听）见到 `status==='error'` 就直接弹「回复出错」。也就是说**通知比「要不要重试」的判定更早到达**：重试中的中间失败，被当成了轮次终态。用户看到的正是「还在重试 + 先弹失败通知」的自相矛盾。
+- **为什么不直接在 core 层把中间 error 压掉**：`error` 状态同时驱动会话树红点、错误横幅、`lastError` 持久化等多处语义，延迟整条链路会波及 CV-ERR-01 已定稿的错误分类/展示口径（也会拖慢真终态的反馈）。改在**通知这一层**：status 是否终态是 core 的事实，通知只需在「可能是终态」时多等一小会儿再确认。
+- **修法（`packages/forge-desktop/src/notifyGate.ts`，新增）**：把原先埋在 `main.ts` 事件回调里的弹/不弹规则（前台聚焦、3s 冷却、done 紧随中断/出错、**出错宽限期**）抽成纯逻辑模块，输出决策 `notify | defer | skip(reason)`。`error` 到达时不再直接弹，而是 `defer`——挂起 1s，期间任何后续状态事件都会作废这次挂起（`auto_retry_start` 会把状态改回 `streaming`）；1s 后复问，**状态仍是 `error` 才弹**（重试耗尽 / 不可重试 = 真终态），已被 `streaming` 接管则静默跳过。窗口在这一秒里切到前台同样不弹（复问时重新判定）。
+- **顺带修掉一个真 bug**：冷却/抑制判定原写作 `now - (lastToastedAt.get(id) ?? 0) < 3000`，把「从未弹过」当成时间戳 0，于是任何小于 3s 的时钟域下首个通知会被误判成「冷却内」而静默丢失。改为「以是否真的弹过为准」（`undefined` 判空），这也是把时间注入化之后单测立刻照出来的。
+- **验证**：`tsc --noEmit` 0 错；新增 `test/notifyGate.test.ts` 11 例全绿（重试期间不弹 / 重试耗尽才弹 / 不可重试仍弹 / 宽限期内切前台不弹 / error 后到 done 作废挂起 / settle 幂等 / 前台不弹 / 3s 冷却 / done 紧随中断不覆盖 / 非终态不弹 / 多会话互不干扰）。`@forge/desktop` 全量 363 例 355 过 6 红，6 红逐个 stash 对拍确认**与本改动无关**（`piConversationAdapter` 2 例 + `shellProbe` 4 例，改动前后完全一致）。**未做实机验证**：需要一次真实的 provider 失败+自动重试才能看到通知时序，本次没有触发真实 5xx/429。
+- **已知代价与边界**：① 真终态的失败通知晚 1s 出现（横幅早就在界面上了，不可感知）；② 宽限期是**时序兜底**而非精确信号——若 `auto_retry_start` 因极端卡顿晚于 1s 到达，仍会先弹一次；pi 侧这两个事件同属一次 agent run 的相邻事件（毫秒级），1s 余量足够。③ 不做「重试开始时也发一条右下角通知」——重试进度已经有对话区提示条 + 思考计时，再加一条只会更吵。
+- **不做的**：① 不改 core 的 `error` 状态语义与 CV-ERR-01 错误分类；② 不改通知卡片的视觉/文案（`notifyToast.ts` 原样）；③ 不动对话区已有的「正在自动重试（第 N/M 次）」提示条（那条本来就对）。
+
+## v6.6 (视觉：流式「进行中」从边框呼吸改投影呼吸——与抬升不再打架)
+
+> 来源：2026-09-30 用户反馈（截图：深色主题、助手回复中、1m25s）「现在 AI 回复中的时候会有呼吸边框，我觉得和你现在的这个改动有点不匹配，而看不出你的悬浮效果」。先出 `prototypes/streaming-elevation-coexist-demo.html`（现状 + A 投影呼吸 / B 上缘流光 / C 收窄边框呼吸 / D 蚂蚁线 / E 琥珀呼吸 五档对比），用户选定 **A**。
+
+- **诊断（先量再改，结论和直觉不同）**：实测流式期间**抬升并没有掉**——投影仍是完整 4 段 `--elev-2`，输入框也仍持焦点。问题出在**信号位冲突**：`.compose-box.streaming` 把 `border-color` 换成 `--foreground` 并按 35%↔85% 呼吸，深色主题下那条 1px 线实测在 `rgb(89,91,94)` ↔ `rgb(163,166,169)` 之间摆动（**亮度摆幅 1.9 倍**，盒内底色只有 `rgb(32,34,38)`），比盒内的柔和投影显眼得多——人眼先读到「一个忽明忽暗的亮框」，读不到「浮着的一层」。盒子的轮廓同时只能讲一件事：要么「受光的发丝边 + 柔和投影」（浮起来），要么「一条会呼吸的实线」（一个框）；旧实现让后者盖住了前者。
+- **另一个事实：边框呼吸是冗余信号**。流式中框内有 `⠋` 转轮 + 「助手回复中，Enter 排队发送…」、框外有「助手正在思考 1m25s」计时、右下角有红色停止按钮——边框呼吸是第四个，却占用了最贵的那个位置（轮廓）。
+- **令牌（`design-tokens.css`）**：新增 `--elev-2-active`（level 2 的呼吸峰值档，深浅各一套）。它与 `--elev-2` 的差别**只在环境阴影更远更深**（浅色 16px/34px → 22px/48px、α 6~7% → 10~11%；深色 16px/34px → 22px/46px、α 30/34% → 42/46%），**接触阴影保持不动**——读起来是「盒子被抬得更高」而不是「影子变黑了」，底面始终贴着页面。用令牌而不是把值写进 keyframes：以后调呼吸幅度只动一处，且深浅主题分开可调。
+- **组件（`InstructionInput.vue`）**：`.compose-box.streaming` 不再碰 `border-color`（那行 `border-color: var(--foreground)` 删除，边框回到基础的发丝边），改为 `animation: stream-breathe 2.4s ease-in-out infinite`，`@keyframes stream-breathe` 改成在 `--elev-2` ↔ `--elev-2-active` 之间摆 `box-shadow`。
+  - **关键细节：呼吸的起始档就是 `--elev-2`，不是从 `--elev-1` 起**。用户刚在聚焦态（`--elev-2`）按的 Enter，若动画从 `--elev-1` 起，盒子会先**塌下去再浮起来**；现在是在已抬起的档位上继续加深。靠 CSS 层叠顺序保证：`.compose-box.streaming` 与 `.compose-box:focus-within` 特异性相同（0,2,0）且排在后面，动画的 `box-shadow` 覆盖聚焦态那条。
+  - 呼吸时长 2s → **2.4s** 并有意偏慢：这是「在工作」的氛围提示，不是加载进度，不该催人。
+  - 删掉 `.compose-box.streaming:focus-within { animation: … }`（它存在的唯一理由是让聚焦时用另一套边框色呼吸，现在两个状态同一套动画，这条例外没有意义了）。
+  - 新增 `.compose-box.streaming.dragover { animation: none; box-shadow: var(--elev-2); }`：转发中把文件拖进输入框时两个状态会同时命中，动画会持续覆盖拖拽态的 `box-shadow`，明确落回静态抬升档。
+- **验证**：`vue-tsc` 0 错。真实应用（vite dev + mock 后端）按相位冻结实测：**边框在静息 / 聚焦 / 流式三态完全恒定**（浅色都是 `oklch(0.92 0.004 286.32)`、深色都是 `rgba(255,255,255,0.114)`）；流式 0% 相位阴影 = `--elev-2`（16px/34px），50% 相位 = 峰值（22px/48px）。
+  - 新增 `e2e/composeElevation.spec.ts`（4 例，浅/深主题各 2 条）：`ELEV-E2E-001` 断言边框色三态恒定；`ELEV-E2E-002` 断言抬升档位（静息环境段 <14px、聚焦 ≥14px、流式挂着 `stream-breathe` 且环境段 ≥33px）。
+  - **这两条用例做过红色检查**：按文件粒度 `git stash` 回退 `InstructionInput.vue` + `design-tokens.css` 后复跑 **4/4 全红**（`聚焦不应改边框色` 与 `静息态必须有抬升投影` 两条断言分别命中旧行为），确认它们真能拦住这次的回归。
+  - **踩过的坑（已写进用例注释）**：首版断言对 `boxShadow` 字符串做子串匹配（`toContain('16px')`），流式期间 animation 正在跑、`getComputedStyle` 返回的是**插值中间帧**（实测读到 `0px 6.25903px 16.5181px`），必然随机失败。改成解析每层第三个长度值取最大模糊半径，再按档位区间判定——与动画相位无关。
+- **文档/原型同步**：`prototypes/index.html`（令牌 + `.compose-box.streaming` 改投影呼吸）、新增 `prototypes/streaming-elevation-coexist-demo.html`（五档对比 + 已选定方案的三相位对照）。`prototypes/streaming-border-options.html`（更早那版边框方案对比）**保留原样不动**：它是历史决策记录，改它等于篡改当时的候选集。
+- **不做的**：① 不改「进行中」的其它三个信号（框内转轮文案、框外思考计时、停止按钮）——它们各占各的位置，本次只回收被边框占掉的那个；② 不引入上缘流光 / 蚂蚁线 / 新色相（B/D/E 三档未采纳，见 demo）；③ 不给呼吸加峰值上限之外的额外动画（`prefers-reduced-motion` 下由既有全局口径关掉，与项目其它动效一致）。
+
+## v6.5 (视觉：会话「进行中」状态点换盲文点阵动画 + 状态图标落进行内留白修文字跳动)
+
+> 来源：2026-09-30 用户反馈——「换一下进行中的状态点的显示，很多是转圈，有的是截图右侧那种动画」，并附 VS Code 资源管理器加载指示器截图作参照；另一条独立诉求「现在有点的时候文字会被后移，字应该对齐，状态图标等在前面」；随后追加两条——「图标应该往左移动」（对齐对了但图标吃了标题宽度）、「浅色主题是不是该用黑光扫」。原型：`prototypes/session-status-spinner.html`（占位策略 + 五款动画）、`prototypes/status-sweep-theme.html`（扫过色的四款浅/深方案，**待用户确认后再落地**）。
+
+- **跳动根因（不是「间距不对」）**：状态点用 `v-if="shouldShowDot(session)"` **条件挂载**。状态点一出现就把标题整体右推 14px（8px 圆点 + 6px gap），消失时又推回去；且状态流转（运行→完成→空闲）本身就会让行内内容横向抖一下，扫视一列时每行起点都不同。
+- **对齐改法（两轮才对）**：① 先做「恒占位」——去掉 `v-if`，无状态时只加 `is-blank` 档做 `visibility: hidden`，`title` 改为 `shouldShowDot(session) ? statusTitle(session) : ''`（否则每行空闲会话都弹「空闲」tooltip）。标题左边界确实齐了，但**图标作为 inline 槽位把整列标题右推了 18px**，用户截图红框标的就是这条被占掉的留白。② 最终改为**图标彻底退出 flex 流**、绝对定位进行内 24px 留白：`.tree-session > .tree-session-status-dot { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); }`（选择器带 `>` + 类是为了压过 `.tree-session > *` 那条 `position: relative; z-index: 1`）。标题回到**改动前的原始 24px 起始位置**，且因为不占任何宽度，对齐不再依赖「占位不塌陷」这个前提。
+- **动画选型（`ProjectTree.vue`）**：`.tone-streaming` 由「8px 黄点 + 1.6s 光晕脉冲（`tree-status-pulse`）」换成 **2×4 盲文点阵斜向波**——即用户截图里 VS Code 资源管理器那种 8 个小点依次点亮。选中它的理由：光晕脉冲在 1.6s 周期里弱到**分不清是在动还是只是亮着**；点阵不依赖颜色就能读出「进行中」，密度上又比 SVG 圆弧安静，密集列表里远看只是一列小方块在闪。
+- **节奏（首版被判太快后调）**：周期 **1.6s**、相邻点波峰步进 **0.15s**（右列再延后半拍 75ms → 波形自左上向右下扫过，全程 0.525s）。首版是 1.05s/0.09s，实测 8 个点的波峰糊成一片闪烁、看不出方向，只觉得「在跳」；放缓后能看清单个点走完对角线。关键帧同步放缓（18% 达峰、45% 回落到底亮度）。
+- **槽位几何**：圆点 8px → **12×12 框**（`display: grid` + `place-content: center`），给点阵留余量。点阵尺寸 2.3px、间隙 0.85px——`4×2.3 + 3×0.85 = 11.75px`，**必须刚好收进 12px**，首版按 2.4/1.26px 排出来是 13.38px、溢出槽位 1.4px（6× 截图才看出来）。出错红点 / 完成绿点下沉为 `::after`（`grid-area: 1/1/span 4/span 2` 居中），tone 色不变、仍是静态常显。
+- **两个顺手的收敛**：① 点阵 `<i>` 默认 `display: none`、只在 `.tone-streaming` 下显形，否则 error/done 行的 8 个黄点会从红色实心点后面透出来；② `is-blank i { display: none }`——空闲行连动画一起停，20 行 idle 不会白白跑 160 条 keyframes。③ `prefers-reduced-motion: reduce` 下退回静态黄点（`animation: none` + 显示 `::after`），语义不丢。
+- **验证**：`vue-tsc` 0 错，单测全绿。Playwright 临时 spec 实测（同一屏 streaming/idle/error/done 四种行）：恒占位阶段标题 `left` 全部 = 54（改前带状态 54 / 无状态 40）；改为绝对定位后**全部 = 36**（= 改动前的原始位置，图标不再吃宽度），图标框 `x=20 w=12`；`tone-streaming` 内部 8 个 `<i>`，浏览器实测 `animation: 1.6s@0s/0.075/0.15/0.225/0.3/0.375/0.45/0.525`；令牌在两主题下分别取到 `oklch(0.93 0.045 85)/oklch(0.46 0.11 62)` 与 `oklch(0.42 0.07 85)/oklch(0.85 0.14 92)`，`getComputedStyle` 确认关键帧解析出的两枚色都在、`getAnimations()` 为 running。5× 放大截图两主题各取一帧：浅色是深琥珀点在淡点阵上走、深色是亮琥珀点在暗点阵上走，方向都读得出来。`session.spec.ts` + `lastErrorRestore.spec.ts` 11 过 1 红，唯一红的 `SESSION-E2E-001` 按文件粒度 `git stash` 回退本文改动后复跑**同样红**= 改动前既有。
+- **扫过色分主题（v6.5 追加，用户选定 C 档）**：点阵原先两主题同色（静息 = `--warning` 16%、扫过 = 满 `--warning`）。**根因**：`thinking-shimmer` 那套扫光能成立是因为「**亮带扫过深色文字**」，靠比底色更亮被看见，所以它在白底上照样成立；点阵是「亮点在**浅色点阵**上移动」，浅色主题下静息点几乎没画出来、扫过点也只是同色相深一档，**方向感消失**。结论：扫过元素必须相对**本地底色**有最大反差 → 浅底改用暗点扫、深底仍用亮点扫。
+  - **令牌（`design-tokens.css`）**：新增 `--status-run-rest`（静息点）/ `--status-run-peak`（扫过点），**深浅两套值分开写**（同 `--shade` / `--elev-*` 先例）：浅色 `rest oklch(0.93 0.045 85)` / `peak oklch(0.46 0.11 62)`（**深琥珀棕，不用纯墨**——保住「暖色 = 运行中」这层语义），深色 `rest oklch(0.42 0.07 85)` / `peak oklch(0.85 0.14 92)`。
+  - **组件（`ProjectTree.vue`）**：`i` 的底色从 `background: var(--warning)` + **opacity 呼吸**改为 `background-color: var(--status-run-rest)`，峰值关键帧切到 `var(--status-run-peak)`——`background-color` 在两枚令牌解析出的实色之间插值，浅色主题里就是**一个暗点在淡点阵上走**（同色相的「深一档」在白底上拉不开）。`transform: scale` 保留。`prefers-reduced-motion` 下的静态点也改取 `--status-run-peak`（两主题下都醒目）。
+  - **四个备选**（`prototypes/status-sweep-theme.html`，只换这两个色、节奏几何全不动）：A 现方案 / B 反相扫·深墨（用户提议）/ **C 反相扫·深琥珀棕（采用）** / D 反相扫 + 静息点去色。
+- **流程纠偏（用户明确提出）**：本轮先写了原型、紧接着就把 `ProjectTree.vue` 改掉了，等于没给选择余地。以后**画 demo 与改代码必须分开**：要么只出原型停下等确认，要么直接实现，不能并行。已写入长期记忆。
+- **不做的**：① 不动 `SubagentTabBar.vue` / `SubagentResultView.vue` / `ConversationHistoryPopover.vue` 的状态点（它们本来就是恒占位/已有独立动画，本轮不顺带统一，避免扩大回归面）；② 不用 `prefers-reduced-motion` 之外的机制做动效降级；③ 不动状态语义与判定逻辑（`shouldShowDot` 的 done 未读规则原样保留）。
+
+## v6.4 (视觉：输入框抬升层级——去掉焦点边框变色，改「浮起来」)
+
+> 来源：2026-09-30 用户反馈——自截图与 DeepSeek 输入框对比「我们（图1）比较平，图2 会有悬浮感」，并附一条明确指令「输入框的鼠标焦点边框变色也去掉」。先出 `prototypes/compose-box-elevation-demo.html`（A 现状 / B 轻 / C 中 / D 强四档 + E 底色分层）与 `prototypes/compose-box-elevation-design.html`（设计规格稿：抬升层级模型 / 现状拆解 / 前后对比 / 细节放大 / 令牌与改动点），用户圈定 **C 档**。
+
+- **根因（拆信号，不是「缺个阴影」）**：`.compose-box` 是 `background: var(--background)` + `border: 1px solid var(--input)`。浅色主题下 `--background` 是纯白，**框底与页面底同色**，盒子只剩一圈 1px 灰线——读起来是「画在页面上的矩形」而不是「浮着的一层」。真正缺的是一套**抬升层级**：弹窗/浮层/队列面板都有 `--shadow-*`，唯独**常驻**的输入框是零抬升。四个信号里现有实现只有「发丝边」一个，且 `transition` 里写了 `box-shadow` 却从来没有值（写了不生效的空转）。
+- **令牌（`packages/forge-ui/src/design-tokens.css`）**：投影段新增 `--shade`（投影色相：浅色 `22 24 29` 冷灰——纯黑投影在白底上发脏；深色 `0 0 0`）、`--elev-1`（常驻控件静息态，两层柔光 + `inset 0 1px 0` 上缘高光）、`--elev-2`（焦点面板，四段：接触 + 过渡 + 环境 + 上缘高光）。**深浅两套值必须分开写**：浅色靠底色差制造深度、深色底本身已有层次只能靠投影变黑；受光白线浅色 70%、深色压到 6%（70% 在深底上是一根发光条）。浮层继续沿用 `--shadow-*`，不合并。
+- **组件（`InstructionInput.vue`）**：`.compose-box` 改 `background: var(--card)` + `box-shadow: var(--elev-1)`（深色下 `--card` 0.243 比 `--background` 0.215 **亮**一档，方向一致，跨主题都是「盒比页面亮」）。
+  - **焦点边框变色按要求去掉**：`.compose-box:focus-within` 的 `border-color: var(--brand)` 删除，改 `box-shadow: var(--elev-2)`；文件末尾那段 `<style>` 全局覆盖（`[data-theme='dark']` 压到 40% brand 的补丁）整个删除——它专为压暗这条边框而写，边框不改色后失去意义。旧实现的问题不止「突兀」：`--brand` 浅色是深灰、深色是近白，**同一语义跨主题亮度方向相反**，边框一变就像闪了一下；而且它和 `.dragover`（边框品牌色 + 底色提示）**撞语义**——拖拽和聚焦用同一个信号。
+  - `.streaming:focus-within` 同样去掉 `border-color: var(--brand)`，只保留 `stream-breathe` 呼吸动画（底边颜色由呼吸表达），原先与之配对的 `@keyframes stream-breathe-focus`（品牌色呼吸）随之删除，不再需要第二套关键帧。
+  - `.dragover` 的底色基色从 `var(--background)` 改 `var(--card)`——否则拖拽态会把盒子的抬升底色抹掉，变成比页面还暗的一块，和静息态接不上。
+- **同材质延伸件（`TodoPanel.vue` / `AskUserQuestionPanel.vue`）**：两个面板底边塞在输入框背后（-10px 负 margin）做「一体延伸」，若仍留 `--background` 就会**面板贴着、框浮着**，接缝处一道色差断层；同步改 `background: var(--card)` + `box-shadow: var(--elev-1)`（面板的抬升投影落在自己的上缘、被输入框盖住，延伸感不变）。
+- **验证**：`vue-tsc` 0 错；`forge-ui` 单测 337/337 全绿。vite dev + mock 后端实测（脚本采 `getComputedStyle` + 像素采样）：浅色静息 `--elev-1` / 聚焦 `--elev-2` / 边框两态**恒为** `oklch(0.92 0.004 286.32)`（不再变色）；深色静息 `inset 0 1px 0 rgba(255,255,255,0.06)` + `rgba(0,0,0,0.28)` 系、聚焦升到四段；盒内/页底像素浅色 `#ffffff` vs `#f7f7f7`（会话区本就带渐变，底色差天然存在，悬浮感成立）、深色 `rgb(32,34,38)` vs `rgb(26,28,32)`；投影落点 `#f9f9f9`（框下 4px）/ `rgb(23,24,27)`（深色）。Todo 面板 + 输入框接缝截图确认同材质无断层。
+  - **E2E（`todoPanel`/`queue`/`session`/`thinkingLevel`/`askUserQuestion`/`contentWidth` 六条 spec，43 例）**：41 过 2 红，两条红线**均已按文件粒度 `git stash` 回退本文改动后复跑确认为改动前既有**——① `todoPanel` `TSC-E2E-009b`（hero-mode 下面板头部与 textarea 重叠，回退后同样红）；② `session` `SESSION-E2E-001`（草稿态首条消息未创建会话，回退后同样红）。`queue QC-002` 在批量跑时曾闪过一次红，单独跑 + 全 spec 复跑均过（`6 passed`），判定为批量时序抖动、非本次回归。
+  - **仓库并发编辑提示**：定位 `SESSION-E2E-001` 过程中发现 `packages/forge-ui/src/components/ProjectTree.vue` 在本轮工作期间（09:56）被**本次改动之外**的编辑改过（会话状态点改常驻 + `is-blank` 档 + 内部 `<i>` 元素，114 行），不属于本次改动；上面那条基线结论是在**保留该外部改动**的前提下取得的（= HEAD + 他人的 ProjectTree 改动），结论不受影响。
+  - `todoPanel.spec.ts` 的「同材质」断言按新契约改写：旧断言是「聚焦时输入框边框加深、面板不动（两色必须不同）」，现改为「边框色两态**一致**（焦点不换边框色）+ 聚焦时输入框投影比面板更重」——沿用旧断言会与用户本次的明确要求直接冲突。
+  - `.compose-input:focus` 补写 `border-color: transparent`：`global.css` 有一条 `textarea:focus { border: 1px solid var(--brand); box-shadow: 0 0 0 3px … }`，内圈原本靠 scoped 特异性隐式压住；把契约写成显式属性后，将来动全局规则不会穿透到输入框内圈。
+- **文档/原型同步**：`prototypes/index.html`（令牌 + `.compose-box` 静息/聚焦 + `.dragover`）、`prototypes/ask-user-question-prototype.html`（同款，深色底用 `color-mix` 提亮而**不是**该原型的 `--card`——那里 `--card` 0.22 比 `--background` 0.26 暗，直接套会变成「凹坑」）、新增 `prototypes/compose-box-elevation-demo.html`（四档对比）与 `prototypes/compose-box-elevation-design.html`（设计规格稿）。
+- **不做的**：① 不改几何——圆角 16px、`padding: 12px 14px 58px`、底部操作条绝对定位、上边沿拖拽带、斜杠/@ 浮窗位置全部不动（与「平不平」无关，一起动只扩大回归面）；② **不改会话区底色**（设计稿里的方案 E：浅色会话区 `#f6f6f7`）。实测会话区本就带 `App.vue` 的壳层渐变（左侧采样 `#f7f7f7`），底色差已经存在，无需再压一档；深色主题更是不能压（`--card` 已比 `--background` 亮，再压会抵掉方向）；③ 不把 `--elev-*` 合并进 `--shadow-*`（语义不同：前者是「常驻控件受光抬升」，后者是「浮层离地」）；④ 不引入 `--elev-band` 令牌（方案 E 未采纳，留一个没人用的令牌不如不留）。
+
 ## v6.3.1 (修复：侧栏「项目/任务」分段胶囊被拉长变形)
 
 > 来源：2026-09-30 用户反馈截图——侧栏顶部「项目」胶囊右侧多出一截、成了被拉长的椭圆（对照图才是应有的贴合形态）。

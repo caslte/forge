@@ -657,6 +657,9 @@ onBeforeUnmount(() => {
 /*
  * 与 TodoPanel 同款「从输入框延伸出的浮窗」：同边框色 + 同顶部圆角 16px，
  * 下边沿无 border，底部 -10px 负 margin 塞进输入框背后（由输入框上边框充当视觉底边）。
+ *
+ * 2026-09-30 同步输入框抬升（C 方案）：跟 TodoPanel 一样改 --card + --elev-1，
+ * 否则面板与抬起来的输入框之间会出现一道色差断层。
  */
 .ask-panel {
   position: relative;
@@ -664,7 +667,8 @@ onBeforeUnmount(() => {
   border: 1px solid var(--input);
   border-bottom: 0;
   border-radius: 16px 16px 0 0;
-  background: var(--background);
+  background: var(--card);
+  box-shadow: var(--elev-1);
   margin: 0 0 -10px;
   padding: 8px 14px 14px;
   font-size: 13px;

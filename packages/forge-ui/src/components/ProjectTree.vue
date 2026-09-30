@@ -555,12 +555,11 @@ onUnmounted(() => {
           @dragstart="onSessionDragStart($event, session)"
         >
           <span
-            v-if="shouldShowDot(session)"
             class="tree-session-status-dot"
-            :class="`tone-${sessionTone(session)}`"
-            :title="statusTitle(session)"
+            :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
+            :title="shouldShowDot(session) ? statusTitle(session) : ''"
             aria-hidden="true"
-          ></span>
+          ><i v-for="n in 8" :key="n" /></span>
 
           <div class="tree-node-main">
             <input
@@ -732,12 +731,11 @@ onUnmounted(() => {
               @dragstart="onSessionDragStart($event, session)"
             >
               <span
-                v-if="shouldShowDot(session)"
                 class="tree-session-status-dot"
-                :class="`tone-${sessionTone(session)}`"
-                :title="statusTitle(session)"
+                :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
+                :title="shouldShowDot(session) ? statusTitle(session) : ''"
                 aria-hidden="true"
-              ></span>
+              ><i v-for="n in 8" :key="n" /></span>
 
               <div class="tree-node-main">
                 <input
@@ -1220,36 +1218,117 @@ onUnmounted(() => {
   background: color-mix(in oklab, var(--muted) 30%, transparent);
 }
 
-.tree-session-status-dot {
+/* 状态槽位：12×12 的固定尺寸框（比 8px 圆点大，给运行中动画留余量）。
+   关键：不参与行的 flex 流——绝对定位落进行左侧 24px 留白里，
+   标题完全回到改动前的 24px 起始位置，图标一列也固定在同一 x 上。 */
+.tree-session > .tree-session-status-dot {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
   flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, 2.3px);
+  grid-auto-rows: 2.3px;
+  /* 4 行 + 3 间隙 = 11.75px，刚好收在 12px 槽位内 */
+  gap: 0.85px;
+  place-content: center;
+  align-items: center;
+  justify-items: center;
+}
+
+.tree-session-status-dot.is-blank {
+  visibility: hidden;
+}
+
+/* 静止态用 ::after 画实心点（圆点色随 tone 变） */
+.tree-session-status-dot::after {
+  content: '';
+  display: none;
+  grid-area: 1 / 1 / span 4 / span 2;
   width: 8px;
   height: 8px;
   border-radius: 999px;
 }
 
-/* 运行中：黄色 + 呼吸脉冲 */
-.tree-session-status-dot.tone-streaming {
-  background: var(--warning);
-  --dot: var(--warning);
-  animation: tree-status-pulse 1.6s ease-in-out infinite;
-}
-
 /* 出错：红色常显 */
-.tree-session-status-dot.tone-error {
+.tree-session-status-dot.tone-error::after {
   background: var(--destructive);
+  display: block;
 }
 
-/* 已完成（未点击过）：绿色 */
-.tree-session-status-dot.tone-done {
+/* 已完成（未点击过）：绿色常显 */
+.tree-session-status-dot.tone-done::after {
   background: var(--success);
+  display: block;
 }
 
-@keyframes tree-status-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--dot, var(--warning)) 50%, transparent);
-  }
+/* 运行中：2×4 盲文点阵，斜向波依次点亮（VS Code 资源管理器语汇）。
+   动得明确——不靠颜色也能读出「进行中」，且纯 CSS 不占主线程。
+   点阵只在 streaming 下显形；非运行态/空槽位一律不渲染这 8 个点。
+   扫过色取 --status-run-rest / --status-run-peak 两枚令牌（深浅两套值，
+   浅底用暗点扫、深底用亮点扫——详见 design-tokens.css 处的说明）。 */
+.tree-session-status-dot i {
+  display: none;
+  width: 2.3px;
+  height: 2.3px;
+  border-radius: 999px;
+  background-color: var(--status-run-rest);
+  transform: scale(0.72);
+  animation: tree-status-wave 1.6s ease-in-out infinite;
+}
+
+.tree-session-status-dot.tone-streaming i {
+  display: block;
+}
+
+/* 空槽位连动画一起停：20 行 idle 不会白白跑 160 条 keyframes */
+.tree-session-status-dot.is-blank i {
+  display: none;
+}
+
+/* grid 行优先排列：odd = 左列 r0..r3，even = 右列 r0..r3；
+   右列延后半拍 → 波形自左上向右下扫过。
+   1.6s 周期 + 0.15s 步进：1.05s 版本用户嫌快，波形糊成一片闪烁；放缓后能看清「一个点从左上走到右下」 */
+.tree-session-status-dot.tone-streaming i:nth-child(1) { animation-delay: 0s; }
+.tree-session-status-dot.tone-streaming i:nth-child(3) { animation-delay: 0.15s; }
+.tree-session-status-dot.tone-streaming i:nth-child(5) { animation-delay: 0.3s; }
+.tree-session-status-dot.tone-streaming i:nth-child(7) { animation-delay: 0.45s; }
+.tree-session-status-dot.tone-streaming i:nth-child(2) { animation-delay: 0.075s; }
+.tree-session-status-dot.tone-streaming i:nth-child(4) { animation-delay: 0.225s; }
+.tree-session-status-dot.tone-streaming i:nth-child(6) { animation-delay: 0.375s; }
+.tree-session-status-dot.tone-streaming i:nth-child(8) { animation-delay: 0.525s; }
+
+/* 峰值处同时切色 + 放大：background-color 在两枚令牌解析出的实色之间插值，
+   浅色主题里就是一个暗点扫过淡点阵（而不是同色相的「深一档」——那个在白底上拉不开）。
+   18% 达峰 / 45% 回落：亮点停留占大头，1.6s 周期才看得出方向而不是在闪。 */
+@keyframes tree-status-wave {
+  0%,
+  45%,
   100% {
-    box-shadow: 0 0 0 5px color-mix(in oklab, var(--dot, var(--warning)) 0%, transparent);
+    background-color: var(--status-run-rest);
+    transform: scale(0.72);
+  }
+  18% {
+    background-color: var(--status-run-peak);
+    transform: scale(1);
+  }
+}
+
+/* 降级：系统要求减少动效时退回静态点，取扫过色（两个主题下都醒目），语义不丢 */
+@media (prefers-reduced-motion: reduce) {
+  .tree-session-status-dot i {
+    animation: none;
+  }
+  .tree-session-status-dot.tone-streaming i {
+    display: none;
+  }
+  .tree-session-status-dot.tone-streaming::after {
+    background: var(--status-run-peak);
+    display: block;
   }
 }
 

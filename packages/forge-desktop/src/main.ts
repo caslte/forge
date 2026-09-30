@@ -33,6 +33,7 @@ import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode }
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { createNotifyToastManager } from './notifyToast.ts';
+import { createNotifyGate, type NotifyKind } from './notifyGate.ts';
 import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
@@ -847,38 +848,22 @@ app.whenReady().then(async () => {
   app.on('before-quit', () => killAllPtys());
   win.webContents.on('did-navigate', () => killAllPtys());
 
-  // 同会话去重状态：
-  // - lastToastedAt：任意终态通知后的短冷却（重复终态只弹第一条）
-  // - lastInterruptAt：cancel 编排（createForgeCore）会先 setStatus('canceled') 再经
-  //   done 门控补发一次 'done'——5s 内跟随中断/出错到达的 done 视为同一轮收尾，
-  //   不用「回复已完成」覆盖「回复被中断/出错」通知
-  const lastToastedAt = new Map<string, number>();
-  const lastInterruptAt = new Map<string, number>();
-  eventBus.on('conversation.statusChanged', (raw) => {
-    const p = raw as { sessionId?: unknown; status?: unknown };
-    if (typeof p?.sessionId !== 'string' || typeof p?.status !== 'string') return;
-    const kind =
-      p.status === 'done' ? 'done' : p.status === 'canceled' ? 'interrupt' : p.status === 'error' ? 'error' : null;
-    if (kind === null) return;
-    // 窗口前台聚焦时不打扰（最小化视为离开，会弹）；两种情况都留一行日志方便排查
+  // 弹/不弹的决策全在 notifyGate（纯逻辑、可单测）：前台聚焦、3s 冷却、done 紧随
+  // 中断/出错，以及**出错的宽限期**——error 到达时还不知道 pi 会不会自动重试，
+  // 挂起 1s 复问，期间状态回到 streaming 就说明重试接管，不该在「正在自动重试
+  // （第 1/3 次）」时先弹一个「回复出错」（见 notifyGate.ts 文件头）。
+  const notifyGate = createNotifyGate();
+  /** 会话 → 宽限期复问定时器：任何后续状态事件都会清掉它（gate 内另有 lastStatus 复核兜底） */
+  const errorGraceTimers = new Map<string, NodeJS.Timeout>();
+
+  /** 主窗口是否在前台（最小化视为离开，会弹）；两种情况都留一行日志方便排查 */
+  function isMainWindowFocused(): boolean {
     const w = mainWindow;
-    if (!w || w.isDestroyed() || (w.isFocused() && w.isVisible())) {
-      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口前台 → 不弹通知`);
-      return;
-    }
-    const now = Date.now();
-    if (now - (lastToastedAt.get(p.sessionId) ?? 0) < 3000) {
-      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，3s 冷却内 → 不重复弹`);
-      return;
-    }
-    if (kind === 'done' && now - (lastInterruptAt.get(p.sessionId) ?? 0) < 5000) {
-      console.log(`[notify] 会话 ${p.sessionId} done 紧随中断/出错 → 不覆盖原通知`);
-      return;
-    }
-    console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口非前台 → 弹系统通知`);
-    lastToastedAt.set(p.sessionId, now);
-    if (kind !== 'done') lastInterruptAt.set(p.sessionId, now);
-    const sessionId = p.sessionId;
+    return !w || w.isDestroyed() || (w.isFocused() && w.isVisible());
+  }
+
+  function showNotify(kind: NotifyKind, sessionId: string): void {
+    console.log(`[notify] 会话 ${sessionId} 终态=${kind}，窗口非前台 → 弹系统通知`);
     // 正文取最后一条用户消息（「任务：…」摘要）。直接发送路径的 user 气泡由渲染层
     // 乐观插入、不经 eventBus 的 conversation.message（该事件只有队列补发跟进才带
     // role=user），故此处从历史接口现取，勿依赖事件缓存。
@@ -917,6 +902,38 @@ app.whenReady().then(async () => {
         notifyToast.notify({ kind, sessionId, body });
       })
       .catch((err) => console.log(`[notify] 取会话历史失败，通知正文回退默认：${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  eventBus.on('conversation.statusChanged', (raw) => {
+    const p = raw as { sessionId?: unknown; status?: unknown };
+    if (typeof p?.sessionId !== 'string' || typeof p?.status !== 'string') return;
+    const sessionId = p.sessionId;
+    // 同一会话的宽限期复问只保留最新一个（重复 error 事件不叠加定时器）
+    const pending = errorGraceTimers.get(sessionId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      errorGraceTimers.delete(sessionId);
+    }
+    const outcome = notifyGate.observe(sessionId, p.status, { focused: isMainWindowFocused(), now: Date.now() });
+    if (outcome.type === 'skip') {
+      console.log(`[notify] 会话 ${sessionId} 状态=${p.status} → 不弹（${outcome.reason}）`);
+      return;
+    }
+    if (outcome.type === 'defer') {
+      const timer = setTimeout(() => {
+        errorGraceTimers.delete(sessionId);
+        const settled = notifyGate.settle(sessionId, { focused: isMainWindowFocused(), now: Date.now() });
+        if (settled.type === 'notify') showNotify(settled.kind, sessionId);
+        else if (settled.type === 'skip') {
+          console.log(`[notify] 会话 ${sessionId} 出错宽限期后 → 不弹（${settled.reason}）`);
+        }
+      }, notifyGate.errorGraceMs);
+      timer.unref?.();
+      errorGraceTimers.set(sessionId, timer);
+      console.log(`[notify] 会话 ${sessionId} 状态=error → 宽限 ${notifyGate.errorGraceMs}ms 待复问（可能自动重试中）`);
+      return;
+    }
+    showNotify(outcome.kind, sessionId);
   });
 
   // ===== 预热入口（v3.78 上移到 boot.ready 之前；boot 前主路径 + boot 后 fallback 共用）=====

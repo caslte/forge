@@ -39,22 +39,22 @@ export function looksMonospace(text: string): boolean {
 }
 
 /**
- * 队列条目当前是否处于「被截断、需要展开」状态。
+ * 队列条目当前是否被截断（超出部分靠省略号藏起来了 → 需要挂 title 提示全文）。
  *
- * 两个方向都要看：收趟态是 nowrap + 省略号，溢出体现在**横向**
- * （`scrollWidth`）；而展开态是 pre-wrap + 内部纵向滚动，溢出在纵向。
- * 只看一个方向就会在窗口 resize 或展开/收起切换时给出错误的按钮显隐。
+ * 收趟态是 `white-space: nowrap` + `text-overflow: ellipsis`，溢出体现在
+ * **横向**（`scrollWidth > clientWidth`）；纵向也一并检查，避免样式再变时
+ * 标题悄悄失效。不能按字数猜——同一条 68 字的路径在 890px 宽下 1 行放得下、
+ * 在窄窗下会截断。
  */
-export function isQueueItemClamped(el: HTMLElement, isExpanded = false): boolean {
-  if (isExpanded) return true;
+export function isQueueItemClamped(el: HTMLElement): boolean {
   return el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight;
 }
 
 /**
- * 队列面板每条的默认行数：1。
+ * 队列条目的行数：1。
  *
- * 用户 2026-09-29 反馈「内容放在一行，不要换行」——收趟态不换行、不折行，
- * 超出用省略号；需要看全文时点「展开」才折行（`.queue-item.open`）。
+ * 用户 2026-09-29 反馈：「内容放在一行，不要换行」+「展开去掉，超出了给个 title」。
+ * 所以面板是纯一行列表：超出用省略号，悬停出原生 title 看全文，没有展开态。
  * 导出为常量而非魔法数，便于测试共用同一个口径。
  */
 export const QUEUE_TEXT_CLAMP_LINES = 1;
