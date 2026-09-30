@@ -31,7 +31,7 @@
 - **文档/原型同步**：`prototypes/index.html`（令牌 + `.compose-box.streaming` 改投影呼吸）、新增 `prototypes/streaming-elevation-coexist-demo.html`（五档对比 + 已选定方案的三相位对照）。`prototypes/streaming-border-options.html`（更早那版边框方案对比）**保留原样不动**：它是历史决策记录，改它等于篡改当时的候选集。
 - **不做的**：① 不改「进行中」的其它三个信号（框内转轮文案、框外思考计时、停止按钮）——它们各占各的位置，本次只回收被边框占掉的那个；② 不引入上缘流光 / 蚂蚁线 / 新色相（B/D/E 三档未采纳，见 demo）；③ 不给呼吸加峰值上限之外的额外动画（`prefers-reduced-motion` 下由既有全局口径关掉，与项目其它动效一致）。
 
-## v6.5 (视觉：会话「进行中」状态点换盲文点阵动画 + 状态图标落进行内留白修文字跳动)
+## v6.5 (视觉：会话状态点家族——运行中盲文点阵扫过／已完成对勾／出错方块叹号 + 图标落进行内留白修文字跳动)
 
 > 来源：2026-09-30 用户反馈——「换一下进行中的状态点的显示，很多是转圈，有的是截图右侧那种动画」，并附 VS Code 资源管理器加载指示器截图作参照；另一条独立诉求「现在有点的时候文字会被后移，字应该对齐，状态图标等在前面」；随后追加两条——「图标应该往左移动」（对齐对了但图标吃了标题宽度）、「浅色主题是不是该用黑光扫」。原型：`prototypes/session-status-spinner.html`（占位策略 + 五款动画）、`prototypes/status-sweep-theme.html`（扫过色的四款浅/深方案，**待用户确认后再落地**）。
 
@@ -41,13 +41,19 @@
 - **节奏（首版被判太快后调）**：周期 **1.6s**、相邻点波峰步进 **0.15s**（右列再延后半拍 75ms → 波形自左上向右下扫过，全程 0.525s）。首版是 1.05s/0.09s，实测 8 个点的波峰糊成一片闪烁、看不出方向，只觉得「在跳」；放缓后能看清单个点走完对角线。关键帧同步放缓（18% 达峰、45% 回落到底亮度）。
 - **槽位几何**：圆点 8px → **12×12 框**（`display: grid` + `place-content: center`），给点阵留余量。点阵尺寸 2.3px、间隙 0.85px——`4×2.3 + 3×0.85 = 11.75px`，**必须刚好收进 12px**，首版按 2.4/1.26px 排出来是 13.38px、溢出槽位 1.4px（6× 截图才看出来）。出错红点 / 完成绿点下沉为 `::after`（`grid-area: 1/1/span 4/span 2` 居中），tone 色不变、仍是静态常显。
 - **两个顺手的收敛**：① 点阵 `<i>` 默认 `display: none`、只在 `.tone-streaming` 下显形，否则 error/done 行的 8 个黄点会从红色实心点后面透出来；② `is-blank i { display: none }`——空闲行连动画一起停，20 行 idle 不会白白跑 160 条 keyframes。③ `prefers-reduced-motion: reduce` 下退回静态黄点（`animation: none` + 显示 `::after`），语义不丢。
-- **验证**：`vue-tsc` 0 错，单测全绿。Playwright 临时 spec 实测（同一屏 streaming/idle/error/done 四种行）：恒占位阶段标题 `left` 全部 = 54（改前带状态 54 / 无状态 40）；改为绝对定位后**全部 = 36**（= 改动前的原始位置，图标不再吃宽度），图标框 `x=20 w=12`；`tone-streaming` 内部 8 个 `<i>`，浏览器实测 `animation: 1.6s@0s/0.075/0.15/0.225/0.3/0.375/0.45/0.525`；令牌在两主题下分别取到 `oklch(0.93 0.045 85)/oklch(0.46 0.11 62)` 与 `oklch(0.42 0.07 85)/oklch(0.85 0.14 92)`，`getComputedStyle` 确认关键帧解析出的两枚色都在、`getAnimations()` 为 running。5× 放大截图两主题各取一帧：浅色是深琥珀点在淡点阵上走、深色是亮琥珀点在暗点阵上走，方向都读得出来。`session.spec.ts` + `lastErrorRestore.spec.ts` 11 过 1 红，唯一红的 `SESSION-E2E-001` 按文件粒度 `git stash` 回退本文改动后复跑**同样红**= 改动前既有。
+- **验证**：`vue-tsc` 0 错，单测全绿。Playwright 临时 spec 实测（同一屏 streaming/error/done/idle/已读 done 五种行）：标题 `left` <b>全部 = 36</b>（= 改动前的原始位置，图标不吃标题宽度），图标列固定 x=20；字形实测 `.dot-check` 12×12、<code>color: oklch(0.55 0.16 145)</code>（深色下自动切 <code>oklch(0.72 0.14 145)</code>）、<code>.dot-bang</code> 11×11 且 <code>ink #fff / bg oklch(0.577 0.245 27.325)</code>（深色下 bg 自动切 <code>oklch(0.7 0.18 27.325)</code>）；点阵 8 个 <code>&lt;i&gt;</code>、<code>animation: 1.6s@0s…0.525s</code>、<code>display: grid</code>，而 idle 行为 <code>none</code>（不跑空动画）；5× 放大截图两主题各一帧 + 三个图标各一张，字形无畸变。`session.spec.ts` + `lastErrorRestore.spec.ts` 11 过 1 红，唯一红的 `SESSION-E2E-001` 按文件粒度 `git stash` 回退本文改动后复跑**同样红**= 改动前既有。
 - **扫过色分主题（v6.5 追加，用户选定 C 档）**：点阵原先两主题同色（静息 = `--warning` 16%、扫过 = 满 `--warning`）。**根因**：`thinking-shimmer` 那套扫光能成立是因为「**亮带扫过深色文字**」，靠比底色更亮被看见，所以它在白底上照样成立；点阵是「亮点在**浅色点阵**上移动」，浅色主题下静息点几乎没画出来、扫过点也只是同色相深一档，**方向感消失**。结论：扫过元素必须相对**本地底色**有最大反差 → 浅底改用暗点扫、深底仍用亮点扫。
   - **令牌（`design-tokens.css`）**：新增 `--status-run-rest`（静息点）/ `--status-run-peak`（扫过点），**深浅两套值分开写**（同 `--shade` / `--elev-*` 先例）：浅色 `rest oklch(0.93 0.045 85)` / `peak oklch(0.46 0.11 62)`（**深琥珀棕，不用纯墨**——保住「暖色 = 运行中」这层语义），深色 `rest oklch(0.42 0.07 85)` / `peak oklch(0.85 0.14 92)`。
   - **组件（`ProjectTree.vue`）**：`i` 的底色从 `background: var(--warning)` + **opacity 呼吸**改为 `background-color: var(--status-run-rest)`，峰值关键帧切到 `var(--status-run-peak)`——`background-color` 在两枚令牌解析出的实色之间插值，浅色主题里就是**一个暗点在淡点阵上走**（同色相的「深一档」在白底上拉不开）。`transform: scale` 保留。`prefers-reduced-motion` 下的静态点也改取 `--status-run-peak`（两主题下都醒目）。
   - **四个备选**（`prototypes/status-sweep-theme.html`，只换这两个色、节奏几何全不动）：A 现方案 / B 反相扫·深墨（用户提议）/ **C 反相扫·深琥珀棕（采用）** / D 反相扫 + 静息点去色。
+- **已完成 / 出错 改字形（v6.5 第三轮，用户圈定）**：原先两者都是 8px 实心点，与运行中的点阵**不同形**，看不出同源。`prototypes/status-done-error.html` 出了 5+5 款后用户选定 **done = 绿色对勾 ✓ / error = 红色方块感叹号 !**，统一信号从「形状」换成「<b>位置恒定 + 只有运行中在动</b>」。
+  - **为什么字形反而更合理**：运行中是<b>持续态</b>，已完成/出错是<b>离散事件</b>——持续态值得一个会动的形态；离散事件用 1× 就认得出的字形更划算（点阵每点只有 2.3px，1× 看过去就是一团糊）。
+  - **图形必须是现成图标，不能手搓**：我前两版用「两条 <code>div</code> 转 ±45°」画勾，第一版两臂 <code>left/top</code> 摆反出来是「人」字（开口朝下），第二版形状对了但<b>接缝对不齐</b>——拼两条独立线段没有交点约束，缩到 1× 就是个歪的。**最终直接用仓库现成的 Feather 路径** <code>viewBox="0 0 24 24"</code> + <code>&lt;polyline points="20 6 9 17 4 12"/&gt;</code>（<code>SettingsPanel</code> 的 <code>.swatch-check</code> / <code>GitCommitDialog</code> / <code>MessageCard</code> / <code>HtmlCanvasBlock</code> / <code>selectionPopover.ts</code> 五处同款），<code>stroke-width="3"</code>（24 网格缩到 12px 时 2 偏细）。矢量路径转角是同一点，天然闭合，不用算。
+  - **实现（<code>ProjectTree.vue</code>）**：槽位从 <code>display: grid</code> 改回 <code>flex</code> 居中（点阵缩进 <code>.dot-matrix</code> 子元素），<code>::after</code>（原画 8px 实心点）<b>只留给 <code>prefers-reduced-motion</code> 降级</b>。新增 <code>.dot-check</code>（12px，<code>color: var(--success)</code> + <code>currentColor</code>，主题自动跟随）与 <code>.dot-bang</code>（11px 圆角方块 + CSS 底板 / SVG 描边的 <code>!</code>）。<b>不新增任何令牌</b>。
+  - **白赚**：字形方案没有一次性动画 → <b>不需要给状态图标加 <code>:key</code> 强制重挂载</b>（原方案里唯一有实现成本的那处消失）。
+  - **判定逻辑一行未动</b>：done 仍只在未读（<code>doneReadAt == null</code>）时显示、error 常显、idle 不显示但占位、<code>title</code> 原样。
 - **流程纠偏（用户明确提出）**：本轮先写了原型、紧接着就把 `ProjectTree.vue` 改掉了，等于没给选择余地。以后**画 demo 与改代码必须分开**：要么只出原型停下等确认，要么直接实现，不能并行。已写入长期记忆。
-- **不做的**：① 不动 `SubagentTabBar.vue` / `SubagentResultView.vue` / `ConversationHistoryPopover.vue` 的状态点（它们本来就是恒占位/已有独立动画，本轮不顺带统一，避免扩大回归面）；② 不用 `prefers-reduced-motion` 之外的机制做动效降级；③ 不动状态语义与判定逻辑（`shouldShowDot` 的 done 未读规则原样保留）。
+- **不做的**：① 不动 `SubagentTabBar.vue` / `SubagentResultView.vue` / `ConversationHistoryPopover.vue` 的状态点（它们本来就是恒占位/已有独立动画，本轮不顺带统一，避免扩大回归面）；② 不用 `prefers-reduced-motion` 之外的机制做动效降级；③ 不动状态语义与判定逻辑（`shouldShowDot` 的 done 未读规则原样保留）；④ 不用 `div` 转角手搓图标——仓库已有成体系的 Feather 内联 SVG 口径，一律复用。
 
 ## v6.4 (视觉：输入框抬升层级——去掉焦点边框变色，改「浮起来」)
 

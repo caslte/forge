@@ -559,7 +559,27 @@ onUnmounted(() => {
             :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
             :title="shouldShowDot(session) ? statusTitle(session) : ''"
             aria-hidden="true"
-          ><i v-for="n in 8" :key="n" /></span>
+          >
+            <span class="dot-matrix"><i v-for="n in 8" :key="n" /></span>
+            <svg
+              v-if="session.status === 'done'"
+              class="dot-check"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span v-if="session.status === 'error'" class="dot-bang">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                <line x1="12" y1="8" x2="12" y2="13" />
+                <line x1="12" y1="16.5" x2="12" y2="17.5" />
+              </svg>
+            </span>
+          </span>
 
           <div class="tree-node-main">
             <input
@@ -735,7 +755,27 @@ onUnmounted(() => {
                 :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
                 :title="shouldShowDot(session) ? statusTitle(session) : ''"
                 aria-hidden="true"
-              ><i v-for="n in 8" :key="n" /></span>
+              >
+                <span class="dot-matrix"><i v-for="n in 8" :key="n" /></span>
+                <svg
+                  v-if="session.status === 'done'"
+                  class="dot-check"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <span v-if="session.status === 'error'" class="dot-bang">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                    <line x1="12" y1="8" x2="12" y2="13" />
+                    <line x1="12" y1="16.5" x2="12" y2="17.5" />
+                  </svg>
+                </span>
+              </span>
 
               <div class="tree-node-main">
                 <input
@@ -1227,10 +1267,24 @@ onUnmounted(() => {
   top: 50%;
   transform: translateY(-50%);
   z-index: 1;
-  flex: 0 0 auto;
   width: 12px;
   height: 12px;
-  display: grid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-session-status-dot.is-blank {
+  visibility: hidden;
+}
+
+/* ===== 运行中：2×4 盲文点阵，斜向波依次点亮（VS Code 资源管理器语汇）=====
+   动得明确——不靠颜色也能读出「进行中」，且纯 CSS 不占主线程。
+   点阵只在 streaming 下显形；其余三态走各自字形（见下）。
+   扫过色取 --status-run-rest / --status-run-peak 两枚令牌（深浅两套值，
+   浅底用暗点扫、深底用亮点扫——详见 design-tokens.css 处的说明）。 */
+.dot-matrix {
+  display: none;
   grid-template-columns: repeat(2, 2.3px);
   grid-auto-rows: 2.3px;
   /* 4 行 + 3 间隙 = 11.75px，刚好收在 12px 槽位内 */
@@ -1240,39 +1294,11 @@ onUnmounted(() => {
   justify-items: center;
 }
 
-.tree-session-status-dot.is-blank {
-  visibility: hidden;
+.tree-session-status-dot.tone-streaming .dot-matrix {
+  display: grid;
 }
 
-/* 静止态用 ::after 画实心点（圆点色随 tone 变） */
-.tree-session-status-dot::after {
-  content: '';
-  display: none;
-  grid-area: 1 / 1 / span 4 / span 2;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-}
-
-/* 出错：红色常显 */
-.tree-session-status-dot.tone-error::after {
-  background: var(--destructive);
-  display: block;
-}
-
-/* 已完成（未点击过）：绿色常显 */
-.tree-session-status-dot.tone-done::after {
-  background: var(--success);
-  display: block;
-}
-
-/* 运行中：2×4 盲文点阵，斜向波依次点亮（VS Code 资源管理器语汇）。
-   动得明确——不靠颜色也能读出「进行中」，且纯 CSS 不占主线程。
-   点阵只在 streaming 下显形；非运行态/空槽位一律不渲染这 8 个点。
-   扫过色取 --status-run-rest / --status-run-peak 两枚令牌（深浅两套值，
-   浅底用暗点扫、深底用亮点扫——详见 design-tokens.css 处的说明）。 */
-.tree-session-status-dot i {
-  display: none;
+.dot-matrix i {
   width: 2.3px;
   height: 2.3px;
   border-radius: 999px;
@@ -1281,26 +1307,17 @@ onUnmounted(() => {
   animation: tree-status-wave 1.6s ease-in-out infinite;
 }
 
-.tree-session-status-dot.tone-streaming i {
-  display: block;
-}
-
-/* 空槽位连动画一起停：20 行 idle 不会白白跑 160 条 keyframes */
-.tree-session-status-dot.is-blank i {
-  display: none;
-}
-
 /* grid 行优先排列：odd = 左列 r0..r3，even = 右列 r0..r3；
    右列延后半拍 → 波形自左上向右下扫过。
    1.6s 周期 + 0.15s 步进：1.05s 版本用户嫌快，波形糊成一片闪烁；放缓后能看清「一个点从左上走到右下」 */
-.tree-session-status-dot.tone-streaming i:nth-child(1) { animation-delay: 0s; }
-.tree-session-status-dot.tone-streaming i:nth-child(3) { animation-delay: 0.15s; }
-.tree-session-status-dot.tone-streaming i:nth-child(5) { animation-delay: 0.3s; }
-.tree-session-status-dot.tone-streaming i:nth-child(7) { animation-delay: 0.45s; }
-.tree-session-status-dot.tone-streaming i:nth-child(2) { animation-delay: 0.075s; }
-.tree-session-status-dot.tone-streaming i:nth-child(4) { animation-delay: 0.225s; }
-.tree-session-status-dot.tone-streaming i:nth-child(6) { animation-delay: 0.375s; }
-.tree-session-status-dot.tone-streaming i:nth-child(8) { animation-delay: 0.525s; }
+.dot-matrix i:nth-child(1) { animation-delay: 0s; }
+.dot-matrix i:nth-child(3) { animation-delay: 0.15s; }
+.dot-matrix i:nth-child(5) { animation-delay: 0.3s; }
+.dot-matrix i:nth-child(7) { animation-delay: 0.45s; }
+.dot-matrix i:nth-child(2) { animation-delay: 0.075s; }
+.dot-matrix i:nth-child(4) { animation-delay: 0.225s; }
+.dot-matrix i:nth-child(6) { animation-delay: 0.375s; }
+.dot-matrix i:nth-child(8) { animation-delay: 0.525s; }
 
 /* 峰值处同时切色 + 放大：background-color 在两枚令牌解析出的实色之间插值，
    浅色主题里就是一个暗点扫过淡点阵（而不是同色相的「深一档」——那个在白底上拉不开）。
@@ -1318,17 +1335,63 @@ onUnmounted(() => {
   }
 }
 
-/* 降级：系统要求减少动效时退回静态点，取扫过色（两个主题下都醒目），语义不丢 */
+/* ===== 已完成（未读）：Feather check =====
+   路径是仓库现成的那一段（SettingsPanel .swatch-check / GitCommitDialog / MessageCard /
+   HtmlCanvasBlock / selectionPopover.ts 五处同款），不手搓「两条 div 转 ±45°」——
+   那种画法两臂接缝对不齐，缩到 1× 就是个歪的「人」字。
+   stroke-width 取 3（与 .swatch-check 同款：24 网格缩到 12px 时 2 偏细）；
+   描边走 currentColor，深浅主题自动跟随。 */
+.dot-check {
+  display: none;
+  width: 12px;
+  height: 12px;
+  color: var(--success);
+}
+
+.tree-session-status-dot.tone-done .dot-check {
+  display: block;
+}
+
+/* ===== 出错：11px 圆角方块 + 白色感叹号 =====
+   底板用 CSS 画方块（正方形无形变风险，不值得为它上 SVG），里面的「!」用描边路径，
+   与对勾同档 3px。红色只给需用户处理的错误（CV-ERR-01 口径），常显、静止。 */
+.dot-bang {
+  display: none;
+  position: relative;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--destructive);
+  color: #fff;
+}
+
+.tree-session-status-dot.tone-error .dot-bang {
+  display: block;
+}
+
+.dot-bang svg {
+  position: absolute;
+  inset: 1.5px;
+  width: calc(100% - 3px);
+  height: calc(100% - 3px);
+}
+
+/* 降级：系统要求减少动效时，运行中退回静态点，取扫过色（两个主题下都醒目），语义不丢。
+   已完成/出错本就是静止字形，不受此影响。 */
 @media (prefers-reduced-motion: reduce) {
-  .tree-session-status-dot i {
+  .dot-matrix i {
     animation: none;
   }
-  .tree-session-status-dot.tone-streaming i {
+  .tree-session-status-dot.tone-streaming .dot-matrix {
     display: none;
   }
   .tree-session-status-dot.tone-streaming::after {
-    background: var(--status-run-peak);
+    content: '';
     display: block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--status-run-peak);
   }
 }
 
