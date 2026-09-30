@@ -93,13 +93,26 @@ test('E-CA-002 @P0 @mock-backend：跨源隔离——宿主读不到沙箱文档
 
 test('E-CA-003 @P0 @mock-backend：流式中途是骨架蒙版不是源码，闭合瞬间换卡片且零跳变', async ({ page }) => {
   const health = attachHealthGuards(page);
-  // 故意只写到一半（围栏未闭合）
-  await seedAndOpen(
-    page,
-    'sess-canvas-3',
-    '画布流式',
-    `梳理中：\n\n\`\`\`canvas\n<div class="k">登录接口防爆破机制`,
-  );
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-canvas-3', '画布流式')]);
+  // 会话树是启动时读的：seed 完必须重载，否则列表里没有这条会话
+  await page.reload();
+  await waitForMock(page);
+  await openSession(page, '画布流式');
+
+  // 故意只写到一半（围栏未闭合）——必须是**真流式**：历史里的未闭合围栏按设计直接
+  // 出半成品（见 MessageCard「骨架会永远转圈」注释），blocked 只在流式期间成立。
+  // 本用例改前用 seedHistory 喂半截内容，blocked 恒为 false，从来没测到骨架（一直红）。
+  await seedSendScript(page, 'sess-canvas-3', [
+    {
+      type: 'delta',
+      delayMs: 20,
+      payload: { text: '梳理中：\n\n```canvas\n<div class="k">登录接口防爆破机制', kind: 'text' },
+    },
+  ]);
+  await page.locator('.compose-input').fill('画一张链路图');
+  await page.locator('.compose-input').press('Enter');
 
   const block = page.locator('.md-canvas-block');
   const skel = block.locator('.canvas-skel');
@@ -312,4 +325,99 @@ test('E-CA-007 @P1 @mock-backend：内容超高时卡片内部滚动，不撑破
   const after = await metrics();
   expect(after.clientH).toBe(before.clientH); // 滚的是卡片内部，视口没被撑大
   expect(await frame.evaluate((el) => el.getBoundingClientRect().height)).toBe(h1);
+});
+
+/**
+ * 截图回归（2026-09-30 真机）：画布卡片流式期间一直闪，闪的时候能看见源码。
+ *
+ * 成因：终态判据被直接跑在半截源码上——`<div style=` 因属性里的 `=` 命中
+ * looksLikeCodeCanvas（骨架提前塌成代码块，用户看见满屏源码），长内联样式因半截
+ * 属性值算进「最长文本片段」命中 PROSE_LONG_RUN（骨架塌成正文），标签一闭合又变回
+ * 骨架。150ms 一次的节流重渲染下就是「骨架 ↔ 代码/正文」来回翻面。
+ *
+ * 这条按帧采样整段流式过程：卡片只能待在骨架，收尾才换 iframe。
+ */
+const STREAM_CHUNKS = [
+  '先说结论：这是一个多仓库并列的平台根目录。\n\n```canvas\n<div style=',
+  'display:flex;flex-direction:column;gap:14px;padding:16px;border:1px solid var(--c-border)',
+  '">\n  <div style="font-weight:600;font-size:14px;color:var(--c-fg)">edu 平台根目录（多仓库并列）</div>\n',
+  '  <div style="border:1px solid var(--c-border);border-radius:8px;padding:10px 14px;background:var(--c-surface)">edu-admin 后台管理</div>\n',
+  '</div>\n```',
+];
+
+test('E-CA-010 @P0 @mock-backend：流式期间一律骨架——半截标签/长内联样式不翻面（2026-09-30 截图回归）', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-canvas-10', '画布流式不闪')]);
+  await page.reload();
+  await waitForMock(page);
+  await openSession(page, '画布流式不闪');
+
+  // 逐帧采样卡片当前落在哪个分支：任何一帧出现 prose/code/empty 都是回归
+  await page.evaluate(() => {
+    const w = window as unknown as { __canvasTrace: string[]; __canvasRaf: number };
+    w.__canvasTrace = [];
+    const sample = (): void => {
+      const block = document.querySelector('.md-canvas-block');
+      if (block) {
+        const state = block.querySelector('.canvas-skel')
+          ? 'skeleton'
+          : block.querySelector('.canvas-prose')
+            ? 'PROSE'
+            : block.querySelector('.canvas-fallback')
+              ? 'CODE'
+              : block.querySelector('.canvas-empty')
+                ? 'EMPTY'
+                : block.querySelector('iframe')
+                  ? 'iframe'
+                  : 'none';
+        const trace = w.__canvasTrace;
+        if (trace[trace.length - 1] !== state) trace.push(state);
+      }
+      w.__canvasRaf = requestAnimationFrame(sample);
+    };
+    sample();
+  });
+
+  const emitDelta = async (text: string): Promise<void> => {
+    await page.evaluate(
+      ([key, chunk]) => {
+        window.__forgeMock!.emit(key, 'conversation.delta', { delta: { text: chunk, kind: 'text' } });
+      },
+      ['sess-canvas-10', text] as const,
+    );
+  };
+
+  await page.evaluate(() => {
+    window.__forgeMock!.emit('sess-canvas-10', 'conversation.statusChanged', { status: 'streaming' });
+  });
+  await page.locator('.compose-input').fill('画一张 edu 目录结构图');
+  await page.locator('.compose-input').press('Enter');
+
+  const block = page.locator('.md-canvas-block');
+  for (const [i, chunk] of STREAM_CHUNKS.entries()) {
+    await emitDelta(chunk);
+    // 每个分片留出 > 150ms 节流窗口，保证每个「半截状态」都被真正渲染过一帧
+    await page.waitForTimeout(260);
+    await expect(block.locator('.canvas-skel'), `第 ${i + 1} 片流式分片期间应当是骨架`).toBeVisible();
+    await expect(block.locator('.canvas-fallback')).toHaveCount(0);
+    await expect(block.locator('.canvas-prose')).toHaveCount(0);
+  }
+
+  // 闭合围栏：换成真卡片（终态判 html，与流式口径一致，闭合不翻面）
+  await expect(block.locator('iframe')).toHaveCount(1, { timeout: 5_000 });
+  await page.evaluate(() => {
+    window.__forgeMock!.emit('sess-canvas-10', 'conversation.statusChanged', { status: 'done' });
+  });
+
+  const trace = await page.evaluate(() => {
+    const w = window as unknown as { __canvasTrace: string[]; __canvasRaf: number };
+    cancelAnimationFrame(w.__canvasRaf);
+    return w.__canvasTrace;
+  });
+  expect(trace.filter((s) => s === 'PROSE' || s === 'CODE' || s === 'EMPTY'), `流式中途翻面：${trace.join(' → ')}`).toEqual([]);
+  expect(trace).toContain('skeleton');
+  expect(trace[trace.length - 1]).toBe('iframe');
+  health.assertHealthy();
 });

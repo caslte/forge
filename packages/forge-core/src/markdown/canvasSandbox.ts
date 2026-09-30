@@ -54,6 +54,26 @@ export function looksLikeHtmlCanvas(source: string): boolean {
 const HAS_TAG_RE = /<[a-zA-Z!/][^>]*>/;
 
 /**
+ * 末尾未闭合的标签片段：`<div style="padding:10px` 这种只写了一半的。
+ *
+ * 流式判据必须先把它剪掉再算内容。它没有 `>`，`stripTagsToText` / `longestTextRun`
+ * 的 `<[^>]*>` 都剥不掉它，于是半截属性值被当成「正文」——属性里的 `=` 让
+ * looksLikeCodeCanvas 命中赋值号（骨架提前塌成代码块，用户看见满屏源码），长内联
+ * 样式让 longestTextRun ≥ PROSE_LONG_RUN（骨架塌成一段正文），标签一闭合片段消失
+ * 又变回骨架。150ms 一次的节流重渲染下，就是「画图时一直闪、闪的时候看见源码」
+ * （2026-09-30 真机）。
+ *
+ * 只吃「后随内容里没有 `>`」的最后一个 `<字母/!/`：`if (a < b)` 这类比较运算符
+ * （`<` 后是空格或数字）不误伤。
+ */
+const TRAILING_PARTIAL_TAG_RE = /<[a-zA-Z!/][^>]*$/;
+
+/** 剪掉末尾半截标签（流式判据的唯一入口，终态判据不剪：闭合后源码不再增长）。 */
+function withoutTrailingPartialTag(source: string): string {
+  return (source ?? '').replace(TRAILING_PARTIAL_TAG_RE, '');
+}
+
+/**
  * HTML `<canvas>` 元素（真标签，非 canvas 围栏这个词）。
  *
  * 模型会把「画布卡片」直译成 <canvas>（2026-09-29 真机：MiniMax 交回
@@ -153,10 +173,28 @@ export function looksLikeCodeCanvas(source: string): boolean {
  * （HtmlCanvasBlock）本来各判一遍，两边的顺序只要有一处不同就会出现「骨架闪一下
  * 然后落到代码框」这种自相矛盾的结果——这正是 2026-09-29 实测到的现象。判定逻辑
  * 只有一份，两边都读它。
+ *
+ * 但「一份」不等于「一档」：流式中途的源码是半截的，终态判据（按完整源码设计）
+ * 直接在它上面跑会抖——见 judgeStreamingCanvas 的说明。故入口收成一个、口径分两档，
+ * 由 options.streaming 选。
  */
 
 /** 卡片源码的终态（'undecided' 专用于流式中途：还判不出是不是 HTML） */
 export type CanvasVerdict = 'empty' | 'html' | 'prose' | 'code' | 'undecided';
+
+/** 判决档位选择 */
+export interface CanvasJudgeOptions {
+  /**
+   * true = 围栏尚未闭合（流式中途，源码还会继续增长）。
+   *
+   * 中途只放行「剪掉末尾半截标签后依然成立」的判据，且只放行其中**单调**的那几条：
+   * 一旦判成 prose/code 就不会再翻回骨架。文本占比这类非单调判据（正文占比随标签
+   * 增多降、随文字增多升）留到闭合后判一次，否则每个节流点来回翻面。
+   *
+   * 默认 false = 闭合终态，口径与历史完全一致（老调用点零改动）。
+   */
+  streaming?: boolean;
+}
 
 /**
  * 卡片源码判成哪一态。
@@ -174,8 +212,9 @@ export type CanvasVerdict = 'empty' | 'html' | 'prose' | 'code' | 'undecided';
  * 模型正要画图的前言，判早了会在闭合瞬间翻面（正文↔卡片），故交给流式骨架占位。
  * 已经判成 prose/code 的不再回退到 undecided——文本只会变长，判据单调。
  */
-export function judgeCanvasSource(source: string): CanvasVerdict {
+export function judgeCanvasSource(source: string, options: CanvasJudgeOptions = {}): CanvasVerdict {
   const s = source ?? '';
+  if (options.streaming === true) return judgeStreamingCanvas(s);
   if (s.trim() === '') return 'empty';
   if (CANVAS_ELEMENT_RE.test(s)) return 'code';
   if (HAS_TAG_RE.test(s)) {
@@ -187,6 +226,31 @@ export function judgeCanvasSource(source: string): CanvasVerdict {
   // 剩下的是「可能是散文」：太短判不出是散文开头还是画图前言，交给骨架占位。
   if (s.trim().length < PROSE_MIN_TEXT) return 'undecided';
   return 'prose';
+}
+
+/**
+ * 流式口径（围栏未闭合）。与终态口径的差别只有两处，都是为了「中途不翻面」：
+ *
+ * 1. 先剪掉末尾半截标签（TRAILING_PARTIAL_TAG_RE）再算内容。不剪的话，`<div style=`
+ *    会因属性里的 `=` 命中 looksLikeCodeCanvas → 骨架提前塌成代码块（用户看到的是
+ *    满屏源码），长内联样式会因算进「最长文本片段」命中 PROSE_LONG_RUN → 塌成正文，
+ *    标签一闭合又变回骨架：150ms 一次的重渲染下就是一直闪。剪掉后这两种都不再发生。
+ * 2. 有标签时只放行「长句铁证」这一条单调判据（见 streamingProseShell），
+ *    薄壳的占比判据留到闭合后判一次——它天生非单调。
+ *
+ * 空态（'empty'）属于终态结论：中途只能给 'undecided'（挂骨架）。中途就出空态文案，
+ * 等于在刚开栏那一帧闪一次「画布没有内容」。
+ */
+function judgeStreamingCanvas(raw: string): CanvasVerdict {
+  const s = withoutTrailingPartialTag(raw);
+  if (s.trim() === '') return 'undecided';
+  if (CANVAS_ELEMENT_RE.test(s)) return 'code';
+  if (!HAS_TAG_RE.test(s)) {
+    if (looksLikeCodeCanvas(s) || looksLikeAsciiArt(s, 2)) return 'code';
+    if (s.trim().length < PROSE_MIN_TEXT) return 'undecided';
+    return 'prose';
+  }
+  return streamingProseShell(s) ? 'prose' : 'html';
 }
 
 /** base64 → UTF-8（前端与流式判决共用一份解码；atob 只给 Latin-1，需 TextDecoder 还原） */
@@ -214,16 +278,43 @@ export function looksLikeProseCanvas(source: string): boolean {
     if (looksLikeAsciiArt(s, 2)) return false;
     return !looksLikeCodeCanvas(s);
   }
-  // <canvas 开头（含流式中途没写完的半截标签）：终态归 judgeCanvasSource 的
-  // code 分支，这里只否决 prose——否则开头几十字会被判成正文、提前撤掉骨架。
-  if (/<canvas/i.test(s)) return false;
-  if (!looksLikeHtmlCanvas(s)) return false;
-  if (GRAPHIC_RE.test(s)) return false;
-  const text = stripTagsToText(s).trim();
-  if (text.length < PROSE_MIN_TEXT) return false;
+  const text = proseShellText(s);
+  if (text === null) return false;
   if (longestTextRun(s) >= PROSE_LONG_RUN) return true;
   if (text.length / s.length <= PROSE_TEXT_RATIO) return false;
   return !VISUAL_CUE_RE.test(s);
+}
+
+/**
+ * 有标签内容的 prose 前哨（终态与流式共用）：命中即返回可见文本，未命中返回 null。
+ *
+ * 两个档位必须读同一份前哨：任何一边单独加个否决条件，都会让「中途判成 A、闭合判成 B」
+ * 变成翻面。所以这里只做静态否决（标签形态 / 图元 / 最小文本量），不放任何会随源码
+ * 增长而反复成立-不成立的判据。
+ */
+function proseShellText(s: string): string | null {
+  // <canvas 开头（含流式中途没写完的半截标签）：终态归 judgeCanvasSource 的
+  // code 分支，这里只否决 prose——否则开头几十字会被判成正文、提前撤掉骨架。
+  if (/<canvas/i.test(s)) return null;
+  if (!looksLikeHtmlCanvas(s)) return null;
+  if (GRAPHIC_RE.test(s)) return null;
+  const text = stripTagsToText(s).trim();
+  return text.length < PROSE_MIN_TEXT ? null : text;
+}
+
+/**
+ * 流式口径的 prose：只认「长句铁证」。
+ *
+ * 为什么只留这一条：文本片段只会变长（末尾半截标签已先剪掉，片段不会被标签闭合
+ * 缩回去），所以 `≥ PROSE_LONG_RUN` 一旦成立就不再撤销——中途撤骨架出来的是正文，
+ * 不会在下一个节流点变回骨架。比例那条（薄壳路径）反过来：标签流进来占比就掉、
+ * 文字流进来占比就升，是骨架↔正文来回闪的第二来源，留到闭合后判一次。
+ *
+ * 前哨与终态共用，故中途判成 prose 的，闭合后仍判 prose（长句路径在终态里也排第一，
+ * 且 svg/img、字符画、<canvas 的否决两边一样）。
+ */
+function streamingProseShell(s: string): boolean {
+  return proseShellText(s) !== null && longestTextRun(s) >= PROSE_LONG_RUN;
 }
 
 /**

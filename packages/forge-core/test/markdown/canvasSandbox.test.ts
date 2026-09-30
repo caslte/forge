@@ -398,3 +398,113 @@ test('另存文档：独立可打开，标题转义不进标签', () => {
   assert.match(file, /<title>&lt;\/title&gt;&lt;script&gt;<\/title>/);
   assert.ok(file.includes('<meta name="viewport"'));
 });
+
+/* ------------------------------------------------------------------ *
+ * 流式口径（judgeCanvasSource(src, { streaming: true })）。
+ *
+ * 2026-09-30 真机回归：画布卡片在流式期间一直闪，闪的时候看见源码。成因是终态判据
+ * 直接跑在半截源码上——`<div style=` 因属性里的 `=` 命中 looksLikeCodeCanvas（骨架
+ * 提前塌成代码块），长内联样式因半截属性值算进「最长文本片段」命中 PROSE_LONG_RUN
+ * （骨架塌成正文），标签一闭合又变回骨架。150ms 一次的重渲染下就是来回翻面。
+ *
+ * 这些用例把「流式全程待在骨架族」钉死：前缀每一步都不许落到 prose / code。
+ * ------------------------------------------------------------------ */
+
+/** 骨架族：终态是内容、中途只该出骨架的两态 */
+function onSkeleton(v: string): boolean {
+  return v === 'undecided' || v === 'html';
+}
+
+/** 逐字符前缀走一遍（含每 1 字符的细粒度，比真机节流点更严） */
+function streamingWalk(source: string, step = 1): string[] {
+  const seen: string[] = [];
+  for (let i = 0; i <= source.length; i += step) {
+    const v = judgeCanvasSource(source.slice(0, i), { streaming: true });
+    if (seen[seen.length - 1] !== v) seen.push(v);
+  }
+  return seen;
+}
+
+/** 真机常见写法：每个节点一条长内联样式（属性值远超 PROSE_LONG_RUN） */
+const LONG_STYLE_DIAGRAM = `<div style="display:flex;flex-direction:column;gap:14px;padding:16px;border:1px solid var(--c-border);border-radius:10px">
+  <div style="font-weight:600;font-size:14px;color:var(--c-fg)">edu 平台根目录（多仓库并列）</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
+    <div style="border:1px solid var(--c-border);border-radius:8px;padding:10px 14px;background:var(--c-surface)">edu-admin 后台管理</div>
+    <div style="border:1px solid var(--c-border);border-radius:8px;padding:10px 14px;background:var(--c-surface)">edu-service 业务层</div>
+  </div>
+</div>`;
+
+test('流式口径：半截标签不落代码块（`<div style=` 是「还没画完」，不是源码）', () => {
+  // 改前：无完整标签 + 属性里的 `=` → looksLikeCodeCanvas → code，卡片直接变代码块
+  assert.equal(judgeCanvasSource('<div style=', { streaming: true }), 'undecided');
+  assert.equal(judgeCanvasSource('<div style="display:flex;gap:14px;padding:16px', { streaming: true }), 'undecided');
+  // 终态口径不变（围栏就在半截标签处闭合：源码确实不可渲染，落代码块）
+  assert.equal(judgeCanvasSource('<div style='), 'code');
+  // 标签闭合 → 骨架等闭合，不落终态
+  assert.equal(judgeCanvasSource('<div style="display:flex">', { streaming: true }), 'html');
+});
+
+test('流式口径：长内联样式的 HTML 图全程待在骨架族（不塌成正文/代码）', () => {
+  const seen = streamingWalk(LONG_STYLE_DIAGRAM);
+  assert.deepEqual(
+    seen.filter((v) => !onSkeleton(v)),
+    [],
+    `流式中途出现了终态分支：${seen.join(' → ')}`,
+  );
+  // 终态照旧判 html（长样式不等于「文字塞卡片」）
+  assert.equal(judgeCanvasSource(LONG_STYLE_DIAGRAM), 'html');
+});
+
+test('流式口径：无标签纯文字仍提前出正文（不挂假进度，E-CA-009 语义不变）', () => {
+  const half = PLAIN_NO_LICENSE.slice(0, Math.floor(PLAIN_NO_LICENSE.length / 2));
+  assert.equal(judgeCanvasSource(half, { streaming: true }), 'prose');
+  assert.equal(judgeCanvasSource(PLAIN_NO_LICENSE, { streaming: true }), 'prose');
+  // 单调：一旦 prose，后续前缀不再回骨架
+  const seen = streamingWalk(PLAIN_NO_LICENSE, 7);
+  assert.equal(seen.includes('prose'), true);
+  assert.equal(seen[seen.length - 1], 'prose');
+});
+
+test('流式口径：无标签源码/字符画仍判 code（等宽对齐不能等闭合）', () => {
+  assert.equal(
+    judgeCanvasSource('const total = list.reduce((a, b) => a + b, 0);', { streaming: true }),
+    'code',
+  );
+  assert.equal(judgeCanvasSource('| 阶段 | 动作 |\n| 构建 | 编译打包 |', { streaming: true }), 'code');
+});
+
+test('流式口径：刚开栏（空 / 半截标签）只给 undecided，不出空态文案', () => {
+  // 改前 blocked 且源码为空时落到「画布没有内容」，等于开栏那一帧闪一次空态
+  assert.equal(judgeCanvasSource('', { streaming: true }), 'undecided');
+  assert.equal(judgeCanvasSource('\n  ', { streaming: true }), 'undecided');
+  assert.equal(judgeCanvasSource('', ), 'empty');
+});
+
+test('流式口径：半截 <canvas（标签没写完）不提前出代码块，闭合后归 code', () => {
+  assert.equal(judgeCanvasSource('<canvas width="640" style="background:#fff"', { streaming: true }), 'undecided');
+  assert.equal(
+    judgeCanvasSource('<canvas width="640" style="background:#fff">生效值 ────► 920px', { streaming: true }),
+    'code',
+  );
+});
+
+test('半截标签裁剪不误伤比较运算符：代码仍判 code', () => {
+  // `<` 后是空格或数字，不算标签开头
+  assert.equal(
+    judgeCanvasSource('for (let i = 0; i < n; i++) {\n  sum += xs[i];\n}', { streaming: true }),
+    'code',
+  );
+  assert.equal(judgeCanvasSource('if (a < b) return a;', { streaming: true }), 'code');
+  assert.equal(judgeCanvasSource('let ok = xs.length', { streaming: true }), 'code');
+});
+
+test('流式口径：带标签的长文（薄壳包长句）也提前出正文，且不回翻', () => {
+  const shell = `<div style="border-radius:8px"><p>${'这段说明文字足够长，长到超过长句阈值，用来验证带标签的长文在中途也能提前出正文而不是一直挂骨架转圈。'.repeat(2)}</p><div style="display:flex;gap:8px"><span>甲</span><span>乙</span></div></div>`;
+  assert.equal(judgeCanvasSource(shell, { streaming: true }), 'prose');
+  const seen = streamingWalk(shell, 5);
+  const idx = seen.indexOf('prose');
+  assert.notEqual(idx, -1);
+  assert.deepEqual(seen.slice(idx), ['prose'], `判成 prose 后又回翻了：${seen.join(' → ')}`);
+  // 终态同判 prose（前哨共用，闭合不翻面）
+  assert.equal(judgeCanvasSource(shell), 'prose');
+});

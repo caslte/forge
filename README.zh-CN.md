@@ -55,6 +55,10 @@
 **📸 附件随手贴 · 截图复制粘贴就进来**
 文件拖进去也行，剩下的交给 AI。
 
+## 🧷 执行模型
+
+Forge 是本地编码代理：以你的用户身份读写文件、执行命令，不设权限门禁。这一取舍继承自 [pi](https://github.com/earendil-works/pi) 的设计理念——真正的隔离应该交给操作系统或容器。
+
 ## 致谢
 
 Forge 基于 [pi](https://github.com/earendil-works/pi) 编码代理引擎构建。

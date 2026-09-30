@@ -1,5 +1,32 @@
 # 变更日志
 
+## v6.3.1 (修复：侧栏「项目/任务」分段胶囊被拉长变形)
+
+> 来源：2026-09-30 用户反馈截图——侧栏顶部「项目」胶囊右侧多出一截、成了被拉长的椭圆（对照图才是应有的贴合形态）。
+
+- **根因（Playwright 实测复现，非推测）**：选中态胶囊几何是 JS 按 active 按钮 `offsetLeft/offsetWidth` 实测写进 `--pill-l/--pill-r` 的（CSS 的 `right: calc(50% + 1px)` 兜底只在两键等宽时正确），两处踩空：
+  1. **侧栏折叠/展开时按被压扁的盒子实测**（用户截图这一处）：`.sidebar` 的折叠是 `transition: width`，展开那一 tick `.view-seg` 被 flex 压到 min-content（分段开关 94→70px、按钮 44→32px），`sidebarCollapsed` 的 watch 恰在此刻测出 `--pill-r = 70-2-32 = 36px`；过渡结束后盒子回到 94/44，胶囊宽度却成了 `94-2-36 = 56px`（应为 44px）——**永久多出 12px**，与用户截图里「项目」右侧那截完全对上（`git stash` 回退本文改动复跑：实测 `Received: 12`）。
+  2. **首贴静默落空**（同源坑，中文恰好看不出来）：`.view-seg` 挂在 `v-if="formalUiReady"` 里，`onMounted` 的 `nextTick` 早于它挂载（`viewSegEl` 还是 null，函数第一步就 return）。中文两键等宽，CSS 兜底几何恰好正确；英文 `Projects`(62px)/`Tasks`(47px) 不等宽，首帧胶囊比按钮窄 **7.48px**，要等用户切一次视角才归位。
+- **实现（`packages/forge-ui/src/App.vue`）**：几何改由 `ResizeObserver(viewSegEl)` 驱动——observe 时先补首贴、之后盒子每变一次就按**实际几何**重贴，两个洞同时收敛（第 1 个不再读到过渡中的中间态，第 2 个不再依赖 onMounted 时机）。RO 回调走 `moveViewPill(false)` 新增的 no-anim 分支（`.view-seg.no-anim::before { transition: none }`，与 `.is-task` 同特异性故必须排在它之后）：容器自身在改尺寸时胶囊逐帧贴着按钮走、不播水滴，也不会「自己乱滑」。`watch([treeView, activeLocale])` 保留显式重贴（切视角时两键宽度互换、开关整体盒子不变，RO 看不见），`sidebarCollapsed` 从依赖里去掉（盒子变化已由 RO 覆盖）；`onMounted` 里那句测不到元素的 `nextTick(moveViewPill)` 删除，`onUnmounted` 里 disconnect。
+- **验证**：`session.spec.ts` 新增两条回归用例（先 RED 后 GREEN，回退 RO 后均必失败）——`SESSION-E2E-009`（E-SM-009：首贴 + 切视角 + 折叠展开，回退后 `Received: 12`）、`SESSION-E2E-010`（E-SM-010：en-US 英文首帧，回退后 `Received: 7.4844`）；断言口径 = 胶囊 `::before` 的 left/width 与 active 按钮 `offsetLeft/offsetWidth` 误差 ≤1px，用 `expect.poll` 等水滴/宽度过渡落位（避免在过渡途中的巧合几何上误判——首版用例就栽在这里，加上「等侧栏降到 0 / 开关回到原宽」两步才真正 RED）。forge-ui 单测 337/337、`vue-tsc` 0 错；全量 e2e 155 例：138 过 / 17 红，红线全部为改动前既有（`git stash` 回退本文改动后复跑抽样同样红：canvasCard 2、subagent 4、branchBadge 3、mw-restore 2、session E2E-001、conversationHistoryLocate 1、updater 1，以及 3 个临时 repro/probe spec），本改动零回归。
+- **不做的**：不给 `.view-seg` 加 `flex: none` 挡收缩——那会改掉侧栏折叠动画里分段开关被收缩/裁剪的观感，本次只修几何、不动动画；不把水滴过渡从 `left/right` 改成 `width` 动画。
+- **文档同步**：`prd/02_session_management.md`（SM-S06 交互与反馈：补「胶囊几何按 active 按钮实测、开关自身尺寸一变就必须重贴」口径）、`test/02_session/e2e.md`（新增 E-SM-009/E-SM-010 + 覆盖汇总两行）、`test/02_session/coverage-matrix.md`（两行）。
+
+## v6.3 (修复：画布卡片流式期间一直闪、闪的时候看见源码——判决分「流式/终态」两档)
+
+> 来源：2026-09-30 用户反馈「在画图的时候会一直闪，闪的时候会看到下面的代码，之前没有过」+ 截图（卡片停在骨架「正在绘制图示…」）。回归点是 `ee26b46`：它把流式骨架的口径从「围栏没闭合就一律骨架」改成「判出 prose/code 就提前出终态」（`showSkeleton = blocked && (undecided || html)`），但 `judgeCanvasSource` 那套判据是按**完整源码**设计的，半截源码上会抖。
+
+- **成因（两个，都是「半截标签被当成正文内容」）**：判据里 `stripTagsToText` / `longestTextRun` 只吃完整的 `<...>`，没写完的 `<div style=...` 会整段留在文本里：① 属性里的 `=` 命中 `looksLikeCodeCanvas` 的赋值号 → 判 `code` → 骨架提前塌成**代码块**（用户看见满屏源码）；② 长内联样式的属性值被算成「最长文本片段」→ 命中 `PROSE_LONG_RUN` → 判 `prose` → 骨架塌成正文，标签一闭合片段消失又变回 `html`。150ms 一次（`STREAM_RENDER_INTERVAL_MS`）的重渲染下就是「骨架 ↔ 代码/正文」来回翻面。真机实测：622 字符的 edu 目录结构图在 22 个节流点里翻了 6 次面（`code@24 → skeleton@120 → prose@360 → skeleton@384 → prose@504 → skeleton@528 → iframe`）。
+- **判据（`packages/forge-core/src/markdown/canvasSandbox.ts`）**：入口仍是一个 `judgeCanvasSource(source, options)`（唯一口径），但口径分两档，由 `options.streaming` 选，默认 false = 终态口径与历史逐字一致（老调用点零改动）。
+  - 先剪掉**末尾未闭合的标签片段**（`TRAILING_PARTIAL_TAG_RE = /<[a-zA-Z!/][^>]*$/`）再算内容——这是两个成因的共同根；`if (a < b)` 这类比较运算符（`<` 后是空格/数字）不误伤，带标签内容上的比较运算符另有单测钉住。
+  - 流式档只放行**单调**判据：无完整标签时才允许提前出终态（真源码/字符画 → `code`，够长的纯文字 → `prose`，其余 → `undecided`）；有完整标签时只认「长句铁证」（`≥ PROSE_LONG_RUN`，文本只增不减，撤了不会回翻），薄壳那条**占比**判据天生非单调（标签进来占比掉、文字进来占比升）留到闭合后判一次。
+  - 空态归终态：流式中途空源码给 `undecided`（挂骨架），不再在开栏那一帧闪一次「画布没有内容」。
+  - 终态档把 `looksLikeProseCanvas` 的前哨抽成 `proseShellText`（`<canvas` 否决 / `looksLikeHtmlCanvas` / svg-img 否决 / 最小可见文本），两档共用同一份——任何一边单独加否决条件都会变成「中途判 A、闭合判 B」的翻面。
+- **调用点（`packages/forge-ui/src/components/HtmlCanvasBlock.vue`）**：`verdict` 改读 `judgeCanvasSource(source, { streaming: props.blocked === true })`；`showSkeleton` / 模板分支一律不动（`blocked` 仍由 MessageCard 的 `segments` 在「末围栏未闭合 + 流式中」时置位）。
+- **验证**：forge-core 单测 461→469（新增 8 例流式口径：半截标签不落代码块 / 长内联样式全程待在骨架族 / 纯文字仍提前出正文且不回翻 / 无标签源码仍 `code` / 开栏空态只给 `undecided` / 半截 `<canvas` / 比较运算符不误伤 / 薄壳包长句提前出正文且不回翻，其中「长内联样式全程待在骨架族」按 1 字符粒度走完全部前缀）。E2E `canvasCard.spec.ts` 10/10：新增 `E-CA-010`（逐帧 rAF 采样，断言整段流式只出现 `skeleton`、收尾才 `iframe`，任何一帧出现 `PROSE/CODE/EMPTY` 即失败）。四包 typecheck 0 错；`forge-core` 469/469、`forge-ui` 337/337、`forge-extensions` 69/69 全绿。
+- **顺带修掉一个一直红的 P0**：`E-CA-003`（「流式中途是骨架蒙版」）改前用 `seedHistory` 喂半截围栏，而 `blocked` 只在**真流式**期间成立（历史/取消的未闭合围栏按设计直接出半成品，否则骨架永远转圈，见 MessageCard 注释），所以它自 `ead000a` 起就没测到过骨架、长期红（`git stash` 回退本次改动后复跑确认：同样红）。现改为真流式驱动（`seedSendScript` + 补一条 delta 闭栏），零跳变断言保留。
+- **不做的**：不改骨架/终态的高度与视觉（`CANVAS_DEFAULT_HEIGHT` 不动，闭合零跳变是本来的口径）；不把 `<canvas>` 元素改回 iframe（沙箱禁脚本，它必然是死的，`code` 降级是唯一不丢信息的落点）；不给流式档加「薄壳占比」判据——那是非单调的根源，宁可让带标签的文字壳在闭合那一刻出正文（一次翻面），也不要流式期间一直闪。
+
 ## v6.2 (新增：改动文件卡右键「用浏览器打开」——HTML 原型改完一键看效果)
 
 > 来源：2026-09-29 用户反馈「写完 `prototypes/*.html` 还要自己去文件夹双击」+ 截图（文件行右键只有「打开所在目录」）。诉求是右键里直接开浏览器看效果。

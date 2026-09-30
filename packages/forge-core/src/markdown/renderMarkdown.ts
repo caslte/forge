@@ -44,6 +44,7 @@ export {
   looksLikeAsciiArt,
   stripCanvasProse,
   judgeCanvasSource,
+  type CanvasJudgeOptions,
   decodeCanvasSource,
   remapDarkBackgrounds,
   type CanvasVerdict,

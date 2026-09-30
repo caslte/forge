@@ -52,6 +52,10 @@ Commit and push from the conversation, with the AI writing up the message for yo
 **📸 Attach Anything · screenshots just go in**
 Paste them, drag files in — the rest is handled.
 
+## 🧷 Execution Model
+
+Forge is a local coding agent: it reads and writes files and runs commands as you, with no permission gate in between. This is inherited from [pi](https://github.com/earendil-works/pi)'s design — real isolation belongs to the operating system or a container.
+
 ## Acknowledgements
 
 Forge is built on the [pi](https://github.com/earendil-works/pi) coding-agent engine.

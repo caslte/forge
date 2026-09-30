@@ -184,17 +184,41 @@ watch(treeView, (v) => {
    内容收缩容器无剩余空间可分配、flex:1 也无法等分，改为按 active 按钮实测宽贴 */
 const viewSegEl = ref<HTMLElement | null>(null);
 
-function moveViewPill(): void {
+/** 按 active 按钮实测几何贴胶囊；animate=false 抑制水滴（容器自身在改尺寸，跟着贴即可） */
+function moveViewPill(animate = true): void {
   const seg = viewSegEl.value;
   if (!seg) return;
   const btn = seg.querySelector<HTMLElement>('.view-seg-btn.active');
   if (!btn || btn.offsetWidth === 0) return; // 侧栏折叠隐藏时跳过，展开后重贴
+  if (!animate) seg.classList.add('no-anim');
   seg.style.setProperty('--pill-l', `${btn.offsetLeft}px`);
   seg.style.setProperty('--pill-r', `${seg.clientWidth - btn.offsetLeft - btn.offsetWidth}px`);
+  if (!animate) requestAnimationFrame(() => seg.classList.remove('no-anim'));
 }
 
-watch([treeView, sidebarCollapsed, activeLocale], () => {
+/* 视角/语言切换：分段开关整体盒子多半不变（两键宽度互换），ResizeObserver 看不见 → 显式重贴 */
+watch([treeView, activeLocale], () => {
   void nextTick(moveViewPill);
+});
+
+/**
+ * 几何以**分段开关的实际盒子**为准：ResizeObserver 在 observe 时先补一次当前几何，
+ * 之后盒子每变一次就重贴一次（不带水滴）。两处实测踩过的坑都收敛在这里：
+ * - 首贴：`.view-seg` 在 v-if="formalUiReady" 里，onMounted 的 nextTick 早于它挂载，
+ *   那时 viewSegEl 还是 null，首贴静默落空 → 英文（Projects/Tasks 不等宽）首帧停在
+ *   CSS 50% 兜底几何上，胶囊不贴合，要等用户切一次视角才归位。
+ * - 侧栏折叠/展开是 width 过渡（.sidebar），展开瞬间 .view-seg 被压到 min-content
+ *   （94→70px、按钮 44→32px），此刻 sidebarCollapsed 的 watch 测出的 --pill-r 永久偏小：
+ *   过渡结束后盒子回到 94/44，胶囊却被拉长成 56px（用户实测「项目胶囊变形」）。
+ *   RO 在过渡结束按终态重贴自愈，途中也逐帧贴着按钮走，不再错位。
+ */
+let viewSegRo: ResizeObserver | null = null;
+watch(viewSegEl, (el) => {
+  viewSegRo?.disconnect();
+  viewSegRo = null;
+  if (!el) return;
+  viewSegRo = new ResizeObserver(() => moveViewPill(false));
+  viewSegRo.observe(el);
 });
 
 /** 切项目/任务视角：等同直接赋值，胶囊几何由上方 watch 在 nextTick 重贴。
@@ -729,8 +753,8 @@ function startPostBootInit(): void {
 }
 
 onMounted(() => {
-  // 指示胶囊初始定位（含字体加载后的一次校准由语言/视角 watch 兜底）
-  void nextTick(moveViewPill);
+  // 指示胶囊首贴不在这里：.view-seg 挂在 v-if="formalUiReady" 里，此刻还没渲染，
+  // 由 viewSegEl 的 ResizeObserver 在元素挂载时补首贴（见上方 viewSegRo）
   // 事件订阅先挂：订阅本身不发请求，core 未就绪期间主进程也不会推业务事件，
   // 挂早了无副作用（放行后 loadSessions 等才真正出发）
   unsubSessionRemoved = subscribe('session.removed', (payload) => {
@@ -793,6 +817,8 @@ onUnmounted(() => {
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
   unsubNotifyFocus?.();
+  viewSegRo?.disconnect();
+  viewSegRo = null;
   window.removeEventListener('keydown', onTerminalHotkey);
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
@@ -1438,6 +1464,12 @@ onUnmounted(() => {
   transition:
     right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
     left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 分段开关自身尺寸在变（侧栏宽度过渡 / 语言切换 / 首贴）：几何逐帧跟着贴，不播水滴。
+   必须排在 .is-task 之后——两条选择器特异性相同，靠顺序取胜 */
+.view-seg.no-anim::before {
+  transition: none;
 }
 
 .view-seg-btn {

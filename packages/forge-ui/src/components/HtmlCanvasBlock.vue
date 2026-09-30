@@ -68,17 +68,24 @@ const srcdoc = computed(() => buildCanvasDocument(source.value, tokens.value));
  * 四态判决走 @forge/core 的 judgeCanvasSource（唯一口径），本组件不再自己排
  * 「先看 isHtml 还是先看 isProse」——那正是 2026-09-29 骨架闪完落到代码框的成因：
  * 旧模板里 !isHtml 分支排在 isProse 前面，无标签的纯文字永远先被代码块截胡。
+ *
+ * 档位由 blocked 选：围栏没闭合（源码还会继续增长）走流式口径，闭合后走终态口径。
+ * 流式口径只放行单调判据——终态判据直接跑在半截源码上会抖成「骨架↔代码/正文」
+ * 来回翻面（2026-09-30 真机「画图时一直闪、闪的时候看见源码」），原因见
+ * canvasSandbox 的 judgeStreamingCanvas 注释。
  */
-const verdict = computed(() => judgeCanvasSource(source.value));
+const verdict = computed(() =>
+  judgeCanvasSource(source.value, { streaming: props.blocked === true }),
+);
 /**
  * 骨架只在「结论还会变」时挂。
  *
- * - undecided：判不出（无标签又太短），先占位；
+ * - undecided：判不出（无标签又太短），先占位；流式口径下空态也归到这里；
  * - html：已经确定是卡片，但源码只写了一半——绝不能把半成品塞进 iframe
  *   （E-CA-003 契约），仍要挂骨架等闭合；
- * - prose / code：结论已定且不会再变（无标签分支对文本单调：只会变长，判据
- *   只会从 undecided 走到终态），此时挂骨架就是「假进度」——用户先看一秒
- *   转圈再变成正文/代码框，正是 2026-09-29 截图的观感。直接出终态。
+ * - prose / code：结论已定且不会再变（流式口径只放行单调判据，见 canvasSandbox），
+ *   此时挂骨架就是「假进度」——用户先看一秒转圈再变成正文/代码框，正是 2026-09-29
+ *   截图的观感。直接出终态。
  */
 const showSkeleton = computed(
   () => props.blocked === true && (verdict.value === 'undecided' || verdict.value === 'html'),
