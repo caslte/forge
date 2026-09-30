@@ -450,6 +450,7 @@ function onGripDown(ev: PointerEvent): void {
   if (!terminalOpen.value) return;
   ev.preventDefault();
   dragging.value = true;
+  document.body.classList.add('term-resizing');
   const startY = ev.clientY;
   const startH = liveHeight.value;
   const target = ev.currentTarget as HTMLElement;
@@ -463,14 +464,24 @@ function onGripDown(ev: PointerEvent): void {
   };
   const up = (): void => {
     dragging.value = false;
+    document.body.classList.remove('term-resizing');
     setTerminalHeight(liveHeight.value);
     document.removeEventListener('pointermove', mv);
     document.removeEventListener('pointerup', up);
+    document.removeEventListener('pointercancel', up);
     // 松手即终态（拖高期间无过渡），立刻重测：只 sync 不 fit 会让 xterm 停在旧行列
     refitTab(activeTab());
   };
   document.addEventListener('pointermove', mv);
   document.addEventListener('pointerup', up);
+  // 触控被系统打断时 pointerup 不会来：cancel 走同一收口，避免 body 光标钉死
+  document.addEventListener('pointercancel', up);
+}
+
+function onGripMove(ev: PointerEvent): void {
+  // 流光跟随鼠标 X：hover 与拖拽（指针捕获期间事件重定向到热区）都会触发 pointermove
+  const band = ev.currentTarget as HTMLElement;
+  band.style.setProperty('--seg-x', `${ev.clientX - band.getBoundingClientRect().left}px`);
 }
 
 onMounted(() => {
@@ -495,6 +506,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disposed = true;
+  document.body.classList.remove('term-resizing');
   window.removeEventListener('resize', onWindowResize);
   unsubData?.();
   unsubExit?.();
@@ -516,7 +528,13 @@ defineExpose({ togglePanel });
     :class="{ open: terminalOpen, dragging }"
     :style="{ '--h': liveHeight + 'px', '--term-surface': termPalette.background, '--term-ink': termPalette.foreground }"
   >
-    <div class="grip" @pointerdown="onGripDown"></div>
+    <!-- v-if：面板收起后热区不得残留（否则悬空劫持上方内容的点击） -->
+    <div
+      v-if="terminalOpen"
+      class="grip"
+      @pointerdown="onGripDown"
+      @pointermove="onGripMove"
+    ></div>
     <div class="term-bar">
       <span
         v-for="tab in tabs"
@@ -600,7 +618,10 @@ defineExpose({ togglePanel });
   height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* 不设 overflow:hidden：上沿拖拽带要越出顶边骑在缝上（见 .grip），设了会把热区整段
+     裁掉（grip 曾因此完全不可命中）。防内容泼溅由 term-body 自身 overflow:hidden 与
+     .content 底部裁剪兜底；作为热区的定位基准需 position:relative */
+  position: relative;
   border-top: 1px solid var(--border);
   background: var(--background);
   transition: height var(--transition-base);
@@ -615,16 +636,45 @@ defineExpose({ togglePanel });
   transition: none;
 }
 
+/* 上沿拖拽带（TM-F01）：透明热区跨骑面板顶边——上探 5px、内收 5px（止于 term-bar 6px
+   顶部预留内，tab 本体不被劫持）。z-index:2 压过 .term-bar 的 1，热区才能盖住其顶部死区 */
 .term .grip {
-  height: 5px;
-  flex: none;
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  height: 11px;
   cursor: row-resize;
-  margin-top: -5px;
-  z-index: 1;
+  touch-action: none;
+  z-index: 2;
 }
 
-.term .grip:hover {
-  background: color-mix(in oklab, var(--brand-accent) 30%, transparent);
+/* 流光（侧栏右缘 / 输入框上沿同款）：110px 两端渐隐柔光段压在面板顶边线上，中心前景色，
+   --seg-x 由 pointermove 写入鼠标 X，停哪亮哪，不自动流动 */
+.term .grip::after {
+  content: '';
+  position: absolute;
+  left: var(--seg-x, 50%);
+  top: 50%;
+  width: 110px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--foreground) 65%, transparent) 50%, transparent);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+}
+
+.term .grip:hover::after,
+.term .grip:active::after {
+  opacity: 1;
+}
+
+/* 捕获指针后光标仍按命中元素渲染，拖拽中需全局压住 row-resize 并禁选中（侧栏同款） */
+:global(body.term-resizing) {
+  cursor: row-resize;
+  user-select: none;
 }
 
 .term-bar {
