@@ -22,6 +22,10 @@ import TerminalPanel from './components/TerminalPanel.vue';
 import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
 import logoMain from './assets/logo-main.png';
+// 标题栏左上角品牌字样：复用 landing/hero 同一对 public 字标（深浅各一版），
+// 全链路共享同一次加载/解码，不新增资产
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 const { t, activeLocale } = useI18n();
 
@@ -842,7 +846,7 @@ onUnmounted(() => {
          toggle 悬浮钉死窗口左上角——折叠时侧栏从按钮底下抽走，按钮零位移不跳动。
          toggle 必须包在窗口级拖拽条内做 no-drag 后代：Electron 的 drag 区只认后代挖洞，
          同级悬浮会被原生拖拽吞掉 hover/click（旧版 TitleBar 内按钮可用的原因相同） -->
-    <div class="shell-topstrip">
+    <div class="shell-topstrip" :class="{ 'shell-topstrip-mac': isMac }">
       <button
         class="shell-toggle"
         :class="{ 'shell-toggle-mac': isMac }"
@@ -866,6 +870,10 @@ onUnmounted(() => {
           </svg>
         </span>
       </button>
+      <!-- 品牌字样：紧跟 LOGO 右侧，钉在同一 36px 带里（pointer-events:none，
+           整条带仍是纯拖拽区，不给标题栏开新的可点区域） -->
+      <img class="tb-name wm-dark" :src="logoWordmarkDark" alt="" aria-hidden="true" draggable="false" />
+      <img class="tb-name wm-light" :src="logoWordmarkLight" alt="" aria-hidden="true" draggable="false" />
     </div>
     <!-- 整窗反光层（伪玻璃）：纯视觉，pointer-events:none -->
     <div class="shell-sheen" aria-hidden="true"></div>
@@ -1352,6 +1360,40 @@ onUnmounted(() => {
   object-fit: contain;
   pointer-events: none;
   transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+/* 品牌字样（标题栏左上，跟在 LOGO 右侧）：同一对 public 字标按 data-theme 切版。
+   亮度不用字标原色（纯黑 / 纯白）——36px 高的带子里纯色会压过旁边的图标；
+   两主题分别降到与 toggle 图标 --muted-foreground 等亮（深 0.53 / 浅 0.58）。 */
+.tb-name {
+  position: absolute;
+  left: 48px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 11px;
+  width: auto;
+  display: none;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+:root:not([data-theme='light']) .tb-name.wm-dark,
+:root[data-theme='light'] .tb-name.wm-light {
+  display: block;
+}
+
+:root:not([data-theme='light']) .tb-name.wm-dark {
+  opacity: 0.53;
+}
+
+:root[data-theme='light'] .tb-name.wm-light {
+  opacity: 0.58;
+}
+
+/* macOS 红绿灯占掉左侧 78px，字样跟着 toggle 一起让位 */
+.shell-topstrip-mac .tb-name {
+  left: 118px;
 }
 
 .tb-panel {

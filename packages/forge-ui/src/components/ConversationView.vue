@@ -84,6 +84,7 @@ const {
   historyWindowTruncated,
   expandHistoryWindow,
   expandHistoryWindowTo,
+  userOrdinalInWindow,
   isMessageStreaming,
   toggleGroup,
   sessionStatus,
@@ -451,12 +452,17 @@ const NEAR_BOTTOM_DEBOUNCE_MS = 120;
 /** 定位后触底抑制窗口：定位平滑滚动结束若贴近底部（目标靠后时被钳制在底部附近），
  *  属于程序化定位而非"手动滚到底"，窗口内触底信号不退出回看（否则选中突出立即丢失） */
 const LOCATE_NEAR_BOTTOM_SUPPRESS_MS = 800;
+/** 定位动画期间的向上触顶扩窗屏蔽：扩窗会即时写 scrollTop 取消 smooth 动画，
+ *  视口永久钉在动画中途（长会话里点靠前条目必现：目标就是窗口首项，动画必然途经顶部） */
+const LOCATE_SCROLL_GUARD_MS = 700;
 
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 let highlightedMsgEl: HTMLElement | null = null;
 let nearBottomTimer: ReturnType<typeof setTimeout> | null = null;
 /** 最近一次定位进入回看的时刻（触底抑制窗口起点） */
 let lastLocateAt = 0;
+/** 定位动画屏蔽窗口终点（见 LOCATE_SCROLL_GUARD_MS） */
+let locateScrollUntil = 0;
 
 function clearLocateHighlight(): void {
   if (highlightTimer !== null) {
@@ -469,36 +475,37 @@ function clearLocateHighlight(): void {
   }
 }
 
-/** messages 数组索引 → 第几条 user 消息（0 起）；索引越界或该位置非 user 返回 -1 */
-function userOrdinalOf(index: number): number {
-  const msgs = messages.value;
-  if (!Number.isInteger(index) || index < 0 || index >= msgs.length) return -1;
-  let count = 0;
-  for (let i = 0; i <= index; i += 1) {
-    if (msgs[i]?.role === 'user') count += 1;
-  }
-  return count - 1;
-}
-
 /**
  * 时间线条目点击：进入回看模式 + 平滑滚动定位到该用户消息 + 短暂高亮（AC-CV-016）。
- * 定位目标是 user 消息本身（.msg-user 按 DOM 顺序与 userOrdinal 对齐），
- * 工具组折叠不影响——user 消息永远渲染可见。
+ * 定位目标是 user 消息本身，工具组折叠不影响——user 消息永远渲染可见。
+ *
+ * 窗口化（v3.74）下 .msg-user 的 DOM 序只覆盖**已挂载窗口**：全量序会错位（上方轮次未挂载），
+ * 所以序由 useSessionConversation 按窗口内实际挂载项给出（userOrdinalInWindow）。
  */
 async function locateMessage(index: number): Promise<void> {
   if (showResultView.value) return; // 结果视图激活期间不定位/回看（防御；Rail 本就隐藏）
   const container = scrollRef.value;
   if (!container) return;
-  const ordinal = userOrdinalOf(index);
-  if (ordinal < 0) return;
-  // 目标消息被历史窗口化截断在上方：先扩窗覆盖再等 patch，否则 .msg-user 的
-  // DOM 序只覆盖窗口内消息，ordinal 映射会错位（v3.74 窗口化配套）
-  if (expandHistoryWindowTo(index)) await nextTick();
-  const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
-  if (!el) return;
+  // 先关掉两条会把视口拽回底部的路径，再动窗口：
+  // - reviewCtrl.enter → autoFollow=false（否则扩窗触发 ResizeObserver 钉底，定位被冲掉）；
+  // - cancelSettlePin → 切会话后的 800ms 稳定期是给「自动滚底」兜底的，点击定位是明确
+  //   意图，不能被它覆盖（否则开大会话后立刻点条目，只会看到视口弹回底部）。
   reviewCtrl.enter(index); // browse→review；review 中重复点击仅更新目标
   syncReview();
+  cancelSettlePin();
+  // 目标消息被历史窗口化截断在上方：先扩窗覆盖再等 patch；新批次插在内容区上方，
+  // 不补 scrollTop 视口会瞬跳（与 maybeExpandHistoryWindow 同锚定口径）
+  if (expandHistoryWindowTo(index)) {
+    const prevHeight = container.scrollHeight;
+    await nextTick();
+    if (scrollRef.value === container) container.scrollTop += container.scrollHeight - prevHeight;
+  }
+  const ordinal = userOrdinalInWindow(index);
+  if (ordinal < 0) return;
+  const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
+  if (!el) return;
   lastLocateAt = Date.now(); // 开启触底抑制窗口（程序化定位滚动 ≠ 手动触底）
+  locateScrollUntil = lastLocateAt + LOCATE_SCROLL_GUARD_MS; // 屏蔽动画期间的触顶扩窗
   clearLocateHighlight();
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.classList.add('msg-locate-highlight');
@@ -560,7 +567,8 @@ function onScrollIntentKey(e: KeyboardEvent): void {
 
 function onMessagesScroll(): void {
   updateConvFade();
-  void maybeExpandHistoryWindow();
+  // 定位动画期间不扩窗（否则即时写 scrollTop 打断 smooth，定位停在半路）
+  if (Date.now() >= locateScrollUntil) void maybeExpandHistoryWindow();
   const elNow = scrollRef.value;
   if (elNow) {
     const scrolledUpBy = lastScrollTop - elNow.scrollTop;

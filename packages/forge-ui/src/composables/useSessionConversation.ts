@@ -409,6 +409,8 @@ function dismissAskAnswered(): void {
   // 流式新消息天然落在窗口尾（slice 取尾部），无需特殊处理。
   const HISTORY_INITIAL_ITEMS = 24;
   const HISTORY_STEP_ITEMS = 16;
+  /** 时间轴定位时目标上方的余量（展示项）：避免目标贴窗口首项、动画一结束就撞上触顶补挂 */
+  const HISTORY_LOCATE_HEADROOM = 8;
 
   const historyWindow = ref<number>(HISTORY_INITIAL_ITEMS);
   /** 尾部窗口化后的展示项；窗口盖满时与 displayItems 同一引用（避免多余 patch） */
@@ -431,16 +433,52 @@ function dismissAskAnswered(): void {
     return true;
   }
 
+  /** 消息索引（messages 序）→ 展示项索引（displayItems 序）；工具组内无单条消息故 -1 */
+  function displayIndexOfMessage(messageIndex: number): number {
+    const items = displayItems.value;
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i];
+      if (!it || it.kind !== 'message') continue;
+      if (it.idx >= messageIndex) return i;
+    }
+    return -1;
+  }
+
   /**
-   * 时间轴定位目标在窗口外时，扩窗到「该消息起往后全挂载」。
-   * 目标 user 消息及其后的内容都要可见（回看模式向上翻页需要）。
+   * 时间轴定位：把窗口扩到「目标之上再留 HISTORY_LOCATE_HEADROOM 项、目标及其后全挂载」。
+   * 目标 user 消息及其后的内容都要可见（回看模式向上翻页需要）；留一点上方余量是必要的——
+   * 目标贴住窗口首项时，平滑滚动必然途经顶部，动画一结束就撞上「向上触顶补挂历史」，
+   * 补挂的锚定又会把视口拽走（长会话里点靠前条目必现）。
+   *
+   * 入参是 **messages 数组索引**，而窗口是按 **displayItems 展示项** 切的（工具聚合成组后
+   * 两者不再同序）。这里必须先换算成展示项索引再比较/换算长度——直接拿消息索引和
+   * windowStartIndex 比会在长会话里误判「目标已挂载」，点击时间线条目落到别的轮次上。
    * @returns 窗口是否发生变化（调用方据此等待 patch 后再查 DOM）
    */
-  function expandHistoryWindowTo(index: number): boolean {
-    if (index >= windowStartIndex.value) return false;
-    const remaining = displayItems.value.length - index;
+  function expandHistoryWindowTo(messageIndex: number): boolean {
+    const target = displayIndexOfMessage(messageIndex);
+    if (target < 0) return false;
+    const want = Math.max(0, target - HISTORY_LOCATE_HEADROOM);
+    if (want >= windowStartIndex.value) return false;
+    const remaining = displayItems.value.length - want;
     if (remaining > historyWindow.value) historyWindow.value = remaining + 8;
     return true;
+  }
+
+  /**
+   * 该 user 消息在**当前已挂载窗口**内的 DOM 序（0 起），供视图 querySelectorAll('.msg-user')
+   * 取节点。窗口截断时全量序会与 DOM 序错位（上方轮次未挂载），故只数窗口内、且在目标之前的
+   * user 消息。目标未挂载 → -1。
+   */
+  function userOrdinalInWindow(messageIndex: number): number {
+    const items = windowedItems.value;
+    let n = 0;
+    for (const it of items) {
+      if (it.kind !== 'message' || it.msg.role !== 'user') continue;
+      if (it.idx === messageIndex) return n;
+      n += 1;
+    }
+    return -1;
   }
 
   // ===== 历史加载 / 会话切换 =====
@@ -1162,6 +1200,7 @@ function dismissAskAnswered(): void {
     historyWindowTruncated,
     expandHistoryWindow,
     expandHistoryWindowTo,
+    userOrdinalInWindow,
     isMessageStreaming,
     toggleGroup,
     sessionStatus,
