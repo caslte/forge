@@ -89,6 +89,18 @@
         user-select: none;
         font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
       }
+      /* ---- 字标入场动效：已从本文件移除（v3.87 实测）-------------------------
+         原以为启动时长时间可见的是这里的 splash，实测**不是**：
+           · BrowserWindow 以 show:false 建窗，本 splash 在 HTML 一解析即渲染
+             （paintWhenInitiallyHidden 默认 true），随后要等 decode + 双 rAF +
+             显示前帧校验（上限 700ms）才 win.show()；
+           · 而 Vue 模块链一就绪就 mount，把 #app 的 innerHTML 整体换成 BootWelcome。
+             实测（真实 preload + 真实页面）：splashReady 后 ~300ms Vue 即已 mount，
+             **本 splash 在屏上最多几百毫秒**，而 BootWelcome 要留 4~7s。
+         所以动效挂在 BootWelcome.vue（v3.87 G 档为常驻心跳循环，相位无关、无发令）。
+         本文件的字标保持静态终态：若这里也动，Vue 顶替时会把动画截断在中间，
+         观感是「扫到一半字突然换了」，比没有动效更差。
+         --------------------------------------------------------------------- */
       #app-boot-splash .splash-word {
         display: none;
         /* 320px 与 BootWelcome / LandingHero / conv-hero 同档（v3.85.2）：

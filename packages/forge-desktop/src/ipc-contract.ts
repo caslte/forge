@@ -135,6 +135,15 @@ export interface BootState {
   startedAt: number;
   /** core 组装耗时（毫秒）；未完成时为 null */
   durationMs: number | null;
+  /**
+   * v3.87：主进程 `win.show()` + 显示后帧校验完成的时刻（主进程时钟）；未显示为 null。
+   * 欢迎页字标入场动效据此起播——**动效必须等「窗口已可见」，不能从组件 mount 或
+   * CSS 首帧自动开始**：BootWelcome 可能在窗口显示之前就 mount（实测 dev 下
+   * splashReady 后 ~300ms 即 mount，而 win.show() 还要等一张合成帧），那时窗口
+   * 不可见，约 1.2s 的逐字动画会在用户看到之前就播完。
+   * 「事件早于订阅」与「订阅早于事件」两种顺序都要覆盖，故事件 + 本字段双通道。
+   */
+  splashShownAt: number | null;
 }
 
 /** preload ↔ main 原生对话框通道 */
@@ -279,6 +288,12 @@ export type ForgeEvent =
   // 注意：不进 FORGE_EVENTS 数组（那是 eventBus 转发注册表，core 未就绪时 eventBus
   // 不存在、注册不了）；渲染端通过 forge:boot-state 拉取兜底防错过。
   | 'boot.ready'
+  // v3.87：splash 字标入场动效的**发令**。必须在 win.show() 之后再发——动画属于
+  // 「用户看得见的那一刻」，而 splash 从 HTML 一解析就在跑（paintWhenInitiallyHidden
+  // 默认 true），若从首帧起跑，约 1.2s 的逐字动画会在 decode + 2 帧 rAF + 显示前帧校验
+  // （上限 700ms）走完之前就播完了，窗口亮起时只剩静态终态。
+  // 同样不进 FORGE_EVENTS（主进程直发）；渲染端带超时兑底，不依赖本事件必达。
+  | 'boot.splashShown'
   // 系统通知点击跳转（notifyToast.ts）：主进程直发（不经 core eventBus），
   // payload { sessionId }——渲染端收到后切换到该会话（App.vue onSelectSession）
   | 'notify.focusSession';

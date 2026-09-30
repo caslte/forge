@@ -220,6 +220,14 @@ const forgeBridge = {
   splashReady(): void {
     ipcRenderer.send(IPC_BOOT_SPLASH_READY);
   },
+  /**
+   * v3.87：订阅「窗口已显示」发令（splash 字标入场动效的起跑信号）。
+   * 与 splashReady 相反方向：那条是渲染→主（我准备好了），这条是主→渲染（你该演了）。
+   * 渲染端带超时兑底，所以本事件丢失不会让字标永久停在起点。
+   */
+  onSplashShown(listener: () => void): () => void {
+    return subscribeEvent('boot.splashShown', listener);
+  },
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
     return subscribeEvent(event, listener);
   },

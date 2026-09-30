@@ -488,8 +488,10 @@ const bridge: ForgeBridge = {
   // 纯浏览器预览：非 Electron 环境，UI 按「无系统窗口控件」处理（不影响 mock 布局核对）
   platform: 'browser',
   // v3.76 启动门闩：mock 无真实 core 组装，永远就绪——欢迎页一帧即过，e2e 不受影响
+  // v3.87 splashShownAt：mock 语义是「早已就绪」，视为窗口早已显示（null 会挂起
+  // BootWelcome 字标入场动效的拉通道，只能等 2.5s 兜底）
   async bootState() {
-    return { ready: true, startedAt: 0, durationMs: 0 };
+    return { ready: true, startedAt: 0, durationMs: 0, splashShownAt: Date.now() };
   },
   // v3.78.7 splash 上屏回执：纯浏览器环境没有真实窗口可显示，空实现即可
   splashReady() {

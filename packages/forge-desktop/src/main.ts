@@ -144,7 +144,7 @@ const SPLASH_PAINT_SETTLE_MS = 300;
  * （见 bootFrame.ts）。这层校验同时纠正了 v3.78.7 把宽限放在 show() 之前的顺序错误——详见
  * 函数尾部的说明。
  */
-async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number): Promise<void> {
+async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number, onShown?: () => void): Promise<void> {
   const startedAt = Date.now();
   const yieldFor = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   const painted = new Promise<boolean>((resolve) => {
@@ -192,6 +192,17 @@ async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number): Prom
     hasContent,
   );
   logPresentedFrame('显示后', postFrame);
+  // v3.87：splash 字标入场动效的**发令**。放在 show() + 显示后帧之后：
+  // 这两个信号合起来才代表「字已经真的到屏幕上了」。早发（首帧就跑）则约 1.2s 的逐字
+  // 动画会在 decode + 2 帧 rAF + 显示前帧校验走完之前播完，窗口亮起时只剩终态。
+  // onShown 先于 send 调用：BootWelcome 的「拉」（bootState.splashShownAt）与「推」
+  // （本事件）双通道，谁先谁后都能起播——反序（先 send 后改字段）会让「先订阅后
+  // 等拉」的组合两头落空，只能等兜底。
+  onShown?.();
+  if (!win.isDestroyed()) {
+    win.webContents.send(IPC_EVENT, { event: 'boot.splashShown', payload: null });
+    console.log('[boot] 已发 splash 字标入场动效发令');
+  }
   await yieldFor(SPLASH_PAINT_SETTLE_MS);
   const shownAt = Date.now();
   console.log(
@@ -775,7 +786,7 @@ app.whenReady().then(async () => {
   //    推（事件）+ 拉（IPC_BOOT_STATE）双通道：渲染进程可能尚未订阅事件（Vite 加载中），
   //    mount 时会主动拉一次 bootState 兜底，不依赖单一方向。
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
-  const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null };
+  const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null, splashShownAt: null };
   const win = createAndLoadWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
   registerShellIpc(bootState, forgeAgentDir);
 
@@ -784,7 +795,9 @@ app.whenReady().then(async () => {
   // 循环与 Chromium UI 线程是同一个线程——若紧接着 loadURL 就开跑，渲染进程的创建
   // 与导航提交会一起被卡住，用户看到数秒纯底色白屏（实测 0.6s→4.7s，详见
   // waitForSplashPainted 注释）。此处让主线程先空转等 splash 提交并合成一帧。
-  await waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS);
+  await waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS, () => {
+    bootState.splashShownAt = Date.now();
+  });
 
   // ===== shell 自愈（2026-09）：把「用户自己去 settings.json 填 shellPath」变成自动动作 =====
   // 时机选在这里的理由：splash 已上屏（spawn where/reg 的几十毫秒不会卡首帧），而

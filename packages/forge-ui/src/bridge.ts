@@ -117,6 +117,12 @@ export interface BootState {
   ready: boolean;
   startedAt: number;
   durationMs: number | null;
+  /**
+   * v3.87：主进程 `win.show()` 完成的时刻；未显示为 null。欢迎页字标入场动效据此起播
+   * （必须等「窗口已可见」——BootWelcome 可能在窗口显示之前就 mount，那时约 1.2s 的逐字
+   * 动画会在用户看到之前播完）。与 `boot.splashShown` 事件构成推/拉双通道。
+   */
+  splashShownAt: number | null;
 }
 
 /**
@@ -351,6 +357,12 @@ export interface ForgeBridge {
   bootState(): Promise<BootState>;
   /** splash 上屏回执（v3.78.7）：主进程据此决定何时显示窗口；纯浏览器环境为空实现 */
   splashReady(): void;
+  /**
+   * v3.87：订阅「窗口已显示」发令（splash 字标入场动效的起跑信号）。与 splashReady
+   * 反向：那条是渲染→主（我准备好了），这条是主→渲染（你该演了）。渲染端另有超时
+   * 兜底，故本事件丢失不会让字标永久停在起点。纯浏览器环境为空实现。
+   */
+  onSplashShown?(listener: () => void): () => void;
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
   askUserQuestion: ForgeAskUserQuestion;
