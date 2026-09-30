@@ -233,8 +233,15 @@ textarea:focus {
   box-shadow: var(--shadow-md);
 }
 
+/* hover 必须显式重申字色：全局 button:hover { color: var(--brand) } 的特异性 (0,1,1)
+   压过上面 .selection-pop-btn 的 (0,1,0)，鼠标一停上去就会把「--background 压在
+   --foreground 底上」翻成「--brand 压在 --foreground 底上」——深色主题下就是
+   rgb(197,198,203) 的字压在 rgb(179,180,184) 的底上，对比度 1.2:1，字等于消失
+   （点「复制」后反馈态正好停在这儿，肉眼只见一个灰药丸）。
+   hover 反馈也从 opacity 0.9 换成底色压深：opacity 会连字一起压暗，且不像"可点"。 */
 .selection-pop-btn:hover {
-  opacity: 0.9;
+  color: var(--background);
+  background: color-mix(in oklab, var(--foreground) 90%, black);
 }
 
 .selection-pop-btn svg {

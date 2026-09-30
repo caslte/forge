@@ -1284,7 +1284,7 @@ onUnmounted(() => {
 /* ===== 运行中：2×4 盲文点阵，斜向波依次点亮（VS Code 资源管理器语汇）=====
    动得明确——不靠颜色也能读出「进行中」，且纯 CSS 不占主线程。
    点阵只在 streaming 下显形；其余三态走各自字形（见下）。
-   扫过色取 --status-run-rest / --status-run-peak 两枚令牌（深浅两套值，
+   扫过色取 --status-run-rest / --status-run-mid / --status-run-peak 三枚令牌（深浅两套值，
    浅底用暗点扫、深底用亮点扫——详见 design-tokens.css 处的说明）。 */
 .dot-matrix {
   display: none;
@@ -1322,19 +1322,27 @@ onUnmounted(() => {
 .dot-matrix i:nth-child(6) { animation-delay: 0.375s; }
 .dot-matrix i:nth-child(8) { animation-delay: 0.525s; }
 
-/* 峰值处同时切色 + 放大：background-color 在两枚令牌解析出的实色之间插值，
-   浅色主题里就是一个暗点扫过淡点阵（而不是同色相的「深一档」——那个在白底上拉不开）。
-   18% 达峰 / 45% 回落：亮点停留占大头，1.6s 周期才看得出方向而不是在闪。 */
+/* 三档相位（v6.5 第四轮）：静息 1.87:1 → 尾巴 3.42:1 → 峰值 7.37:1（浅色主题实测值）。
+   **多出来的中间档就是尾巴**：点冲到最深后不是瞬间消失，而是经 mid 滑回静息，
+   于是「一个暗点拖着一条淡尾从左上走到右下」——方向感来自尾巴，不来自闪烁。
+   两档跳变时眼睛只看到「有个点在闪」，看不出它往哪走。
+   scale 同步编码（0.72 → 1 → 0.88），色弱用户靠大小也能跟。
+   时间点：0%/46%/100% 静息，14% 峰值（急升），32% 尾巴（缓落）——0.32×1.6s=0.51s 的尾巴跨度，
+   约跨 3 个点距（0.15s 步进），所以同时只有「一个头 + 一条尾」在场上。 */
 @keyframes tree-status-wave {
   0%,
-  45%,
+  46%,
   100% {
     background-color: var(--status-run-rest);
     transform: scale(0.72);
   }
-  18% {
+  14% {
     background-color: var(--status-run-peak);
     transform: scale(1);
+  }
+  32% {
+    background-color: var(--status-run-mid);
+    transform: scale(0.88);
   }
 }
 

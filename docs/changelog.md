@@ -1,5 +1,21 @@
 # 变更日志
 
+## v6.8 (修复：选区复制浮窗的「已复制」在鼠标停留时变成隐形的灰药丸)
+
+> 来源：2026-09-30 用户反馈（截图：深色主题、对话区拖选后点复制）「复制点了之后看不清」。截图像素实测：药丸底 `rgb(180,181,183)`，字与勾 `rgb(198,198,203)`——两者亮度差 18/255，肉眼就是“一片灰”。
+
+- **先量后判，根因不在配色而在 CSS 特异性**：把截图里的药丸色/字色反查回令牌，两个值都精确命中「`--foreground` @ 0.9 opacity」与「`--brand` @ 0.9 opacity」。全局 `button:hover { border-color/color: var(--brand) }` 的特异性是 **(0,1,1)**，压过 `.selection-pop-btn` 自己那条 (0,1,0)——鼠标一停在按钮上（点完复制手还搁在那儿），字色就被改写成 `--brand`。深色主题下 `--brand`≈近白、`--foreground`≈浅灰，**对比度 1.22:1**（本该 8.32:1）；浅色主题是另一种倒挂（`--brand` 压 `--foreground` 底）**1.11:1**。反馈态本身没问题，是被 hover 规则吃掉了。
+- **为什么此前没被发现**：`.md-code-copy`（代码块复制）已经踩过同一个坑并修好了——它把 `color: var(--success)` 写在 `.md-code-copy.is-copied` (0,2,0) 上，刚好压过 `button:hover`；选区浮窗没写 `:hover` 字色，就没人挡。同一个全局规则，两处结局不同。
+- **修法**（`packages/forge-ui/src/global.css`）：`.selection-pop-btn:hover` 里显式重申 `color: var(--background)`，让反色配对在 hover 态也成立；hover 反馈同时从 `opacity: 0.9` 换成 `background: color-mix(in oklab, var(--foreground) 90%, black)`（opacity 会连字一起压暗，且不像“可点”）。深浅两主题 hover 对比度分别回到 ~8.1:1 / ~13.6:1。
+- **新增回归用例** `packages/forge-ui/e2e/selectionCopy.spec.ts`（3 例，mock-backend）：`E-SC-001` 深色 / `E-SC-002` 浅色，均拖选正文→浮窗在**常态 / hover / 「已复制」三态**断言字底对比度 ≥ 4.5:1（WCAG AA 正文），并校验剪贴板内容 = 选区原文、1.4s 后自动收起且清空选区；`E-SC-003` 非消息区（会话树）选字不弹窗。
+  - **对比度不靠正则解析颜色字符串**：在页面里用 1×1 canvas 把 `getComputedStyle` 的 `color`/`background-color` 画出来读像素（canvas 的颜色解析覆盖 `oklch()` / `color-mix()`），半透明底合成到 `--background` 令牌上；解析失败（`fillStyle` 停在哨兵值）直接报错，而不是拿一个错的颜色算出一个漂亮的对比度。
+  - **踩过的坑（已写进用例注释）**：首版断言“时绿时红”且回退改动后**仍然全绿**。原因是 `button` 有 `transition: color var(--transition-fast)`（120ms，且 color 在 oklab 里插值），刚 hover 完就去读 `getComputedStyle` 拿到的是**中间帧**——运气好读到过渡前的深色就过了。改成 `await pop.getAnimations({subtree:true}).map(a => a.finished)` 等过渡跑完再读，才得到稳定的真值。
+  - **做过红色检查**：把 `.selection-pop-btn:hover` 改回 `opacity: 0.9` 复跑，深浅两条**均必红**（1.217 / 1.111，与截图实测 1.21 逐位一致）；改回修法后 `selectionCopy` + `codeCopy` 共 8 例（`--repeat-each=2`）全绿。
+- **真机像素复核**：修法落地后在 mock 应用里按相位冻结截图（深/浅各一张），确认「已复制」为浅灰底深字 / 深底白字，勾与字都清楚。
+- **契约同步**：`docs/prd/03_conversation.md` 的 CV-S13 交互与反馈新增一条——**反色配对必须在 hover 态也成立**，并写明 `(0,1,1) > (0,1,0)` 这个坑与凡是自带底色的按钮都要写 `.x, .x:hover { color }` 的口径。
+- **验证**：`npm run typecheck` 四包 0 错；`npm run test`：core 473/473、ui 341/341、extensions 69/69，desktop 355/363（6 红即 v6.7 已记账的存量 `piConversationAdapter` 2 + `shellProbe` 4，与本次无关）。
+- **不做的**：① 不改全局 `button:hover` 的 `--brand` 字色（它对绝大多数裸按钮正是想要的效果，改了会连带动整个应用）；② 不逐个审 30+ 个缺 `:hover` 字色的自定义按钮（`.send-btn` / `.ce-retry` / `.dlg-ai` …，多数本来就想要 brand 悬停色，真出事的只有“自带底色”那一类，浮窗是当前唯一一例）；③ 不改 CV-S13 的形态、时机与 1.4s 反馈时长。
+
 ## v6.7 (修复：自动重试期间不再弹「回复出错」系统通知——出错先挂起，宽限期后再判定)
 
 > 来源：2026-09-30 用户反馈（附对话区截图：正文栏正显示「正在自动重试（第 1/3 次）…」）——「刚才应该是重试的时候，给我右下角弹出了一个窗口，说是 AI 回复失败的窗口，错误提示是对的，但是像这种情况，应该比如 3 次重试之后还不行再弹那个提示框，而不是第一次不行，自己还在重试的时候就弹出来」。
@@ -46,6 +62,13 @@
   - **令牌（`design-tokens.css`）**：新增 `--status-run-rest`（静息点）/ `--status-run-peak`（扫过点），**深浅两套值分开写**（同 `--shade` / `--elev-*` 先例）：浅色 `rest oklch(0.93 0.045 85)` / `peak oklch(0.46 0.11 62)`（**深琥珀棕，不用纯墨**——保住「暖色 = 运行中」这层语义），深色 `rest oklch(0.42 0.07 85)` / `peak oklch(0.85 0.14 92)`。
   - **组件（`ProjectTree.vue`）**：`i` 的底色从 `background: var(--warning)` + **opacity 呼吸**改为 `background-color: var(--status-run-rest)`，峰值关键帧切到 `var(--status-run-peak)`——`background-color` 在两枚令牌解析出的实色之间插值，浅色主题里就是**一个暗点在淡点阵上走**（同色相的「深一档」在白底上拉不开）。`transform: scale` 保留。`prefers-reduced-motion` 下的静态点也改取 `--status-run-peak`（两主题下都醒目）。
   - **四个备选**（`prototypes/status-sweep-theme.html`，只换这两个色、节奏几何全不动）：A 现方案 / B 反相扫·深墨（用户提议）/ **C 反相扫·深琥珀棕（采用）** / D 反相扫 + 静息点去色。
+- **白底看不清「哪个在跑」——静息点提亮 + 三档尾巴（v6.5 第四轮，用户选 C）**：用户截图指出白底上「轮到全白的时候就看不到哪个在跑」。**根因不是扫得不够明显，是静息点几乎不存在**：浅色静息色 <code>oklch(0.93 0.045 85)</code> = <code>rgb(246,230,199)</code>，**对白底只有 1.23:1**（深色主题的 <code>rgb(95,74,26)</code> 对深底 <code>rgb(25,25,29)</code> 也只有 2.07:1）——8 个点里能看见的只有正在扫过的那 2~3 个，**2×4 的网格结构整个丢了**。
+  - **令牌（<code>design-tokens.css</code>）**：<code>--status-run-rest</code> 浅 <code>0.93 0.045 85</code> → <code>0.80 0.05 85</code>（1.87:1）、深 <code>0.42 0.07 85</code> → <code>0.50 0.08 85</code>（2.89:1）；**新增 <code>--status-run-mid</code>**（尾巴档）浅 <code>0.64 0.10 70</code>（3.42:1）、深 <code>0.65 0.12 88</code>（5.39:1）。
+  - **组件（<code>ProjectTree.vue</code>）</b>：<code>@keyframes tree-status-wave</code> 从两档改<b>三档</b>——<code>0%/46%/100%</code> → rest、<code>14%</code> → peak（急升）、<code>32%</code> → mid（缓落），<code>transform: scale</code> 同步走 <code>0.72 → 1 → 0.88</code>。<b>多出来的中间档就是尾巴</b>：点冲到最深后不是瞬间消失，而是经 mid 滑回静息，于是「一个暗点拖着一条淡尾从左上走到右下」——<b>方向感来自尾巴，不来自闪烁</b>。尾巴跨度 0.32×1.6s = 0.51s ≈ 3 个点距（0.15s 步进），所以场上同时只有「一个头 + 一条尾」。点阵几何、1.6s 周期、0.15s 步进、12px 槽位全部不动。
+  - <b>刻意的取舍</b>：C 档静息只有 1.87:1，<b>比只提亮的 B 档（2.22:1）还低</b>——静息点只负责「网格存在」不负责「在动」，真正承载动的是 3.42 → 7.37 那一段。峰值/静息的<b>落差</b>才是方向感来源。
+  - **四帧钉帧的坑（首版钉帧没生效）</b>：把负 <code>animation-delay</code> 写在容器上（<code>.frozen i</code>）会被 <code>.mtx i:nth-child(n)</code> 的更高特异性（0,2,1 > 0,1,1）盖掉，<b>四帧结果完全一样</b>，差点误判成「A 已经清楚了」。修法：逐 <code>nth-child</code> 写 <code>calc(自身错峰 + var(--d))</code>，且必须配 <code>animation-play-state: paused</code>。<b>凡「在静态图上看动画」都要先确认帧真的错开了。</b>
+  - **验证口径</b>：<code>getComputedStyle</code> 实测两主题令牌均取到新值；<code>getAnimations()[0].effect.getKeyframes()</code> 返回 <b>5 帧</b>且色/缩放与设计一致（浅：<code>0→rest@0.72 / 0.14→peak@1 / 0.32→mid@0.88 / 0.46→rest@0.72</code>）；5× 钉帧截图两主题各 4 相位逐帧确认「8 点全部可见 + 一个头 + 一条尾」。
+  - **其他三个备选</b>（<code>prototypes/status-run-contrast.html</code>）：A 现状 / B 只提亮静息点（最小改动，仍两档跳变）/ **C 提亮 + 三档尾巴（采用）** / D 静息点去色成中性灰（形状说话，不依赖色相，红绿色觉异常也跟得上）。
 - **已完成 / 出错 改字形（v6.5 第三轮，用户圈定）**：原先两者都是 8px 实心点，与运行中的点阵**不同形**，看不出同源。`prototypes/status-done-error.html` 出了 5+5 款后用户选定 **done = 绿色对勾 ✓ / error = 红色方块感叹号 !**，统一信号从「形状」换成「<b>位置恒定 + 只有运行中在动</b>」。
   - **为什么字形反而更合理**：运行中是<b>持续态</b>，已完成/出错是<b>离散事件</b>——持续态值得一个会动的形态；离散事件用 1× 就认得出的字形更划算（点阵每点只有 2.3px，1× 看过去就是一团糊）。
   - **图形必须是现成图标，不能手搓**：我前两版用「两条 <code>div</code> 转 ±45°」画勾，第一版两臂 <code>left/top</code> 摆反出来是「人」字（开口朝下），第二版形状对了但<b>接缝对不齐</b>——拼两条独立线段没有交点约束，缩到 1× 就是个歪的。**最终直接用仓库现成的 Feather 路径** <code>viewBox="0 0 24 24"</code> + <code>&lt;polyline points="20 6 9 17 4 12"/&gt;</code>（<code>SettingsPanel</code> 的 <code>.swatch-check</code> / <code>GitCommitDialog</code> / <code>MessageCard</code> / <code>HtmlCanvasBlock</code> / <code>selectionPopover.ts</code> 五处同款），<code>stroke-width="3"</code>（24 网格缩到 12px 时 2 偏细）。矢量路径转角是同一点，天然闭合，不用算。

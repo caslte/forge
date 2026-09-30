@@ -188,9 +188,6 @@ let slashLoadGen = 0;
 const { success: toastSuccess, error: toastError } = useToast();
 const { t } = useI18n();
 
-/** 粘贴快捷键文案：mac 显示 ⌘V，其他平台 Ctrl+V（输入框占位用） */
-const pasteKey = window.forge?.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
-
 /** git 徽标/提交入口的忙态（2026-09-23 用户口径修正）：只看当前会话自身是否 streaming，
  *  同项目其他会话执行中不锁本会话的提交/切分支（不同会话可以提交不同的代码） */
 const gitBusy = computed(() => props.sessionStatus === 'streaming');
@@ -1539,7 +1536,7 @@ watch(
         ? t('input.placeholder.streaming', { frame: spinnerFrame })
         : compacting || autoCompacting
           ? t('input.placeholder.compacting')
-          : t('input.placeholder.default', { pasteKey })"
+          : t('input.placeholder.default')"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"

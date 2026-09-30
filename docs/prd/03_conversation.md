@@ -515,6 +515,7 @@
 - **交互与反馈**：
   - 释放鼠标（mouseup，含双击划词）后弹出；上方放不下（贴近视口顶缘）翻到选区下方；水平居中于选区并夹紧在视口内（GAP 8px / EDGE 8px，与全局 tooltip 同款定位语言，fixed + transform 免疫滚动容器偏移）。
   - 样式 = 全局 tooltip 反色同款（`--foreground` 底 / `--background` 字）+ `--shadow-md` + `--radius-lg`，图标复用 footer 复制按钮的 SVG（复制双框 → 打勾）；z-index 9998 压在 tooltip（99999）之下。
+  - **反色配对必须在 hover 态也成立**：全局 `button:hover { color: var(--brand) }` 的特异性 (0,1,1) 压过组件自己的 (0,1,0)。反色按钮若只在基础规则里写 `color`，鼠标一停上去字色就被改写成 `--brand` 压 `--foreground` 底（深色主题实测 rgb(197,198,203) / rgb(179,180,184) = **1.22:1**，浅色 1.11:1，字等于消失）。凡是自带底色的浮窗/按钮，一律写成 `.x, .x:hover { color: … }`。
   - 收起时机：任意滚动（capture 阶段，含消息流内部滚动）/ 在浮窗外重新按下鼠标 / Escape（同时清空选区）/ 复制反馈结束。
   - 文案走 i18n（`chat.copySelection` 中英双语；「已复制」复用 `chat.copied`），浮窗常驻期间切语言即时跟随。
 - **权限边界**：只读剪贴板写入（`navigator.clipboard.writeText`，失败回退 `execCommand('copy')`，与设置页复制日志同款兜底）；不新增 IPC、不触碰主进程。
