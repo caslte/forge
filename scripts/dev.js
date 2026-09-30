@@ -67,6 +67,10 @@ function runBuild(workspace) {
 }
 
 async function main() {
+  if (isWindows) {
+    // 中文 Windows 默认代码页 936(GBK)，与子进程 UTF-8 输出不符会显示乱码
+    spawnSync('cmd', ['/c', 'chcp', '65001'], { stdio: 'ignore' });
+  }
   console.log('[dev] 1/4 build @forge/core');
   runBuild('@forge/core');
   console.log('[dev] 2/4 build @forge/desktop');
