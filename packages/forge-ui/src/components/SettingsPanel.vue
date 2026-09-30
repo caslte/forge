@@ -1130,25 +1130,31 @@ onUnmounted(() => {
 }
 
 .width-option {
-  padding: 5px 14px;
+  /* 1px 环（原型 prototypes/selection-highlight-options.html B 档）：
+     2px 满圈在深色主题是全屏最亮的元素，形状语言也和 focus 撞脸。
+     描边每边减 1px，padding 每边补 1px → **外框尺寸逐像素不变**，
+     分组内不会出现半像素错位。 */
+  padding: 6px 15px;
   font-size: 12px;
   font-weight: 500;
   font-family: inherit;
   color: var(--foreground);
   background: var(--card);
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   cursor: pointer;
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .width-option:hover {
-  border-color: var(--muted-foreground);
+  border-color: color-mix(in oklab, var(--brand) var(--select-hover-pct), var(--border));
 }
 
 .width-option.active {
-  border-color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 6%, var(--card));
+  /* 环色不再用 --brand 原值，改由 --select-ring-pct 统一给出（比例按主题定，见 design-tokens.css）；
+     存在感由底色补。 */
+  border-color: color-mix(in oklab, var(--brand) var(--select-ring-pct), var(--border));
+  background: color-mix(in oklab, var(--brand) var(--select-bg-pct), var(--card));
 }
 
 .pref-switch.on .pref-knob {
@@ -1487,8 +1493,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px;
-  border: 2px solid var(--border);
+  padding: 9px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--card);
   cursor: pointer;
@@ -1496,12 +1502,12 @@ onUnmounted(() => {
 }
 
 .theme-swatch:hover {
-  border-color: var(--muted-foreground);
+  border-color: color-mix(in oklab, var(--brand) var(--select-hover-pct), var(--border));
 }
 
 .theme-swatch.active {
-  border-color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 6%, var(--card));
+  border-color: color-mix(in oklab, var(--brand) var(--select-ring-pct), var(--border));
+  background: color-mix(in oklab, var(--brand) var(--select-bg-pct), var(--card));
 }
 
 .swatch-color {
@@ -1556,24 +1562,24 @@ onUnmounted(() => {
 }
 
 .language-option {
-  padding: 6px 14px;
+  padding: 7px 15px;
   font-size: 12px;
   font-weight: 500;
   color: var(--foreground);
   background: var(--card);
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   cursor: pointer;
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .language-option:hover {
-  border-color: var(--muted-foreground);
+  border-color: color-mix(in oklab, var(--brand) var(--select-hover-pct), var(--border));
 }
 
 .language-option.active {
-  border-color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 6%, var(--card));
+  border-color: color-mix(in oklab, var(--brand) var(--select-ring-pct), var(--border));
+  background: color-mix(in oklab, var(--brand) var(--select-bg-pct), var(--card));
 }
 
 /* 模型配置表单：弹窗形态（遮罩配方同 .up-confirm），不占用列表空间 */
@@ -1865,8 +1871,8 @@ onUnmounted(() => {
 }
 
 .provider-item.is-default {
-  border-color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 4%, var(--card));
+  border-color: color-mix(in oklab, var(--brand) var(--select-ring-pct), var(--border));
+  background: color-mix(in oklab, var(--brand) var(--select-bg-pct), var(--card));
 }
 
 .provider-info {

@@ -29,6 +29,27 @@ const CASES: Case[] = [
     note: 'MiniMax 流内错误帧（真机 2026-09-29）',
   },
   { raw: '500 Internal Server Error', category: 'provider', source: 'model-provider', retryable: true },
+  {
+    raw: 'JSON error injected into SSE stream',
+    category: 'provider',
+    source: 'model-provider',
+    retryable: true,
+    note: 'OpenRouter 向上游流注入 JSON 错误帧（真机 2026-09-29 stealth/space-bunny-alpha）',
+  },
+  {
+    raw: 'Provider returned an empty response',
+    category: 'provider',
+    source: 'model-provider',
+    retryable: true,
+    note: 'OpenRouter 错误码 1001：上游返回空补全（真机 2026-09-29）',
+  },
+  {
+    raw: 'Stream ended without finish_reason',
+    category: 'provider',
+    source: 'model-provider',
+    retryable: true,
+    note: '流提前断开，未收到 finish_reason（真机同批）',
+  },
   { raw: 'Bad gateway (524)', category: 'provider', source: 'model-provider', retryable: true },
   { raw: 'The model server is overloaded', category: 'provider', source: 'model-provider', retryable: true },
   {

@@ -21,6 +21,7 @@ import {
   IPC_SHELL_OPEN_EXTERNAL,
   IPC_SHELL_PROBE,
   IPC_SHELL_OPEN_PATH,
+  IPC_SHELL_OPEN_IN_BROWSER,
   IPC_THEME_SET,
   IPC_LOCALE_SET,
   IPC_ATTACHMENT_SCAN,
@@ -100,10 +101,14 @@ const fileControl = {
   },
 };
 
-/** window.forge.shell 系统能力：文件管理器打开目录 / 系统浏览器打开外链 */
+/** window.forge.shell 系统能力：文件管理器打开目录 / 默认浏览器打开本地 HTML / 系统浏览器打开外链 */
 const shellControl = {
   async openPath(path: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_PATH, path) as Promise<boolean>;
+  },
+  /** 用系统默认浏览器打开本地 HTML；主进程校验（普通文件 + 扩展名白名单），失败 false */
+  async openInBrowser(path: string): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_SHELL_OPEN_IN_BROWSER, path) as Promise<boolean>;
   },
   async openExternal(url: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_EXTERNAL, url) as Promise<boolean>;
@@ -143,6 +148,8 @@ function ensureIpcEventListening(): void {
   ipcEventListening = true;
   // 单例监听，避免每个 window.forge.on 都往 IpcRenderer 追加监听导致 MaxListenersExceededWarning（10 上限）
   ipcRenderer.on(IPC_EVENT, (_e: Electron.IpcRendererEvent, arg: { event: string; payload: unknown }) => {
+    // 临时诊断（模块10 term:data 断链排查，定位后删除）
+    if (arg.event === 'term:data') console.log('[term-diag] preload received IPC_EVENT');
     const listeners = eventListeners.get(arg.event as ForgeEvent);
     if (listeners === undefined || listeners.size === 0) return;
     for (const fn of listeners) {
@@ -212,6 +219,14 @@ const forgeBridge = {
    *  把窗口显示出来。单向无返回；即便丢失也不影响功能（主进程有超时兜底）。 */
   splashReady(): void {
     ipcRenderer.send(IPC_BOOT_SPLASH_READY);
+  },
+  /**
+   * v3.87：订阅「窗口已显示」发令（splash 字标入场动效的起跑信号）。
+   * 与 splashReady 相反方向：那条是渲染→主（我准备好了），这条是主→渲染（你该演了）。
+   * 渲染端带超时兑底，所以本事件丢失不会让字标永久停在起点。
+   */
+  onSplashShown(listener: () => void): () => void {
+    return subscribeEvent('boot.splashShown', listener);
   },
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void {
     return subscribeEvent(event, listener);

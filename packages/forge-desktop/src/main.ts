@@ -33,7 +33,9 @@ import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode }
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { createNotifyToastManager } from './notifyToast.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { createNotifyGate, type NotifyKind } from './notifyGate.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -142,7 +144,7 @@ const SPLASH_PAINT_SETTLE_MS = 300;
  * （见 bootFrame.ts）。这层校验同时纠正了 v3.78.7 把宽限放在 show() 之前的顺序错误——详见
  * 函数尾部的说明。
  */
-async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number): Promise<void> {
+async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number, onShown?: () => void): Promise<void> {
   const startedAt = Date.now();
   const yieldFor = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   const painted = new Promise<boolean>((resolve) => {
@@ -190,6 +192,17 @@ async function waitForSplashPainted(win: BrowserWindow, timeoutMs: number): Prom
     hasContent,
   );
   logPresentedFrame('显示后', postFrame);
+  // v3.87：splash 字标入场动效的**发令**。放在 show() + 显示后帧之后：
+  // 这两个信号合起来才代表「字已经真的到屏幕上了」。早发（首帧就跑）则约 1.2s 的逐字
+  // 动画会在 decode + 2 帧 rAF + 显示前帧校验走完之前播完，窗口亮起时只剩终态。
+  // onShown 先于 send 调用：BootWelcome 的「拉」（bootState.splashShownAt）与「推」
+  // （本事件）双通道，谁先谁后都能起播——反序（先 send 后改字段）会让「先订阅后
+  // 等拉」的组合两头落空，只能等兜底。
+  onShown?.();
+  if (!win.isDestroyed()) {
+    win.webContents.send(IPC_EVENT, { event: 'boot.splashShown', payload: null });
+    console.log('[boot] 已发 splash 字标入场动效发令');
+  }
   await yieldFor(SPLASH_PAINT_SETTLE_MS);
   const shownAt = Date.now();
   console.log(
@@ -537,6 +550,15 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
     }
     return shell.openPath(normalized).then((err) => err === '');
   });
+  // 系统默认浏览器打开本地 HTML（改动文件卡右键「用浏览器打开」）；成功 true，失败 false。
+  // CV-TRUST-02 的同款红线在「放行文件」这一侧再加一层：只放行已存在的**普通文件** +
+  // .html/.htm 白名单（判定在 shell/openTarget.ts，lstat 不跟随软链）——.exe/.bat/.lnk
+  // 与 .js/.url 之类的协议关联全在放行之前就被拒，不存在「打开 = 运行」的路径。
+  ipcMain.handle(IPC_SHELL_OPEN_IN_BROWSER, (_e, p: unknown) => {
+    const target = resolveBrowserOpenTarget(p);
+    if (target === null) return false;
+    return shell.openPath(target).then((err) => err === '');
+  });
   // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
   // URL，其余协议一律拒绝——这条通道绝不能转交 openPath（.exe 会被“打开”=运行）。
   ipcMain.handle(IPC_SHELL_OPEN_EXTERNAL, (_e, u: unknown) => {
@@ -663,6 +685,8 @@ function registerCoreIpc(
   for (const event of FORGE_EVENTS) {
     const e: ForgeEvent = event;
     eventBus.on(e, (payload: unknown) => {
+      // 临时诊断（模块10 term:data 断链排查，定位后删除）
+      if (e === 'term:data') console.log(`[term-diag] eventBus -> send (mainWindow=${mainWindow !== null})`);
       mainWindow?.webContents.send(IPC_EVENT, { event: e, payload });
     });
   }
@@ -762,7 +786,7 @@ app.whenReady().then(async () => {
   //    推（事件）+ 拉（IPC_BOOT_STATE）双通道：渲染进程可能尚未订阅事件（Vite 加载中），
   //    mount 时会主动拉一次 bootState 兜底，不依赖单一方向。
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
-  const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null };
+  const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null, splashShownAt: null };
   const win = createAndLoadWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
   registerShellIpc(bootState, forgeAgentDir);
 
@@ -771,7 +795,9 @@ app.whenReady().then(async () => {
   // 循环与 Chromium UI 线程是同一个线程——若紧接着 loadURL 就开跑，渲染进程的创建
   // 与导航提交会一起被卡住，用户看到数秒纯底色白屏（实测 0.6s→4.7s，详见
   // waitForSplashPainted 注释）。此处让主线程先空转等 splash 提交并合成一帧。
-  await waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS);
+  await waitForSplashPainted(win, SPLASH_PAINT_MAX_WAIT_MS, () => {
+    bootState.splashShownAt = Date.now();
+  });
 
   // ===== shell 自愈（2026-09）：把「用户自己去 settings.json 填 shellPath」变成自动动作 =====
   // 时机选在这里的理由：splash 已上屏（spawn where/reg 的几十毫秒不会卡首帧），而
@@ -794,7 +820,7 @@ app.whenReady().then(async () => {
   });
 
   const { createForgeCore, invoke } = await import('./createForgeCore.ts');
-  const { methodTable, eventBus } = createForgeCore(storePath, {
+  const { methodTable, eventBus, killAllPtys } = createForgeCore(storePath, {
     keychain,
     // pi 数据域根注入（缺省会回退 ~/.pi/agent，生产禁止依赖缺省）
     piAgentDir: forgeAgentDir,
@@ -821,40 +847,36 @@ app.whenReady().then(async () => {
     getLocale: () => uiLocale,
     logoSrc: resolveToastLogoSrc(),
   });
-  win.on('closed', () => notifyToast.disposeAll());
+  win.on('closed', () => {
+    notifyToast.disposeAll();
+    // 模块 10（TM-S04）：窗口关闭全部回收 pty——macOS 关窗不退出进程时同样生效
+    killAllPtys();
+  });
 
-  // 同会话去重状态：
-  // - lastToastedAt：任意终态通知后的短冷却（重复终态只弹第一条）
-  // - lastInterruptAt：cancel 编排（createForgeCore）会先 setStatus('canceled') 再经
-  //   done 门控补发一次 'done'——5s 内跟随中断/出错到达的 done 视为同一轮收尾，
-  //   不用「回复已完成」覆盖「回复被中断/出错」通知
-  const lastToastedAt = new Map<string, number>();
-  const lastInterruptAt = new Map<string, number>();
-  eventBus.on('conversation.statusChanged', (raw) => {
-    const p = raw as { sessionId?: unknown; status?: unknown };
-    if (typeof p?.sessionId !== 'string' || typeof p?.status !== 'string') return;
-    const kind =
-      p.status === 'done' ? 'done' : p.status === 'canceled' ? 'interrupt' : p.status === 'error' ? 'error' : null;
-    if (kind === null) return;
-    // 窗口前台聚焦时不打扰（最小化视为离开，会弹）；两种情况都留一行日志方便排查
+  // ===== 模块 10：内嵌终端 pty 生命周期兜底（TM-F03 异常与边界）=====
+  // - before-quit：全量回收，关 forge 后系统无残留 shell 进程（AC-10-07）。
+  // - did-navigate（含开发期 HMR 整页 reload）：tab 列表与终端内容按 PRD 不持久化，
+  //   文档重载后渲染层不再引用任何旧 ptyId——残留 pty 即孤儿，一律 kill。
+  //   初次加载的 did-navigate 发生在本注册之前，且此刻注册表为空，killAll 无害。
+  app.on('before-quit', () => killAllPtys());
+  win.webContents.on('did-navigate', () => killAllPtys());
+
+  // 弹/不弹的决策全在 notifyGate（纯逻辑、可单测）：前台聚焦、3s 冷却、done 紧随
+  // 中断/出错，以及**出错的宽限期**——error 到达时还不知道 pi 会不会自动重试，
+  // 挂起 1s 复问，期间状态回到 streaming 就说明重试接管，不该在「正在自动重试
+  // （第 1/3 次）」时先弹一个「回复出错」（见 notifyGate.ts 文件头）。
+  const notifyGate = createNotifyGate();
+  /** 会话 → 宽限期复问定时器：任何后续状态事件都会清掉它（gate 内另有 lastStatus 复核兜底） */
+  const errorGraceTimers = new Map<string, NodeJS.Timeout>();
+
+  /** 主窗口是否在前台（最小化视为离开，会弹）；两种情况都留一行日志方便排查 */
+  function isMainWindowFocused(): boolean {
     const w = mainWindow;
-    if (!w || w.isDestroyed() || (w.isFocused() && w.isVisible())) {
-      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口前台 → 不弹通知`);
-      return;
-    }
-    const now = Date.now();
-    if (now - (lastToastedAt.get(p.sessionId) ?? 0) < 3000) {
-      console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，3s 冷却内 → 不重复弹`);
-      return;
-    }
-    if (kind === 'done' && now - (lastInterruptAt.get(p.sessionId) ?? 0) < 5000) {
-      console.log(`[notify] 会话 ${p.sessionId} done 紧随中断/出错 → 不覆盖原通知`);
-      return;
-    }
-    console.log(`[notify] 会话 ${p.sessionId} 回复终态=${p.status}，窗口非前台 → 弹系统通知`);
-    lastToastedAt.set(p.sessionId, now);
-    if (kind !== 'done') lastInterruptAt.set(p.sessionId, now);
-    const sessionId = p.sessionId;
+    return !w || w.isDestroyed() || (w.isFocused() && w.isVisible());
+  }
+
+  function showNotify(kind: NotifyKind, sessionId: string): void {
+    console.log(`[notify] 会话 ${sessionId} 终态=${kind}，窗口非前台 → 弹系统通知`);
     // 正文取最后一条用户消息（「任务：…」摘要）。直接发送路径的 user 气泡由渲染层
     // 乐观插入、不经 eventBus 的 conversation.message（该事件只有队列补发跟进才带
     // role=user），故此处从历史接口现取，勿依赖事件缓存。
@@ -893,6 +915,38 @@ app.whenReady().then(async () => {
         notifyToast.notify({ kind, sessionId, body });
       })
       .catch((err) => console.log(`[notify] 取会话历史失败，通知正文回退默认：${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  eventBus.on('conversation.statusChanged', (raw) => {
+    const p = raw as { sessionId?: unknown; status?: unknown };
+    if (typeof p?.sessionId !== 'string' || typeof p?.status !== 'string') return;
+    const sessionId = p.sessionId;
+    // 同一会话的宽限期复问只保留最新一个（重复 error 事件不叠加定时器）
+    const pending = errorGraceTimers.get(sessionId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      errorGraceTimers.delete(sessionId);
+    }
+    const outcome = notifyGate.observe(sessionId, p.status, { focused: isMainWindowFocused(), now: Date.now() });
+    if (outcome.type === 'skip') {
+      console.log(`[notify] 会话 ${sessionId} 状态=${p.status} → 不弹（${outcome.reason}）`);
+      return;
+    }
+    if (outcome.type === 'defer') {
+      const timer = setTimeout(() => {
+        errorGraceTimers.delete(sessionId);
+        const settled = notifyGate.settle(sessionId, { focused: isMainWindowFocused(), now: Date.now() });
+        if (settled.type === 'notify') showNotify(settled.kind, sessionId);
+        else if (settled.type === 'skip') {
+          console.log(`[notify] 会话 ${sessionId} 出错宽限期后 → 不弹（${settled.reason}）`);
+        }
+      }, notifyGate.errorGraceMs);
+      timer.unref?.();
+      errorGraceTimers.set(sessionId, timer);
+      console.log(`[notify] 会话 ${sessionId} 状态=error → 宽限 ${notifyGate.errorGraceMs}ms 待复问（可能自动重试中）`);
+      return;
+    }
+    showNotify(outcome.kind, sessionId);
   });
 
   // ===== 预热入口（v3.78 上移到 boot.ready 之前；boot 前主路径 + boot 后 fallback 共用）=====

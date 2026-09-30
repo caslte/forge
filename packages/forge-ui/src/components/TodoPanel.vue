@@ -345,6 +345,10 @@ defineExpose({
  * 下边沿无 border：面板底部以 -10px 负 margin 塞进输入框背后（输入框后渲染、
  * 背景不透明，自然盖住面板底边），由输入框的上边框充当视觉底边，形成一体延伸感。
  * 面板水平 padding 取 14px，与 compose-box 内边距对齐。
+ *
+ * 2026-09-30 同步输入框抬升（C 方案）：compose-box 改成 --card + --elev-1 后，
+ * 面板若仍留 --background 会「面板贴着、框浮着」，接缝处出现一道色差断层；
+ * 这里跟同材质一起抬，抬升投影落在面板上缘、被输入框的投影盖住，延伸感不变。
  */
 .todo-panel {
   position: relative;
@@ -352,7 +356,8 @@ defineExpose({
   border: 1px solid var(--input);
   border-bottom: 0;
   border-radius: 16px 16px 0 0;
-  background: var(--background);
+  background: var(--card);
+  box-shadow: var(--elev-1);
   /* 底部 20px padding：给被输入框盖住的 10px 重叠区留出呼吸，避免末行文字贴边 */
   margin: 0 0 -10px;
   padding: 10px 14px 20px;

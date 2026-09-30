@@ -31,7 +31,9 @@ export interface ProjectRecord {
  * @param sessionId pi session ID（对应 pi session 目录名），主键
  * @param projectPath 所属项目绝对路径
  * @param alias 会话别名（默认取首条用户消息摘要，可编辑），可为 null
- * @param lastActiveAt 最近活动时间（ISO8601），会话列表排序用
+ * @param lastActiveAt 最近活动时间（ISO8601），会话列表排序用：创建时写一次，
+ *   之后每轮会话开始（状态转 running）由 SessionService.setSessionStatus touch，
+ *   故 listSessions 的"最近活动在前"在重启后依然成立
  * @param createdAt 创建时间（ISO8601）
  * @param modelOverride 会话级模型覆盖（模块 05；空则用全局默认）
  * @param thinkingLevel 会话级思考级别覆盖（模块 05 MP-S05：off/minimal/low/medium/high/xhigh/max；空则用全局默认）

@@ -60,6 +60,13 @@ export type MinimalPiSession = {
    * 文本（fake 可选；缺失时视为无队列）。
    */
   clearQueue?(): { steering: string[]; followUp: string[] };
+  /**
+   * steer/followUp 直入队（CV-S09 队列编辑用）：真实 AgentSession 支持——内部为同步
+   * push + queue_update，入队动作在首个 await 前完成；fake 可选，缺失时经
+   * prompt + streamingBehavior 降级（仅 streaming 中可用）。
+   */
+  steer?(text: string): Promise<void>;
+  followUp?(text: string): Promise<void>;
   /** 运行中热切换模型（真实 AgentSession 支持；fake 可选实现） */
   setModel?(model: unknown): Promise<void>;
   /** 上下文用量查询（P3-A）；真实 AgentSession 支持，fake 可选；结构兼容 ContextUsage */
@@ -331,6 +338,14 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   /** 待派发确认（CV-S09）：已离开队列但尚未收到 message_start(user) 的文本（FIFO 序），
    * 用于区分「派发」（转发 user 气泡）与「清空」（不转发）；直发起点/取消时清空 */
   private readonly pendingDelivery = new Map<string, string[]>();
+  /**
+   * 打断抑制窗（CV-S09 队列编辑/停止共用）：正在 abort 在途轮次的会话集合。
+   * abort 打断在途工具/LLM 调用时 pi 会发带 errorMessage（如 "This operation was
+   * aborted"）的 agent_end/turn_end/error 事件——这是主动打断的正常收尾而非故障，
+   * 抑制窗内不上报（否则 UI 弹「出了点没预料到的问题」错误横幅）。pi 的事件都在
+   * abort() resolve 前同步派发完毕，await abort() 返回后即撤窗。
+   */
+  private readonly abortingTurns = new Set<string>();
   private completionHandler: TurnCompletionHandler | undefined;
   /** 主轮完成回调（wu-06 done 门控）：prompt 解析后调用，转发到 subagentService.notifyMainTurnEnd */
   private mainTurnEndHandler: ((sessionId: string) => void) | undefined;
@@ -358,6 +373,9 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.resolveSessionModel = options.resolveSessionModel;
     this.subagentService = options.subagentService;
     this.mainTurnEndHandler = options.onMainTurnEnd;
+    // 缺省实现不带 modelsPath，回退 defaultPiModelsPath（~/.pi/agent/models.json，
+    // 终端 pi CLI 的配置）；生产必须由 createForgeCore 注入绑定 agentDir 下
+    // models.json 的实现，否则热切换/磁盘用量估算解析不到仅在 Forge 配置的模型
     this.resolveModel =
       options.resolveModel ??
       (async (model: string) => {
@@ -534,10 +552,14 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     const hadError = this.errorEmittedThisTurn.has(sessionId);
     this.errorEmittedThisTurn.delete(sessionId);
 
-    if (!hadError) {
+    if (!hadError && !this.abortingTurns.has(sessionId)) {
       // wu-06 done 门控：prompt 解析后转发到 subagentService.notifyMainTurnEnd，
       // 由服务层决策「计数=0 立即 done / >0 延迟 + 超时兜底」。completionHandler 保留
       // 给旧路径兼容（与 onMainTurnEnd 二选一，优先 onMainTurnEnd）。
+      // 打断收尾（CV-S09 队列编辑）：被 ⚡立即发送/停止 abort 掉的轮次不发
+      // mainTurnEnd——此刻 done 门控会把状态打成 done，而打断的新轮次紧接着在途
+      //（sendNow 在 adapter 内直发，不走 service.setStatus(streaming)），状态会被
+      // 压成 done 直到新轮次自然结束。顺延由新轮次自己的收尾触发。
       if (this.mainTurnEndHandler !== undefined) {
         this.mainTurnEndHandler(sessionId);
       } else {
@@ -555,8 +577,154 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     if (!lease) return [];
     const cleared = lease.session.clearQueue?.() ?? { steering: [], followUp: [] };
     this.pendingDelivery.delete(sessionId); // 清空 ≠ 派发，不转发 user 气泡
-    await lease.session.abort();
+    // 打断抑制窗：abort 打断在途工具/LLM 时 pi 的 aborted 错误事件是正常收尾，
+    // 不上报（否则停止/打断会弹「出了点没预料到的问题」横幅）
+    this.abortingTurns.add(sessionId);
+    try {
+      await lease.session.abort();
+    } finally {
+      this.abortingTurns.delete(sessionId);
+    }
     return cleared.followUp;
+  }
+
+  /**
+   * 删除待发队列第 index 条（CV-S09 队列编辑）：clearQueue + 重建实现按条删除，
+   * 返回操作后的队列文本（FIFO 序）。index 越界（UI 镜像过期）抛错且队列原样保留。
+   */
+  async removeQueuedMessage(sessionId: string, index: number): Promise<string[]> {
+    return this.mutateFollowUpQueue(sessionId, (items) => {
+      if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+        throw new Error('队列已变化，删除未生效，请展开队列后重试');
+      }
+      items.splice(index, 1);
+      return items;
+    });
+  }
+
+  /**
+   * 立即发送第 index 条（CV-S09 队列编辑，打断语义）：摘出该条 → 中止当前轮 →
+   * 剩余队列先回灌挂回 pi → 再直发该条起全新轮次。pi 的 agent 循环在每个轮次边界
+   * 自动按 FIFO 消费 followUp 队列，因此「立即发送的跑完 → 接着跑队列其他」由 pi
+   * 原生保证；剩余必须在新轮次启动**之前**回灌（sendMessage 会 await 整轮结束，
+   * 之后再入队就是无人消费的死队列）。返回操作后的队列。
+   */
+  async sendQueuedMessageNow(sessionId: string, index: number): Promise<string[]> {
+    const lease = this.requireLease(sessionId);
+    const cleared = lease.session.clearQueue?.() ?? { steering: [], followUp: [] };
+    const items = cleared.followUp.slice();
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+      // index 越界（UI 镜像过期）：原样回灌后抛错，不打断当前轮
+      await this.rebuildFollowUpQueue(lease, items);
+      throw new Error('队列已变化，发送未生效，请展开队列后重试');
+    }
+    const removed = items.splice(index, 1)[0];
+    if (removed === undefined) {
+      // 索引在校验后不可能越界（同步窗口），此处仅为类型收窄兜底
+      await this.rebuildFollowUpQueue(lease, items);
+      throw new Error('队列已变化，发送未生效，请展开队列后重试');
+    }
+    // 中止当前轮：队列已清空（先 clear 再 abort，pi 不会自动续跑剩余队列），
+    // 已生成内容按 abort 语义保留（与停止按钮同款，stopReason=aborted）
+    if (lease.session.isStreaming === true) {
+      this.pendingDelivery.delete(sessionId); // 中止 ≠ 派发，不转发被截断轮的 user 气泡
+      this.abortingTurns.add(sessionId); // aborted 错误事件是打断收尾，不上报
+      try {
+        await lease.session.abort();
+      } finally {
+        this.abortingTurns.delete(sessionId);
+      }
+    }
+    // 剩余队列回灌（此刻空闲，pi 暂不消费；下一步起轮后由循环在轮次边界接手），
+    // 再直发摘出条目——它插队到最前，剩余按 FIFO 排其后
+    for (const text of items) await this.enqueueFollowUp(lease, text);
+    await this.sendMessage(sessionId, removed);
+    return items;
+  }
+
+  /** 会话 lease 必须存在（队列编辑都作用在已建立的 pi 会话上） */
+  private requireLease(sessionId: string): PiAgentSessionLease<MinimalPiSession> {
+    const lease = this.leases.get(sessionId);
+    if (lease === undefined) {
+      throw new Error('会话尚未初始化，无法操作待发队列');
+    }
+    return lease;
+  }
+
+  /**
+   * followUp 直入队（CV-S09 队列编辑基建）：优先 pi 的 session.followUp（同步 push，
+   * 空闲时也可入队）；fake/旧实现缺失时经 prompt + followUp 分流降级（仅 streaming
+   * 中可用，空闲时抛错——此时没有在途轮次，队列本应为空）。
+   */
+  private async enqueueFollowUp(
+    lease: PiAgentSessionLease<MinimalPiSession>,
+    text: string,
+  ): Promise<void> {
+    if (typeof lease.session.followUp === 'function') {
+      await lease.session.followUp(text);
+      return;
+    }
+    if (lease.session.isStreaming === true) {
+      await lease.session.prompt(text, { streamingBehavior: 'followUp' });
+      return;
+    }
+    throw new Error('当前会话不支持待发队列');
+  }
+
+  /**
+   * 按序重建 followUp 队列（clearQueue 之后的回灌步骤）。单条失败（如重建时命令
+   * 校验不过）不中断其余条目回灌，全部尝试完后抛出首个错误——保证清空后的队列
+   * 尽可能完整恢复。
+   */
+  private async rebuildFollowUpQueue(
+    lease: PiAgentSessionLease<MinimalPiSession>,
+    items: readonly string[],
+  ): Promise<void> {
+    let firstError: unknown;
+    for (const text of items) {
+      try {
+        await this.enqueueFollowUp(lease, text);
+      } catch (err) {
+        firstError ??= err;
+      }
+    }
+    if (firstError !== undefined) throw firstError;
+  }
+
+  /**
+   * followUp 队列统一编辑原语（CV-S09 队列编辑）：clearQueue 取回全量 → mutate 出
+   * 新序 → 原样回灌（steering 防御性回灌）。pi 的 clearQueue/followUp 内部均为同步
+   * push（入队动作先于首个 await），clear 与首次回灌之间不存在事件循环空窗，agent
+   * 循环观察不到中间空队列态。mutate 抛错时先回灌原队列再上抛（UI 镜像过期等软
+   * 失败不丢队列）。
+   */
+  private async mutateFollowUpQueue(
+    sessionId: string,
+    mutate: (items: string[]) => string[],
+  ): Promise<string[]> {
+    const lease = this.requireLease(sessionId);
+    const cleared = lease.session.clearQueue?.() ?? { steering: [], followUp: [] };
+    // forge 自身只入 followUp；steering 非空属异常态，防御性原样回灌
+    if (cleared.steering.length > 0 && typeof lease.session.steer === 'function') {
+      for (const text of cleared.steering) await lease.session.steer(text);
+    }
+    let next: string[];
+    try {
+      next = mutate(cleared.followUp.slice());
+    } catch (err) {
+      await this.rebuildFollowUpQueue(lease, cleared.followUp); // 软失败：原样恢复
+      throw err;
+    }
+    await this.rebuildFollowUpQueue(lease, next);
+    // 竞态兜底：重建期间轮次恰好收尾，回灌的条目将无人派发（pi 空闲时不消费
+    // followUp 队列）——清掉重灌，改走直发路径起全新轮次逐条递送
+    const [first, ...rest] = next;
+    if (first !== undefined && lease.session.isStreaming !== true) {
+      lease.session.clearQueue?.();
+      await this.sendMessage(sessionId, first);
+      for (const text of rest) await this.enqueueFollowUp(lease, text);
+    }
+    return next;
   }
 
   /**
@@ -1088,6 +1256,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
         (rawMsg as { error?: string }).error;
       // 关键修复：stopReason === 'error' 时必须透传错误到对话框（超时/拒绝连接/鉴权失败等）
       if (stopReason === 'error') {
+        if (this.abortingTurns.has(sessionId)) return; // 打断收尾：aborted 不上报
         const content = extractAssistantText(event.message.content);
         const raw = errMsgRaw || content || '对话处理失败';
         if (content !== '') this.partialContent.set(sessionId, content);
@@ -1122,10 +1291,18 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
           ts: new Date().toISOString(),
         };
         this.transcripts.set(sessionId, [...(this.transcripts.get(sessionId) ?? []), message]);
-        if (callback) {
-          callback.onMessage(message);
-        } else {
-          this.eventHandlers.onMessage?.(sessionId, message);
+        // 打断收尾（CV-S09 队列编辑）：被 abort 轮的最终 assistant 消息不转发 UI
+        // （记账照做：partialContent/forwardedClean/livePartial/transcripts 保持与
+        // 磁盘一致）。流式占位里已展示同文，转发是重复；且此刻打断新轮次的 user
+        // 气泡可能已由 UI 本地入列——转发会落在该气泡之后，观感即「上一轮的文本
+        // 接到新消息上」（真机表现：⚡立即发送 5 后，被打断轮次的「收到 2。……」
+        // 整段落在 5 下面）。
+        if (!this.abortingTurns.has(sessionId)) {
+          if (callback) {
+            callback.onMessage(message);
+          } else {
+            this.eventHandlers.onMessage?.(sessionId, message);
+          }
         }
       }
       return;
@@ -1137,6 +1314,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       typeof (event as { errorMessage?: unknown }).errorMessage === 'string' &&
       ((event as { errorMessage: string }).errorMessage.length > 0)
     ) {
+      if (this.abortingTurns.has(sessionId)) return; // 打断收尾："This operation was aborted" 不上报
       const raw = (event as { errorMessage: string }).errorMessage;
       this.errorEmittedThisTurn.add(sessionId);
       const error = makeError(raw, (this.partialContent.get(sessionId) ?? '') !== '');
@@ -1145,6 +1323,7 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       return;
     }
     if (event.type === 'error') {
+      if (this.abortingTurns.has(sessionId)) return; // 打断收尾：aborted 不上报
       const raw = event as unknown as { error?: unknown; message?: unknown };
       const rawMsg =
         typeof raw.error === 'string'

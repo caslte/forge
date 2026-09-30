@@ -446,12 +446,52 @@ function basenameOf(dir: string): string {
   return segs[segs.length - 1] ?? '';
 }
 
+// ===== term（10：内嵌终端）假 pty：行缓冲 mini-shell，浏览器全流程演示（不 spawn 真进程）=====
+interface MockPty {
+  cwd: string;
+  buf: string;
+  alive: boolean;
+}
+const termPtys = new Map<string, MockPty>();
+let termSeq = 0;
+
+function termOut(id: string, data: string): void {
+  emit('term:data', { ptyId: id, data });
+}
+
+function termPrompt(p: MockPty): string {
+  return `\x1b[36m${p.cwd}>\x1b[0m `;
+}
+
+function termRun(id: string, p: MockPty, line: string): void {
+  const cmd = line.trim();
+  setTimeout(() => {
+    if (!p.alive) return;
+    if (cmd === 'exit') {
+      p.alive = false;
+      emit('term:exit', { ptyId: id, exitCode: 0 });
+      return;
+    }
+    if (cmd !== '') {
+      let out: string;
+      if (cmd === 'ls' || cmd === 'dir') out = 'README.md  package.json  src/  docs/';
+      else if (cmd === 'pwd') out = p.cwd;
+      else if (cmd.startsWith('echo ')) out = cmd.slice(5);
+      else out = `"${cmd}" 不是内部或外部命令。（mock）`;
+      termOut(id, `${out}\r\n`);
+    }
+    termOut(id, termPrompt(p));
+  }, 80);
+}
+
 const bridge: ForgeBridge = {
   // 纯浏览器预览：非 Electron 环境，UI 按「无系统窗口控件」处理（不影响 mock 布局核对）
   platform: 'browser',
   // v3.76 启动门闩：mock 无真实 core 组装，永远就绪——欢迎页一帧即过，e2e 不受影响
+  // v3.87 splashShownAt：mock 语义是「早已就绪」，视为窗口早已显示（null 会挂起
+  // BootWelcome 字标入场动效的拉通道，只能等 2.5s 兜底）
   async bootState() {
-    return { ready: true, startedAt: 0, durationMs: 0 };
+    return { ready: true, startedAt: 0, durationMs: 0, splashShownAt: Date.now() };
   },
   // v3.78.7 splash 上屏回执：纯浏览器环境没有真实窗口可显示，空实现即可
   splashReady() {
@@ -632,6 +672,40 @@ const bridge: ForgeBridge = {
           message: 'ok',
           data: { messages: HISTORY[(params as { sessionId: string }).sessionId] ?? [] },
         };
+      // CV-S09 队列编辑（与真实链路同构：操作后返回新队列 + 广播 queueUpdated）
+      case 'conversation/queueRemove': {
+        const sessionId = (params as { sessionId?: string }).sessionId ?? '';
+        const index = (params as { index?: number }).index ?? -1;
+        const q = sendQueues.get(sessionId) ?? [];
+        if (!Number.isInteger(index) || index < 0 || index >= q.length) {
+          return { code: 5000, message: '队列已变化，删除未生效', data: null };
+        }
+        q.splice(index, 1);
+        if (q.length === 0) sendQueues.delete(sessionId);
+        else sendQueues.set(sessionId, q);
+        emit('conversation.queueUpdated', { sessionId, followUp: [...q] });
+        return { code: 0, message: 'ok', data: { followUp: [...q] } };
+      }
+      case 'conversation/queueSendNow': {
+        const sessionId = (params as { sessionId?: string }).sessionId ?? '';
+        const index = (params as { index?: number }).index ?? -1;
+        const q = sendQueues.get(sessionId) ?? [];
+        if (!Number.isInteger(index) || index < 0 || index >= q.length) {
+          return { code: 5000, message: '队列已变化，发送未生效', data: null };
+        }
+        const [content] = q.splice(index, 1);
+        if (q.length === 0) sendQueues.delete(sessionId);
+        else sendQueues.set(sessionId, q);
+        emit('conversation.queueUpdated', { sessionId, followUp: [...q] });
+        // 打断语义（与真实链路同构）：中止当前轮 → 立即直发该条并重跑脚本 → 剩余队列
+        // 回灌排在其后 FIFO。user 气泡不 emit（真实后端直发路径不转发，UI 本地补），
+        // 但要写 HISTORY（会话切换回显依赖，与真实 pi 持久化一致）
+        (HISTORY[sessionId] ??= []).push({ role: 'user', content: content!, ts: new Date().toISOString() });
+        persistHistory();
+        const script = sendScripts.get(sessionId);
+        if (script) void runScript(sessionId, script);
+        return { code: 0, message: 'ok', data: { followUp: [...q] } };
+      }
       case 'conversation/getContextUsage': {
         const sid = (params as { sessionId?: string }).sessionId ?? '';
         const tokens = mockUsage.get(sid) ?? DEFAULT_USAGE_TOKENS;
@@ -987,6 +1061,68 @@ const bridge: ForgeBridge = {
         // mock 恒回收站成功（真实端降级语义 trashed=false 由 E2E seed 覆盖模拟）
         return { code: 0, message: 'ok', data: { path: target.dirPath, trashed: true } };
       }
+      case 'term/create': {
+        // 与真实端口径一致：cwd 必须是已注册项目根（AC-10-06 的 mock 镜像）
+        const p = params as { cwd?: string };
+        const cwd = p.cwd ?? '';
+        if (!DB.projects.some((x) => x.path === cwd)) {
+          return { code: 1002, message: `工作目录不是已注册项目根: ${cwd}`, data: null };
+        }
+        termSeq += 1;
+        const ptyId = `mock-pty-${termSeq}`;
+        const rec = { cwd, buf: '', alive: true };
+        termPtys.set(ptyId, rec);
+        // 300ms 延迟应答（同真实 spawn 往返量级）：让「连接中…」防御态可观察。
+        // banner+prompt 在应答「之后」的宏任务下发——复刻真实端「先回 ptyId、事件随后推」
+        // 的时序，顺带常态走到前端的首事件缓冲回放路径。
+        await new Promise((r) => setTimeout(r, 300));
+        if (!rec.alive) {
+          return { code: 5000, message: 'mock pty 已被回收', data: null };
+        }
+        setTimeout(() => {
+          if (!rec.alive) return;
+          termOut(ptyId, '\x1b[90m[mock-shell] 假 pty · 仅面板联调，不产生真实进程\x1b[0m\r\n');
+          termOut(ptyId, termPrompt(rec));
+        }, 0);
+        return { code: 0, message: 'ok', data: { ptyId, shell: 'mock-shell', pid: 10000 + termSeq } };
+      }
+      case 'term/write': {
+        const p = params as { ptyId?: string; data?: string };
+        const id = p.ptyId ?? '';
+        const rec = termPtys.get(id);
+        if (rec === undefined || !rec.alive || typeof p.data !== 'string') {
+          return { code: 0, message: 'ok', data: null }; // 死 pty 静默丢弃（同真实端）
+        }
+        for (const ch of p.data) {
+          if (ch === '\r') {
+            termOut(id, '\r\n');
+            const line = rec.buf;
+            rec.buf = '';
+            termRun(id, rec, line);
+          } else if (ch === '\x03') {
+            termOut(id, '^C\r\n');
+            rec.buf = '';
+            termOut(id, termPrompt(rec));
+          } else if (ch === '\x7f') {
+            if (rec.buf.length > 0) {
+              rec.buf = rec.buf.slice(0, -1);
+              termOut(id, '\b \b');
+            }
+          } else if (ch >= ' ') {
+            rec.buf += ch;
+            termOut(id, ch);
+          }
+        }
+        return { code: 0, message: 'ok', data: null };
+      }
+      case 'term/resize':
+        return { code: 0, message: 'ok', data: null };
+      case 'term/kill': {
+        const p = params as { ptyId?: string };
+        const rec = termPtys.get(p.ptyId ?? '');
+        if (rec !== undefined) rec.alive = false;
+        return { code: 0, message: 'ok', data: null }; // 幂等（同真实端）
+      }
       default:
         return { code: 0, message: 'ok', data: null };
     }
@@ -1024,6 +1160,7 @@ const bridge: ForgeBridge = {
   },
   shell: {
     openPath: async () => true,
+    openInBrowser: async () => true,
     // 浏览器 dev 无系统浏览器：直接回失败（点击行为由拦截器静默处理，不报错）
     openExternal: async () => false,
     // 浏览器 dev 无主进程解析：回健康占位，shell 横幅只在 Electron 真机上出现

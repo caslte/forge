@@ -25,6 +25,9 @@ export type ForgeMethod =
   | 'session/detachSessionWindow'
   | 'conversation/sendMessage'
   | 'conversation/cancelStream'
+  // CV-S09 队列编辑：删除 / 立即发送（打断当前轮并直发该条）
+  | 'conversation/queueRemove'
+  | 'conversation/queueSendNow'
   | 'conversation/queryHistory'
   | 'conversation/getLastError'
   | 'conversation/getContextUsage'
@@ -50,6 +53,11 @@ export type ForgeMethod =
   | 'skill/importSkill'
   | 'skill/createSkill'
   | 'skill/deleteSkill'
+  // term（10：内嵌终端，docs/prd/10_embedded_terminal.md）
+  | 'term/create'
+  | 'term/write'
+  | 'term/kill'
+  | 'term/resize'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
   // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
@@ -91,6 +99,9 @@ export type ForgeEvent =
   | 'subagent.removed'
   | 'git.branchChanged'
   | 'updater.stateChanged'
+  // term（10）：pty 下行数据/退出（按 ptyId 归属各 tab）
+  | 'term:data'
+  | 'term:exit'
   // v3.76 启动门闩：forge-core 组装完成后主进程推送一次（拉通道见 getBootState）
   | 'boot.ready'
   // 系统通知点击跳转（主进程 notifyToast 直发，不经 core eventBus）：payload { sessionId }，
@@ -106,6 +117,12 @@ export interface BootState {
   ready: boolean;
   startedAt: number;
   durationMs: number | null;
+  /**
+   * v3.87：主进程 `win.show()` 完成的时刻；未显示为 null。欢迎页字标入场动效据此起播
+   * （必须等「窗口已可见」——BootWelcome 可能在窗口显示之前就 mount，那时约 1.2s 的逐字
+   * 动画会在用户看到之前播完）。与 `boot.splashShown` 事件构成推/拉双通道。
+   */
+  splashShownAt: number | null;
 }
 
 /**
@@ -340,6 +357,12 @@ export interface ForgeBridge {
   bootState(): Promise<BootState>;
   /** splash 上屏回执（v3.78.7）：主进程据此决定何时显示窗口；纯浏览器环境为空实现 */
   splashReady(): void;
+  /**
+   * v3.87：订阅「窗口已显示」发令（splash 字标入场动效的起跑信号）。与 splashReady
+   * 反向：那条是渲染→主（我准备好了），这条是主→渲染（你该演了）。渲染端另有超时
+   * 兜底，故本事件丢失不会让字标永久停在起点。纯浏览器环境为空实现。
+   */
+  onSplashShown?(listener: () => void): () => void;
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
   askUserQuestion: ForgeAskUserQuestion;
@@ -358,6 +381,12 @@ export interface ForgeBridge {
   shell: {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
     openPath(path: string): Promise<boolean>;
+    /**
+     * 系统默认浏览器打开本地 HTML（改动文件卡右键「用浏览器打开」）。
+     * 仅 .html/.htm 且必须是已存在的普通文件——主进程校验（shell/openTarget.ts），
+     * 渲染层的扩展名判定只管菜单项显不显示。失败返回 false。
+     */
+    openInBrowser(path: string): Promise<boolean>;
     /** 系统浏览器/邮件客户端打开外链（仅 http/https/mailto，主进程校验）；失败返回 false */
     openExternal(url: string): Promise<boolean>;
     /** pi bash 解析健康探测（对话区横幅数据源，见 ShellProbeResult 注释） */
@@ -449,6 +478,31 @@ export interface ListSkillsResult {
 export interface SkillConflictData {
   conflictPath: string;
   sourceDir?: string;
+}
+
+/**
+ * ===== 内嵌终端（10）类型 =====
+ * 事实来源在 @forge/desktop term/ptyService.ts；按本文件惯例本地声明同形类型。
+ */
+
+/** term/create 响应 data */
+export interface TermCreateResult {
+  ptyId: string;
+  /** 实际 spawn 的系统 shell 绝对路径（tab 内首行展示用） */
+  shell: string;
+  pid: number;
+}
+
+/** term:data 事件 payload（data = pty 原始输出含 ANSI，直接 xterm.write 不转义） */
+export interface TermDataPayload {
+  ptyId: string;
+  data: string;
+}
+
+/** term:exit 事件 payload（exit 即发：用户退出/kill/崩溃；tab 内显示退出码） */
+export interface TermExitPayload {
+  ptyId: string;
+  exitCode: number;
 }
 
 /**

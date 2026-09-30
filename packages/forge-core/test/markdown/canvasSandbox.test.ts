@@ -1,11 +1,13 @@
 /**
  * 画布卡片渲染层（契约 docs/plan/canvas-card.md）。
  *
- * 守四件事：
+ * 守五件事：
  * 1. ```canvas 围栏出 data-md-canvas 占位，且 sanitize 不吃掉该属性（吃掉就永远不出卡片）；
  * 2. ```html 围栏不被劫持（模型展示 HTML 代码示例是常态，误渲染成卡片是回归）；
  * 3. 占位里的 base64 与源码 UTF-8 往返一致（中文标注不能乱码）；
- * 4. looksLikeHtmlCanvas 降级判据：JS/纯文本 false，残缺 HTML true。
+ * 4. looksLikeHtmlCanvas 降级判据：JS/纯文本 false，残缺 HTML true；
+ * 5. looksLikeProseCanvas「文字塞卡片」判据（2026-09 增）：标签壳包纯文字 true，
+ *    带视觉结构的真图示 false，配套 stripCanvasProse 摘文还段。
  */
 
 import { test } from 'node:test';
@@ -18,10 +20,16 @@ import {
   buildCanvasDocument,
   buildCanvasStandaloneFile,
   clearRenderCache,
+  judgeCanvasSource,
   looksLikeAsciiArt,
+  looksLikeCodeCanvas,
   looksLikeHtmlCanvas,
+  looksLikeProseCanvas,
+  remapDarkBackgrounds,
   renderMarkdown,
+  stripCanvasProse,
 } from '../../src/markdown/renderMarkdown.ts';
+import { P0P1P2_AUDIT_CARD, REAL_STYLE_BLOCK_DIAGRAM as STYLE_BLOCK_DIAGRAM } from './canvasCorpus.ts';
 
 const TOKENS = {
   bg: 'oklch(0.26 0.006 286.2)',
@@ -130,6 +138,250 @@ test('looksLikeAsciiArt：正文段落级判定（minArt=2），普通硬换行�
   assert.equal(looksLikeAsciiArt('选项 off | low | high\n第二行普通文字  ', 2), false);
 });
 
+test('looksLikeProseCanvas：标签壳包纯文字判 true（宿主降级为正文渲染）', () => {
+  // 实测「文字塞卡片」形态：说明文字包在 p/b 里，除排版壳外没有任何视觉结构
+  const prose =
+    '<div style="font-size:13px">' +
+    '<p><b>private（现在）</b>读代码：只有你 + 授权协作者。Secrets 只在你的账号下可见，仅授权可见，规则强制生效，有被爬走风险。</p>' +
+    '<p><b>public（点了之后）</b>读代码：全网可读，匿名也能看，可被镜像站抓走。Actions 日志全网公开，会被搜索引擎长期缓存。</p>' +
+    '<p>最需要记住的一条：public 是一次性的单向门，转私有不回退。</p>' +
+    '</div>';
+  assert.equal(looksLikeProseCanvas(prose), true);
+});
+
+test('looksLikeProseCanvas：真图示不误判——布局/图元特征即 false', () => {
+  // flex 布局 + 边框盒子（真图示的最低配置）
+  assert.equal(
+    looksLikeProseCanvas(
+      '<div style="display:flex;gap:8px"><div style="border:1px solid var(--c-border);padding:8px">网关</div>' +
+        '<div style="border:1px solid var(--c-border);padding:8px">服务</div><div style="border:1px solid var(--c-border);padding:8px">数据库</div>' +
+        '<p>三个节点按请求顺序从左到右排列，箭头由上一节的连线负责画出。</p></div>',
+    ),
+    false,
+  );
+  // 表格图元
+  assert.equal(
+    looksLikeProseCanvas('<table><tr><td>阶段</td><td>动作</td></tr><tr><td>构建</td><td>编译打包并跑测试，产物归档到缓存目录，失败即中断后续部署流程</td></tr></table>'),
+    false,
+  );
+  // 绝对定位 / 浮动（模型绕开 flex 画盒子时的兜底特征）
+  assert.equal(
+    looksLikeProseCanvas('<div style="position:relative;height:120px"><div style="position:absolute;left:0;top:0">源</div><div style="position:absolute;left:120px;top:0">汇，中间由 SVG 连线相接，两个节点以上下错位摆放呈现出汇流的形态</div></div>'),
+    false,
+  );
+});
+
+test('looksLikeProseCanvas：内联箭头的「伪流程卡」判 true（2026-09-29 真机漏网案例）', () => {
+  // 行文里的 A → B → C 是标点不是布局——中文技术写作极常用，初版把箭头当
+  // 视觉特征导致这类卡片畅通进 iframe。文本占源码九成、无任何布局信号。
+  const forkCard =
+    '<div><b>fork 之后你本地会同时连着两个远程仓库</b> origin → 你的 fork（你有 write 权限，随便推） upstream → 原作者仓库（你只能拉，推不上去）' +
+    '<b>你的日常循环</b> 1. git fetch upstream &amp;&amp; git rebase upstream/main ← 拉原作者的新提交 2. 在本地分支上改 → git push origin my-branch ← 推到你自己的 fork ' +
+    '3. 打开你的 fork 页面点 Compare &amp; pull request → 向上游发申请 4. 他审阅 → 合并进他的 main；或提 modifications 要求你改；或直接 Close，网页上也有个 Sync fork 按钮，做的就是第 1 步</div>';
+  assert.equal(looksLikeProseCanvas(forkCard), true);
+  // 纯箭头流水线同理：没有盒子就没有图，降级成正文不丢信息
+  assert.equal(
+    looksLikeProseCanvas('<p>请求先到网关 → 网关做鉴权 → 转发到服务 → 服务写库 → 返回结果给调用方，整条链路按顺序走完一遍，其中任何一步失败都会直接中断并返回错误给调用方</p>'),
+    true,
+  );
+});
+
+test('looksLikeProseCanvas：grid 壳包分级长文判 true（布局信号盖不住长句）', () => {
+  // 第三轮真机漏网：P0/P1/P2 分级列表，外层 display:grid、每条一个带样式 div，
+  // 布局信号全齐但本质是文字堆——长句判据（单片段 ≥80 字）无视布局信号直接判 prose
+  assert.equal(looksLikeProseCanvas(P0P1P2_AUDIT_CARD), true);
+});
+
+test('looksLikeProseCanvas：svg/img 是「画」，即使夹了长文也不降级（剥标签会拆图）', () => {
+  // 标签文本刻意拉过 80 字长句线：没有 GRAPHIC_RE 豁免时这两例都会被判 prose，
+  // 用它们钉住「图形卡不进文字判据」这条豁免
+  const longLabel = '请求先到网关，网关做鉴权之后转发到服务层处理业务逻辑再写入数据库，最后由服务层把结果按原路返回给调用方，整个闭环走完才算一次成功的调用，任何一步失败都会中断流程并在日志里留下完整的审计记录';
+  // SVG 图形卡
+  assert.equal(
+    looksLikeProseCanvas(`<div><svg width="300" height="80"><text x="10" y="40">${longLabel}</text></svg></div>`),
+    false,
+  );
+  // 位图 + 说明文字
+  assert.equal(
+    looksLikeProseCanvas(`<div><img src="data:image/png;base64,iVBORw0KGgo=" alt="架构图"><p>${longLabel}，具体以图为准。</p></div>`),
+    false,
+  );
+});
+
+test('looksLikeProseCanvas：无标签 / 超短文本 / 样式占大头的卡片不归它管', () => {
+  // 无标签但只有 33 字：不到 PROSE_MIN_TEXT，判不出是散文开头还是画图前言，判 false。
+  // （2026-09-29 截图修复后「无标签」不再是排除条件，够长的无标签散文一律判 prose，
+  //   见下方 judgeCanvasSource 截图回归用例。这条现在是被长度门槛挡住的。）
+  assert.equal(looksLikeProseCanvas('就是一段说明文字，没有任何标签，顺便把长度凑到最短限制之上再说两句'), false);
+  // 带标签但可见文本太短：带标题的小图示不值得降级
+  assert.equal(looksLikeProseCanvas('<div class="k">登录接口防爆破机制 · 报告模型 vs 代码实际链路</div>'), false);
+  // 化妆品属性不算视觉特征：只有圆角/底色的薄壳仍是 prose——由第一用例的反向补充验证
+  assert.equal(
+    looksLikeProseCanvas('<div style="border-radius:8px;background:var(--c-surface)"><p>这里是一段足够长的说明文字，除了圆角和底色之外没有任何布局、框线、箭头或表格特征，用来说明化妆品属性不该被当成视觉结构的证据：模型经常拿一个带样式的薄壳 div 包住整段说明文字塞进 canvas 围栏，这类卡片应当判定为文字塞卡片并降级成正文渲染，而不是进固定高度的 iframe，这也是 2026-09 收紧之后的宿主兜底。</p></div>'),
+    true,
+  );
+});
+
+test('stripCanvasProse：块级闭标签还原段落边界，实体解码，script/style 整块丢弃', () => {
+  const out = stripCanvasProse('<div><p>a&amp;b</p><p>第二段<br>折行</p><style>p{color:red}</style><script>alert(1)</script></div>');
+  assert.equal(out, 'a&b\n\n第二段\n折行');
+});
+
+/* ------------------------------------------------------------------ *
+ * 2026-09-29 截图回归：模型把纯文字说明（无任何标签）塞进 ```canvas 围栏。
+ *
+ * 改前：looksLikeProseCanvas 在首行 `if (!looksLikeHtmlCanvas(s)) return false`
+ * 直接出局 → 落 canvas-fallback 代码框；流式期间还先挂一秒骨架（假进度），
+ * 闭合后突然变成黑底代码框。改后：无标签且不像源码 → prose 走正文流。
+ * ------------------------------------------------------------------ */
+
+/** 截图红框第一段：纯文字 + 「·」伪列表，源码里一个标签都没有 */
+const PLAIN_NO_LICENSE = `没有 LICENSE 时，GitHub 自动套用「保留所有权利」
+· 别人能读你的代码、能 fork —— 纯「阅读」不违法
+· 但复制一段代码用在自己项目里、拿去商用、改了再发布 —— 法律上不允许
+即使他们想做善意的贡献也只能提 PR，因为没有授权基础
+
+实际会发生什么
+· 有人想在自己的项目里 import 你的 @forge/core — 被法律挡住，只能 fork 后当私用代码用
+· 企业法务看到「无许可证」直接跳过 → 少掉一大半潜在使用者
+· GitHub 页面右侧会挂一个灰色的 "Unlicensed" 警告标签，看着就不专业`;
+
+/** 截图红框第二段：✓ 勾选式清单，同样无标签 */
+const PLAIN_MIT = `别人【可以】
+✓ 复制代码到自己项目里用
+✓ 拿去商用、闭源打包成自己的产品
+✓ 改造完成完全一样的样子发布
+
+别人【必须】
+· 保留你写的版权声明（不能抹掉"copyright 2026"）
+· 不能声称代码是自己写的
+· 不能拿你的名字担保他们的产品质量`;
+
+test('judgeCanvasSource：无标签纯文字判 prose（截图回归——改前落代码框）', () => {
+  assert.equal(judgeCanvasSource(PLAIN_NO_LICENSE), 'prose');
+  assert.equal(judgeCanvasSource(PLAIN_MIT), 'prose');
+});
+
+test('judgeCanvasSource：无标签真源码仍判 code（不得被 prose 吞掉）', () => {
+  assert.equal(
+    judgeCanvasSource('const total = list.reduce((a, b) => a + b, 0);\nif (total > 30) throw new Error("x");'),
+    'code',
+  );
+  // 无标签字符画：必须等宽保对齐，判 code 而非 prose（prose 会剥标签毁掉对齐）
+  assert.equal(judgeCanvasSource('| 阶段 | 动作 |\n| 构建 | 编译打包 |\n| 部署 | 发布上线 |'), 'code');
+});
+
+test('looksLikeCodeCanvas：句中出现的代码词不算源码（截图正文里就有 import）', () => {
+  // 「在自己的项目里 import 你的 @forge/core」——import 在句中，是中文技术写作的
+  // 普通名词用法。关键词必须锚行首，否则纯中文说明被误判成源码、照旧掉进代码框。
+  assert.equal(looksLikeCodeCanvas(PLAIN_NO_LICENSE), false);
+  assert.equal(looksLikeCodeCanvas(PLAIN_MIT), false);
+  // 行首才是源码
+  assert.equal(looksLikeCodeCanvas('import os\nprint(os.getcwd())'), true);
+  assert.equal(looksLikeCodeCanvas('for (const x of xs) {\n  f(x);\n}'), true);
+});
+
+test('judgeCanvasSource：真 HTML 卡片判 html，布局信号不被 prose 抢走', () => {
+  assert.equal(judgeCanvasSource('<div class="k">登录接口防爆破机制</div>'), 'html');
+  assert.equal(
+    judgeCanvasSource('<div style="display:flex;gap:8px"><div style="border:1px solid var(--c-border);padding:8px">网关</div><div style="border:1px solid var(--c-border);padding:8px">服务</div></div>'),
+    'html',
+  );
+  assert.equal(judgeCanvasSource('<table><tr><td>阶段</td><td>动作</td></tr></table>'), 'html');
+});
+
+test('judgeCanvasSource：终态没有 undecided——短句也是内容（G04 裁决），流式仍交给骨架', () => {
+  // 终态（围栏已闭合）：一句话就是 prose，不再落 undecided→code 的等宽代码框
+  assert.equal(judgeCanvasSource('画好了'), 'prose');
+  assert.equal(judgeCanvasSource('没有 LI'), 'prose');
+  assert.equal(judgeCanvasSource(''), 'empty');
+  // 流式（围栏未闭合）：太短判不出后续，交给骨架占位——undecided 只存在于流式
+  assert.equal(judgeCanvasSource('没有 LI', { streaming: true }), 'undecided');
+  // 一旦够长就判死，且对无标签内容单调（文本只增不减）——
+  // 骨架不会在闭合瞬间翻面，这是提前撤骨架的前提
+  const half = PLAIN_NO_LICENSE.slice(0, Math.floor(PLAIN_NO_LICENSE.length / 2));
+  assert.equal(judgeCanvasSource(half), 'prose');
+  assert.equal(judgeCanvasSource(PLAIN_NO_LICENSE), 'prose');
+});
+
+test('stripCanvasProse：伪列表符还原成 markdown 列表（否则降级正文糊成一段话）', () => {
+  // 截图里的 `·` 与 `✓` 剥成纯文本后只是行内字面量，不还原会丢掉原列表结构
+  assert.equal(
+    stripCanvasProse(PLAIN_NO_LICENSE).split('\n')[1],
+    '- 别人能读你的代码、能 fork —— 纯「阅读」不违法',
+  );
+  assert.equal(stripCanvasProse(PLAIN_MIT).split('\n')[1], '- 复制代码到自己项目里用');
+  // 还原后过 renderMarkdown 出真 <ul>，不再出代码块
+  const html = renderMarkdown(stripCanvasProse(PLAIN_MIT));
+  assert.ok(html.includes('<ul>'));
+  assert.ok(!html.includes('<pre'));
+  // 行中的 · / ✓ 不受影响（只处理行首）
+  assert.ok(stripCanvasProse('<p>范围是 A · B 的并集</p>').includes('A · B'));
+});
+
+test('stripCanvasProse：行首排版缩进剥掉（防 renderMarkdown 顶成代码块），连续空行收敛', () => {
+  const out = stripCanvasProse('<div>\n  <p>第一段有缩进</p>\n\n  <p>第二段也有</p>\n</div>');
+  assert.equal(out, '第一段有缩进\n\n第二段也有');
+  // 实体解码后不会复活成真标签（先剥标签后解码的顺序契约）
+  assert.equal(stripCanvasProse('<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>'), '<script>alert(1)</script>');
+});
+
+test('judgeCanvasSource：<canvas> 剥元素按其余内容判（2026-09-30 G01 裁决——不再整卡一票否决）', () => {
+  // 沙箱禁脚本，<canvas> 必然是死的；但该死的是元素，不是整张卡。
+  // 死画布里的 ASCII 表格回退文本：剥掉 canvas 标签后走字符画路径 → 仍判 code（等宽保对齐）
+  const deadCanvas =
+    '<canvas width="640" height="150" style="background:#fff;font:13px/1.5 system-ui">\n' +
+    "localStorage 'forge:content-width'   生效值\n" +
+    '─────────────────────────────────────────────\n' +
+    '(缺失 / 非法)  ────────► standard 920px 居中   ← 改后默认\n' +
+    "'standard'    ────────► standard 920px 居中\n" +
+    '</canvas>';
+  assert.equal(judgeCanvasSource(deadCanvas), 'code');
+  // 好卡片混一个装饰 canvas：剥掉后是合规网格 → html（改前整卡拖进代码块）
+  const mixed = '<div style="display:grid;grid-template-columns:1fr 1fr"><div>步骤一</div><div>步骤二</div>' +
+    '<div>步骤三</div><div>步骤四</div><canvas width="80" height="40"></canvas></div>';
+  assert.equal(judgeCanvasSource(mixed), 'html');
+  // 正文里提到 canvas 一词不受牵连（无标签长文照旧 prose）
+  assert.equal(judgeCanvasSource('这段说明里提到了 canvas 围栏这个词，但是没有任何标签，长度也足够判出是散文，应当照常降级成正文流渲染。'), 'prose');
+  // looksLikeProseCanvas 单元口径：canvas 卡不判 prose（剥标签后内容参加判决）
+  assert.equal(looksLikeProseCanvas(deadCanvas), false);
+});
+
+test('remapDarkBackgrounds：暗色下写死的浅色背景换成 --c-surface，前景色与彩色不动', () => {
+  const dark = { ...TOKENS, bg: '#ffffff' };
+  const light = TOKENS; // bg 是深色 oklch
+  assert.equal(
+    remapDarkBackgrounds('<div style="background:#fff">a</div>', dark),
+    '<div style="background:var(--c-surface)">a</div>',
+  );
+  assert.equal(
+    remapDarkBackgrounds('<div style="BACKGROUND: WHITE">a</div>', dark),
+    '<div style="BACKGROUND: var(--c-surface)">a</div>',
+  );
+  assert.equal(
+    remapDarkBackgrounds('<div style="background-color:rgb(255, 255, 255)">a</div>', dark),
+    '<div style="background-color:var(--c-surface)">a</div>',
+  );
+  // 前景色 white 不动：暗色下白字是常见正确写法，全局换掉会把字洗没
+  assert.equal(remapDarkBackgrounds('<div style="color:#fff">a</div>', dark), '<div style="color:#fff">a</div>');
+  // 非近白色不动：#ff0000 曾被 \b 边界误伤成 #fff 前缀
+  assert.equal(remapDarkBackgrounds('<div style="background:#ff0000">a</div>', dark), '<div style="background:#ff0000">a</div>');
+  assert.equal(remapDarkBackgrounds('<div style="background:#fefefe">a</div>', dark), '<div style="background:#fefefe">a</div>');
+  // 令牌写法原样穿过
+  assert.equal(
+    remapDarkBackgrounds('<div style="background:var(--c-surface)">a</div>', dark),
+    '<div style="background:var(--c-surface)">a</div>',
+  );
+  // 亮色主题：整体原样（白背景本来就对，不做多余改写）
+  assert.equal(remapDarkBackgrounds('<div style="background:#fff">a</div>', light), '<div style="background:#fff">a</div>');
+});
+
+test('沙箱文档：暗色下拼装时套用背景重映射', () => {
+  const doc = buildCanvasDocument('<div style="background:#fff">内容</div>', { ...TOKENS, bg: '#ffffff' });
+  assert.ok(doc.includes('background:var(--c-surface)'));
+  assert.ok(!doc.includes('background:#fff'));
+});
+
 test('沙箱文档：预注入语义变量 + 卡片源码原样进 body', () => {
   const doc = buildCanvasDocument('<div class="k">内容</div>', TOKENS);
   assert.ok(doc.startsWith('<!DOCTYPE html>'));
@@ -142,4 +394,160 @@ test('另存文档：独立可打开，标题转义不进标签', () => {
   const file = buildCanvasStandaloneFile('<div>x</div>', TOKENS, '</title><script>');
   assert.match(file, /<title>&lt;\/title&gt;&lt;script&gt;<\/title>/);
   assert.ok(file.includes('<meta name="viewport"'));
+});
+
+/* ------------------------------------------------------------------ *
+ * 流式口径（judgeCanvasSource(src, { streaming: true })）。
+ *
+ * 2026-09-30 真机回归：画布卡片在流式期间一直闪，闪的时候看见源码。成因是终态判据
+ * 直接跑在半截源码上——`<div style=` 因属性里的 `=` 命中 looksLikeCodeCanvas（骨架
+ * 提前塌成代码块），长内联样式因半截属性值算进「最长文本片段」命中 PROSE_LONG_RUN
+ * （骨架塌成正文），标签一闭合又变回骨架。150ms 一次的重渲染下就是来回翻面。
+ *
+ * 这些用例把「流式全程待在骨架族」钉死：前缀每一步都不许落到 prose / code。
+ * ------------------------------------------------------------------ */
+
+/** 骨架族：终态是内容、中途只该出骨架的两态 */
+function onSkeleton(v: string): boolean {
+  return v === 'undecided' || v === 'html';
+}
+
+/** 逐字符前缀走一遍（含每 1 字符的细粒度，比真机节流点更严） */
+function streamingWalk(source: string, step = 1): string[] {
+  const seen: string[] = [];
+  for (let i = 0; i <= source.length; i += step) {
+    const v = judgeCanvasSource(source.slice(0, i), { streaming: true });
+    if (seen[seen.length - 1] !== v) seen.push(v);
+  }
+  return seen;
+}
+
+/** 真机常见写法：每个节点一条长内联样式（属性值远超 PROSE_LONG_RUN） */
+const LONG_STYLE_DIAGRAM = `<div style="display:flex;flex-direction:column;gap:14px;padding:16px;border:1px solid var(--c-border);border-radius:10px">
+  <div style="font-weight:600;font-size:14px;color:var(--c-fg)">edu 平台根目录（多仓库并列）</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
+    <div style="border:1px solid var(--c-border);border-radius:8px;padding:10px 14px;background:var(--c-surface)">edu-admin 后台管理</div>
+    <div style="border:1px solid var(--c-border);border-radius:8px;padding:10px 14px;background:var(--c-surface)">edu-service 业务层</div>
+  </div>
+</div>`;
+
+test('流式口径：半截标签不落代码块（`<div style=` 是「还没画完」，不是源码）', () => {
+  // 改前：无完整标签 + 属性里的 `=` → looksLikeCodeCanvas → code，卡片直接变代码块
+  assert.equal(judgeCanvasSource('<div style=', { streaming: true }), 'undecided');
+  assert.equal(judgeCanvasSource('<div style="display:flex;gap:14px;padding:16px', { streaming: true }), 'undecided');
+  // 终态口径不变（围栏就在半截标签处闭合：源码确实不可渲染，落代码块）
+  assert.equal(judgeCanvasSource('<div style='), 'code');
+  // 标签闭合 → 骨架等闭合，不落终态
+  assert.equal(judgeCanvasSource('<div style="display:flex">', { streaming: true }), 'html');
+});
+
+test('流式口径：长内联样式的 HTML 图全程待在骨架族（不塌成正文/代码）', () => {
+  const seen = streamingWalk(LONG_STYLE_DIAGRAM);
+  assert.deepEqual(
+    seen.filter((v) => !onSkeleton(v)),
+    [],
+    `流式中途出现了终态分支：${seen.join(' → ')}`,
+  );
+  // 终态照旧判 html（长样式不等于「文字塞卡片」）
+  assert.equal(judgeCanvasSource(LONG_STYLE_DIAGRAM), 'html');
+});
+
+test('流式口径：无标签纯文字仍提前出正文（不挂假进度，E-CA-009 语义不变）', () => {
+  const half = PLAIN_NO_LICENSE.slice(0, Math.floor(PLAIN_NO_LICENSE.length / 2));
+  assert.equal(judgeCanvasSource(half, { streaming: true }), 'prose');
+  assert.equal(judgeCanvasSource(PLAIN_NO_LICENSE, { streaming: true }), 'prose');
+  // 单调：一旦 prose，后续前缀不再回骨架
+  const seen = streamingWalk(PLAIN_NO_LICENSE, 7);
+  assert.equal(seen.includes('prose'), true);
+  assert.equal(seen[seen.length - 1], 'prose');
+});
+
+test('流式口径：无标签源码/字符画仍判 code（等宽对齐不能等闭合）', () => {
+  assert.equal(
+    judgeCanvasSource('const total = list.reduce((a, b) => a + b, 0);', { streaming: true }),
+    'code',
+  );
+  assert.equal(judgeCanvasSource('| 阶段 | 动作 |\n| 构建 | 编译打包 |', { streaming: true }), 'code');
+});
+
+test('流式口径：刚开栏（空 / 半截标签）只给 undecided，不出空态文案', () => {
+  // 改前 blocked 且源码为空时落到「画布没有内容」，等于开栏那一帧闪一次空态
+  assert.equal(judgeCanvasSource('', { streaming: true }), 'undecided');
+  assert.equal(judgeCanvasSource('\n  ', { streaming: true }), 'undecided');
+  assert.equal(judgeCanvasSource('', ), 'empty');
+});
+
+test('流式口径：半截 <canvas 不提前出终态，闭合后按剥掉元素后的内容判', () => {
+  // 标签没写完：partial-trim 剪掉 → undecided，骨架等闭合
+  assert.equal(judgeCanvasSource('<canvas width="640" style="background:#fff"', { streaming: true }), 'undecided');
+  // 开标签写完但元素未闭合：剥掉 canvas 开标签后剩回退文本——流式照旧 undecided
+  assert.equal(
+    judgeCanvasSource('<canvas width="640" style="background:#fff">生效值 ────► 920px', { streaming: true }),
+    'undecided',
+  );
+  // 闭合（即便 canvas 元素本身没闭合）：短回退文本按内容判 prose（G04 裁决）
+  assert.equal(
+    judgeCanvasSource('<canvas width="640" style="background:#fff">生效值 ────► 920px'),
+    'prose',
+  );
+});
+
+test('半截标签裁剪不误伤比较运算符：代码仍判 code', () => {
+  // `<` 后是空格或数字，不算标签开头
+  assert.equal(
+    judgeCanvasSource('for (let i = 0; i < n; i++) {\n  sum += xs[i];\n}', { streaming: true }),
+    'code',
+  );
+  assert.equal(judgeCanvasSource('if (a < b) return a;', { streaming: true }), 'code');
+  assert.equal(judgeCanvasSource('let ok = xs.length', { streaming: true }), 'code');
+});
+
+test('流式口径：带标签的长文（薄壳包长句）也提前出正文，且不回翻', () => {
+  const shell = `<div style="border-radius:8px"><p>${'这段说明文字足够长，长到超过长句阈值，用来验证带标签的长文在中途也能提前出正文而不是一直挂骨架转圈。'.repeat(2)}</p><div style="display:flex;gap:8px"><span>甲</span><span>乙</span></div></div>`;
+  assert.equal(judgeCanvasSource(shell, { streaming: true }), 'prose');
+  const seen = streamingWalk(shell, 5);
+  const idx = seen.indexOf('prose');
+  assert.notEqual(idx, -1);
+  assert.deepEqual(seen.slice(idx), ['prose'], `判成 prose 后又回翻了：${seen.join(' → ')}`);
+  // 终态同判 prose（前哨共用，闭合不翻面）
+  assert.equal(judgeCanvasSource(shell), 'prose');
+});
+
+/* ------------------------------------------------------------------ *
+ * 2026-09-30 真机回归：带 <style> 块的流程图卡片被误降级成正文。
+ *
+ * 症状与根因见 docs 注释（STYLE_BLOCK_DIAGRAM 语料本体已挪至
+ * ./canvasCorpus.ts，与 demo 矩阵、语料回归锁共用一份）。
+ * ------------------------------------------------------------------ */
+
+test('judgeCanvasSource：带 <style> 块的网格流程图判 html（2026-09-30 真机——不得剥成正文）', () => {
+  // 改前：<style> 内容整段算进最长文本片段（1612 字）→ 长句铁证 → prose，
+  // 界面把流程图逐行摊平成正文，即用户截图那个样子。
+  assert.equal(judgeCanvasSource(STYLE_BLOCK_DIAGRAM), 'html');
+  assert.equal(looksLikeProseCanvas(STYLE_BLOCK_DIAGRAM), false);
+  // 流式全程待在骨架族：闭合瞬间不翻面（骨架 → 卡片）
+  const seen = streamingWalk(STYLE_BLOCK_DIAGRAM, 3);
+  assert.deepEqual(
+    seen.filter((v) => !onSkeleton(v)),
+    [],
+    `流式中途出现了终态分支：${seen.join(' → ')}`,
+  );
+});
+
+test('长句判据：<style>/<script> 整块不算文本（CSS 不是可见文本）', () => {
+  // 只有 style 内容、没有一个可见长句的卡片：判 html 而不是 prose
+  const styleOnly = `<style>${'.a{color:red}'.repeat(40)}</style><div class="a">短标签</div><div class="a">短标签</div>`;
+  assert.equal(judgeCanvasSource(styleOnly), 'html');
+  // script 同理：脚本源码不顶穿长句阈值。剥掉脚本后只剩「甲乙」两个字 +
+  // script 块在场 → 空壳判 prose（G02 裁决：可见文本近零的卡不出空白 iframe）
+  const scriptHeavy = `<script>${'var x = 1;'.repeat(40)}</script><div>甲</div><div>乙</div>`;
+  assert.equal(judgeCanvasSource(scriptHeavy), 'prose');
+});
+
+test('长句判据：加占比门槛后「长句占满」的文字堆仍判 prose（存量防线不放松）', () => {
+  // 与上方 P0/P1/P2 用例同源：极值判据在长句占 89% 时不得被新门槛放过。
+  assert.equal(looksLikeProseCanvas(P0P1P2_AUDIT_CARD), true);
+  assert.equal(judgeCanvasSource(P0P1P2_AUDIT_CARD), 'prose');
+  // 「一堆短标签 + 一两条长说明」是图示常态，不该按极值判 prose
+  assert.equal(looksLikeProseCanvas(STYLE_BLOCK_DIAGRAM), false);
 });

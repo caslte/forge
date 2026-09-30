@@ -30,19 +30,20 @@ body {
   user-select: none;
 }
 
-/* 暗色 body：D 档光场（原型 bg-tone-options-demo.html，213.4° 对角线性光场 + 底部反光）。
+/* 暗色 body：213.4° 对角线性光场 + 底部反光，峰值与 App.vue 的 .shell-sheen 逐位一致
+   （v6.1：0.096 → 0.035，整体等比缩到 0.365——两处不同步会在透出 body 的场景看到第二个剖面）。
    通常被 .app-container 盖住不可见，这里保持同款是为了多窗口画布等透出 body 的场景
    不出现第二套底色。光场本体画在 App.vue 的 .shell-sheen（盖顶层），此处仅兜底。 */
 :root[data-theme='dark'] body {
   background:
     linear-gradient(213.4deg,
-      rgba(205, 218, 235, 0.096) 0%,
-      rgba(205, 218, 235, 0.050) 28%,
-      rgba(205, 218, 235, 0.024) 47%,
-      rgba(205, 218, 235, 0.019) 60%,
-      rgba(205, 218, 235, 0.010) 72%,
+      rgba(205, 218, 235, 0.035) 0%,
+      rgba(205, 218, 235, 0.018) 28%,
+      rgba(205, 218, 235, 0.009) 47%,
+      rgba(205, 218, 235, 0.007) 60%,
+      rgba(205, 218, 235, 0.004) 72%,
       rgba(205, 218, 235, 0.000) 82%),
-    linear-gradient(0deg, rgba(205, 218, 235, 0.005) 0%, rgba(205, 218, 235, 0) 14%),
+    linear-gradient(0deg, rgba(205, 218, 235, 0.002) 0%, rgba(205, 218, 235, 0) 14%),
     var(--background);
 }
 
@@ -194,6 +195,59 @@ textarea:focus {
 
 .global-tooltip.is-visible {
   opacity: 1;
+}
+
+/* 选区复制浮窗（CV-S13，逻辑在 src/selectionPopover.ts 全局单例）。
+   反色底与全局 tooltip 完全同款（--foreground 底 / --background 字），只是可点击；
+   z-index 压在 tooltip（99999）之下：hover 浮窗按钮时 tooltip 仍能盖在它上面。 */
+.selection-pop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9998;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+
+.selection-pop.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.selection-pop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--foreground);
+  color: var(--background);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+
+/* hover 必须显式重申字色：全局 button:hover { color: var(--brand) } 的特异性 (0,1,1)
+   压过上面 .selection-pop-btn 的 (0,1,0)，鼠标一停上去就会把「--background 压在
+   --foreground 底上」翻成「--brand 压在 --foreground 底上」——深色主题下就是
+   rgb(197,198,203) 的字压在 rgb(179,180,184) 的底上，对比度 1.2:1，字等于消失
+   （点「复制」后反馈态正好停在这儿，肉眼只见一个灰药丸）。
+   hover 反馈也从 opacity 0.9 换成底色压深：opacity 会连字一起压暗，且不像"可点"。 */
+.selection-pop-btn:hover {
+  color: var(--background);
+  background: color-mix(in oklab, var(--foreground) 90%, black);
+}
+
+.selection-pop-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 /* Markdown 代码块复制按钮（markup 由 forge-core renderMarkdown 输出，v-html 注入）。

@@ -22,8 +22,25 @@ document.body.appendChild(tip);
 
 let anchor: Element | null = null;
 
+// 锚点停留在原地点击切换状态（如终端配色档三态循环）时，data-tooltip 属性变了
+// 但不会有 mousemove/mouseover 再来重读——用 observer 让在显文案跟着属性走。
+const tipTextObserver = new MutationObserver(() => {
+  if (anchor === null) return;
+  const text = anchor.getAttribute('data-tooltip');
+  if (text) tip.textContent = text;
+  else hide();
+});
+
+function setAnchor(target: Element, text: string): void {
+  anchor = target;
+  tip.textContent = text;
+  tipTextObserver.disconnect();
+  tipTextObserver.observe(target, { attributes: true, attributeFilter: ['data-tooltip'] });
+}
+
 function hide(): void {
   anchor = null;
+  tipTextObserver.disconnect();
   tip.classList.remove('is-visible');
 }
 
@@ -53,8 +70,7 @@ window.addEventListener('mouseover', (e) => {
     hide();
     return;
   }
-  anchor = target;
-  tip.textContent = text;
+  setAnchor(target, text);
   place();
   tip.classList.add('is-visible');
 }, true);
@@ -69,8 +85,7 @@ window.addEventListener('mousemove', (e) => {
     hide();
     return;
   }
-  anchor = target;
-  tip.textContent = target.getAttribute('data-tooltip');
+  setAnchor(target, target.getAttribute('data-tooltip') ?? '');
   place();
   tip.classList.add('is-visible');
 }, true);

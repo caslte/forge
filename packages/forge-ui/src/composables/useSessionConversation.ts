@@ -76,6 +76,40 @@ export function interpretErrorPayload(payload: unknown): {
   return { retry: null, error: p?.error ?? null, message: p?.message ?? null };
 }
 
+/** 错误横幅三件套的快照（errorMsg / errorInfo / retryInfo） */
+export interface ErrorBannerState {
+  message: string | null;
+  info: ForgeErrorInfo | null;
+  retry: { attempt: number; maxAttempts: number } | null;
+}
+
+/**
+ * 错误横幅状态机（纯函数，横幅三件套的唯一改写处）。
+ *
+ * 「恢复」的定义（新轮次起点 = streaming）：main 侧在自动重试开始时会先把状态从
+ * error 改回 streaming（红点回进行中），此前那条终态错误横幅如果还挂着，就会
+ * 在「重试正在跑 / 已经跑通」的整个过程中一直显示在对话底部 —— 用户看到的就是
+ * 「错过一次就永远挂着，恢复了也不消失」。因此 streaming 与轮次正常终态
+ * （done/idle/canceled）一样清空；只有 status='error' 保留，等下一次发送/重试替换。
+ *
+ * retry 事件与 error 分类互斥：重试中轮次未终止，横幅（v-if）会盖住重试进度条
+ * （v-else-if），两者同时存在时用户只看到旧错误。
+ */
+export function reduceErrorBanner(
+  cur: ErrorBannerState,
+  input:
+    | { kind: 'status'; status: string }
+    | { kind: 'event'; payload: unknown; fallbackMessage: string },
+): ErrorBannerState {
+  if (input.kind === 'status') {
+    if (input.status === 'error') return cur;
+    return { message: null, info: null, retry: null };
+  }
+  const { retry, error, message } = interpretErrorPayload(input.payload);
+  if (retry !== null) return { message: null, info: null, retry };
+  return { message: message ?? input.fallbackMessage, info: error, retry: null };
+}
+
 /**
  * 单会话对话状态机（单视图 ConversationView 与多窗口 MultiWindowConversation 共用）。
  *
@@ -107,6 +141,16 @@ export function useSessionConversation(options: {
   const errorInfo = ref<ForgeErrorInfo | null>(null);
   /** CV-ERR-01：自动重试进行中（轮次未终止）。与 errorInfo 互斥。 */
   const retryInfo = ref<{ attempt: number; maxAttempts: number } | null>(null);
+
+  /** 读/写横幅三件套：所有改写都过 reduceErrorBanner，避免各处口径漂移 */
+  function bannerState(): ErrorBannerState {
+    return { message: errorMsg.value, info: errorInfo.value, retry: retryInfo.value };
+  }
+  function applyBannerState(s: ErrorBannerState): void {
+    errorMsg.value = s.message;
+    errorInfo.value = s.info;
+    retryInfo.value = s.retry;
+  }
 
   /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
   const toolEventIndex = new Map<string, number>();
@@ -365,6 +409,8 @@ function dismissAskAnswered(): void {
   // 流式新消息天然落在窗口尾（slice 取尾部），无需特殊处理。
   const HISTORY_INITIAL_ITEMS = 24;
   const HISTORY_STEP_ITEMS = 16;
+  /** 时间轴定位时目标上方的余量（展示项）：避免目标贴窗口首项、动画一结束就撞上触顶补挂 */
+  const HISTORY_LOCATE_HEADROOM = 8;
 
   const historyWindow = ref<number>(HISTORY_INITIAL_ITEMS);
   /** 尾部窗口化后的展示项；窗口盖满时与 displayItems 同一引用（避免多余 patch） */
@@ -387,16 +433,52 @@ function dismissAskAnswered(): void {
     return true;
   }
 
+  /** 消息索引（messages 序）→ 展示项索引（displayItems 序）；工具组内无单条消息故 -1 */
+  function displayIndexOfMessage(messageIndex: number): number {
+    const items = displayItems.value;
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i];
+      if (!it || it.kind !== 'message') continue;
+      if (it.idx >= messageIndex) return i;
+    }
+    return -1;
+  }
+
   /**
-   * 时间轴定位目标在窗口外时，扩窗到「该消息起往后全挂载」。
-   * 目标 user 消息及其后的内容都要可见（回看模式向上翻页需要）。
+   * 时间轴定位：把窗口扩到「目标之上再留 HISTORY_LOCATE_HEADROOM 项、目标及其后全挂载」。
+   * 目标 user 消息及其后的内容都要可见（回看模式向上翻页需要）；留一点上方余量是必要的——
+   * 目标贴住窗口首项时，平滑滚动必然途经顶部，动画一结束就撞上「向上触顶补挂历史」，
+   * 补挂的锚定又会把视口拽走（长会话里点靠前条目必现）。
+   *
+   * 入参是 **messages 数组索引**，而窗口是按 **displayItems 展示项** 切的（工具聚合成组后
+   * 两者不再同序）。这里必须先换算成展示项索引再比较/换算长度——直接拿消息索引和
+   * windowStartIndex 比会在长会话里误判「目标已挂载」，点击时间线条目落到别的轮次上。
    * @returns 窗口是否发生变化（调用方据此等待 patch 后再查 DOM）
    */
-  function expandHistoryWindowTo(index: number): boolean {
-    if (index >= windowStartIndex.value) return false;
-    const remaining = displayItems.value.length - index;
+  function expandHistoryWindowTo(messageIndex: number): boolean {
+    const target = displayIndexOfMessage(messageIndex);
+    if (target < 0) return false;
+    const want = Math.max(0, target - HISTORY_LOCATE_HEADROOM);
+    if (want >= windowStartIndex.value) return false;
+    const remaining = displayItems.value.length - want;
     if (remaining > historyWindow.value) historyWindow.value = remaining + 8;
     return true;
+  }
+
+  /**
+   * 该 user 消息在**当前已挂载窗口**内的 DOM 序（0 起），供视图 querySelectorAll('.msg-user')
+   * 取节点。窗口截断时全量序会与 DOM 序错位（上方轮次未挂载），故只数窗口内、且在目标之前的
+   * user 消息。目标未挂载 → -1。
+   */
+  function userOrdinalInWindow(messageIndex: number): number {
+    const items = windowedItems.value;
+    let n = 0;
+    for (const it of items) {
+      if (it.kind !== 'message' || it.msg.role !== 'user') continue;
+      if (it.idx === messageIndex) return n;
+      n += 1;
+    }
+    return -1;
   }
 
   // ===== 历史加载 / 会话切换 =====
@@ -406,7 +488,9 @@ function dismissAskAnswered(): void {
     const sid = options.getSessionId();
     if (sid === null) return; // 草稿态无会话，无需加载
     loadingHistory.value = true;
-    errorMsg.value = null;
+    // 三件套一起清：只清 errorMsg 会把 errorInfo 留在横幅里（errorBanner 只看 errorInfo），
+    // 切会话/重拉历史后旧错误就永久挂在新会话底部。下方 getLastError 路径按需恢复。
+    applyBannerState(reduceErrorBanner(bannerState(), { kind: 'status', status: 'idle' }));
     try {
       const res = await call<{ messages: ConversationMessage[] }>('conversation/queryHistory', {
         sessionId: sid,
@@ -452,6 +536,7 @@ function dismissAskAnswered(): void {
         if (sid === options.getSessionId() && res.message) {
           errorMsg.value = res.message;
           errorInfo.value = res.error ?? null;
+          retryInfo.value = null;
         }
       } catch {
         // 静默降级：不显示横幅即可
@@ -475,9 +560,7 @@ function dismissAskAnswered(): void {
     historyWindow.value = HISTORY_INITIAL_ITEMS;
     isStreaming.value = false;
     loadingHistory.value = false;
-    errorMsg.value = null;
-    errorInfo.value = null;
-    retryInfo.value = null;
+    applyBannerState(reduceErrorBanner(bannerState(), { kind: 'status', status: 'idle' }));
     stopElapsed();
   }
 
@@ -498,9 +581,7 @@ function dismissAskAnswered(): void {
       }
       return;
     }
-    errorMsg.value = null;
-    errorInfo.value = null;
-    retryInfo.value = null;
+    applyBannerState(reduceErrorBanner(bannerState(), { kind: 'status', status: 'streaming' }));
     messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
     clearAskAnswered(sid);
     isStreaming.value = true;
@@ -513,6 +594,27 @@ function dismissAskAnswered(): void {
       if (sid !== null) turnStartAt.delete(sid);
       stopElapsed();
       isStreaming.value = false;
+      errorMsg.value = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /**
+   * ⚡立即发送（CV-S09 队列编辑，打断语义）：中止当前轮并直发队列第 index 条。
+   * user 气泡必须 UI 本地补——直发路径的气泡由本层渲染（后端只在「队列派发确认」
+   * 时转发 user 气泡，直发起点会清空 pendingDelivery 不转发），不补的话对话区
+   * 会出现「回复凭空提到没发过的消息」。流式读秒/阶段由 statusChanged(streaming)
+   * 事件（新轮次起点）自动重启，无需在此处理。
+   */
+  async function sendQueuedNow(index: number): Promise<void> {
+    const sid = options.getSessionId();
+    const t = queueItems.value[index]?.trim();
+    if (!t || sid === null) return;
+    applyBannerState(reduceErrorBanner(bannerState(), { kind: 'status', status: 'streaming' }));
+    messages.value.push({ role: 'user', content: t, ts: new Date().toISOString() });
+    scheduleScroll();
+    try {
+      await call<null>('conversation/queueSendNow', { sessionId: sid, index });
+    } catch (e) {
       errorMsg.value = e instanceof Error ? e.message : String(e);
     }
   }
@@ -702,19 +804,18 @@ function dismissAskAnswered(): void {
       isStreaming.value = true;
       startElapsed(p.sessionId);
       resetStreamPhase();
+      // 新轮次起点 = 恢复：清掉上一轮残留的错误横幅/重试进度
+      //（自动重试开始时 main 会把状态改回 streaming，此前那条终态错误必须让位）
+      applyBannerState(reduceErrorBanner(bannerState(), { kind: 'status', status: 'streaming' }));
     } else if (p.status === 'done' || p.status === 'idle' || p.status === 'canceled' || p.status === 'error') {
       // 轮次终态：缓冲里剩余的文本一次补齐上屏（取消/出错也不丢已生成内容）
       flushSmoothText(p.sessionId);
       turnStartAt.delete(p.sessionId);
       stopElapsed();
       isStreaming.value = false;
-      // done/idle/canceled 后清错误横幅：自动重试提示（经 conversation.error 展示）在
-      // 轮次正常结束时自动消失；error 横幅保留到下次发送/重试再替换
-      if (p.status !== 'error') {
-        errorMsg.value = null;
-        errorInfo.value = null;
-        retryInfo.value = null;
-      }
+      // 轮次终态后清错误横幅（自动重试提示同样经 conversation.error 展示，随轮次结束消失）；
+      // status='error' 是例外——保留到「新轮次起点/下一次发送/重试」再替换（见 reduceErrorBanner）
+      applyBannerState(reduceErrorBanner(bannerState(), { kind: 'status', status: p.status }));
       // CV-S11 兜底：会话终态时把残留的 in_progress 标为 completed，避免 TodoPanel
       // 永远挂着呼吸点。快照按 sessionId 隔离，只动当前会话。无可恢复快照时 noop。
       const prevSnap = todoSnapshots.get(p.sessionId) ?? null;
@@ -730,14 +831,13 @@ function dismissAskAnswered(): void {
     // conversation.error 还承载自动重试提示（轮次仍在 streaming），此处置假会误断进行中状态
     // CV-ERR-01：retry 与 error 互斥——前者是「轮次还在跑，正在重试」，
     // 不是错误，UI 要显示进度而不是红色横幅（否则重试成功也留着一条红字）。
-    const { retry, error, message } = interpretErrorPayload(payload);
-    if (retry !== null) {
-      retryInfo.value = retry;
-      return;
-    }
-    retryInfo.value = null;
-    errorInfo.value = error;
-    errorMsg.value = message ?? i18n.t('chat.conversationError', { code: p.code ?? 'unknown' });
+    applyBannerState(
+      reduceErrorBanner(bannerState(), {
+        kind: 'event',
+        payload,
+        fallbackMessage: i18n.t('chat.conversationError', { code: p.code ?? 'unknown' }),
+      }),
+    );
   }
 
   /**
@@ -1100,6 +1200,7 @@ function dismissAskAnswered(): void {
     historyWindowTruncated,
     expandHistoryWindow,
     expandHistoryWindowTo,
+    userOrdinalInWindow,
     isMessageStreaming,
     toggleGroup,
     sessionStatus,
@@ -1111,6 +1212,7 @@ function dismissAskAnswered(): void {
     loadHistory,
     resetForSession,
     send,
+    sendQueuedNow,
     cancel,
     // 子 Agent
     subagents,

@@ -69,6 +69,7 @@ import {
 } from './pi/appUpdater.ts';
 import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
 import { createCommitMessageMethods } from './git/commitMessageService.ts';
+import { createTermService } from './term/ptyService.ts';
 import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
 /** 方法表：方法名 -> handler(params) -> 统一信封（同步/异步） */
@@ -80,6 +81,8 @@ export interface ForgeCoreBundle {
   methodTable: MethodTable;
   /** 统一事件汇：所有 Api 事件在此发射，main.ts 转发到渲染进程 */
   eventBus: EventEmitter;
+  /** 模块 10：全量回收存活 pty（main.ts 在 before-quit 与渲染文档重载时调用） */
+  killAllPtys: () => void;
 }
 
 /** 可选注入依赖（测试可传 mock；缺省走真实 pi 对接） */
@@ -310,6 +313,11 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   };
 
   conversationAdapter = new PiConversationAdapter(piAgentSessionFactory, {
+    // 模型解析与 session factory 的 modelsPath 同源（userData/agent/models.json）：
+    // 热切换 applyModelChange 与重启后磁盘用量估算都经此解析，不注入则回退
+    // defaultPiModelsPath（~/.pi/agent/models.json，终端 pi CLI 的配置），
+    // 导致仅在 Forge 内配置的模型报「模型未配置或不可用」（回归：热切换）
+    resolveModel: (model) => resolvePiModel(model, piModelsPath),
     resolveSessionFile,
     // P3-A 重启恢复：无 lease 时磁盘估算用量需要会话模型（DB 持久化）解析 contextWindow
     resolveSessionModel: async (sessionId) => {
@@ -746,6 +754,17 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     loaderFactory: deps.skillLoaderFactory,
   });
 
+  // term（10：内嵌终端）：pty 注册表在主进程闭包；cwd containment 与 git 方法同口径
+  // （归一后比对已注册项目列表，AC-10-06）；下行事件走共享 eventBus（term:data/term:exit
+  // 已登记 FORGE_EVENTS）。node-pty 由 ptyService 首次 spawn 时动态加载，组装零成本。
+  const termService = createTermService({
+    isKnownProjectPath: (normalized) => {
+      const r = projectService.queryProjectList();
+      return r.ok && r.data.projects.some((p) => p.path === normalized);
+    },
+    emit: (event, payload) => eventBus.emit(event, payload),
+  });
+
   const methodTable: MethodTable = {
     ...projectApi.methods,
     ...gitApi.methods,
@@ -756,6 +775,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...commitMessageMethods,
     ...subagentMethods,
     ...skillMethods,
+    ...termService.methods,
     ...piMethods,
     ...updaterMethods,
     // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）
@@ -769,7 +789,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     'conversation/sendMessage': wrappedSendMessage,
   };
 
-  return { methodTable, eventBus };
+  return { methodTable, eventBus, killAllPtys: termService.killAll };
 }
 
 /** 构造错误信封（wu-06 helper；与 conversationApi.fail 同样形态） */

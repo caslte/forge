@@ -89,7 +89,7 @@ resize：面板/窗口尺寸变化 → addon.fit → invoke term/resize {ptyId, 
 
 - 目标：可开关、可拖高、状态记忆的面板壳。
 - 前置条件：App.vue `.content` 布局。
-- 业务规则：开关按钮在 `.app-toolbar` 右侧（纯图标+1px 外框，激活态描边变 brand 色，demo 定稿样式）；`Ctrl+\`` 全局快捷键（输入框聚焦时同样生效，与 VSCode 一致）；拖高 grip 在面板顶边（hover 有品牌色提示条）；高度范围 120–520px；开/关与高度写 localStorage，重启恢复。
+- 业务规则：开关按钮在 `.app-toolbar` 右侧（纯图标+1px 外框，激活态描边变 brand 色，demo 定稿样式）；`Ctrl+\`` 全局快捷键（输入框聚焦时同样生效，与 VSCode 一致）；拖高 grip 在面板顶边（hover 有品牌色提示条）；高度范围 120px ~ (窗口高度 − 280px)，绝对上限 1200px（2026-09-29 修订：固定 520 上限在大屏/最大化窗口下不够用，改为随窗口高度走，始终给顶栏+对话区+输入框留 280px 可用高度）；开/关与高度写 localStorage，重启恢复。
 - 交互与反馈：展开/收起 200ms 过渡（--transition-base）；恢复时直接以记忆高度展开。
 - 异常与边界：恢复的高度超当前窗口高度 → clamp 到上限。
 - 跨模块影响：会话区被压缩属预期，不改 ConversationView 内部。

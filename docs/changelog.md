@@ -1,5 +1,202 @@
 # 变更日志
 
+## v6.8 (修复：选区复制浮窗的「已复制」在鼠标停留时变成隐形的灰药丸)
+
+> 来源：2026-09-30 用户反馈（截图：深色主题、对话区拖选后点复制）「复制点了之后看不清」。截图像素实测：药丸底 `rgb(180,181,183)`，字与勾 `rgb(198,198,203)`——两者亮度差 18/255，肉眼就是“一片灰”。
+
+- **先量后判，根因不在配色而在 CSS 特异性**：把截图里的药丸色/字色反查回令牌，两个值都精确命中「`--foreground` @ 0.9 opacity」与「`--brand` @ 0.9 opacity」。全局 `button:hover { border-color/color: var(--brand) }` 的特异性是 **(0,1,1)**，压过 `.selection-pop-btn` 自己那条 (0,1,0)——鼠标一停在按钮上（点完复制手还搁在那儿），字色就被改写成 `--brand`。深色主题下 `--brand`≈近白、`--foreground`≈浅灰，**对比度 1.22:1**（本该 8.32:1）；浅色主题是另一种倒挂（`--brand` 压 `--foreground` 底）**1.11:1**。反馈态本身没问题，是被 hover 规则吃掉了。
+- **为什么此前没被发现**：`.md-code-copy`（代码块复制）已经踩过同一个坑并修好了——它把 `color: var(--success)` 写在 `.md-code-copy.is-copied` (0,2,0) 上，刚好压过 `button:hover`；选区浮窗没写 `:hover` 字色，就没人挡。同一个全局规则，两处结局不同。
+- **修法**（`packages/forge-ui/src/global.css`）：`.selection-pop-btn:hover` 里显式重申 `color: var(--background)`，让反色配对在 hover 态也成立；hover 反馈同时从 `opacity: 0.9` 换成 `background: color-mix(in oklab, var(--foreground) 90%, black)`（opacity 会连字一起压暗，且不像“可点”）。深浅两主题 hover 对比度分别回到 ~8.1:1 / ~13.6:1。
+- **新增回归用例** `packages/forge-ui/e2e/selectionCopy.spec.ts`（3 例，mock-backend）：`E-SC-001` 深色 / `E-SC-002` 浅色，均拖选正文→浮窗在**常态 / hover / 「已复制」三态**断言字底对比度 ≥ 4.5:1（WCAG AA 正文），并校验剪贴板内容 = 选区原文、1.4s 后自动收起且清空选区；`E-SC-003` 非消息区（会话树）选字不弹窗。
+  - **对比度不靠正则解析颜色字符串**：在页面里用 1×1 canvas 把 `getComputedStyle` 的 `color`/`background-color` 画出来读像素（canvas 的颜色解析覆盖 `oklch()` / `color-mix()`），半透明底合成到 `--background` 令牌上；解析失败（`fillStyle` 停在哨兵值）直接报错，而不是拿一个错的颜色算出一个漂亮的对比度。
+  - **踩过的坑（已写进用例注释）**：首版断言“时绿时红”且回退改动后**仍然全绿**。原因是 `button` 有 `transition: color var(--transition-fast)`（120ms，且 color 在 oklab 里插值），刚 hover 完就去读 `getComputedStyle` 拿到的是**中间帧**——运气好读到过渡前的深色就过了。改成 `await pop.getAnimations({subtree:true}).map(a => a.finished)` 等过渡跑完再读，才得到稳定的真值。
+  - **做过红色检查**：把 `.selection-pop-btn:hover` 改回 `opacity: 0.9` 复跑，深浅两条**均必红**（1.217 / 1.111，与截图实测 1.21 逐位一致）；改回修法后 `selectionCopy` + `codeCopy` 共 8 例（`--repeat-each=2`）全绿。
+- **真机像素复核**：修法落地后在 mock 应用里按相位冻结截图（深/浅各一张），确认「已复制」为浅灰底深字 / 深底白字，勾与字都清楚。
+- **契约同步**：`docs/prd/03_conversation.md` 的 CV-S13 交互与反馈新增一条——**反色配对必须在 hover 态也成立**，并写明 `(0,1,1) > (0,1,0)` 这个坑与凡是自带底色的按钮都要写 `.x, .x:hover { color }` 的口径。
+- **验证**：`npm run typecheck` 四包 0 错；`npm run test`：core 473/473、ui 341/341、extensions 69/69，desktop 355/363（6 红即 v6.7 已记账的存量 `piConversationAdapter` 2 + `shellProbe` 4，与本次无关）。
+- **不做的**：① 不改全局 `button:hover` 的 `--brand` 字色（它对绝大多数裸按钮正是想要的效果，改了会连带动整个应用）；② 不逐个审 30+ 个缺 `:hover` 字色的自定义按钮（`.send-btn` / `.ce-retry` / `.dlg-ai` …，多数本来就想要 brand 悬停色，真出事的只有“自带底色”那一类，浮窗是当前唯一一例）；③ 不改 CV-S13 的形态、时机与 1.4s 反馈时长。
+
+## v6.7 (修复：自动重试期间不再弹「回复出错」系统通知——出错先挂起，宽限期后再判定)
+
+> 来源：2026-09-30 用户反馈（附对话区截图：正文栏正显示「正在自动重试（第 1/3 次）…」）——「刚才应该是重试的时候，给我右下角弹出了一个窗口，说是 AI 回复失败的窗口，错误提示是对的，但是像这种情况，应该比如 3 次重试之后还不行再弹那个提示框，而不是第一次不行，自己还在重试的时候就弹出来」。
+
+- **根因（不是文案问题，是事件顺序问题）**：pi 在 `message_end(stopReason=error)` 的瞬间就把轮次状态打成 `error`，**之后**才判断这个错误可不可重试——可重试就紧接着发 `auto_retry_start`（`createForgeCore` 的 `onAutoRetryStart` 随即 `setStatus('streaming')` 把状态改回进行中，对话区因此正确显示成「正在自动重试（第 1/3 次）」）。而右下角系统通知（`main.ts` 里 `conversation.statusChanged` 的监听）见到 `status==='error'` 就直接弹「回复出错」。也就是说**通知比「要不要重试」的判定更早到达**：重试中的中间失败，被当成了轮次终态。用户看到的正是「还在重试 + 先弹失败通知」的自相矛盾。
+- **为什么不直接在 core 层把中间 error 压掉**：`error` 状态同时驱动会话树红点、错误横幅、`lastError` 持久化等多处语义，延迟整条链路会波及 CV-ERR-01 已定稿的错误分类/展示口径（也会拖慢真终态的反馈）。改在**通知这一层**：status 是否终态是 core 的事实，通知只需在「可能是终态」时多等一小会儿再确认。
+- **修法（`packages/forge-desktop/src/notifyGate.ts`，新增）**：把原先埋在 `main.ts` 事件回调里的弹/不弹规则（前台聚焦、3s 冷却、done 紧随中断/出错、**出错宽限期**）抽成纯逻辑模块，输出决策 `notify | defer | skip(reason)`。`error` 到达时不再直接弹，而是 `defer`——挂起 1s，期间任何后续状态事件都会作废这次挂起（`auto_retry_start` 会把状态改回 `streaming`）；1s 后复问，**状态仍是 `error` 才弹**（重试耗尽 / 不可重试 = 真终态），已被 `streaming` 接管则静默跳过。窗口在这一秒里切到前台同样不弹（复问时重新判定）。
+- **顺带修掉一个真 bug**：冷却/抑制判定原写作 `now - (lastToastedAt.get(id) ?? 0) < 3000`，把「从未弹过」当成时间戳 0，于是任何小于 3s 的时钟域下首个通知会被误判成「冷却内」而静默丢失。改为「以是否真的弹过为准」（`undefined` 判空），这也是把时间注入化之后单测立刻照出来的。
+- **验证**：`tsc --noEmit` 0 错；新增 `test/notifyGate.test.ts` 11 例全绿（重试期间不弹 / 重试耗尽才弹 / 不可重试仍弹 / 宽限期内切前台不弹 / error 后到 done 作废挂起 / settle 幂等 / 前台不弹 / 3s 冷却 / done 紧随中断不覆盖 / 非终态不弹 / 多会话互不干扰）。`@forge/desktop` 全量 363 例 355 过 6 红，6 红逐个 stash 对拍确认**与本改动无关**（`piConversationAdapter` 2 例 + `shellProbe` 4 例，改动前后完全一致）。**未做实机验证**：需要一次真实的 provider 失败+自动重试才能看到通知时序，本次没有触发真实 5xx/429。
+- **已知代价与边界**：① 真终态的失败通知晚 1s 出现（横幅早就在界面上了，不可感知）；② 宽限期是**时序兜底**而非精确信号——若 `auto_retry_start` 因极端卡顿晚于 1s 到达，仍会先弹一次；pi 侧这两个事件同属一次 agent run 的相邻事件（毫秒级），1s 余量足够。③ 不做「重试开始时也发一条右下角通知」——重试进度已经有对话区提示条 + 思考计时，再加一条只会更吵。
+- **不做的**：① 不改 core 的 `error` 状态语义与 CV-ERR-01 错误分类；② 不改通知卡片的视觉/文案（`notifyToast.ts` 原样）；③ 不动对话区已有的「正在自动重试（第 N/M 次）」提示条（那条本来就对）。
+
+## v6.6 (视觉：流式「进行中」从边框呼吸改投影呼吸——与抬升不再打架)
+
+> 来源：2026-09-30 用户反馈（截图：深色主题、助手回复中、1m25s）「现在 AI 回复中的时候会有呼吸边框，我觉得和你现在的这个改动有点不匹配，而看不出你的悬浮效果」。先出 `prototypes/streaming-elevation-coexist-demo.html`（现状 + A 投影呼吸 / B 上缘流光 / C 收窄边框呼吸 / D 蚂蚁线 / E 琥珀呼吸 五档对比），用户选定 **A**。
+
+- **诊断（先量再改，结论和直觉不同）**：实测流式期间**抬升并没有掉**——投影仍是完整 4 段 `--elev-2`，输入框也仍持焦点。问题出在**信号位冲突**：`.compose-box.streaming` 把 `border-color` 换成 `--foreground` 并按 35%↔85% 呼吸，深色主题下那条 1px 线实测在 `rgb(89,91,94)` ↔ `rgb(163,166,169)` 之间摆动（**亮度摆幅 1.9 倍**，盒内底色只有 `rgb(32,34,38)`），比盒内的柔和投影显眼得多——人眼先读到「一个忽明忽暗的亮框」，读不到「浮着的一层」。盒子的轮廓同时只能讲一件事：要么「受光的发丝边 + 柔和投影」（浮起来），要么「一条会呼吸的实线」（一个框）；旧实现让后者盖住了前者。
+- **另一个事实：边框呼吸是冗余信号**。流式中框内有 `⠋` 转轮 + 「助手回复中，Enter 排队发送…」、框外有「助手正在思考 1m25s」计时、右下角有红色停止按钮——边框呼吸是第四个，却占用了最贵的那个位置（轮廓）。
+- **令牌（`design-tokens.css`）**：新增 `--elev-2-active`（level 2 的呼吸峰值档，深浅各一套）。它与 `--elev-2` 的差别**只在环境阴影更远更深**（浅色 16px/34px → 22px/48px、α 6~7% → 10~11%；深色 16px/34px → 22px/46px、α 30/34% → 42/46%），**接触阴影保持不动**——读起来是「盒子被抬得更高」而不是「影子变黑了」，底面始终贴着页面。用令牌而不是把值写进 keyframes：以后调呼吸幅度只动一处，且深浅主题分开可调。
+- **组件（`InstructionInput.vue`）**：`.compose-box.streaming` 不再碰 `border-color`（那行 `border-color: var(--foreground)` 删除，边框回到基础的发丝边），改为 `animation: stream-breathe 2.4s ease-in-out infinite`，`@keyframes stream-breathe` 改成在 `--elev-2` ↔ `--elev-2-active` 之间摆 `box-shadow`。
+  - **关键细节：呼吸的起始档就是 `--elev-2`，不是从 `--elev-1` 起**。用户刚在聚焦态（`--elev-2`）按的 Enter，若动画从 `--elev-1` 起，盒子会先**塌下去再浮起来**；现在是在已抬起的档位上继续加深。靠 CSS 层叠顺序保证：`.compose-box.streaming` 与 `.compose-box:focus-within` 特异性相同（0,2,0）且排在后面，动画的 `box-shadow` 覆盖聚焦态那条。
+  - 呼吸时长 2s → **2.4s** 并有意偏慢：这是「在工作」的氛围提示，不是加载进度，不该催人。
+  - 删掉 `.compose-box.streaming:focus-within { animation: … }`（它存在的唯一理由是让聚焦时用另一套边框色呼吸，现在两个状态同一套动画，这条例外没有意义了）。
+  - 新增 `.compose-box.streaming.dragover { animation: none; box-shadow: var(--elev-2); }`：转发中把文件拖进输入框时两个状态会同时命中，动画会持续覆盖拖拽态的 `box-shadow`，明确落回静态抬升档。
+- **验证**：`vue-tsc` 0 错。真实应用（vite dev + mock 后端）按相位冻结实测：**边框在静息 / 聚焦 / 流式三态完全恒定**（浅色都是 `oklch(0.92 0.004 286.32)`、深色都是 `rgba(255,255,255,0.114)`）；流式 0% 相位阴影 = `--elev-2`（16px/34px），50% 相位 = 峰值（22px/48px）。
+  - 新增 `e2e/composeElevation.spec.ts`（4 例，浅/深主题各 2 条）：`ELEV-E2E-001` 断言边框色三态恒定；`ELEV-E2E-002` 断言抬升档位（静息环境段 <14px、聚焦 ≥14px、流式挂着 `stream-breathe` 且环境段 ≥33px）。
+  - **这两条用例做过红色检查**：按文件粒度 `git stash` 回退 `InstructionInput.vue` + `design-tokens.css` 后复跑 **4/4 全红**（`聚焦不应改边框色` 与 `静息态必须有抬升投影` 两条断言分别命中旧行为），确认它们真能拦住这次的回归。
+  - **踩过的坑（已写进用例注释）**：首版断言对 `boxShadow` 字符串做子串匹配（`toContain('16px')`），流式期间 animation 正在跑、`getComputedStyle` 返回的是**插值中间帧**（实测读到 `0px 6.25903px 16.5181px`），必然随机失败。改成解析每层第三个长度值取最大模糊半径，再按档位区间判定——与动画相位无关。
+- **文档/原型同步**：`prototypes/index.html`（令牌 + `.compose-box.streaming` 改投影呼吸）、新增 `prototypes/streaming-elevation-coexist-demo.html`（五档对比 + 已选定方案的三相位对照）。`prototypes/streaming-border-options.html`（更早那版边框方案对比）**保留原样不动**：它是历史决策记录，改它等于篡改当时的候选集。
+- **不做的**：① 不改「进行中」的其它三个信号（框内转轮文案、框外思考计时、停止按钮）——它们各占各的位置，本次只回收被边框占掉的那个；② 不引入上缘流光 / 蚂蚁线 / 新色相（B/D/E 三档未采纳，见 demo）；③ 不给呼吸加峰值上限之外的额外动画（`prefers-reduced-motion` 下由既有全局口径关掉，与项目其它动效一致）。
+
+## v6.5 (视觉：会话状态点家族——运行中盲文点阵扫过／已完成对勾／出错方块叹号 + 图标落进行内留白修文字跳动)
+
+> 来源：2026-09-30 用户反馈——「换一下进行中的状态点的显示，很多是转圈，有的是截图右侧那种动画」，并附 VS Code 资源管理器加载指示器截图作参照；另一条独立诉求「现在有点的时候文字会被后移，字应该对齐，状态图标等在前面」；随后追加两条——「图标应该往左移动」（对齐对了但图标吃了标题宽度）、「浅色主题是不是该用黑光扫」。原型：`prototypes/session-status-spinner.html`（占位策略 + 五款动画）、`prototypes/status-sweep-theme.html`（扫过色的四款浅/深方案，**待用户确认后再落地**）。
+
+- **跳动根因（不是「间距不对」）**：状态点用 `v-if="shouldShowDot(session)"` **条件挂载**。状态点一出现就把标题整体右推 14px（8px 圆点 + 6px gap），消失时又推回去；且状态流转（运行→完成→空闲）本身就会让行内内容横向抖一下，扫视一列时每行起点都不同。
+- **对齐改法（两轮才对）**：① 先做「恒占位」——去掉 `v-if`，无状态时只加 `is-blank` 档做 `visibility: hidden`，`title` 改为 `shouldShowDot(session) ? statusTitle(session) : ''`（否则每行空闲会话都弹「空闲」tooltip）。标题左边界确实齐了，但**图标作为 inline 槽位把整列标题右推了 18px**，用户截图红框标的就是这条被占掉的留白。② 最终改为**图标彻底退出 flex 流**、绝对定位进行内 24px 留白：`.tree-session > .tree-session-status-dot { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); }`（选择器带 `>` + 类是为了压过 `.tree-session > *` 那条 `position: relative; z-index: 1`）。标题回到**改动前的原始 24px 起始位置**，且因为不占任何宽度，对齐不再依赖「占位不塌陷」这个前提。
+- **动画选型（`ProjectTree.vue`）**：`.tone-streaming` 由「8px 黄点 + 1.6s 光晕脉冲（`tree-status-pulse`）」换成 **2×4 盲文点阵斜向波**——即用户截图里 VS Code 资源管理器那种 8 个小点依次点亮。选中它的理由：光晕脉冲在 1.6s 周期里弱到**分不清是在动还是只是亮着**；点阵不依赖颜色就能读出「进行中」，密度上又比 SVG 圆弧安静，密集列表里远看只是一列小方块在闪。
+- **节奏（首版被判太快后调）**：周期 **1.6s**、相邻点波峰步进 **0.15s**（右列再延后半拍 75ms → 波形自左上向右下扫过，全程 0.525s）。首版是 1.05s/0.09s，实测 8 个点的波峰糊成一片闪烁、看不出方向，只觉得「在跳」；放缓后能看清单个点走完对角线。关键帧同步放缓（18% 达峰、45% 回落到底亮度）。
+- **槽位几何**：圆点 8px → **12×12 框**（`display: grid` + `place-content: center`），给点阵留余量。点阵尺寸 2.3px、间隙 0.85px——`4×2.3 + 3×0.85 = 11.75px`，**必须刚好收进 12px**，首版按 2.4/1.26px 排出来是 13.38px、溢出槽位 1.4px（6× 截图才看出来）。出错红点 / 完成绿点下沉为 `::after`（`grid-area: 1/1/span 4/span 2` 居中），tone 色不变、仍是静态常显。
+- **两个顺手的收敛**：① 点阵 `<i>` 默认 `display: none`、只在 `.tone-streaming` 下显形，否则 error/done 行的 8 个黄点会从红色实心点后面透出来；② `is-blank i { display: none }`——空闲行连动画一起停，20 行 idle 不会白白跑 160 条 keyframes。③ `prefers-reduced-motion: reduce` 下退回静态黄点（`animation: none` + 显示 `::after`），语义不丢。
+- **验证**：`vue-tsc` 0 错，单测全绿。Playwright 临时 spec 实测（同一屏 streaming/error/done/idle/已读 done 五种行）：标题 `left` <b>全部 = 36</b>（= 改动前的原始位置，图标不吃标题宽度），图标列固定 x=20；字形实测 `.dot-check` 12×12、<code>color: oklch(0.55 0.16 145)</code>（深色下自动切 <code>oklch(0.72 0.14 145)</code>）、<code>.dot-bang</code> 11×11 且 <code>ink #fff / bg oklch(0.577 0.245 27.325)</code>（深色下 bg 自动切 <code>oklch(0.7 0.18 27.325)</code>）；点阵 8 个 <code>&lt;i&gt;</code>、<code>animation: 1.6s@0s…0.525s</code>、<code>display: grid</code>，而 idle 行为 <code>none</code>（不跑空动画）；5× 放大截图两主题各一帧 + 三个图标各一张，字形无畸变。`session.spec.ts` + `lastErrorRestore.spec.ts` 11 过 1 红，唯一红的 `SESSION-E2E-001` 按文件粒度 `git stash` 回退本文改动后复跑**同样红**= 改动前既有。
+- **扫过色分主题（v6.5 追加，用户选定 C 档）**：点阵原先两主题同色（静息 = `--warning` 16%、扫过 = 满 `--warning`）。**根因**：`thinking-shimmer` 那套扫光能成立是因为「**亮带扫过深色文字**」，靠比底色更亮被看见，所以它在白底上照样成立；点阵是「亮点在**浅色点阵**上移动」，浅色主题下静息点几乎没画出来、扫过点也只是同色相深一档，**方向感消失**。结论：扫过元素必须相对**本地底色**有最大反差 → 浅底改用暗点扫、深底仍用亮点扫。
+  - **令牌（`design-tokens.css`）**：新增 `--status-run-rest`（静息点）/ `--status-run-peak`（扫过点），**深浅两套值分开写**（同 `--shade` / `--elev-*` 先例）：浅色 `rest oklch(0.93 0.045 85)` / `peak oklch(0.46 0.11 62)`（**深琥珀棕，不用纯墨**——保住「暖色 = 运行中」这层语义），深色 `rest oklch(0.42 0.07 85)` / `peak oklch(0.85 0.14 92)`。
+  - **组件（`ProjectTree.vue`）**：`i` 的底色从 `background: var(--warning)` + **opacity 呼吸**改为 `background-color: var(--status-run-rest)`，峰值关键帧切到 `var(--status-run-peak)`——`background-color` 在两枚令牌解析出的实色之间插值，浅色主题里就是**一个暗点在淡点阵上走**（同色相的「深一档」在白底上拉不开）。`transform: scale` 保留。`prefers-reduced-motion` 下的静态点也改取 `--status-run-peak`（两主题下都醒目）。
+  - **四个备选**（`prototypes/status-sweep-theme.html`，只换这两个色、节奏几何全不动）：A 现方案 / B 反相扫·深墨（用户提议）/ **C 反相扫·深琥珀棕（采用）** / D 反相扫 + 静息点去色。
+- **白底看不清「哪个在跑」——静息点提亮 + 三档尾巴（v6.5 第四轮，用户选 C）**：用户截图指出白底上「轮到全白的时候就看不到哪个在跑」。**根因不是扫得不够明显，是静息点几乎不存在**：浅色静息色 <code>oklch(0.93 0.045 85)</code> = <code>rgb(246,230,199)</code>，**对白底只有 1.23:1**（深色主题的 <code>rgb(95,74,26)</code> 对深底 <code>rgb(25,25,29)</code> 也只有 2.07:1）——8 个点里能看见的只有正在扫过的那 2~3 个，**2×4 的网格结构整个丢了**。
+  - **令牌（<code>design-tokens.css</code>）**：<code>--status-run-rest</code> 浅 <code>0.93 0.045 85</code> → <code>0.80 0.05 85</code>（1.87:1）、深 <code>0.42 0.07 85</code> → <code>0.50 0.08 85</code>（2.89:1）；**新增 <code>--status-run-mid</code>**（尾巴档）浅 <code>0.64 0.10 70</code>（3.42:1）、深 <code>0.65 0.12 88</code>（5.39:1）。
+  - **组件（<code>ProjectTree.vue</code>）</b>：<code>@keyframes tree-status-wave</code> 从两档改<b>三档</b>——<code>0%/46%/100%</code> → rest、<code>14%</code> → peak（急升）、<code>32%</code> → mid（缓落），<code>transform: scale</code> 同步走 <code>0.72 → 1 → 0.88</code>。<b>多出来的中间档就是尾巴</b>：点冲到最深后不是瞬间消失，而是经 mid 滑回静息，于是「一个暗点拖着一条淡尾从左上走到右下」——<b>方向感来自尾巴，不来自闪烁</b>。尾巴跨度 0.32×1.6s = 0.51s ≈ 3 个点距（0.15s 步进），所以场上同时只有「一个头 + 一条尾」。点阵几何、1.6s 周期、0.15s 步进、12px 槽位全部不动。
+  - <b>刻意的取舍</b>：C 档静息只有 1.87:1，<b>比只提亮的 B 档（2.22:1）还低</b>——静息点只负责「网格存在」不负责「在动」，真正承载动的是 3.42 → 7.37 那一段。峰值/静息的<b>落差</b>才是方向感来源。
+  - **四帧钉帧的坑（首版钉帧没生效）</b>：把负 <code>animation-delay</code> 写在容器上（<code>.frozen i</code>）会被 <code>.mtx i:nth-child(n)</code> 的更高特异性（0,2,1 > 0,1,1）盖掉，<b>四帧结果完全一样</b>，差点误判成「A 已经清楚了」。修法：逐 <code>nth-child</code> 写 <code>calc(自身错峰 + var(--d))</code>，且必须配 <code>animation-play-state: paused</code>。<b>凡「在静态图上看动画」都要先确认帧真的错开了。</b>
+  - **验证口径</b>：<code>getComputedStyle</code> 实测两主题令牌均取到新值；<code>getAnimations()[0].effect.getKeyframes()</code> 返回 <b>5 帧</b>且色/缩放与设计一致（浅：<code>0→rest@0.72 / 0.14→peak@1 / 0.32→mid@0.88 / 0.46→rest@0.72</code>）；5× 钉帧截图两主题各 4 相位逐帧确认「8 点全部可见 + 一个头 + 一条尾」。
+  - **其他三个备选</b>（<code>prototypes/status-run-contrast.html</code>）：A 现状 / B 只提亮静息点（最小改动，仍两档跳变）/ **C 提亮 + 三档尾巴（采用）** / D 静息点去色成中性灰（形状说话，不依赖色相，红绿色觉异常也跟得上）。
+- **已完成 / 出错 改字形（v6.5 第三轮，用户圈定）**：原先两者都是 8px 实心点，与运行中的点阵**不同形**，看不出同源。`prototypes/status-done-error.html` 出了 5+5 款后用户选定 **done = 绿色对勾 ✓ / error = 红色方块感叹号 !**，统一信号从「形状」换成「<b>位置恒定 + 只有运行中在动</b>」。
+  - **为什么字形反而更合理**：运行中是<b>持续态</b>，已完成/出错是<b>离散事件</b>——持续态值得一个会动的形态；离散事件用 1× 就认得出的字形更划算（点阵每点只有 2.3px，1× 看过去就是一团糊）。
+  - **图形必须是现成图标，不能手搓**：我前两版用「两条 <code>div</code> 转 ±45°」画勾，第一版两臂 <code>left/top</code> 摆反出来是「人」字（开口朝下），第二版形状对了但<b>接缝对不齐</b>——拼两条独立线段没有交点约束，缩到 1× 就是个歪的。**最终直接用仓库现成的 Feather 路径** <code>viewBox="0 0 24 24"</code> + <code>&lt;polyline points="20 6 9 17 4 12"/&gt;</code>（<code>SettingsPanel</code> 的 <code>.swatch-check</code> / <code>GitCommitDialog</code> / <code>MessageCard</code> / <code>HtmlCanvasBlock</code> / <code>selectionPopover.ts</code> 五处同款），<code>stroke-width="3"</code>（24 网格缩到 12px 时 2 偏细）。矢量路径转角是同一点，天然闭合，不用算。
+  - **实现（<code>ProjectTree.vue</code>）**：槽位从 <code>display: grid</code> 改回 <code>flex</code> 居中（点阵缩进 <code>.dot-matrix</code> 子元素），<code>::after</code>（原画 8px 实心点）<b>只留给 <code>prefers-reduced-motion</code> 降级</b>。新增 <code>.dot-check</code>（12px，<code>color: var(--success)</code> + <code>currentColor</code>，主题自动跟随）与 <code>.dot-bang</code>（11px 圆角方块 + CSS 底板 / SVG 描边的 <code>!</code>）。<b>不新增任何令牌</b>。
+  - **白赚**：字形方案没有一次性动画 → <b>不需要给状态图标加 <code>:key</code> 强制重挂载</b>（原方案里唯一有实现成本的那处消失）。
+  - **判定逻辑一行未动</b>：done 仍只在未读（<code>doneReadAt == null</code>）时显示、error 常显、idle 不显示但占位、<code>title</code> 原样。
+- **流程纠偏（用户明确提出）**：本轮先写了原型、紧接着就把 `ProjectTree.vue` 改掉了，等于没给选择余地。以后**画 demo 与改代码必须分开**：要么只出原型停下等确认，要么直接实现，不能并行。已写入长期记忆。
+- **不做的**：① 不动 `SubagentTabBar.vue` / `SubagentResultView.vue` / `ConversationHistoryPopover.vue` 的状态点（它们本来就是恒占位/已有独立动画，本轮不顺带统一，避免扩大回归面）；② 不用 `prefers-reduced-motion` 之外的机制做动效降级；③ 不动状态语义与判定逻辑（`shouldShowDot` 的 done 未读规则原样保留）；④ 不用 `div` 转角手搓图标——仓库已有成体系的 Feather 内联 SVG 口径，一律复用。
+
+## v6.4 (视觉：输入框抬升层级——去掉焦点边框变色，改「浮起来」)
+
+> 来源：2026-09-30 用户反馈——自截图与 DeepSeek 输入框对比「我们（图1）比较平，图2 会有悬浮感」，并附一条明确指令「输入框的鼠标焦点边框变色也去掉」。先出 `prototypes/compose-box-elevation-demo.html`（A 现状 / B 轻 / C 中 / D 强四档 + E 底色分层）与 `prototypes/compose-box-elevation-design.html`（设计规格稿：抬升层级模型 / 现状拆解 / 前后对比 / 细节放大 / 令牌与改动点），用户圈定 **C 档**。
+
+- **根因（拆信号，不是「缺个阴影」）**：`.compose-box` 是 `background: var(--background)` + `border: 1px solid var(--input)`。浅色主题下 `--background` 是纯白，**框底与页面底同色**，盒子只剩一圈 1px 灰线——读起来是「画在页面上的矩形」而不是「浮着的一层」。真正缺的是一套**抬升层级**：弹窗/浮层/队列面板都有 `--shadow-*`，唯独**常驻**的输入框是零抬升。四个信号里现有实现只有「发丝边」一个，且 `transition` 里写了 `box-shadow` 却从来没有值（写了不生效的空转）。
+- **令牌（`packages/forge-ui/src/design-tokens.css`）**：投影段新增 `--shade`（投影色相：浅色 `22 24 29` 冷灰——纯黑投影在白底上发脏；深色 `0 0 0`）、`--elev-1`（常驻控件静息态，两层柔光 + `inset 0 1px 0` 上缘高光）、`--elev-2`（焦点面板，四段：接触 + 过渡 + 环境 + 上缘高光）。**深浅两套值必须分开写**：浅色靠底色差制造深度、深色底本身已有层次只能靠投影变黑；受光白线浅色 70%、深色压到 6%（70% 在深底上是一根发光条）。浮层继续沿用 `--shadow-*`，不合并。
+- **组件（`InstructionInput.vue`）**：`.compose-box` 改 `background: var(--card)` + `box-shadow: var(--elev-1)`（深色下 `--card` 0.243 比 `--background` 0.215 **亮**一档，方向一致，跨主题都是「盒比页面亮」）。
+  - **焦点边框变色按要求去掉**：`.compose-box:focus-within` 的 `border-color: var(--brand)` 删除，改 `box-shadow: var(--elev-2)`；文件末尾那段 `<style>` 全局覆盖（`[data-theme='dark']` 压到 40% brand 的补丁）整个删除——它专为压暗这条边框而写，边框不改色后失去意义。旧实现的问题不止「突兀」：`--brand` 浅色是深灰、深色是近白，**同一语义跨主题亮度方向相反**，边框一变就像闪了一下；而且它和 `.dragover`（边框品牌色 + 底色提示）**撞语义**——拖拽和聚焦用同一个信号。
+  - `.streaming:focus-within` 同样去掉 `border-color: var(--brand)`，只保留 `stream-breathe` 呼吸动画（底边颜色由呼吸表达），原先与之配对的 `@keyframes stream-breathe-focus`（品牌色呼吸）随之删除，不再需要第二套关键帧。
+  - `.dragover` 的底色基色从 `var(--background)` 改 `var(--card)`——否则拖拽态会把盒子的抬升底色抹掉，变成比页面还暗的一块，和静息态接不上。
+- **同材质延伸件（`TodoPanel.vue` / `AskUserQuestionPanel.vue`）**：两个面板底边塞在输入框背后（-10px 负 margin）做「一体延伸」，若仍留 `--background` 就会**面板贴着、框浮着**，接缝处一道色差断层；同步改 `background: var(--card)` + `box-shadow: var(--elev-1)`（面板的抬升投影落在自己的上缘、被输入框盖住，延伸感不变）。
+- **验证**：`vue-tsc` 0 错；`forge-ui` 单测 337/337 全绿。vite dev + mock 后端实测（脚本采 `getComputedStyle` + 像素采样）：浅色静息 `--elev-1` / 聚焦 `--elev-2` / 边框两态**恒为** `oklch(0.92 0.004 286.32)`（不再变色）；深色静息 `inset 0 1px 0 rgba(255,255,255,0.06)` + `rgba(0,0,0,0.28)` 系、聚焦升到四段；盒内/页底像素浅色 `#ffffff` vs `#f7f7f7`（会话区本就带渐变，底色差天然存在，悬浮感成立）、深色 `rgb(32,34,38)` vs `rgb(26,28,32)`；投影落点 `#f9f9f9`（框下 4px）/ `rgb(23,24,27)`（深色）。Todo 面板 + 输入框接缝截图确认同材质无断层。
+  - **E2E（`todoPanel`/`queue`/`session`/`thinkingLevel`/`askUserQuestion`/`contentWidth` 六条 spec，43 例）**：41 过 2 红，两条红线**均已按文件粒度 `git stash` 回退本文改动后复跑确认为改动前既有**——① `todoPanel` `TSC-E2E-009b`（hero-mode 下面板头部与 textarea 重叠，回退后同样红）；② `session` `SESSION-E2E-001`（草稿态首条消息未创建会话，回退后同样红）。`queue QC-002` 在批量跑时曾闪过一次红，单独跑 + 全 spec 复跑均过（`6 passed`），判定为批量时序抖动、非本次回归。
+  - **仓库并发编辑提示**：定位 `SESSION-E2E-001` 过程中发现 `packages/forge-ui/src/components/ProjectTree.vue` 在本轮工作期间（09:56）被**本次改动之外**的编辑改过（会话状态点改常驻 + `is-blank` 档 + 内部 `<i>` 元素，114 行），不属于本次改动；上面那条基线结论是在**保留该外部改动**的前提下取得的（= HEAD + 他人的 ProjectTree 改动），结论不受影响。
+  - `todoPanel.spec.ts` 的「同材质」断言按新契约改写：旧断言是「聚焦时输入框边框加深、面板不动（两色必须不同）」，现改为「边框色两态**一致**（焦点不换边框色）+ 聚焦时输入框投影比面板更重」——沿用旧断言会与用户本次的明确要求直接冲突。
+  - `.compose-input:focus` 补写 `border-color: transparent`：`global.css` 有一条 `textarea:focus { border: 1px solid var(--brand); box-shadow: 0 0 0 3px … }`，内圈原本靠 scoped 特异性隐式压住；把契约写成显式属性后，将来动全局规则不会穿透到输入框内圈。
+- **文档/原型同步**：`prototypes/index.html`（令牌 + `.compose-box` 静息/聚焦 + `.dragover`）、`prototypes/ask-user-question-prototype.html`（同款，深色底用 `color-mix` 提亮而**不是**该原型的 `--card`——那里 `--card` 0.22 比 `--background` 0.26 暗，直接套会变成「凹坑」）、新增 `prototypes/compose-box-elevation-demo.html`（四档对比）与 `prototypes/compose-box-elevation-design.html`（设计规格稿）。
+- **不做的**：① 不改几何——圆角 16px、`padding: 12px 14px 58px`、底部操作条绝对定位、上边沿拖拽带、斜杠/@ 浮窗位置全部不动（与「平不平」无关，一起动只扩大回归面）；② **不改会话区底色**（设计稿里的方案 E：浅色会话区 `#f6f6f7`）。实测会话区本就带 `App.vue` 的壳层渐变（左侧采样 `#f7f7f7`），底色差已经存在，无需再压一档；深色主题更是不能压（`--card` 已比 `--background` 亮，再压会抵掉方向）；③ 不把 `--elev-*` 合并进 `--shadow-*`（语义不同：前者是「常驻控件受光抬升」，后者是「浮层离地」）；④ 不引入 `--elev-band` 令牌（方案 E 未采纳，留一个没人用的令牌不如不留）。
+
+## v6.3.1 (修复：侧栏「项目/任务」分段胶囊被拉长变形)
+
+> 来源：2026-09-30 用户反馈截图——侧栏顶部「项目」胶囊右侧多出一截、成了被拉长的椭圆（对照图才是应有的贴合形态）。
+
+- **根因（Playwright 实测复现，非推测）**：选中态胶囊几何是 JS 按 active 按钮 `offsetLeft/offsetWidth` 实测写进 `--pill-l/--pill-r` 的（CSS 的 `right: calc(50% + 1px)` 兜底只在两键等宽时正确），两处踩空：
+  1. **侧栏折叠/展开时按被压扁的盒子实测**（用户截图这一处）：`.sidebar` 的折叠是 `transition: width`，展开那一 tick `.view-seg` 被 flex 压到 min-content（分段开关 94→70px、按钮 44→32px），`sidebarCollapsed` 的 watch 恰在此刻测出 `--pill-r = 70-2-32 = 36px`；过渡结束后盒子回到 94/44，胶囊宽度却成了 `94-2-36 = 56px`（应为 44px）——**永久多出 12px**，与用户截图里「项目」右侧那截完全对上（`git stash` 回退本文改动复跑：实测 `Received: 12`）。
+  2. **首贴静默落空**（同源坑，中文恰好看不出来）：`.view-seg` 挂在 `v-if="formalUiReady"` 里，`onMounted` 的 `nextTick` 早于它挂载（`viewSegEl` 还是 null，函数第一步就 return）。中文两键等宽，CSS 兜底几何恰好正确；英文 `Projects`(62px)/`Tasks`(47px) 不等宽，首帧胶囊比按钮窄 **7.48px**，要等用户切一次视角才归位。
+- **实现（`packages/forge-ui/src/App.vue`）**：几何改由 `ResizeObserver(viewSegEl)` 驱动——observe 时先补首贴、之后盒子每变一次就按**实际几何**重贴，两个洞同时收敛（第 1 个不再读到过渡中的中间态，第 2 个不再依赖 onMounted 时机）。RO 回调走 `moveViewPill(false)` 新增的 no-anim 分支（`.view-seg.no-anim::before { transition: none }`，与 `.is-task` 同特异性故必须排在它之后）：容器自身在改尺寸时胶囊逐帧贴着按钮走、不播水滴，也不会「自己乱滑」。`watch([treeView, activeLocale])` 保留显式重贴（切视角时两键宽度互换、开关整体盒子不变，RO 看不见），`sidebarCollapsed` 从依赖里去掉（盒子变化已由 RO 覆盖）；`onMounted` 里那句测不到元素的 `nextTick(moveViewPill)` 删除，`onUnmounted` 里 disconnect。
+- **验证**：`session.spec.ts` 新增两条回归用例（先 RED 后 GREEN，回退 RO 后均必失败）——`SESSION-E2E-009`（E-SM-009：首贴 + 切视角 + 折叠展开，回退后 `Received: 12`）、`SESSION-E2E-010`（E-SM-010：en-US 英文首帧，回退后 `Received: 7.4844`）；断言口径 = 胶囊 `::before` 的 left/width 与 active 按钮 `offsetLeft/offsetWidth` 误差 ≤1px，用 `expect.poll` 等水滴/宽度过渡落位（避免在过渡途中的巧合几何上误判——首版用例就栽在这里，加上「等侧栏降到 0 / 开关回到原宽」两步才真正 RED）。forge-ui 单测 337/337、`vue-tsc` 0 错；全量 e2e 155 例：138 过 / 17 红，红线全部为改动前既有（`git stash` 回退本文改动后复跑抽样同样红：canvasCard 2、subagent 4、branchBadge 3、mw-restore 2、session E2E-001、conversationHistoryLocate 1、updater 1，以及 3 个临时 repro/probe spec），本改动零回归。
+- **不做的**：不给 `.view-seg` 加 `flex: none` 挡收缩——那会改掉侧栏折叠动画里分段开关被收缩/裁剪的观感，本次只修几何、不动动画；不把水滴过渡从 `left/right` 改成 `width` 动画。
+- **文档同步**：`prd/02_session_management.md`（SM-S06 交互与反馈：补「胶囊几何按 active 按钮实测、开关自身尺寸一变就必须重贴」口径）、`test/02_session/e2e.md`（新增 E-SM-009/E-SM-010 + 覆盖汇总两行）、`test/02_session/coverage-matrix.md`（两行）。
+
+## v6.3 (修复：画布卡片流式期间一直闪、闪的时候看见源码——判决分「流式/终态」两档)
+
+> 来源：2026-09-30 用户反馈「在画图的时候会一直闪，闪的时候会看到下面的代码，之前没有过」+ 截图（卡片停在骨架「正在绘制图示…」）。回归点是 `ee26b46`：它把流式骨架的口径从「围栏没闭合就一律骨架」改成「判出 prose/code 就提前出终态」（`showSkeleton = blocked && (undecided || html)`），但 `judgeCanvasSource` 那套判据是按**完整源码**设计的，半截源码上会抖。
+
+- **成因（两个，都是「半截标签被当成正文内容」）**：判据里 `stripTagsToText` / `longestTextRun` 只吃完整的 `<...>`，没写完的 `<div style=...` 会整段留在文本里：① 属性里的 `=` 命中 `looksLikeCodeCanvas` 的赋值号 → 判 `code` → 骨架提前塌成**代码块**（用户看见满屏源码）；② 长内联样式的属性值被算成「最长文本片段」→ 命中 `PROSE_LONG_RUN` → 判 `prose` → 骨架塌成正文，标签一闭合片段消失又变回 `html`。150ms 一次（`STREAM_RENDER_INTERVAL_MS`）的重渲染下就是「骨架 ↔ 代码/正文」来回翻面。真机实测：622 字符的 edu 目录结构图在 22 个节流点里翻了 6 次面（`code@24 → skeleton@120 → prose@360 → skeleton@384 → prose@504 → skeleton@528 → iframe`）。
+- **判据（`packages/forge-core/src/markdown/canvasSandbox.ts`）**：入口仍是一个 `judgeCanvasSource(source, options)`（唯一口径），但口径分两档，由 `options.streaming` 选，默认 false = 终态口径与历史逐字一致（老调用点零改动）。
+  - 先剪掉**末尾未闭合的标签片段**（`TRAILING_PARTIAL_TAG_RE = /<[a-zA-Z!/][^>]*$/`）再算内容——这是两个成因的共同根；`if (a < b)` 这类比较运算符（`<` 后是空格/数字）不误伤，带标签内容上的比较运算符另有单测钉住。
+  - 流式档只放行**单调**判据：无完整标签时才允许提前出终态（真源码/字符画 → `code`，够长的纯文字 → `prose`，其余 → `undecided`）；有完整标签时只认「长句铁证」（`≥ PROSE_LONG_RUN`，文本只增不减，撤了不会回翻），薄壳那条**占比**判据天生非单调（标签进来占比掉、文字进来占比升）留到闭合后判一次。
+  - 空态归终态：流式中途空源码给 `undecided`（挂骨架），不再在开栏那一帧闪一次「画布没有内容」。
+  - 终态档把 `looksLikeProseCanvas` 的前哨抽成 `proseShellText`（`<canvas` 否决 / `looksLikeHtmlCanvas` / svg-img 否决 / 最小可见文本），两档共用同一份——任何一边单独加否决条件都会变成「中途判 A、闭合判 B」的翻面。
+- **调用点（`packages/forge-ui/src/components/HtmlCanvasBlock.vue`）**：`verdict` 改读 `judgeCanvasSource(source, { streaming: props.blocked === true })`；`showSkeleton` / 模板分支一律不动（`blocked` 仍由 MessageCard 的 `segments` 在「末围栏未闭合 + 流式中」时置位）。
+- **验证**：forge-core 单测 461→469（新增 8 例流式口径：半截标签不落代码块 / 长内联样式全程待在骨架族 / 纯文字仍提前出正文且不回翻 / 无标签源码仍 `code` / 开栏空态只给 `undecided` / 半截 `<canvas` / 比较运算符不误伤 / 薄壳包长句提前出正文且不回翻，其中「长内联样式全程待在骨架族」按 1 字符粒度走完全部前缀）。E2E `canvasCard.spec.ts` 10/10：新增 `E-CA-010`（逐帧 rAF 采样，断言整段流式只出现 `skeleton`、收尾才 `iframe`，任何一帧出现 `PROSE/CODE/EMPTY` 即失败）。四包 typecheck 0 错；`forge-core` 469/469、`forge-ui` 337/337、`forge-extensions` 69/69 全绿。
+- **顺带修掉一个一直红的 P0**：`E-CA-003`（「流式中途是骨架蒙版」）改前用 `seedHistory` 喂半截围栏，而 `blocked` 只在**真流式**期间成立（历史/取消的未闭合围栏按设计直接出半成品，否则骨架永远转圈，见 MessageCard 注释），所以它自 `ead000a` 起就没测到过骨架、长期红（`git stash` 回退本次改动后复跑确认：同样红）。现改为真流式驱动（`seedSendScript` + 补一条 delta 闭栏），零跳变断言保留。
+- **不做的**：不改骨架/终态的高度与视觉（`CANVAS_DEFAULT_HEIGHT` 不动，闭合零跳变是本来的口径）；不把 `<canvas>` 元素改回 iframe（沙箱禁脚本，它必然是死的，`code` 降级是唯一不丢信息的落点）；不给流式档加「薄壳占比」判据——那是非单调的根源，宁可让带标签的文字壳在闭合那一刻出正文（一次翻面），也不要流式期间一直闪。
+
+## v6.2 (新增：改动文件卡右键「用浏览器打开」——HTML 原型改完一键看效果)
+
+> 来源：2026-09-29 用户反馈「写完 `prototypes/*.html` 还要自己去文件夹双击」+ 截图（文件行右键只有「打开所在目录」）。诉求是右键里直接开浏览器看效果。
+
+- **前端（`packages/forge-ui`）**：`ChangedFilesCard.vue` 文件行右键菜单**仅在目标是 .html/.htm 时**多出「用浏览器打开」（地球图标，排在「打开所在目录」之前），点它走文件**本体**的绝对路径而不是目录（与「打开所在目录」两条动作互不串味）；菜单视口夹紧高度估算随之分档（单 38 / 双 72px，否则贴底时菜单下半截出屏）。扩展名判定 `/\.html?$/i` 与主进程白名单同口径——但**只管菜单项显不显示**，「能不能开」由主进程裁决。i18n `tool.openInBrowser` 中英双语；`bridge.ts` / `mock-bridge.ts` 增 `shell.openInBrowser`。
+- **主进程（`packages/forge-desktop`）**：新增通道 `forge:shell:openInBrowser`（preload + main handler）。**刻意不复用 `IPC_SHELL_OPEN_PATH`**——那条是 CV-TRUST-02 定下的「只放行目录」通道（Windows 上「打开」指向 .exe/.bat/.lnk 即执行，渲染层任意字符串直传 = RCE 链）。放行文件必须另开一条并把口子收窄，判定抽成纯模块 `src/shell/openTarget.ts`（可单测、不 import electron）：
+  - 白名单**只有 .html/.htm**（大小写不敏感）——`.js`/`.url` 这类协议关联与全部可执行扩展在 fs 访问之前就被拒；
+  - 校验**普通文件**：目录、`.html` 后缀的目录一律拒；
+  - **`lstat` 而非 `stat`**：不跟随软链，指向 .exe 的 `x.html` 软链因此 `isFile()` 为 false 被拒（硬链不构成绕过：系统按**我们给的路径的扩展名**派发 handler，硬链只会被浏览器当二进制渲染，不会执行）；
+  - 词法归一 `.`/`..` 中间段后再校验（渲染层拼接的路径同款问题，ShellExecuteEx 不归一会弹「找不到文件」）；
+  - 不存在 / 无权限 / 非法字符 → `false`，失败原因不透给渲染层。
+- **验证**：`test/shell/openTarget.test.ts` 7 例（白名单矩阵 / 归一 / 非字符串 / 6 类非白名单扩展名真实存在仍拒 / 目录 / 软链（本机 Windows 无软链权限自动 skip，判定逻辑不依赖它）/ 不存在与非法字符），6 过 1 跳；E2E `E-CV-FILES-008`（html 行两项且顺序正确、点第一项 `openInBrowser` 收到文件本体路径且 `openPath` 零调用、html 行「打开所在目录」仍给目录、非 html 行仍只有一项）——`changedFiles.spec.ts` 8/8 全绿。四包 typecheck 0 错；forge-core 461/461、forge-ui 318/318、forge-extensions 69/69 全绿；forge-desktop 344/352（6 红 + 1 跳均为本次之前已存在：`ensurePiShellPath` 环境相关 4 + PiConversationAdapter 2，与本改动零交集）。浏览器 mock 页实测菜单：地球图标项 + 原有目录项同款排版，hover 底色一致。
+- **不做的**：不做「在应用内预览」（画布卡片已有 iframe 沙箱，另开一套是另一件事）；菜单不加「复制路径 / 复制文件名」等无关项；主进程不校验路径是否在项目根内——技能目录（`AppData\Roaming\Electron\agent`）这类项目根外的合法编辑目标不能被这条规则误杀。
+
+## v6.1 (视觉：暗色主题可读性——抬底 + 压字双向收敛)
+
+> 来源：2026-09-29 用户反馈「暗色太黑、长时间看累，对话区看着脏」，并附 GPT 的 Soft Dark / Charcoal 建议求证。诊断后经 `prototypes/dialog-readability-demo.html` 出 A 现状 / B 只抬底（GPT 思路）/ C 只去脏 / D 全改 四档对比，实测指标由脚本从真实渲染结果 `getComputedStyle` 算出（Chromium 对 `oklch()` 原样返回函数串，需自行转 sRGB），用户定稿 **D**，并追加两条约束：**行高不动（保持 2）**、**文件类型徽章保留 Linguist 饱和色**。
+
+- **诊断（先拆因果，再动色）**：反馈里其实是**两条独立因果**，GPT 的建议一条都没碰到。
+  - 疲劳 ← 底色 Y=0.0047 贴黑 **且** 正文对比 12.15:1 过冲（AAA 只要 7:1；深色高对比是光晕与视疲劳来源）。GPT 方案把底色抬对了，文字却同时提到 0.928，对比升到 **14.19:1**，比现状更高——方向反了。
+  - 脏 ← `App.vue .shell-sheen` 以 `z-index:210` 盖在**文字之上**，把阅读区底色从 `#0d0f13` 抬到 `#1f2228`，**亮度差 3.35 倍**，横向色斑直接洗在正文行上。
+  - C 档（只去脏、底色不动）证明两者可分离：背景立刻干净，但对比仍是 12.15:1，疲劳一点没改善。
+- **令牌（`packages/forge-ui/src/design-tokens.css`）**：暗色阶梯保 hue 265 不动、组件层继续 `color-mix` 同源派生（不引第二套灰阶）——`--background` 0.166→**0.215**（Y ×2.06）、`--card` 0.189→**0.243**、`--muted/--secondary/--accent` 0.207→**0.268**、`--foreground` 0.85→**0.82**（**压**字）、`--muted-foreground` 0.62→**0.66**（**提**小字，13px 工具行/时间戳才是真正吃力的字）、`--border` 半透明白 alpha 0.085→**0.115**。正文对比 12.15→**10.07:1**，次级 5.25→5.63:1。`--shadow-sm/md/lg` 各补一档（底色 Y 翻倍后同 alpha 投影观感减淡）。
+- **光场（`App.vue` + `global.css`）**：峰值 0.096→**0.035**（衰减形状不变，整体等比 0.365），不均匀度 3.35×→**1.69×**。两处**必须同步**（`global.css` 是 body 兜底，不同步会在透出 body 的场景看到第二个剖面）。
+- **用户气泡（`MessageCard.vue`）**：暗色下 `--bubble-bg` `#3a3a3d`→**`#2b2e34`**、hover `#4a4a4d`→`#3a3e45`、字 `#ffffff`→**`#d7dae0`**。旧值是纯中性灰（色相 0），亮度是底的 4.4 倍、配 19:1 纯白字，在带蓝调的炭灰里是一块刺眼大灰板；换同色相冷调后亮度比 2.8 倍、字 13.6:1。`--bubble-bg` 是 shell 上的局部变量，`.bubble-fade` 渐隐叠层全部从它派生，无需额外改动。亮色主题不动。
+- **启动帧（`forge-ui/index.html`）**：boot splash 兜底 `--welcome-bg` `rgb(13 15 19)`→**`rgb(24 25 29)`**、`--welcome-muted` 0.62→0.66。这两个值是「模块链加载前」那一帧的底色，与 `theme.ts` 同属不可漂移的锁定项。
+- **窗口底色（`forge-desktop/src/theme.ts`）**：`THEME_BACKGROUND.dark` `#0d0f13`→**`#18191d`**。与 `design-tokens.css` 的 `--background` 逐位锁定（`test/theme.test.ts` 解析 CSS 换算 sRGB 做断言），改令牌不改这里会立刻红。
+- **不做的（用户定稿）**：① **行高保持 `line-height: 2` 不动**（原型初稿曾提议 1.75，未采纳）；② **文件类型徽章保留 GitHub Linguist 饱和色**（`ToolCallCard.vue` 去饱和方案已撤回——颜色承载语言信息，一眼看出改的是 TS 还是 Vue，不是装饰噪点）；③ 不引 GPT 建议的 Accent `#7C8CFF` 靛蓝（与 `design-tokens.css`「中性深灰，非紫色」冲突，且已有琥珀/青瓷绿/金三个色相在跑）；④ 不做「侧栏比主区亮」（与 `App.vue` 一体化壳层「不靠色块台阶」冲突）。
+- **验证**：typecheck 四包 0 错；forge-core 461/461、forge-ui 318/318 全绿；forge-desktop 338/345（6 红经 `git stash` 对比确认全部为改动前已存在的 `ensurePiShellPath` 环境相关 4 + PiConversationAdapter 2，零回归）。vite dev 页实测令牌全部落位（`--background` 解析为 `oklch(0.215 0.008 265)`、`--border` 为 `rgba(255,255,255,0.115)`、暗色 `.shell-sheen` 规则峰值 0.035 已进样式表）。
+- **口径提醒**：`oklch()` 首值是**感知亮度 L**（改色用），`12.15:1` 是 **WCAG 对比度**（验收用，中间量是 sRGB 相对亮度 Y），两者不是同一口径，勿混说。压字 0.85→0.82 只让正文 Y 降 10.3%（配平动作），抬底 0.166→0.215 才是 Y ×2.06 的主调。
+
+## v3.88.0 (新增：CV-S13 选区复制浮窗——消息内拖选文字松开鼠标即弹「复制文本」)
+
+> 来源：2026-09-29 用户需求「参考图例，选中文本释放鼠标弹浮窗，只要复制文本」。参考图里的三动作（复制文本/添加到任务/在侧边任务中提问）被用户砍到只剩复制。形态先经 `prototypes/selection-copy-demo.html` 出 A（深色卡片浮层）/ B（tooltip 反色）两变体，用户拍板 **B**。
+
+- **前端（`packages/forge-ui`）**：新增 `src/selectionPopover.ts` 全局单例（`main.ts` 引入即生效，与 `tooltip.ts` 同款模式：document 级 `mouseup` + fixed/transform 视口定位，免疫滚动容器偏移）。行为口径：① 仅选区锚点落在 `.msg`（消息卡片根）内才弹——侧栏/设置/终端（xterm 自带选区复制）/画布 iframe（事件不回传）天然不触发；② 浮窗出现在选区上方 8px，贴顶翻下方，水平夹紧视口（GAP/EDGE 与 tooltip 同款）；③ 点按钮 → `navigator.clipboard.writeText`（失败回退 `execCommand`，与设置页复制日志同款兜底）→ 「已复制」打勾 1.4s → 收起并清空选区；④ 任意滚动（capture）/ 浮窗外 mousedown / Escape（连选区一起清）即隐。样式进 `global.css`（`.selection-pop`）：反色底抄全局 tooltip（`--foreground` 底 / `--background` 字）+ `--shadow-md` + `--radius-lg`，图标复用 footer 复制按钮 SVG；z-index 9998 压在 tooltip 之下。i18n 新增 `chat.copySelection`（复制文本/Copy text），「已复制」复用 `chat.copied`；浮窗常驻期间切语言由 `watch(i18n.activeLocale)` 即时跟随。
+- **不做的**：「添加到任务」「在侧边任务中提问」（用户裁定）；键盘划选（shift+方向键）不触发（需求口径=鼠标释放）；不动 footer 既有整条复制按钮。
+- **验证**：forge-ui 单测 318/318、vue-tsc 0 错；vite dev 页（51731）浏览器实测全链路——消息区选中文本弹出（反色逐值 `oklch(0.85…)` 底/`oklch(0.166…)` 字核对）、点复制翻「已复制」→ 1.4s 收起清选区、非消息区选区不弹、Escape 收起。⚠️ 隐藏页环境 `Selection.toString()` 恒空（不重绘副作用），测试驱动用临时 `getSelection` 补丁验证模块逻辑，产品代码未加任何兜底。
+- **文档**：PRD `docs/prd/03_conversation.md` 新增 CV-S13 节 + AC-CV-052/053/054 + 自检报告一行。
+
+## v3.87.0 (新增：CV-S09 队列编辑——每条待发消息可删除 / ⚡立即发送（打断当前轮并直发）)
+
+> 来源：2026-09-29 用户需求「排队消息不能只是干等，要能删、能插队」。交互先经 `docs/demos/queue-demo.html` 定稿；初版 ⚡ 采用 pi 原生 `steer`（等当前轮结束在边界插入），用户复核后明确要**真打断**（「AI 分析好长时间我不还是要等很久」），终版改为摘出条目 → abort 当前轮 → 立即直发。pi 原生无按条操作 API，按条编辑用 `clearQueue + 重建` 实现（`clearQueue/followUp` 内部均为同步 push，clear 与回灌之间无事件循环空窗，agent 循环观察不到中间空队列态）。
+
+- **adapter（`packages/forge-desktop/src/pi/piConversationAdapter.ts`）**：`MinimalPiSession` 增可选 `steer()/followUp()`（真实 AgentSession 均有；fake 缺失时经 `prompt+streamingBehavior` 降级）；新增 `removeQueuedMessage(index)`（clearQueue + 原序回灌；index 越界原样恢复后抛错）与 `sendQueuedMessageNow(index)`（**打断语义**，用户定稿「= 按停止 + 发一条新消息，队列其他保持不动，跑完接着跑队列」：先 clear 再 abort（队列已空 pi 不会自动续跑）→ **剩余队列先回灌** → sendMessage 直发摘出条目起全新轮次，pi 循环在轮次边界按 FIFO 自动续跑剩余——回灌必须在起轮**之前**（sendMessage await 整轮，之后再入队就是无人消费的死队列，首版真机 bug 2 根因）；会话已空闲则跳过 abort；越界不打断当前轮）；**打断抑制窗** `abortingTurns`（对停止按钮同样生效）：① abort 期间 pi 发的 "This operation was aborted" 错误事件是正常收尾，不上报（真机 bug 1 根因——错误横幅 +「立即重试」）；② 被 abort 轮的最终 assistant 消息（`message_end(stopReason=aborted)`）不转发 UI 但记账照做——它到达时打断新轮次的 user 气泡已本地入列，转发会落在气泡之后，观感即「上一轮的文本接到新消息上」（真机 bug 3 根因：⚡发 5 后「收到 2。……」整段落在 5 下面）；③ 被 abort 轮次不发 mainTurnEnd（done 门控会把状态压成 done，而新轮次在 adapter 内直发、不走 service.setStatus(streaming)，状态会被压 done 直到新轮次结束）；私有 `mutateFollowUpQueue` 统一「clear → mutate（软失败原样恢复再抛错）→ 回灌（单条失败不中断其余）」。
+- **forge-core**：`PiConversationAdapter` port 增两个可选方法；`ConversationService.removeQueuedMessage`（校验 1001/1002，适配器不支持/越界 5000）；`sendQueuedMessageNow` 带状态驱动（非 streaming 先置 streaming，结束后兜底置 done——adapter 内直发不经 service.sendMessage，状态必须此层负责）；`ConversationApi` 注册 `conversation/queueRemove|queueSendNow`，返回 `{ followUp }` 新队列。
+- **前端（`packages/forge-ui`）**：队列浮窗条目悬停浮现两动作（⚡立即发送 / ✕删除，样式对齐定稿 demo：`--primary`/`--destructive` token）；**⚡ 的 user 气泡必须本地补**（真机 bug：直发路径后端不转发 user 气泡——`pendingDelivery` 只服务队列派发确认、直发起点即清空，导致「回复凭空提到没发过的 6 和 5」）：`useSessionConversation.sendQueuedNow(index)` 本地 push 气泡（文本取自队列镜像）+ 调 RPC，`InstructionInput` ⚡ 改 emit `queue-send-now` 由 ConversationView 接线；流式读秒/阶段由 statusChanged(streaming) 事件自动重启，无需额外处理；mock-bridge sendNow 去掉 user 气泡 emit（与真实后端对齐，避免 mock 下双气泡），HISTORY 照写（切会话回显）；`bridge.ts` ForgeMethod 增两方法；i18n `input.queue.*` 中英双语（⚡ tooltip 明示「打断当前回答，马上开始这条」）。
+- **不做的**：用户复核后砍掉「在此前插入」（初版做过，语义与立即发送混淆）；停止语义不变——全停 + 队列回填输入框。
+- **验证**：adapter 新增 7 用例（删中间/越界恢复/打断直发+剩余先回灌/越界不 abort/空闲跳过 abort/打断抑制窗×2——错误事件与被打断轮收尾消息均不外发、窗外照常）全过；demo 浏览器实测完整时序 `当前轮(被打断) → 立即直发条 → 队列逐条续跑 → 空闲`（用户定稿语义）；forge-core 服务层新增 4 用例全过；forge-core 450/450、forge-ui 318/318、三包 typecheck 0 错；desktop 全量 337/344——6 红全部为改动前已存在（`shellProbe` 环境相关 5 + 错误文案遗留 1，stash 对比确认）。
+- **真机待确认**：①打断后瞬态状态——abort 使在途轮以 `stopReason=aborted` 收尾（partial 保留），新轮次全程保持 streaming（旧轮 done 已抑制），观察状态灯/停止按钮是否无缝；②被打断轮的流式占位文本保留在原位（不再被收尾消息重排），确认观感。
+- **真机待确认**：打断后瞬态状态——abort 使在途轮以 `stopReason=aborted` 收尾（与停止按钮同款，partial 保留），随后新轮次立起 streaming；`streaming→canceled/done→streaming` 之间可能有毫秒级状态灯闪烁，待真机观察是否可感。
+
+## v3.86.0 (新增：模块 10 内嵌终端——pty 服务 + term/* IPC + xterm 连体 tab 面板)
+
+> 来源：PRD `docs/prd/10_embedded_terminal.md`（已确认），视觉按 `prototypes/terminal-git-prototype.html` 定稿 demo 对齐（2026-09-23 用户验收「按照这个demo对齐」）。模块 11（Git 提交推送）已先行交付，本次补终端。
+
+- **后端（`packages/forge-desktop`）**：
+  - 新增 `src/term/ptyService.ts`：node-pty（`@lydell/node-pty`，N-API 预编译，免 rebuild）封装为四个 RPC——`term/create`（cwd 必须 realpath 归一后命中已注册项目根，否则 1002；spawn 固定系统 shell `COMSPEC`/`SHELL`，不接受渲染层传任意可执行路径）、`term/write`/`term/resize`/`term/kill`（死/未知 ptyId 静默返回 0，PRD F04）。node-pty **懒加载**（首次 spawn 才 dynamic import，不拖累启动链）；`spawnPty/resolveShell/logger` 全部可注入，纯 TS 可测。
+  - `ipc-contract.ts`：`ForgeMethod` 增 4 方法、`ForgeEvent`/`FORGE_EVENTS` 增 `term:data`/`term:exit`（漏登记 = 主进程静默不转发，`ipcEventContract.test.ts` 的同款防线）；`createForgeCore.ts` 把 termService 方法表并入 methodTable、事件走 core eventBus，并导出 `killAllPtys`。
+  - `main.ts`：`before-quit`、窗口 `closed`、`did-navigate`（HMR/reload 孤儿对账）三处全量回收 pty（AC-10-07）。
+- **前端（`packages/forge-ui`）**：
+  - 新增 `components/TerminalPanel.vue`：xterm（`@xterm/xterm` + fit 插件）连体 tab 面板，主题/字体从 design tokens 取（深浅切换即时应用）；每 tab 存活独立 Terminal，后台 tab 不断流；tab ✕ 或**鼠标中键**关闭；面板高默认 240px、拖拽 clamp 120–520px、`forge:terminal-height`/`forge:terminal-open` 持久化；tab 软上限 20（超出一次性 toast）；pty 退出 tab 内保留 `[进程已退出 code=N]`；≥300ms 的 create 往返显示「连接中…」防御态；**有选区时 Ctrl/Cmd+C = 复制**（无选区仍是 SIGINT 中断），右键亦复制选区。
+  - 面板右端两个动作键（用户 2026-09-29 追加）：**配色档切换**（暗/亮，未手选前跟随应用主题，手选后不再跟随，落 `forge:terminal-tint`；活动 tab 与面板底同步换色）+ **收起面板**（等价顶栏终端按钮的「关」）。行高 `lineHeight` 1.8→**1.4**（12px 字下单元格高 29px→22px，demo 静态文本的 1.8 放进真实终端明显偏松）。
+  - **拖高上限改为随窗口高度走**（用户 2026-09-29：固定 520 拉不够高）：区间 120px ~ (窗口高度 − 280px)、绝对上限 1200px，`clampTerminalHeight`/`termHeightMax` 为唯一口径（拖拽、恢复、窗口 resize 三条路径共用）；窗口变矮只做内存内 clamp、**不写 localStorage**，窗口拉回去时用户记着的那个数还在。PRD F01 业务规则同步修订。
+  - **配色取值缺陷修正（同一轮）**：原先把 design tokens 的 `--muted`/`--foreground` 原样喂给 xterm，而令牌是 `oklch()`/`color-mix()` 串——xterm 颜色解析只认 `#hex`/`rgb()`，判非法后**静默回退默认色**（浅色档 `--foreground: #333333` 恰是 hex 才让亮色主题看着正常，暗色主题实际一直在用 xterm 默认字色）。改为面板内置两档 hex 常量（`#15171d/#ccced0` 与 `#f4f4f5/#333333`，即两档令牌的 sRGB 换算值），同一份常量同时供 xterm 与 CSS 变量 `--term-surface`/`--term-ink` 使用，两侧不可能再错位。
+  - App.vue：工具栏纯图标入口 + `Ctrl+\`` 全局开关；面板 `v-show` 常驻（切设置页不断流、pty 不回收）。i18n 新增 `terminal` 域中英双语。
+  - mock-bridge：假 pty 行缓冲 mini-shell（echo/ls/pwd/exit/^C/退格），300ms 延迟应答复刻真实时序，浏览器 dev 可全流程演示。
+  - **四处时序修正**（真机/浏览器实测发现）：① `tabs` 是 shallowRef，直接改 `tab.creating` 不触发重渲染——「连接中」永挂，改经 `patchTab()` 重排数组强制求值；② 主进程 spawn 后立即推数据、而 ptyId 要等 create 应答回传，首块输出（shell prompt）可能先于归属到位——新增未能认领事件的按 ptyId 暂存队列，应答确认后回放；③ **尺寸握手**：面板高度带 0↔240 过渡，途中 fit 出的是中间态行列，拿它 spawn 再连发 resize，ConPTY 每次重排都把 banner 顶出可视区（真机表现＝「上面空一块、往上滚才有字」）——改为开关/尺寸变化统一等落定（260ms）后量一次、**仅在行列真变化时才发 resize**、拖高松手立刻重测（fit 与 resize 必须成对，只 sync 不 fit 会让 xterm 停在旧行列）；④ ③ 的防抖把「开面板要自动建 tab」的意图冲掉了——过渡期间 ResizeObserver 连着回调、各自重排那个 260ms 定时器，默认不建 tab 的几次会顶掉带建 tab 的那一次，于是**点顶栏按钮只开了个空面板**；意图改由独立位 `wantAutoCreate` 记账（开面板/冷启动恢复时置位），谁最后落定都算数。
+- **附带修正（`packages/forge-ui/src/App.vue`）**：`onSelectSession` 此前只改 `currentSessionId`、不对齐 `currentProjectPath`，导致**从会话树点入后新建终端 tab 的 cwd 停在旧项目**（从项目树点入才正确）；现按会话的 `projectPath` 同步，tab 标题一并跟手。
+- **验证**：`term/ptyService.test.ts` 9/9（含 AC-10-06 伪造 cwd 三例、AC-10-07 killAll、shell 解析矩阵）；forge-ui 单测 318/318、vue-tsc 0 错；desktop typecheck 0 错；桌面全量 330/337——6 个红全部为**先前已存在**的 `test/pi/shellProbe`（环境相关）与 `test/pi/piConversationAdapter`（2d5de25 错误文案改动遗留），与本模块无关。浏览器（mock）实测：面板 240px/连体 tab 压边框 1px/拖拽 340→520→120 clamp+持久化/Ctrl+` 开关/ls-exit 回环/退出行/中英空态/深浅主题前景色联动；④ 修复后冷刷新复测——收起且零 tab 时点顶栏按钮 → 面板展开并自动出现当前项目 tab（名称与 cwd 均对），期间只有一条 `term/create`、无多余 resize；动作键复测（`getComputedStyle` 逐值）：tint=auto+暗主题 → 面板底 `rgb(21,23,29)`，第一击 → `rgb(244,244,245)` 且 `forge:terminal-tint=light`，第二击 → 回到 `rgb(21,23,29)`/`dark`，收起键点击后面板 `open` 类移除且 `forge:terminal-open=0`；行高改后单元格实测 22px（改前 29px）；拖高区间实测（视口 1625 高 → 上限 1200）：上抛 4000px → `--h`/localStorage 同为 1200px，下压 4000px → 120px。
+- **文档**：新增 `docs/api/10_terminal.md`（§0 安全口径 + 四方法参数/错误表 + 事件 + 渲染层约定）。
+- **真机待办**：主进程部分需重启 Electron dev app 生效——vim/top 全屏应用（AC-10-05）、任务管理器确认无残留进程（AC-10-07）、真实 COMSPEC/SHELL。
+
 ## v3.85.6 (修复：系统通知小窗 LOGO 过期且模糊)
 
 > 来源：2026-09-29 用户反馈（截图）——回复完成通知左上角的 LOGO 是旧版带锤铁砧图且分辨率很低，与当前品牌 LOGO 不符。
@@ -123,7 +320,7 @@
   - `ipc-contract.ts`：`ShellProbeResult` 的 ok 分支加 `autoFixed?: boolean`（＝本次是自动写配置后复探恢复的，配置刚落盘、已存在会话仍持旧解析结果）。
 - **前端（forge-ui）**：`useShellHealth` 增加 `autoFixed` / `busy` / `reprobe()`（重测绕过首挂载幂等闸门，探测中禁按钮）；对话区横幅三态——**自动修复成功**（`autoFixed`，muted 色提示「已自动识别 Git Bash（路径）并写入配置，重启应用后新会话生效」）、**仍不可用**（原错误色 + 「重新检测」+「打开配置文件所在目录」双入口）、正常（无横幅）；i18n 新增 `chat.shellReprobe/Reprobing/AutoFixed` 并改写 `chat.shellFixHint`（中英全键，`sb-actions`/`sb-ok`/`.sb-fix:disabled` 样式同源）。
 - **文档**：新增 `docs/knowledge/git-bash-autofix.md`（+ index.json 登记）记录候选链、时机纪律与五个易错点；本条目。
-- **真机验证（本机 Windows + Git 装 `D:\work\tools\Git`，PATH 只有 `<root>\cmd`）**：确认旧链路三级全落空的根因（PATH 里没有 `bin\bash.exe`），新链路由 `where git.exe` 反推出 `D:\work\tools\Git\bin\bash.exe` 并成功合并写进 `<userData>/agent/settings.json`（`packages` 7 项原样保留），复探 `ok=true`。
+- **真机验证（本机 Windows + Git 装 `<Git 安装目录>`，PATH 只有 `<root>\cmd`）**：确认旧链路三级全落空的根因（PATH 里没有 `bin\bash.exe`），新链路由 `where git.exe` 反推出 `<Git 安装目录>\bin\bash.exe` 并成功合并写进 `<userData>/agent/settings.json`（`packages` 7 项原样保留），复探 `ok=true`。
   - 过程中踩到并加固：**落盘前 `path.normalize`**。候选若带重复分隔符（如 `D:////work////Git////bin////bash.exe`），Windows 视作合法路径（`existsSync` 通过、连复探也通过），但 spawn 行为不稳——属于「看起来修好了、实际还是坏的」一类最难查的配置；补单测锁住。
 - **验证**：新增 `test/pi/gitBashResolver.test.ts` 10 例（候选链全部依赖注入驱动，不依赖测试机装没装 Git）+ `shellProbe.test.ts` 追加 5 例（已可用零副作用 / 解析不到不动配置 / 修复成功且 packages 不丢 / 候选路径形态不规范须规范化 / 候选不可用不谎报）；`@forge/desktop` 311 过·0 挂·1 skip，`@forge/ui` 294 过·0 挂，两包 typecheck 0 错。
 

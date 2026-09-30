@@ -18,14 +18,15 @@ import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
+import { createFollowGate, isScrollIntentKey } from '../utils/followGate';
 import { formatElapsed } from '../utils/formatElapsed.ts';
 import { toErrorBannerModel } from '../utils/errorPresentation.ts';
 import { useI18n } from '../i18n/index.ts';
 
 // v3.85.2：字标与 splash/BootWelcome 同一 URL（public 资产，dev '/'、prod './' 均可解析）——
 // 全链路共享同一次加载/解码，接管时不再有「新图解码前塌高」的闪动
-const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.png';
-const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.png';
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 /**
  * 对话主视图。
@@ -83,6 +84,7 @@ const {
   historyWindowTruncated,
   expandHistoryWindow,
   expandHistoryWindowTo,
+  userOrdinalInWindow,
   isMessageStreaming,
   toggleGroup,
   sessionStatus,
@@ -93,6 +95,7 @@ const {
   resetForSession: resetConvForSession,
   loadHistory,
   send: sendTurn,
+  sendQueuedNow,
   cancel: cancelTurn,
   subagents,
   activeAgentId,
@@ -172,6 +175,7 @@ function resetForSession(): void {
   stoppedNotice.value = false;
   // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
   reviewCtrl.reset();
+  followGate.clearUserIntent();
   syncReview();
   clearLocateHighlight();
   beginSettlePin();
@@ -448,12 +452,17 @@ const NEAR_BOTTOM_DEBOUNCE_MS = 120;
 /** 定位后触底抑制窗口：定位平滑滚动结束若贴近底部（目标靠后时被钳制在底部附近），
  *  属于程序化定位而非"手动滚到底"，窗口内触底信号不退出回看（否则选中突出立即丢失） */
 const LOCATE_NEAR_BOTTOM_SUPPRESS_MS = 800;
+/** 定位动画期间的向上触顶扩窗屏蔽：扩窗会即时写 scrollTop 取消 smooth 动画，
+ *  视口永久钉在动画中途（长会话里点靠前条目必现：目标就是窗口首项，动画必然途经顶部） */
+const LOCATE_SCROLL_GUARD_MS = 700;
 
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 let highlightedMsgEl: HTMLElement | null = null;
 let nearBottomTimer: ReturnType<typeof setTimeout> | null = null;
 /** 最近一次定位进入回看的时刻（触底抑制窗口起点） */
 let lastLocateAt = 0;
+/** 定位动画屏蔽窗口终点（见 LOCATE_SCROLL_GUARD_MS） */
+let locateScrollUntil = 0;
 
 function clearLocateHighlight(): void {
   if (highlightTimer !== null) {
@@ -466,36 +475,37 @@ function clearLocateHighlight(): void {
   }
 }
 
-/** messages 数组索引 → 第几条 user 消息（0 起）；索引越界或该位置非 user 返回 -1 */
-function userOrdinalOf(index: number): number {
-  const msgs = messages.value;
-  if (!Number.isInteger(index) || index < 0 || index >= msgs.length) return -1;
-  let count = 0;
-  for (let i = 0; i <= index; i += 1) {
-    if (msgs[i]?.role === 'user') count += 1;
-  }
-  return count - 1;
-}
-
 /**
  * 时间线条目点击：进入回看模式 + 平滑滚动定位到该用户消息 + 短暂高亮（AC-CV-016）。
- * 定位目标是 user 消息本身（.msg-user 按 DOM 顺序与 userOrdinal 对齐），
- * 工具组折叠不影响——user 消息永远渲染可见。
+ * 定位目标是 user 消息本身，工具组折叠不影响——user 消息永远渲染可见。
+ *
+ * 窗口化（v3.74）下 .msg-user 的 DOM 序只覆盖**已挂载窗口**：全量序会错位（上方轮次未挂载），
+ * 所以序由 useSessionConversation 按窗口内实际挂载项给出（userOrdinalInWindow）。
  */
 async function locateMessage(index: number): Promise<void> {
   if (showResultView.value) return; // 结果视图激活期间不定位/回看（防御；Rail 本就隐藏）
   const container = scrollRef.value;
   if (!container) return;
-  const ordinal = userOrdinalOf(index);
-  if (ordinal < 0) return;
-  // 目标消息被历史窗口化截断在上方：先扩窗覆盖再等 patch，否则 .msg-user 的
-  // DOM 序只覆盖窗口内消息，ordinal 映射会错位（v3.74 窗口化配套）
-  if (expandHistoryWindowTo(index)) await nextTick();
-  const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
-  if (!el) return;
+  // 先关掉两条会把视口拽回底部的路径，再动窗口：
+  // - reviewCtrl.enter → autoFollow=false（否则扩窗触发 ResizeObserver 钉底，定位被冲掉）；
+  // - cancelSettlePin → 切会话后的 800ms 稳定期是给「自动滚底」兜底的，点击定位是明确
+  //   意图，不能被它覆盖（否则开大会话后立刻点条目，只会看到视口弹回底部）。
   reviewCtrl.enter(index); // browse→review；review 中重复点击仅更新目标
   syncReview();
+  cancelSettlePin();
+  // 目标消息被历史窗口化截断在上方：先扩窗覆盖再等 patch；新批次插在内容区上方，
+  // 不补 scrollTop 视口会瞬跳（与 maybeExpandHistoryWindow 同锚定口径）
+  if (expandHistoryWindowTo(index)) {
+    const prevHeight = container.scrollHeight;
+    await nextTick();
+    if (scrollRef.value === container) container.scrollTop += container.scrollHeight - prevHeight;
+  }
+  const ordinal = userOrdinalInWindow(index);
+  if (ordinal < 0) return;
+  const el = container.querySelectorAll<HTMLElement>('.msg-user')[ordinal] ?? null;
+  if (!el) return;
   lastLocateAt = Date.now(); // 开启触底抑制窗口（程序化定位滚动 ≠ 手动触底）
+  locateScrollUntil = lastLocateAt + LOCATE_SCROLL_GUARD_MS; // 屏蔽动画期间的触顶扩窗
   clearLocateHighlight();
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.classList.add('msg-locate-highlight');
@@ -540,18 +550,40 @@ async function maybeExpandHistoryWindow(): Promise<void> {
 /** 上次滚动位置（方向判定用）：用户上滚 vs 程序化滚底（扩窗锚定/定位/置底均为向下） */
 let lastScrollTop = 0;
 
+/** 用户滚动意图 + 「是否该脱离跟随」判定（纯逻辑见 utils/followGate.ts，注入 Date.now 作时钟） */
+const followGate = createFollowGate({ nearBottomPx: NEAR_BOTTOM_PX });
+
+/** 一次用户滚动输入：结束落位稳定期钉底，并给紧随其后的 scroll 事件打上意图标记 */
+function onUserScrollIntent(): void {
+  cancelSettlePin();
+  followGate.markUserIntent(Date.now());
+}
+
+/** 键盘滚动：只有滚动类按键算意图（其余按键沿用 cancelSettlePin 的旧行为） */
+function onScrollIntentKey(e: KeyboardEvent): void {
+  cancelSettlePin();
+  if (isScrollIntentKey(e.key)) followGate.markUserIntent(Date.now());
+}
+
 function onMessagesScroll(): void {
   updateConvFade();
-  void maybeExpandHistoryWindow();
+  // 定位动画期间不扩窗（否则即时写 scrollTop 打断 smooth，定位停在半路）
+  if (Date.now() >= locateScrollUntil) void maybeExpandHistoryWindow();
   const elNow = scrollRef.value;
   if (elNow) {
     const scrolledUpBy = lastScrollTop - elNow.scrollTop;
     lastScrollTop = elNow.scrollTop;
     // 流式输出期间用户向上翻阅历史：脱离自动跟随（delta 不再强制滚底），
-    // 露出「回到底部」按钮；滚回距底 <NEAR_BOTTOM_PX 停稳后由下方触底判定恢复
+    // 露出「回到底部」按钮；滚回距底 <NEAR_BOTTOM_PX 停稳后由下方触底判定恢复。
+    // 方向只认「新鲜的输入意图」：1px 上移也算数（旧 2px 阈值会让触控板第一下失效、
+    // 随即被 delta 钉底拽回），而无输入却出现的 scrollTop 减少（布局 clamp / smooth 被打断）
+    // 是程序性位移，不得触发 detach。
     if (
-      scrolledUpBy > 2 &&
-      elNow.scrollHeight - elNow.scrollTop - elNow.clientHeight > NEAR_BOTTOM_PX
+      followGate.onScroll(
+        Date.now(),
+        scrolledUpBy,
+        elNow.scrollHeight - elNow.scrollTop - elNow.clientHeight,
+      )
     ) {
       reviewCtrl.detach();
       syncReview();
@@ -710,12 +742,14 @@ onMounted(() => {
     convFadeObserver = new ResizeObserver(onConvResize);
     convFadeObserver.observe(el);
     if (el.firstElementChild) convFadeObserver.observe(el.firstElementChild);
-    // 用户手动滚动 = 明确的位置意图，立即结束稳定期
-    // （pointerdown 覆盖拖动滚动条，它既不触发 wheel 也不触发 touchstart）
-    el.addEventListener('wheel', cancelSettlePin, { passive: true });
-    el.addEventListener('touchstart', cancelSettlePin, { passive: true });
-    el.addEventListener('pointerdown', cancelSettlePin, { passive: true });
-    el.addEventListener('keydown', cancelSettlePin);
+    // 用户手动滚动 = 明确的位置意图，立即结束稳定期并登记滚动意图
+    // （pointerdown 覆盖拖动滚动条，它既不触发 wheel 也不触发 touchstart；
+    //   touchmove 覆盖惯性滚动期间的持续意图）
+    el.addEventListener('wheel', onUserScrollIntent, { passive: true });
+    el.addEventListener('touchstart', onUserScrollIntent, { passive: true });
+    el.addEventListener('touchmove', onUserScrollIntent, { passive: true });
+    el.addEventListener('pointerdown', onUserScrollIntent, { passive: true });
+    el.addEventListener('keydown', onScrollIntentKey);
   }
   // 挂载即带会话（多窗格/切窗口重挂）时同样走稳定期：本钩子晚于 composable 的
   // onMounted（loadHistory/loadSubagents 已发起），此处开窗不会漏掉异步回填
@@ -1129,6 +1163,7 @@ onUnmounted(() => {
         :commit-entry="!isEmpty"
         @send="onSend"
         @cancel="onCancelTurn"
+        @queue-send-now="sendQueuedNow"
         @model-change="onModelChange"
         @pick-project="emit('pick-project', $event)"
         @open-project-picker="emit('open-project-picker')"
@@ -1459,7 +1494,7 @@ onUnmounted(() => {
 /* InstructionInput 为多根 fragment（compose-box + 状态行），不再继承父组件 scopeId，
    父作用域规则必须经 :deep() 才能命中 .compose-box */
 /* 宽度统一取 --conv-box-w：默认 100cqw（= 原有 100cqw），hero 态收窄，
-   标准宽度偏好下由 .conv-view.col-standard 改写为内容列宽（三种形态一致，不跳宽） */
+   标准宽度偏好下由 .conv-view.col-standard 改写为内容列宽（首条消息发出前后两种形态一致，不跳宽） */
 .conv-input-wrap :deep(.compose-box) {
   max-width: var(--conv-box-w);
   margin-inline: auto;
@@ -1474,13 +1509,21 @@ onUnmounted(() => {
   --conv-box-w: min(640px, 100cqw);
 }
 
+/* 子 agent Tab 栏直接挂在 .conv-view 下、读不到 --conv-box-w，hero 态需显式同宽，
+   否则标准宽度下 Tab 栏 920px、输入框 640px，两者左缘错开。数值同上面 hero-mode。 */
+.conv-view:has(.conv-input-wrap.hero-mode) :deep(.subagent-tabbar) {
+  max-width: min(640px, 100%);
+}
+
 .conv-input-wrap :deep(.compose-status) {
   max-width: var(--conv-box-w);
   margin-inline: auto;
 }
 
-/* 标准宽度：输入框整体（输入框 + 状态行）跟随正文列宽 */
-.conv-view.col-standard .conv-input-wrap {
+/* 标准宽度：输入框整体（输入框 + 状态行）跟随正文列宽。
+   hero（空会话首屏）排除在外——首屏输入框固定收窄 640px（与启动落地页 LandingHero
+   同宽），若这里一并改写成 920px，「标准」反而会把新会话首屏输入框撑得比「宽」还宽。 */
+.conv-view.col-standard .conv-input-wrap:not(.hero-mode) {
   --conv-box-w: var(--conv-col);
 }
 

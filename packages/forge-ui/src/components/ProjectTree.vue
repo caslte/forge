@@ -91,7 +91,10 @@ function sessionDisplayName(s: SessionItem): string {
   return s.alias || t('project.sessionName', { id: s.sessionId.slice(-6) });
 }
 
-// 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序
+// 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序。
+// 注：后端已把该序持久化（setSessionStatus 转 running 时 touch lastActiveAt，见
+// forge-core sessionService），本表退化为「同序快路径」——省掉等 statusChanged 回包的
+// 一次重排，且 mock/异常路径下仍能置顶。两者同序，删掉本表结果不变。
 const activatedOrder = ref<string[]>([]);
 
 watch(
@@ -555,12 +558,31 @@ onUnmounted(() => {
           @dragstart="onSessionDragStart($event, session)"
         >
           <span
-            v-if="shouldShowDot(session)"
             class="tree-session-status-dot"
-            :class="`tone-${sessionTone(session)}`"
-            :title="statusTitle(session)"
+            :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
+            :title="shouldShowDot(session) ? statusTitle(session) : ''"
             aria-hidden="true"
-          ></span>
+          >
+            <span class="dot-matrix"><i v-for="n in 8" :key="n" /></span>
+            <svg
+              v-if="session.status === 'done'"
+              class="dot-check"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span v-if="session.status === 'error'" class="dot-bang">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                <line x1="12" y1="8" x2="12" y2="13" />
+                <line x1="12" y1="16.5" x2="12" y2="17.5" />
+              </svg>
+            </span>
+          </span>
 
           <div class="tree-node-main">
             <input
@@ -732,12 +754,31 @@ onUnmounted(() => {
               @dragstart="onSessionDragStart($event, session)"
             >
               <span
-                v-if="shouldShowDot(session)"
                 class="tree-session-status-dot"
-                :class="`tone-${sessionTone(session)}`"
-                :title="statusTitle(session)"
+                :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
+                :title="shouldShowDot(session) ? statusTitle(session) : ''"
                 aria-hidden="true"
-              ></span>
+              >
+                <span class="dot-matrix"><i v-for="n in 8" :key="n" /></span>
+                <svg
+                  v-if="session.status === 'done'"
+                  class="dot-check"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <span v-if="session.status === 'error'" class="dot-bang">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                    <line x1="12" y1="8" x2="12" y2="13" />
+                    <line x1="12" y1="16.5" x2="12" y2="17.5" />
+                  </svg>
+                </span>
+              </span>
 
               <div class="tree-node-main">
                 <input
@@ -1220,36 +1261,148 @@ onUnmounted(() => {
   background: color-mix(in oklab, var(--muted) 30%, transparent);
 }
 
-.tree-session-status-dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
+/* 状态槽位：12×12 的固定尺寸框（比 8px 圆点大，给运行中动画留余量）。
+   关键：不参与行的 flex 流——绝对定位落进行左侧 24px 留白里，
+   标题完全回到改动前的 24px 起始位置，图标一列也固定在同一 x 上。 */
+.tree-session > .tree-session-status-dot {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-session-status-dot.is-blank {
+  visibility: hidden;
+}
+
+/* ===== 运行中：2×4 盲文点阵，斜向波依次点亮（VS Code 资源管理器语汇）=====
+   动得明确——不靠颜色也能读出「进行中」，且纯 CSS 不占主线程。
+   点阵只在 streaming 下显形；其余三态走各自字形（见下）。
+   扫过色取 --status-run-rest / --status-run-mid / --status-run-peak 三枚令牌（深浅两套值，
+   浅底用暗点扫、深底用亮点扫——详见 design-tokens.css 处的说明）。 */
+.dot-matrix {
+  display: none;
+  grid-template-columns: repeat(2, 2.3px);
+  grid-auto-rows: 2.3px;
+  /* 4 行 + 3 间隙 = 11.75px，刚好收在 12px 槽位内 */
+  gap: 0.85px;
+  place-content: center;
+  align-items: center;
+  justify-items: center;
+}
+
+.tree-session-status-dot.tone-streaming .dot-matrix {
+  display: grid;
+}
+
+.dot-matrix i {
+  width: 2.3px;
+  height: 2.3px;
   border-radius: 999px;
+  background-color: var(--status-run-rest);
+  transform: scale(0.72);
+  animation: tree-status-wave 1.6s ease-in-out infinite;
 }
 
-/* 运行中：黄色 + 呼吸脉冲 */
-.tree-session-status-dot.tone-streaming {
-  background: var(--warning);
-  --dot: var(--warning);
-  animation: tree-status-pulse 1.6s ease-in-out infinite;
-}
+/* grid 行优先排列：odd = 左列 r0..r3，even = 右列 r0..r3；
+   右列延后半拍 → 波形自左上向右下扫过。
+   1.6s 周期 + 0.15s 步进：1.05s 版本用户嫌快，波形糊成一片闪烁；放缓后能看清「一个点从左上走到右下」 */
+.dot-matrix i:nth-child(1) { animation-delay: 0s; }
+.dot-matrix i:nth-child(3) { animation-delay: 0.15s; }
+.dot-matrix i:nth-child(5) { animation-delay: 0.3s; }
+.dot-matrix i:nth-child(7) { animation-delay: 0.45s; }
+.dot-matrix i:nth-child(2) { animation-delay: 0.075s; }
+.dot-matrix i:nth-child(4) { animation-delay: 0.225s; }
+.dot-matrix i:nth-child(6) { animation-delay: 0.375s; }
+.dot-matrix i:nth-child(8) { animation-delay: 0.525s; }
 
-/* 出错：红色常显 */
-.tree-session-status-dot.tone-error {
-  background: var(--destructive);
-}
-
-/* 已完成（未点击过）：绿色 */
-.tree-session-status-dot.tone-done {
-  background: var(--success);
-}
-
-@keyframes tree-status-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--dot, var(--warning)) 50%, transparent);
-  }
+/* 三档相位（v6.5 第四轮）：静息 1.87:1 → 尾巴 3.42:1 → 峰值 7.37:1（浅色主题实测值）。
+   **多出来的中间档就是尾巴**：点冲到最深后不是瞬间消失，而是经 mid 滑回静息，
+   于是「一个暗点拖着一条淡尾从左上走到右下」——方向感来自尾巴，不来自闪烁。
+   两档跳变时眼睛只看到「有个点在闪」，看不出它往哪走。
+   scale 同步编码（0.72 → 1 → 0.88），色弱用户靠大小也能跟。
+   时间点：0%/46%/100% 静息，14% 峰值（急升），32% 尾巴（缓落）——0.32×1.6s=0.51s 的尾巴跨度，
+   约跨 3 个点距（0.15s 步进），所以同时只有「一个头 + 一条尾」在场上。 */
+@keyframes tree-status-wave {
+  0%,
+  46%,
   100% {
-    box-shadow: 0 0 0 5px color-mix(in oklab, var(--dot, var(--warning)) 0%, transparent);
+    background-color: var(--status-run-rest);
+    transform: scale(0.72);
+  }
+  14% {
+    background-color: var(--status-run-peak);
+    transform: scale(1);
+  }
+  32% {
+    background-color: var(--status-run-mid);
+    transform: scale(0.88);
+  }
+}
+
+/* ===== 已完成（未读）：Feather check =====
+   路径是仓库现成的那一段（SettingsPanel .swatch-check / GitCommitDialog / MessageCard /
+   HtmlCanvasBlock / selectionPopover.ts 五处同款），不手搓「两条 div 转 ±45°」——
+   那种画法两臂接缝对不齐，缩到 1× 就是个歪的「人」字。
+   stroke-width 取 3（与 .swatch-check 同款：24 网格缩到 12px 时 2 偏细）；
+   描边走 currentColor，深浅主题自动跟随。 */
+.dot-check {
+  display: none;
+  width: 12px;
+  height: 12px;
+  color: var(--success);
+}
+
+.tree-session-status-dot.tone-done .dot-check {
+  display: block;
+}
+
+/* ===== 出错：11px 圆角方块 + 白色感叹号 =====
+   底板用 CSS 画方块（正方形无形变风险，不值得为它上 SVG），里面的「!」用描边路径，
+   与对勾同档 3px。红色只给需用户处理的错误（CV-ERR-01 口径），常显、静止。 */
+.dot-bang {
+  display: none;
+  position: relative;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--destructive);
+  color: #fff;
+}
+
+.tree-session-status-dot.tone-error .dot-bang {
+  display: block;
+}
+
+.dot-bang svg {
+  position: absolute;
+  inset: 1.5px;
+  width: calc(100% - 3px);
+  height: calc(100% - 3px);
+}
+
+/* 降级：系统要求减少动效时，运行中退回静态点，取扫过色（两个主题下都醒目），语义不丢。
+   已完成/出错本就是静止字形，不受此影响。 */
+@media (prefers-reduced-motion: reduce) {
+  .dot-matrix i {
+    animation: none;
+  }
+  .tree-session-status-dot.tone-streaming .dot-matrix {
+    display: none;
+  }
+  .tree-session-status-dot.tone-streaming::after {
+    content: '';
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--status-run-peak);
   }
 }
 

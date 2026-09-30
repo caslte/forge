@@ -233,8 +233,8 @@ test('TSC-E2E-009c @P0 @mock-backend CV-S11：TodoPanel 为 opencode 风格浮�
   // 折叠动画接线：面板 padding 过渡
   expect(panelStyle.transitionProperty).toContain('padding');
 
-  // 2) 与输入框同材质：失焦时边框色与 compose-box 一致；
-  //    聚焦时输入框边框加深，todo 面板保持原色、不对焦联动（用户裁定）
+  // 2) 与输入框同材质：边框色与 compose-box 恒一致（聚焦不改边框色，v3.86 起）；
+  //    聚焦反馈改由「抬升档位」表达——compose-box 投影从 --elev-1 升到 --elev-2，面板不动
   const textarea = page.locator('textarea.compose-input');
   await textarea.click(); // 确保输入框聚焦
   const focusedBoxColor = await page.locator('.compose-box').evaluate(
@@ -243,8 +243,16 @@ test('TSC-E2E-009c @P0 @mock-backend CV-S11：TodoPanel 为 opencode 风格浮�
   const focusedPanelColor = await panel.evaluate(
     (el) => getComputedStyle(el).borderTopColor,
   );
-  // 聚焦态两色分离：输入框加深，面板不动
-  expect(focusedBoxColor).not.toBe(focusedPanelColor);
+  // 边框色两态一致：焦点不再换边框色（用户裁定去掉焦点边框变色）
+  expect(focusedBoxColor).toBe(focusedPanelColor);
+  // 聚焦 = 抬升升档：compose-box 的投影比面板更重
+  const shadows = await page.evaluate(() => ({
+    box: getComputedStyle(document.querySelector('.compose-box') as HTMLElement).boxShadow,
+    panel: getComputedStyle(document.querySelector('[data-testid="todo-panel"]') as HTMLElement).boxShadow,
+  }));
+  expect(shadows.box).not.toBe('none');
+  expect(shadows.panel).not.toBe('none');
+  expect(shadows.box).not.toBe(shadows.panel);
 
   await page.locator('.conv-messages').click(); // 点消息区空白让输入框失焦
   await expect

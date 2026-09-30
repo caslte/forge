@@ -1,5 +1,5 @@
 /**
- * 改动文件汇总卡片 E2E（E-CV-FILES-001~007，mock-backend）。
+ * 改动文件汇总卡片 E2E（E-CV-FILES-001~008，mock-backend）。
  *
  * 覆盖：历史回显（折叠默认/头部展开/行点击行内 diff/行级与总统计/相对路径）、
  * pi 真实入参形状的工具卡 diff 恢复渲染（多 hunk 逐块 + 旧形状兼容）、
@@ -409,6 +409,80 @@ test('E-CV-FILES-007 @P1 @mock-backend：工具入参带 ./ 前缀时「打开�
   await menu.locator('.cf-context-menu-item').click();
   const calls = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
   expect(calls).toEqual([`${PROJECT}/packages/forge-ui/src`]);
+
+  health.assertHealthy();
+});
+
+test('E-CV-FILES-008 @P1 @mock-backend：HTML 文件行右键多出「用浏览器打开」，非 HTML 行菜单不串项', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.goto('/');
+  await waitForMock(page);
+  await seedSessions(page, [mkSession('sess-cf-8', '右键用浏览器打开')]);
+  await seedHistory(page, 'sess-cf-8', [
+    { id: 'm1', role: 'user', content: '写个原型页', ts: '2026-09-08T08:00:00.000Z' },
+    {
+      id: 't1', role: 'tool', content: 'Written', ts: '2026-09-08T08:00:05.000Z',
+      toolEventId: 'te-1', toolName: 'write', status: 'completed',
+      input: { path: `${PROJECT}/prototypes/queue-panel-redesign.html`, content: '<h1>a</h1>\n<p>b</p>' },
+    },
+    {
+      id: 't2', role: 'tool', content: 'Written', ts: '2026-09-08T08:00:06.000Z',
+      toolEventId: 'te-2', toolName: 'write', status: 'completed',
+      input: { path: `${PROJECT}/packages/forge-ui/src/a.ts`, content: 'export const a = 1;' },
+    },
+    { id: 'm2', role: 'assistant', content: '完成', ts: '2026-09-08T08:00:10.000Z' },
+  ]);
+  await page.reload();
+  await waitForMock(page);
+  // 必须在 reload 之后挂（reload 会清掉 window 注入）：记录真实提交给 bridge 的绝对路径
+  await page.evaluate(() => {
+    const w = window as unknown as { __openInBrowserCalls: string[]; __openPathCalls: string[] };
+    w.__openInBrowserCalls = [];
+    w.__openPathCalls = [];
+    const origBrowser = window.forge.shell.openInBrowser.bind(window.forge.shell);
+    window.forge.shell.openInBrowser = (p: string) => {
+      w.__openInBrowserCalls.push(p);
+      return origBrowser(p);
+    };
+    const origPath = window.forge.shell.openPath.bind(window.forge.shell);
+    window.forge.shell.openPath = (p: string) => {
+      w.__openPathCalls.push(p);
+      return origPath(p);
+    };
+  });
+  await openSeededSession(page, '右键用浏览器打开');
+
+  const card = page.locator('.changed-files');
+  await card.locator('.cf-head').click();
+  const htmlRow = card.locator('.cf-row', { hasText: 'queue-panel-redesign.html' });
+  const tsRow = card.locator('.cf-row', { hasText: 'a.ts' });
+  await expect(htmlRow).toBeVisible();
+  await expect(tsRow).toBeVisible();
+  const menu = page.locator('.cf-context-menu');
+
+  // HTML 行：两项，「用浏览器打开」在前
+  await htmlRow.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.cf-context-menu-item')).toHaveText(['用浏览器打开', '打开所在目录']);
+
+  // 点第一项 → shell.openInBrowser 收到**文件本体**的绝对路径（不是目录）
+  await menu.locator('.cf-context-menu-item').first().click();
+  await expect(menu).toHaveCount(0);
+  const browserCalls = await page.evaluate(() => (window as unknown as { __openInBrowserCalls: string[] }).__openInBrowserCalls);
+  expect(browserCalls).toEqual([`${PROJECT}/prototypes/queue-panel-redesign.html`]);
+  const dirCalls = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
+  expect(dirCalls).toEqual([]);
+
+  // HTML 行的「打开所在目录」仍是目录，两条动作互不串味
+  await htmlRow.click({ button: 'right' });
+  await menu.locator('.cf-context-menu-item', { hasText: '打开所在目录' }).click();
+  const dirCalls2 = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
+  expect(dirCalls2).toEqual([`${PROJECT}/prototypes`]);
+
+  // 非 HTML 行：仍只有「打开所在目录」一项
+  await tsRow.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.cf-context-menu-item')).toHaveText('打开所在目录');
 
   health.assertHealthy();
 });

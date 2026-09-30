@@ -84,7 +84,7 @@ export function readGitInstallPathFromRegistry(): string | null {
         windowsHide: true,
       });
       if (result.status !== 0 || !result.stdout) continue;
-      // 形如：`    InstallPath    REG_SZ    D:\work\tools\Git`
+      // 形如：`    InstallPath    REG_SZ    <Git 安装目录>`
       const matched = result.stdout.match(/InstallPath\s+REG_SZ\s+(.+)/);
       const value = matched?.[1]?.trim();
       if (value) return value;

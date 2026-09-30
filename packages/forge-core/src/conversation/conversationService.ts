@@ -259,6 +259,16 @@ export interface PiConversationAdapter {
    * 返回被清空的队列文本（FIFO 序，供 UI 回填输入框）；无队列返回空数组。
    */
   cancelStream(sessionId: string): Promise<string[]>;
+  /**
+   * 删除待发队列第 index 条（CV-S09 队列编辑）。返回操作后的队列文本（FIFO 序）；
+   * index 越界（UI 镜像过期）抛错且队列原样保留。
+   */
+  removeQueuedMessage?(sessionId: string, index: number): Promise<string[]>;
+  /**
+   * 立即发送第 index 条（CV-S09 队列编辑，打断语义）：中止当前轮，立即以全新轮次
+   * 直发该条；剩余队列回灌排在其后。返回操作后的队列文本。
+   */
+  sendQueuedMessageNow?(sessionId: string, index: number): Promise<string[]>;
   /** 上下文用量查询（P3-A）；无数据返回 null；允许异步实现（无 lease 时磁盘估算） */
   getContextUsage?(sessionId: string): Promise<ConversationUsageSnapshot | null> | ConversationUsageSnapshot | null;
   /** 手动压缩（P3-A） */
@@ -454,6 +464,85 @@ export class ConversationService {
     const cleared = await this.adapter.cancelStream(sessionId);
     this.setStatus(sessionId, 'canceled'); // 保留 lastDeltaText（已生成内容不丢弃）
     return { ok: true, data: { clearedMessages: cleared } };
+  }
+
+  /**
+   * 队列编辑公共校验（CV-S09 队列编辑）：sessionId 非空 + 会话存在 + index 为非负
+   * 整数 + 适配器支持该操作。通过后委托适配器执行。（sendNow 有独立的状态驱动，
+   * 不走本方法——见 sendQueuedMessageNow。）
+   */
+  private async editQueue(
+    sessionId: string,
+    index: number,
+  ): Promise<ConversationResult<{ followUp: string[] }>> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (!Number.isInteger(index) || index < 0) {
+      return { ok: false, code: 1001, message: '参数错误：index 必须为非负整数' };
+    }
+    if (typeof this.adapter.removeQueuedMessage !== 'function') {
+      return { ok: false, code: 5000, message: '当前适配器不支持待发队列编辑' };
+    }
+    try {
+      const followUp = await this.adapter.removeQueuedMessage(sessionId, index);
+      return { ok: true, data: { followUp } };
+    } catch (err) {
+      return { ok: false, code: 5000, message: toMessage(err) };
+    }
+  }
+
+  /**
+   * 删除待发队列第 index 条（CV-S09 队列编辑）。
+   * @returns 成功返回操作后的队列 { followUp }；会话/参数非法 1001/1002；适配器
+   *          不支持或 index 越界（UI 镜像过期）5000
+   */
+  removeQueuedMessage(sessionId: string, index: number): Promise<ConversationResult<{ followUp: string[] }>> {
+    return this.editQueue(sessionId, index);
+  }
+
+  /**
+   * 立即发送第 index 条（CV-S09 队列编辑，打断语义）：中止当前轮，立即直发该条，
+   * 剩余队列继续排队。状态驱动：adapter 内部直发新轮次不走 service.sendMessage，
+   * streaming/done 必须由此处负责——非 streaming 时先置 streaming（空闲边缘态），
+   * 打断期间的旧轮次收尾不再推 done（adapter 抑制），新轮次自然结束后由
+   * mainTurnEnd 门控置 done，此处仅兜底。
+   * @returns 成功返回操作后的队列 { followUp }；会话/参数非法 1001/1002；越界 5000
+   */
+  async sendQueuedMessageNow(sessionId: string, index: number): Promise<ConversationResult<{ followUp: string[] }>> {
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (!Number.isInteger(index) || index < 0) {
+      return { ok: false, code: 1001, message: '参数错误：index 必须为非负整数' };
+    }
+    if (typeof this.adapter.sendQueuedMessageNow !== 'function') {
+      return { ok: false, code: 5000, message: '当前适配器不支持待发队列编辑' };
+    }
+    const wasStreaming = this.getStatus(sessionId) === 'streaming';
+    if (!wasStreaming) {
+      // 空闲边缘态（点击瞬间轮次恰好已收尾）：新轮次照起，状态跟平
+      this.setStatus(sessionId, 'streaming', { lastDeltaText: undefined });
+    }
+    try {
+      const followUp = await this.adapter.sendQueuedMessageNow(sessionId, index);
+      // 正常路径 done 由 mainTurnEnd 门控在轮次结束推；此处兜底「门控延迟/未触发」
+      if (this.getStatus(sessionId) === 'streaming') {
+        this.setStatus(sessionId, 'done');
+      }
+      return { ok: true, data: { followUp } };
+    } catch (err) {
+      if (this.getStatus(sessionId) === 'streaming') {
+        this.setStatus(sessionId, 'error', { lastError: toMessage(err) });
+      }
+      return { ok: false, code: 5000, message: toMessage(err) };
+    }
   }
 
   /**

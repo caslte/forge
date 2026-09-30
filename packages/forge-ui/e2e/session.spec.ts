@@ -346,3 +346,87 @@ test('SESSION-E2E-008 @P0 @mock-backend E-SM-008 回归：openProject 被拖慢�
 });
 
 void waitForMock;
+
+// ===== E-SM-009/E-SM-010（回归）：项目/任务分段指示胶囊几何 =====
+/**
+ * 豆胶囊几何由 JS 按 active 按钮实测写入 `--pill-l/--pill-r`（CSS 的 50% 兜底几何
+ * 只在两键等宽时正确）。读回胶囊与按钮几何做对比：胶囊 left/width 必须等于按钮几何。
+ */
+async function readViewPill(
+  page: Page,
+): Promise<{ pillLeft: number; pillWidth: number; btnLeft: number; btnWidth: number }> {
+  return page.evaluate(() => {
+    const seg = document.querySelector<HTMLElement>('.view-seg')!;
+    const btn = seg.querySelector<HTMLElement>('.view-seg-btn.active')!;
+    const cs = getComputedStyle(seg, '::before');
+    return {
+      // ::before 的 left 相对分段开关 padding box，正好与按钮 offsetLeft 同坐标系
+      pillLeft: parseFloat(cs.left),
+      pillWidth: parseFloat(cs.width),
+      btnLeft: btn.offsetLeft,
+      btnWidth: btn.offsetWidth,
+    };
+  });
+}
+
+/** 胶囊贴合 active 按钮（误差 ≤1px）；用 poll 等侧栏宽度过渡 / 水滴落位结束 */
+async function expectPillHugsButton(page: Page): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const g = await readViewPill(page);
+        return Math.max(Math.abs(g.pillLeft - g.btnLeft), Math.abs(g.pillWidth - g.btnWidth));
+      },
+      { message: '指示胶囊必须与 active 按钮几何贴合（≤1px）' },
+    )
+    .toBeLessThanOrEqual(1);
+}
+
+test('SESSION-E2E-009 @P1 @mock-backend E-SM-009 回归：侧栏折叠展开后胶囊不残留变形几何', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await boot(page, [mkSession({ alias: '胶囊几何' })]);
+
+  // 首贴：分段开关挂在 v-if="formalUiReady" 里，几何由 ResizeObserver 在元素挂载时补
+  await expectPillHugsButton(page);
+  // 换视角来回：两键宽度互换，胶囊各自贴合（水滴动画落位后）
+  await page.locator('.view-seg-btn', { hasText: '任务' }).click();
+  await expectPillHugsButton(page);
+  await page.locator('.view-seg-btn', { hasText: '项目' }).click();
+  await expectPillHugsButton(page);
+
+  // 侧栏折叠 → 展开：展开瞬间分段开关被压到 min-content（94→70px、按钮 44→32px），
+  // 旧实现此刻测出的 --pill-r 永久偏小，过渡结束后胶囊被拉长成 56px（用户实测的「胶囊变形」）
+  const segW = await page.evaluate(() => document.querySelector<HTMLElement>('.view-seg')!.clientWidth);
+  await page.locator('.shell-toggle').click();
+  // 等折叠过渡真的走完（侧栏宽度到 0），展开才是「从 min-content 起步」的原始现场
+  await expect
+    .poll(() => page.evaluate(() => document.querySelector('.sidebar')!.getBoundingClientRect().width))
+    .toBeLessThanOrEqual(1);
+  await page.locator('.shell-toggle').click();
+  // 等展开过渡走完（分段开关回到原宽）再判几何：过渡途中的巧合贴合成不了证据
+  await expect
+    .poll(() => page.evaluate(() => document.querySelector<HTMLElement>('.view-seg')!.clientWidth))
+    .toBe(segW);
+  await expectPillHugsButton(page);
+
+  health.assertHealthy();
+});
+
+// 英文两键不等宽（Projects 62px / Tasks 47px）：CSS 50% 兜底几何必然不贴合，
+// 首帧只有实测几何才对——锁住「首贴不能落空」
+test.describe('E-SM-010 英文首贴', () => {
+  test.use({ locale: 'en-US' });
+
+  test('SESSION-E2E-010 @P1 @mock-backend E-SM-010 回归：英文首帧胶囊即贴合 active 按钮', async ({ page }) => {
+    const health = attachHealthGuards(page);
+    await boot(page, [mkSession({ alias: 'geometry' })]);
+
+    await expect(page.locator('.view-seg-btn', { hasText: 'Projects' })).toHaveClass(/active/);
+    await expectPillHugsButton(page);
+
+    await page.locator('.view-seg-btn', { hasText: 'Tasks' }).click();
+    await expectPillHugsButton(page);
+
+    health.assertHealthy();
+  });
+});

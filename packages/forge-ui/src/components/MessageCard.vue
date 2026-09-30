@@ -357,11 +357,14 @@ const segments = computed<Segment[]>(() => {
   if (cursor < html.length) {
     out.push({ kind: 'html', html: html.slice(cursor) });
   }
-  // 末围栏未闭合（流式中卡片只写了一半）：只有最后那张换成骨架蒙版。
+  // 末围栏未闭合（流式中卡片只写了一半）：只有最后那张可能需要骨架蒙版。
   // 蒙版高度 == 终态高度，所以闭合瞬间既不跳变也不顶动下方正文。
   // 仅流式期间生效：终态（结束/取消/历史）围栏仍未闭合时不会再有后续 token，
   // 骨架会永远转圈——此时直接按占位内容渲染（残缺 HTML 交给浏览器补齐，
   // 非 HTML 走代码块降级），宁可显示半成品也不挂假进度。
+  //
+  // 是否真要挂骨架由 HtmlCanvasBlock 里的 judgeCanvasSource 决定（唯一口径）：
+  // 源码已够长且能判出「不是 HTML」时，它会直接出正文/代码块，不等闭合。
   if (renderedOpenFence.value && props.streaming) {
     for (let j = out.length - 1; j >= 0; j -= 1) {
       const seg = out[j];
@@ -621,6 +624,21 @@ const riseIn = computed(() => {
 
 .msg-user .msg-content {
   color: #ffffff;
+}
+
+/* 暗色：气泡改冷调 + 降亮（#2b2e34 / 字 #d7dae0）。
+   旧值 #3a3a3d 是**纯中性灰**（色相 0），落在一片带蓝调的炭灰里是一块无彩度的大灰板：
+   亮度是底色的 4.4 倍、且配纯白字（19:1），在一屏低对比正文里刺眼。
+   换同色相冷调后亮度比降到 2.8 倍，字色降到 13.6:1，气泡仍在前景但不再抢。
+   --bubble-bg 是 shell 上的局部变量，渐隐叠层（.bubble-fade）都从它派生，无需额外改动。 */
+:root[data-theme='dark'] .msg-user .msg-bubble-shell {
+  --bubble-bg: #2b2e34;
+}
+:root[data-theme='dark'] .msg-user .msg-bubble-shell.is-clamped:hover {
+  --bubble-bg: #3a3e45;
+}
+:root[data-theme='dark'] .msg-user .msg-content {
+  color: #d7dae0;
 }
 
 .msg-assistant {

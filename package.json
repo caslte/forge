@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "forge 桌面项目工作台（npm workspaces 根）",
+  "license": "MIT",
   "type": "module",
   "workspaces": [
     "packages/forge-core",

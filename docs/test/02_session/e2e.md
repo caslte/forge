@@ -170,6 +170,45 @@
 
 ---
 
+## E-SM-009 分段指示胶囊几何贴合（回归）
+
+- **关联 AC**：AC-SM-022（分段开关可切视角；胶囊几何是开关可用性的可观测面） | **优先级**：P1 | **上线门禁**：是 | **自动化等级**：mock-backend
+- **角色/页面**：单用户 / 侧栏顶部「项目 / 任务」分段开关
+- **前置条件**：项目已打开（分段开关随 `formalUiReady` 挂载）
+- **测试数据**：默认 mock 项目 + 1 会话
+- **准备与清理**：mock 会话；用后清 localStorage（`forge:sidebar:view`）与临时项目
+- **操作**：
+  1. `page.goto('/')`，等 `.tree-panel` → 断言胶囊贴合（首贴）
+  2. 切「任务」→ 断言贴合 → 切回「项目」→ 断言贴合（两键宽度互换）
+  3. 点 `.shell-toggle` 折叠侧栏 → 等侧栏宽度到 0 → 再点展开 → 等分段开关回到原宽 → 断言贴合
+- **断言**：
+  - 胶囊 `::before` 的 left/width 与 active 按钮 `offsetLeft/offsetWidth` 误差 ≤1px（`expect.poll` 等水滴落位/宽度过渡结束）
+- **背景**：几何由 JS 按 active 按钮实测写入 `--pill-l/--pill-r`；CSS 的 `50%` 兜底几何只在两键等宽时正确。两处实测踩空：
+  1. 首贴：`.view-seg` 挂在 `v-if="formalUiReady"` 内，`onMounted` 的 `nextTick` 早于它挂载，`viewSegEl` 还是 null，首贴静默落空；
+  2. 侧栏折叠/展开是 `.sidebar { transition: width }`，展开瞬间 `.view-seg` 被 flex 压到 min-content（94→70px、按钮 44→32px），此刻 `sidebarCollapsed` 的 watch 测出的 `--pill-r=36px` 永久偏小——过渡结束后盒子回到 94/44，胶囊被拉长成 56px（用户实测截图：胶囊右侧多出 12px，像被拉长的椭圆）。
+- **修复对应**：源码 `App.vue` 改用 `ResizeObserver(viewSegEl)` 按**分段开关实际盒子**重贴（observe 时补首贴、尺寸每次变化都重贴，并加 `.no-anim` 抑制容器自身变尺寸期间的水滴动画）；首贴从 `onMounted` 的 `nextTick` 移除。回退该 RO → 本用例第 3 步实测 `Received: 12`（12px 变形），必失败。
+- **失败检查**：无 console error / pageerror；用例：`e2e/session.spec.ts`（`SESSION-E2E-009`）
+
+---
+
+## E-SM-010 英文首帧胶囊贴合（回归）
+
+- **关联 AC**：AC-SM-022 | **优先级**：P1 | **上线门禁**：是 | **自动化等级**：mock-backend
+- **角色/页面**：单用户 / 侧栏顶部「Projects / Tasks」分段开关（英文界面）
+- **前置条件**：界面语言英文（`navigator.language` = en-US，偏好默认 system）
+- **测试数据**：默认 mock 项目 + 1 会话；两键不等宽（Projects 62px / Tasks 47px）
+- **准备与清理**：mock 会话；用后清理
+- **操作**：
+  1. 英文界面冷启动 → 断言「Projects」为 active 且胶囊贴合
+  2. 切「Tasks」→ 断言贴合
+- **断言**：
+  - 首帧（未切过视角）胶囊即与 active 按钮几何贴合（误差 ≤1px）
+- **背景**：同 E-SM-009 的第 1 条——首贴落空时英文首帧停在 CSS `50%` 兜底几何上（两键不等宽 → 必然不贴合），胶囊比按钮窄 7.5px；中文因两键等宽而「幸免」，故本用例必须用英文锁。
+- **修复对应**：同 E-SM-009（`ResizeObserver` 在元素挂载时补首贴）。回退该 RO → 本用例实测 `Received: 7.4844`，必失败。
+- **失败检查**：无 console error / pageerror；用例：`e2e/session.spec.ts`（`SESSION-E2E-010`）
+
+---
+
 ## 覆盖汇总
 
 | 用例 | AC | 优先级 | 自动化等级 | 触发展开项 |
@@ -182,5 +221,7 @@
 | E-SM-006 | 022/023/024/025/026/027 | P1 | mock-backend | 多步交互（双视角/收起展开全部/LOGO 按钮/聚焦行 pill/视角记忆） |
 | E-SM-007 | 013 | P0 | mock-backend | 回归：多窗口窄窗格工具组不被 flex 压缩（mwToolGroupVisible.spec.ts） |
 | E-SM-008 | —（性能回归锁） | P0 | mock-backend | 回归：冷启动会话树不等待 openProject（拖慢 openProject 6s，会话树须 2s 内到位） |
+| E-SM-009 | 022 | P1 | mock-backend | 回归：分段指示胶囊按开关实际盒子贴合（首贴 + 视角切换 + 侧栏折叠展开后不自愈即失败） |
+| E-SM-010 | 022 | P1 | mock-backend | 回归：英文首帧胶囊即贴合（Projects/Tasks 不等宽，CSS 50% 兜底必然偏窄） |
 
 > 注：多窗口并发为集成级风险，真实多 AgentSession 并发（非 mock）见 `test/integration/pi-core.md`（F5/F6）。

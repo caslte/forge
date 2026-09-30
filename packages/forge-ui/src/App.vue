@@ -5,6 +5,7 @@ import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } fro
 import { projectTagOf } from './utils/sessionView';
 import { dropDraft } from './utils/composerDrafts';
 import { useTheme } from './composables/useTheme';
+import { usePreferences } from './composables/usePreferences';
 import { useToast } from './composables/useToast';
 import { useI18n } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
@@ -17,9 +18,14 @@ import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import GitCommitDialog from './components/GitCommitDialog.vue';
+import TerminalPanel from './components/TerminalPanel.vue';
 import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
 import logoMain from './assets/logo-main.png';
+// 标题栏左上角品牌字样：复用 landing/hero 同一对 public 字标（深浅各一版），
+// 全链路共享同一次加载/解码，不新增资产
+const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
+const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 const { t, activeLocale } = useI18n();
 
@@ -182,17 +188,41 @@ watch(treeView, (v) => {
    内容收缩容器无剩余空间可分配、flex:1 也无法等分，改为按 active 按钮实测宽贴 */
 const viewSegEl = ref<HTMLElement | null>(null);
 
-function moveViewPill(): void {
+/** 按 active 按钮实测几何贴胶囊；animate=false 抑制水滴（容器自身在改尺寸，跟着贴即可） */
+function moveViewPill(animate = true): void {
   const seg = viewSegEl.value;
   if (!seg) return;
   const btn = seg.querySelector<HTMLElement>('.view-seg-btn.active');
   if (!btn || btn.offsetWidth === 0) return; // 侧栏折叠隐藏时跳过，展开后重贴
+  if (!animate) seg.classList.add('no-anim');
   seg.style.setProperty('--pill-l', `${btn.offsetLeft}px`);
   seg.style.setProperty('--pill-r', `${seg.clientWidth - btn.offsetLeft - btn.offsetWidth}px`);
+  if (!animate) requestAnimationFrame(() => seg.classList.remove('no-anim'));
 }
 
-watch([treeView, sidebarCollapsed, activeLocale], () => {
+/* 视角/语言切换：分段开关整体盒子多半不变（两键宽度互换），ResizeObserver 看不见 → 显式重贴 */
+watch([treeView, activeLocale], () => {
   void nextTick(moveViewPill);
+});
+
+/**
+ * 几何以**分段开关的实际盒子**为准：ResizeObserver 在 observe 时先补一次当前几何，
+ * 之后盒子每变一次就重贴一次（不带水滴）。两处实测踩过的坑都收敛在这里：
+ * - 首贴：`.view-seg` 在 v-if="formalUiReady" 里，onMounted 的 nextTick 早于它挂载，
+ *   那时 viewSegEl 还是 null，首贴静默落空 → 英文（Projects/Tasks 不等宽）首帧停在
+ *   CSS 50% 兜底几何上，胶囊不贴合，要等用户切一次视角才归位。
+ * - 侧栏折叠/展开是 width 过渡（.sidebar），展开瞬间 .view-seg 被压到 min-content
+ *   （94→70px、按钮 44→32px），此刻 sidebarCollapsed 的 watch 测出的 --pill-r 永久偏小：
+ *   过渡结束后盒子回到 94/44，胶囊却被拉长成 56px（用户实测「项目胶囊变形」）。
+ *   RO 在过渡结束按终态重贴自愈，途中也逐帧贴着按钮走，不再错位。
+ */
+let viewSegRo: ResizeObserver | null = null;
+watch(viewSegEl, (el) => {
+  viewSegRo?.disconnect();
+  viewSegRo = null;
+  if (!el) return;
+  viewSegRo = new ResizeObserver(() => moveViewPill(false));
+  viewSegRo.observe(el);
 });
 
 /** 切项目/任务视角：等同直接赋值，胶囊几何由上方 watch 在 nextTick 重贴。
@@ -279,6 +309,27 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 // 设置
 const { themeMode, setTheme } = useTheme();
 const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
+const { terminalOpen, setTerminalOpen } = usePreferences();
+
+// ===== 内嵌终端（模块 10）入口状态 =====
+// tab 标题的项目显示名：别名优先，回退目录名（与会话归属标签同口径）
+const terminalProjectName = computed(() => {
+  const p = currentProject.value;
+  if (p === null) return '';
+  return p.alias ?? basename(p.path);
+});
+
+/**
+ * Ctrl+` 全局开合（TM-S01，与 VSCode 一致：输入框聚焦时同样生效）。
+ * 只拦 ctrl+反引号这一组合（不吞普通反引号输入，Ctrl 组合本就不产出字符），
+ * 故无需聚焦豁免逻辑；key 与 code 双判覆盖键盘布局差异。
+ */
+function onTerminalHotkey(ev: KeyboardEvent): void {
+  if (!ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
+  if (ev.key !== '`' && ev.code !== 'Backquote') return;
+  ev.preventDefault();
+  setTerminalOpen(!terminalOpen.value);
+}
 
 // 模型列表与会话模型（ConversationView 消费）
 const models = ref<string[]>([]);
@@ -520,6 +571,10 @@ function onSessionCreated(sessionId: string): void {
 async function onSelectSession(id: string): Promise<void> {
   currentSessionId.value = id;
   draftMode.value = false;
+  // 会话归属项目要跟手：终端等「以当前项目为 cwd」的入口读的是 currentProjectPath，
+  // 只从项目树点入才会更新——从会话树点入时必须按会话的 projectPath 对齐
+  const owner = sessions.value.find((s) => s.sessionId === id)?.projectPath ?? null;
+  if (owner !== null && owner !== currentProjectPath.value) currentProjectPath.value = owner;
   // 设置在设置页时，点击会话应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
   try {
@@ -702,8 +757,8 @@ function startPostBootInit(): void {
 }
 
 onMounted(() => {
-  // 指示胶囊初始定位（含字体加载后的一次校准由语言/视角 watch 兜底）
-  void nextTick(moveViewPill);
+  // 指示胶囊首贴不在这里：.view-seg 挂在 v-if="formalUiReady" 里，此刻还没渲染，
+  // 由 viewSegEl 的 ResizeObserver 在元素挂载时补首贴（见上方 viewSegRo）
   // 事件订阅先挂：订阅本身不发请求，core 未就绪期间主进程也不会推业务事件，
   // 挂早了无副作用（放行后 loadSessions 等才真正出发）
   unsubSessionRemoved = subscribe('session.removed', (payload) => {
@@ -754,6 +809,9 @@ onMounted(() => {
       }
     })
     .catch(() => startPostBootInit());
+
+  // 终端快捷键（TM-S01）：window 级 keydown，捕获阶段即可——Ctrl+` 在任何焦点下生效
+  window.addEventListener('keydown', onTerminalHotkey);
 });
 
 onUnmounted(() => {
@@ -763,6 +821,9 @@ onUnmounted(() => {
   unsubProjectRemoved?.();
   unsubProvidersChanged?.();
   unsubNotifyFocus?.();
+  viewSegRo?.disconnect();
+  viewSegRo = null;
+  window.removeEventListener('keydown', onTerminalHotkey);
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
 </script>
@@ -785,7 +846,7 @@ onUnmounted(() => {
          toggle 悬浮钉死窗口左上角——折叠时侧栏从按钮底下抽走，按钮零位移不跳动。
          toggle 必须包在窗口级拖拽条内做 no-drag 后代：Electron 的 drag 区只认后代挖洞，
          同级悬浮会被原生拖拽吞掉 hover/click（旧版 TitleBar 内按钮可用的原因相同） -->
-    <div class="shell-topstrip">
+    <div class="shell-topstrip" :class="{ 'shell-topstrip-mac': isMac }">
       <button
         class="shell-toggle"
         :class="{ 'shell-toggle-mac': isMac }"
@@ -809,6 +870,10 @@ onUnmounted(() => {
           </svg>
         </span>
       </button>
+      <!-- 品牌字样：紧跟 LOGO 右侧，钉在同一 36px 带里（pointer-events:none，
+           整条带仍是纯拖拽区，不给标题栏开新的可点区域） -->
+      <img class="tb-name wm-dark" :src="logoWordmarkDark" alt="" aria-hidden="true" draggable="false" />
+      <img class="tb-name wm-light" :src="logoWordmarkLight" alt="" aria-hidden="true" draggable="false" />
     </div>
     <!-- 整窗反光层（伪玻璃）：纯视觉，pointer-events:none -->
     <div class="shell-sheen" aria-hidden="true"></div>
@@ -959,6 +1024,18 @@ onUnmounted(() => {
             </button>
           </template>
           <span class="app-toolbar-space"></span>
+          <!-- 终端开关（模块 10 D5 定稿）：纯图标无边框，激活态品牌色底 -->
+          <button
+            class="app-toolbar-btn term-toggle"
+            :class="{ 'is-active': terminalOpen }"
+            :data-tooltip="t('terminal.toggle')"
+            @click="setTerminalOpen(!terminalOpen)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 17 10 11 4 5" />
+              <line x1="12" y1="19" x2="20" y2="19" />
+            </svg>
+          </button>
         </div>
 
         <section v-if="activeView === 'settings'" class="settings-stage">
@@ -1040,6 +1117,14 @@ onUnmounted(() => {
             @remove-project="onRemoveProject"
           />
         </template>
+
+        <!-- 内嵌终端面板（模块 10 D1）：.content 底部、session-stage 之后的兄弟节点；
+             设置视图只 v-show 隐藏——组件保持挂载，tab/pty 在切设置往返间存活（收起保活同款语义） -->
+        <TerminalPanel
+          v-show="activeView !== 'settings'"
+          :project-path="currentProjectPath"
+          :project-name="terminalProjectName"
+        />
       </main>
       </div>
     </section>
@@ -1135,8 +1220,10 @@ onUnmounted(() => {
   background: linear-gradient(180deg, transparent 4%, var(--border) 18%, var(--border) 82%, transparent 96%);
 }
 
-/* 暗色（D 档）：底色已深（oklch 0.166），不再压黑（压黑会沉到光场剖面之下）；
-   改为自带一层竖向微光（+1~+3 电平，原型 D 档同款）——侧栏是略高于同位置主区的独立面 */
+/* 暗色：底色不再压黑（压黑会沉到光场剖面之下）；改为自带一层竖向微光
+   （+1~+3 电平）——侧栏是略高于同位置主区的独立面。
+   v6.1 抬底后 alpha 不变：要的是侧栏与主区之间的**差**，光场峰值同时从 0.096 降到 0.035，
+   两者同比缩小，相对关系保持。 */
 :root[data-theme='dark'] .sidebar {
   background: linear-gradient(180deg,
     rgba(205, 218, 235, 0.004) 0%,
@@ -1275,6 +1362,40 @@ onUnmounted(() => {
   transition: opacity var(--transition-fast), transform var(--transition-fast);
 }
 
+/* 品牌字样（标题栏左上，跟在 LOGO 右侧）：同一对 public 字标按 data-theme 切版。
+   亮度不用字标原色（纯黑 / 纯白）——36px 高的带子里纯色会压过旁边的图标；
+   两主题分别降到与 toggle 图标 --muted-foreground 等亮（深 0.53 / 浅 0.58）。 */
+.tb-name {
+  position: absolute;
+  left: 48px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 11px;
+  width: auto;
+  display: none;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+:root:not([data-theme='light']) .tb-name.wm-dark,
+:root[data-theme='light'] .tb-name.wm-light {
+  display: block;
+}
+
+:root:not([data-theme='light']) .tb-name.wm-dark {
+  opacity: 0.53;
+}
+
+:root[data-theme='light'] .tb-name.wm-light {
+  opacity: 0.58;
+}
+
+/* macOS 红绿灯占掉左侧 78px，字样跟着 toggle 一起让位 */
+.shell-topstrip-mac .tb-name {
+  left: 118px;
+}
+
 .tb-panel {
   position: absolute;
   inset: 0;
@@ -1314,19 +1435,25 @@ onUnmounted(() => {
     radial-gradient(80% 55% at 105% 108%, rgba(255, 255, 255, 0.3) 0%, transparent 60%);
 }
 
-/* 暗色：D 档光场（原型 bg-tone-options-demo.html v6，213.4° 对角线性光场 + 底部反光）。
-   与设计稿一致的整窗剖面：右上最亮（+0.096 白）向左下线性衰减、构造上无热点；
-   盖顶而非沉底——面板保持不透明也被同一光场覆盖，整窗剖面连续。 */
+/* 暗色：213.4° 对角线性光场 + 底部反光。
+   与设计稿一致的整窗剖面：右上最亮向左下线性衰减、构造上无热点；
+   盖顶而非沉底——面板保持不透明也被同一光场覆盖，整窗剖面连续。
+
+   v6.1 可读性：峰值 0.096 → 0.035（衰减形状不变，整体等比缩到 0.365）。
+   旧值把阅读区底色从 #0d0f13 抬到 #1f2228，**亮度差 3.35 倍**，而这层是 z-index:210
+   盖在**文字之上**的——横向的色斑直接洗在正文行上，是「对话区看着脏」的主因
+   （副因：用户气泡改冷调，见 MessageCard；文件类型徽章的 Linguist 色经复核保留）。
+   0.035 下不均匀度降到 1.69 倍，正文对底色的对比从 10.10 回到 9.35，口感更平。 */
 :root[data-theme='dark'] .shell-sheen {
   background:
     linear-gradient(213.4deg,
-      rgba(205, 218, 235, 0.096) 0%,
-      rgba(205, 218, 235, 0.050) 28%,
-      rgba(205, 218, 235, 0.024) 47%,
-      rgba(205, 218, 235, 0.019) 60%,
-      rgba(205, 218, 235, 0.010) 72%,
+      rgba(205, 218, 235, 0.035) 0%,
+      rgba(205, 218, 235, 0.018) 28%,
+      rgba(205, 218, 235, 0.009) 47%,
+      rgba(205, 218, 235, 0.007) 60%,
+      rgba(205, 218, 235, 0.004) 72%,
       rgba(205, 218, 235, 0.000) 82%),
-    linear-gradient(0deg, rgba(205, 218, 235, 0.005) 0%, rgba(205, 218, 235, 0) 14%);
+    linear-gradient(0deg, rgba(205, 218, 235, 0.002) 0%, rgba(205, 218, 235, 0) 14%);
 }
 
 .tree-panel {
@@ -1379,6 +1506,12 @@ onUnmounted(() => {
   transition:
     right 240ms cubic-bezier(0.34, 1.45, 0.64, 1),
     left 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 70ms;
+}
+
+/* 分段开关自身尺寸在变（侧栏宽度过渡 / 语言切换 / 首贴）：几何逐帧跟着贴，不播水滴。
+   必须排在 .is-task 之后——两条选择器特异性相同，靠顺序取胜 */
+.view-seg.no-anim::before {
+  transition: none;
 }
 
 .view-seg-btn {
@@ -1552,6 +1685,19 @@ onUnmounted(() => {
 
 .app-toolbar-space {
   flex: 1;
+}
+
+/* 终端开关：纯图标方形按钮，无边框（用户 2026-09-29 去掉 1px 外框）；
+   激活态底色/字色由 .is-active 既有规则接管 */
+.app-toolbar-btn.term-toggle {
+  padding: 6px;
+  border: none;
+  border-radius: var(--radius-md);
+}
+
+.app-toolbar-btn.term-toggle svg {
+  width: 14px;
+  height: 14px;
 }
 
 .session-stage {

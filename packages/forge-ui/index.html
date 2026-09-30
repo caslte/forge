@@ -74,8 +74,8 @@
         --welcome-muted: var(--muted-foreground, oklch(0.552 0.016 285.938));
       }
       :root[data-theme='dark'] {
-        --welcome-bg: var(--background, rgb(13 15 19));
-        --welcome-muted: var(--muted-foreground, oklch(0.62 0.008 262));
+        --welcome-bg: var(--background, rgb(24 25 29));
+        --welcome-muted: var(--muted-foreground, oklch(0.66 0.008 262));
       }
 
       #app-boot-splash {
@@ -89,6 +89,18 @@
         user-select: none;
         font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
       }
+      /* ---- 字标入场动效：已从本文件移除（v3.87 实测）-------------------------
+         原以为启动时长时间可见的是这里的 splash，实测**不是**：
+           · BrowserWindow 以 show:false 建窗，本 splash 在 HTML 一解析即渲染
+             （paintWhenInitiallyHidden 默认 true），随后要等 decode + 双 rAF +
+             显示前帧校验（上限 700ms）才 win.show()；
+           · 而 Vue 模块链一就绪就 mount，把 #app 的 innerHTML 整体换成 BootWelcome。
+             实测（真实 preload + 真实页面）：splashReady 后 ~300ms Vue 即已 mount，
+             **本 splash 在屏上最多几百毫秒**，而 BootWelcome 要留 4~7s。
+         所以动效挂在 BootWelcome.vue（v3.87 G 档为常驻心跳循环，相位无关、无发令）。
+         本文件的字标保持静态终态：若这里也动，Vue 顶替时会把动画截断在中间，
+         观感是「扫到一半字突然换了」，比没有动效更差。
+         --------------------------------------------------------------------- */
       #app-boot-splash .splash-word {
         display: none;
         /* 320px 与 BootWelcome / LandingHero / conv-hero 同档（v3.85.2）：
@@ -113,9 +125,9 @@
       <div id="app-boot-splash" role="status" aria-label="应用正在启动">
         <!-- 相对路径（v3.85.2）：prod 是 base:'./' + loadFile（file://），绝对路径 /logo-…
              在打包版裂图只剩 alt 文字。显式 width/height：解码完成前盒子不塌 0
-             （PNG 原图 357×47 / 358×47，320 等比 ≈ 42）。 -->
-        <img class="splash-word wm-dark" src="./logo-wordmark-on-dark.png" width="320" height="42" alt="FORGE" aria-hidden="true" draggable="false" />
-        <img class="splash-word wm-light" src="./logo-wordmark-on-light.png" width="320" height="42" alt="FORGE" aria-hidden="true" draggable="false" />
+             （矢量字标 viewBox 357×47，320 等比 ≈ 42；v3.86 换 L3 全弧线 SVG）。 -->
+        <img class="splash-word wm-dark" src="./logo-wordmark-on-dark.svg" width="320" height="42" alt="FORGE" aria-hidden="true" draggable="false" />
+        <img class="splash-word wm-light" src="./logo-wordmark-on-light.svg" width="320" height="42" alt="FORGE" aria-hidden="true" draggable="false" />
         <div class="splash-phase">正在准备运行环境…</div>
       </div>
     </div>

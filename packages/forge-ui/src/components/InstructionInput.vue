@@ -14,6 +14,7 @@ import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
 import { shouldConvertPasteToFile } from '../utils/pasteText';
 import { draftKeyOf, loadDraft, saveDraft } from '../utils/composerDrafts';
 import { prependQueuedText } from '../utils/prependQueuedText';
+import { looksMonospace, isQueueItemClamped } from '../utils/queueText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
@@ -55,6 +56,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'send', text: string): void;
   (e: 'cancel'): void;
+  /** 「↵立即」：立即发送队列第 index 条（打断语义），上层补 user 气泡并调 RPC */
+  (e: 'queue-send-now', index: number): void;
   (e: 'model-change', model: string): void;
   /** 草稿态选中归属项目（上层切当前项目，草稿保留） */
   (e: 'pick-project', path: string): void;
@@ -185,9 +188,6 @@ let slashLoadGen = 0;
 const { success: toastSuccess, error: toastError } = useToast();
 const { t } = useI18n();
 
-/** 粘贴快捷键文案：mac 显示 ⌘V，其他平台 Ctrl+V（输入框占位用） */
-const pasteKey = window.forge?.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
-
 /** git 徽标/提交入口的忙态（2026-09-23 用户口径修正）：只看当前会话自身是否 streaming，
  *  同项目其他会话执行中不锁本会话的提交/切分支（不同会话可以提交不同的代码） */
 const gitBusy = computed(() => props.sessionStatus === 'streaming');
@@ -284,6 +284,52 @@ const inputLocked = computed(() => compacting.value || autoCompacting.value);
 const queueList = computed(() => props.queueItems ?? []);
 const QUEUE_MAX = 5;
 const queuePanelOpen = ref(false);
+
+/** 各条目是否因一行放不下而被截断（决定要不要挂原生 title 提示全文，渲染后实测，非按字数猜） */
+const queueClamped = ref<ReadonlySet<number>>(new Set());
+const queuePanelRef = ref<HTMLElement | null>(null);
+
+function isQueueClamped(i: number): boolean {
+  return queueClamped.value.has(i);
+}
+
+/**
+ * 实测哪些条目被截断了。
+ *
+ * 不能按字数猜——同一条 68 字的路径在 890px 宽下 1 行放得下、在窄窗下要截断。
+ * 判据是 utils/queueText.ts 的 isQueueItemClamped：收趟态是 nowrap + 省略号，
+ * 溢出体现在横向（scrollWidth > clientWidth）。
+ */
+function measureQueueOverflow(): void {
+  const panel = queuePanelRef.value;
+  if (!panel) return;
+  const next = new Set<number>();
+  for (const el of Array.from(panel.querySelectorAll<HTMLElement>('.queue-item'))) {
+    const i = Number(el.dataset.index);
+    if (!Number.isInteger(i)) continue;
+    const textEl = el.querySelector<HTMLElement>('.queue-item-text');
+    if (textEl && isQueueItemClamped(textEl)) next.add(i);
+  }
+  queueClamped.value = next;
+}
+
+/** 宽度变了（窗口缩放 / 内容列切换）行数就会变，必须重测 */
+function onQueueViewportResize(): void {
+  nextTick(measureQueueOverflow);
+}
+
+/** 打开/关闭面板：打开时重测（队列可能已变，旧的实测值不作数） */
+function toggleQueuePanel(): void {
+  queuePanelOpen.value = !queuePanelOpen.value;
+  if (!queuePanelOpen.value) return;
+  nextTick(measureQueueOverflow);
+  window.addEventListener('resize', onQueueViewportResize);
+}
+
+// 队列内容变化（入队/派发/删除/切会话）后重测溢出：条目下标整体左移，实测值必须跟着刷新
+watch(queueList, () => {
+  nextTick(measureQueueOverflow);
+});
 const canSend = computed(
   () => (text.value.trim().length > 0 || attachments.value.length > 0) && !inputLocked.value,
 );
@@ -373,7 +419,7 @@ async function onCompact(): Promise<void> {
   }
 }
 
-/** textarea 自适应高度上限：与拖拽盒子上限(320)对齐（320 − 上内边距12 − 底部预留58），之后交给滚动条 */
+/** textarea 自适应高度上限：与拖拽盒子上限(320)对齐（320 − 上内边距12 − 底部预留54 − border2 ≈ 252，取 250），之后交给滚动条 */
 const GROW_MAX = 250;
 
 /**
@@ -599,17 +645,21 @@ let rsStartY = 0;
 let rsStartH = 0;
 let rsFloor = 0;
 
-/** 当前布局下盒子最小高度：上内边距 + 附件行实高（v3.39 贴图后计入，防拖拽下限以下内容溢出重叠）+ 输入区最小高度 + 底部预留 */
+/** 当前布局下盒子最小高度：上内边距 + 附件行实高（v3.39 贴图后计入，防拖拽下限以下内容溢出重叠）+ 输入区最小高度 + 底部预留 + 上下 border。
+ *  盒子是 border-box（global.css `* { box-sizing: border-box }`），内联 height 要把 border 也算进去，
+ *  早期版本这里写成 −2，拖拽能到比静息高度再矮 4px 的盒子、输入区溢进内边距。+2 之后下限 = 静息高度。 */
 function minBoxHeight(): number {
   const el = inputBoxRef.value;
-  if (!el) return 64;
+  if (!el) return 136;
   const cs = getComputedStyle(el);
   const pt = parseFloat(cs.paddingTop) || 0;
   const pb = parseFloat(cs.paddingBottom) || 0;
+  const bt = parseFloat(cs.borderTopWidth) || 0;
+  const bb = parseFloat(cs.borderBottomWidth) || 0;
   const ta = textareaRef.value;
   const taMin = ta ? parseFloat(getComputedStyle(ta).minHeight) || 0 : 0;
   const attachH = attachRowRef.value?.offsetHeight ?? 0;
-  return Math.max(64, pt + attachH + taMin + pb - 2);
+  return Math.max(pt + attachH + taMin + pb + bt + bb, 136);
 }
 
 function onResizeDown(e: PointerEvent): void {
@@ -771,6 +821,35 @@ function onSend(): void {
   // 附件行追加在正文后（换行分隔），@ 前缀是附件协议标记：@开头=附件，
   // 手敲裸路径=正文，展示层零歧义；模型据此自行 read，纯附件消息就是纯附件行
   emit('send', paths.length > 0 ? `${trimmed}\n${paths.map((p) => `@${p}`).join('\n')}` : trimmed);
+}
+
+// ===== CV-S09 队列编辑：删除 / 「↵立即」（打断当前轮并直发该条） =====
+
+/** 删除第 i 条；失败（UI 镜像过期等）toast 提示，队列以 queueUpdated 事件全量自愈 */
+async function onQueueRemove(i: number): Promise<void> {
+  if (!props.sessionId) return;
+  try {
+    await call('conversation/queueRemove', { sessionId: props.sessionId, index: i });
+  } catch (e) {
+    toastError(e instanceof Error ? e.message : t('input.queue.editFailed'));
+  }
+}
+
+/**
+ * 「↩ 取回编辑」：把第 i 条移出队列并回填输入框（与 Esc 停止回填同一套 prependQueuedText 语义）。
+ * 面板保持打开——用户往往要连着取回几条，关掉反而多一次点击。
+ */
+async function onQueueRestore(i: number): Promise<void> {
+  const item = queueList.value[i];
+  if (typeof item !== 'string') return;
+  // 先取文本再删：删除成功后 queueUpdated 到达会让后续条目左移，index 不再指向同一条
+  await onQueueRemove(i);
+  restoreQueuedText([item]);
+}
+
+/** 「↵立即」：立即发送第 i 条，交给上层（user 气泡要本地补进会话消息列表，输入框够不着） */
+function onQueueSendNow(i: number): void {
+  emit('queue-send-now', i);
 }
 
 /** 把一批路径加入待发区（格式白名单 + 主进程密钥嗅探后返回标记）；返回是否全部成功 */
@@ -1197,12 +1276,14 @@ function onDocClick(e: MouseEvent): void {
   const inModel = el && typeof el.closest === 'function' && el.closest('.model-wrap');
   const inLevel = el && typeof el.closest === 'function' && el.closest('.level-wrap');
   const inProj = el && typeof el.closest === 'function' && el.closest('.proj-wrap');
-  const inQueue = el && typeof el.closest === 'function' && el.closest('.queue-wrap');
+  // 面板已是 .compose-box 直接子节点，不再嵌在 .queue-wrap 内，命中判定要认它自己
+  const inQueue = el && typeof el.closest === 'function' && el.closest('.queue-wrap, .queue-panel');
   if (inModel || inLevel || inProj || inQueue) return;
   modelMenuOpen.value = false;
   levelMenuOpen.value = false;
   projMenuOpen.value = false;
   queuePanelOpen.value = false;
+  window.removeEventListener('resize', onQueueViewportResize);
 }
 
 /**
@@ -1212,6 +1293,7 @@ function onDocClick(e: MouseEvent): void {
 function restoreQueuedText(items: string[]): void {
   text.value = prependQueuedText(text.value, items);
   queuePanelOpen.value = false;
+  window.removeEventListener('resize', onQueueViewportResize);
   nextTick(() => {
     autoGrow();
     focus();
@@ -1290,6 +1372,7 @@ watch(levelMenuOpen, (open) => {
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
+  window.removeEventListener('resize', onQueueViewportResize);
   unsubCompacted?.();
   unsubCompacting?.();
   unsubSlash?.();
@@ -1341,7 +1424,8 @@ watch(
     historyCursor.value = -1;
     if (changed) {
       // 切到新会话：textarea 自然回落（autoGrow 已处理）+ 手动拖高过的 compose-box 也回到自然高度，
-      // 否则下次打开会按上次拖的高度撑开。box-shadow / border 不用清，本身就没内联。
+      // 否则下次打开会按上次拖的高度撑开。border / 抬升投影（v6.4 的 --elev-*）不用清：
+      // 走的是 class 与 CSS 变量，盒子上没有内联样式。
       nextTick(() => {
         autoGrow();
         if (inputBoxRef.value) inputBoxRef.value.style.height = '';
@@ -1452,7 +1536,7 @@ watch(
         ? t('input.placeholder.streaming', { frame: spinnerFrame })
         : compacting || autoCompacting
           ? t('input.placeholder.compacting')
-          : t('input.placeholder.default', { pasteKey })"
+          : t('input.placeholder.default')"
       :disabled="inputLocked"
       :rows="3"
       spellcheck="false"
@@ -1578,7 +1662,7 @@ watch(
             aria-haspopup="true"
             @click.stop="toggleLevelMenu"
           >
-            <span>{{ displayLevel ?? 'off' }}</span>
+            <span class="level-t">{{ displayLevel ?? 'off' }}</span>
             <svg class="level-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
           </button>
           <!-- max 反馈动画（方案 A）：金色流光扫过 max 档位自身，见 flashMaxCell -->
@@ -1612,20 +1696,19 @@ watch(
       </div>
 
       <div class="compose-actions">
-        <!-- CV-S09 待发送队列徽标 + 只读浮窗：忙时入队的消息在派发前暂存于此 -->
+        <!-- CV-S09 待发送队列徽标：面板已是 .compose-box 直接子节点（见下方 queue-panel），
+             这里只留触发器；队列编辑（取回 / 删除 / 「↵立即」-打断当前轮）经 conversation/queue* RPC -->
         <div v-if="queueList.length > 0" class="queue-wrap">
           <button
             class="queue-badge"
             type="button"
+            :aria-expanded="queuePanelOpen"
+            aria-haspopup="true"
             :data-tooltip="t('input.queue.tooltip')"
-            @click.stop="queuePanelOpen = !queuePanelOpen"
+            @click.stop="toggleQueuePanel"
           >
             {{ t('input.queue.badge', { count: queueList.length }) }}
           </button>
-          <div v-if="queuePanelOpen" class="queue-panel">
-            <div class="menu-hint">{{ t('input.queue.hint') }}</div>
-            <div v-for="(item, i) in queueList" :key="i" class="queue-item">{{ item }}</div>
-          </div>
         </div>
 
         <!-- 发送/停止 -->
@@ -1657,6 +1740,55 @@ watch(
         <button v-if="isStreaming" class="cancel-btn" :aria-label="t('input.stop.aria')" :data-tooltip="t('input.stop.tooltip')" @click="onCancel">
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
         </button>
+      </div>
+    </div>
+
+    <!-- CV-S09 待发送队列面板：挂在 .compose-box 而不是徽标上——
+         left/right 对齐输入框文字列（面板宽 = 文字列宽），长路径 / 代码不再逐字符折行；
+         每条固定一行（超出用省略号，悬停出原生 title 看全文），序号表达派发顺序。 -->
+    <div v-if="queueList.length > 0 && queuePanelOpen" ref="queuePanelRef" class="queue-panel">
+      <div class="queue-panel-head">{{ t('input.queue.hint') }}</div>
+      <div class="queue-list">
+        <div
+          v-for="(item, i) in queueList"
+          :key="`${i}-${item}`"
+          class="queue-item"
+          :data-index="i"
+        >
+          <span class="queue-idx" aria-hidden="true">{{ i + 1 }}</span>
+          <div class="queue-item-main">
+            <!-- 超出才挂 title：能一行读完的条目悬停不该再弹一次一模一样的全文。
+                 2026-09-29 反馈去掉了「展开/收起」按钮 -->
+            <div
+              class="queue-item-text"
+              :class="{ mono: looksMonospace(item) }"
+              :title="isQueueClamped(i) ? item : undefined"
+            >{{ item }}</div>
+          </div>
+          <span class="queue-item-actions">
+            <button type="button" class="queue-act queue-act-now" @click.stop="onQueueSendNow(i)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 10 4 15 9 20" />
+                <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+              </svg>
+              <span>{{ t('input.queue.sendNow') }}</span>
+            </button>
+            <button type="button" class="queue-act" :aria-label="t('input.queue.restore')" :data-tooltip="t('input.queue.restoreHint')" @click.stop="onQueueRestore(i)">
+              <!-- 铅笔图标：与 ProjectTree 的重命名图标同款。原用「回转箭头」，和左侧
+                   「立即」的 ↵ 撞脸，两个左箭头摆一起根本分不出谁是谁 -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+            </button>
+            <button type="button" class="queue-act queue-act-danger" :data-tooltip="t('input.queue.remove')" @click.stop="onQueueRemove(i)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -1776,10 +1908,22 @@ watch(
 <style scoped>
 .compose-box {
   position: relative;
-  padding: 12px 14px 58px; /* 底部预留：给钉在底部的操作行留空间 */
+  /* 底部预留：给钉在底部的操作行留空间（操作行实高约 26 + bottom 12 = 38，余量 ~16px）。
+     这三个数与 .compose-input 的 min-height: 68px 一起决定静息总高：
+       12(上内边距) + 68(输入区) + 54(底部预留) + 2(border) = 136px
+     136 同时是拖拽下限（minBoxHeight，见脚本区），即「默认高度 = 最小高度」，
+     上边沿往下拖不会有任何变化，默认就是用户认可的那个高度。 */
+  padding: 12px 14px 54px;
   border-radius: 16px;
   border: 1px solid var(--input);
-  background: var(--background);
+  /* 静息态抬升 level 1（2026-09-30 用户选定「C 中悬浮」）：
+     旧实现是 background: var(--background)，浅色主题下与页面底**完全同色**，
+     盒子只剩一圈 1px 灰线，读起来是「画在页面上的矩形」而不是「浮着的一层」。
+     改 --card + --elev-1：底色差定深度、投影定离地、inset 白线定受光，三个信号齐了才浮得起来。
+     深色主题下 --card 比 --background 亮一档，方向一致（盒子比页面亮）。
+     注意：投影靠 --elev-* 令牌，深浅主题两套值，不在组件里写第二套色值。 */
+  background: var(--card);
+  box-shadow: var(--elev-1);
   display: flex;
   flex-direction: column;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
@@ -1819,9 +1963,14 @@ watch(
   opacity: 1;
 }
 
+/* 聚焦态 = 抬升升到 level 2（2026-09-30 用户要求去掉焦点边框变色）。
+   旧实现是 border-color: var(--brand)：--brand 浅色主题是深灰、深色主题是近白，
+   同一语义在两种主题下亮度方向相反，边框一变就像闪了一下；而且它和 .dragover
+   （边框品牌色 + 底色提示）撞语义——拖拽和聚焦用同一个信号。
+   改为投影加深一档：边框始终是那条发丝边，焦点由「盒子被抬高」表达，
+   跨主题一致、也不和拖拽态抢信号。 */
 .compose-box:focus-within {
-  border-color: var(--brand);
-  /* 仅保留外圈边框；去掉内圈 3px 光环 */
+  box-shadow: var(--elev-2);
 }
 
 /* 输入框下方状态行（左：项目+分支，右：上下文用量+压缩）：贴紧盒子下缘。
@@ -1842,39 +1991,42 @@ watch(
   margin-left: auto;
 }
 
-/* 进行中：实线边框 + 呼吸效果 */
+/* 进行中（streaming）= 抬升在 --elev-2 ↔ --elev-2-active 之间呼吸（2026-09-30 用户选定方案 A）。
+   旧实现是动画 border-color（--foreground 35% ↔ 85%）：实测那条 1px 线在深色主题下
+   从 rgb(89,91,94) 摆到 rgb(163,166,169)，**亮度摆幅 1.9 倍**，在暗底上比盒内的柔和投影
+   显眼得多——人眼先读到「一个忽明忽暗的亮框」，读不到「浮着的一层」。根因是它占了「轮廓」
+   这个信号位：盒子轮廓同时只能讲一件事，要么是「受光的发丝边 + 柔和投影」（= 浮起来），
+   要么是「一条会呼吸的实线」（= 一个框）。
+   现在把「进行中」挪到投影层：边框全程不动（与静息/聚焦完全一致），只让环境阴影缓慢加深外扩。
+   注意「进行中」信号本来是冗余的——框内有 ⠋ 转轮 + 「助手回复中，Enter 排队发送…」文案、
+   框外有「助手正在思考」计时、右下角有红色停止按钮，边框呼吸是第四个，却占用了最贵的位置。
+   呼吸是有意慢的（2.4s）：这是「在工作」的氛围提示，不是加载进度，不该催人。 */
 .compose-box.streaming {
-  border-color: var(--foreground);
-  animation: stream-breathe 2s ease-in-out infinite;
+  animation: stream-breathe 2.4s ease-in-out infinite;
 }
 
 @keyframes stream-breathe {
   0%, 100% {
-    border-color: color-mix(in oklab, var(--foreground) 35%, transparent);
+    box-shadow: var(--elev-2);
   }
   50% {
-    border-color: color-mix(in oklab, var(--foreground) 85%, transparent);
+    box-shadow: var(--elev-2-active);
   }
 }
 
-.compose-box.streaming:focus-within {
-  border-color: var(--brand);
-  animation: stream-breathe-focus 2s ease-in-out infinite;
+/* 拖拽悬停与流式同时发生（转发中把文件拖进输入框）：两者都要投影，
+   各写一条 box-shadow 会互相盖掉，动画还会持续覆盖拖拽态——停掉动画、落回静态抬升档。 */
+.compose-box.streaming.dragover {
+  animation: none;
+  box-shadow: var(--elev-2);
 }
 
-@keyframes stream-breathe-focus {
-  0%, 100% {
-    border-color: color-mix(in oklab, var(--brand) 50%, transparent);
-  }
-  50% {
-    border-color: var(--brand);
-  }
-}
-
-/* 拖拽图片悬停高亮：边框品牌色 + 轻微底色提示可放置 */
+/* 拖拽图片悬停高亮：边框品牌色 + 轻微底色提示可放置。
+   底色混的基色用 --card（盒子自身底色），不是 --background——否则拖拽态会把
+   盒子的抬升底色抹掉，变成比页面还暗的一块，和静息态接不上。 */
 .compose-box.dragover {
   border-color: var(--brand);
-  background: color-mix(in oklab, var(--brand) 4%, var(--background));
+  background: color-mix(in oklab, var(--brand) 4%, var(--card));
 }
 
 /* 紧凑模式（多窗口）：与单窗口输入框高度规则保持一致（可拖拽调整） */
@@ -2026,8 +2178,13 @@ watch(
 }
 
 .compose-input:focus {
-  /* 内圈文本区无需任何焦点边框/光环，仅由外圈 .compose-box 边框表达聚焦 */
+  /* 内圈文本区不出任何焦点边框/光环：聚焦反馈只由外圈 .compose-box 的抬升档位表达
+     （v6.4 起不再换边框色，见 .compose-box:focus-within 注释）。
+     必须写成显式属性、不能只留注释交给 global.css 的 textarea:focus 让位：
+     那条全局规则会给 textarea 上 1px 品牌色边框 + 3px 光环，靠 scoped 特异性压住它
+     属于「隐式依赖」——这里把契约写死，将来改全局规则不会穿透到输入框内圈。 */
   border: none;
+  border-color: transparent;
   outline: none;
   box-shadow: none;
 }
@@ -2098,7 +2255,8 @@ watch(
   position: relative;
 }
 
-/* CV-S09 待发送队列：徽标 + 向上弹出只读浮窗（对齐 .model-menu 视觉） */
+/* CV-S09 待发送队列：面板挂在 .compose-box 上（宽度对齐输入框文字列），
+   徽标只负责开合（.queue-wrap 不再包面板） */
 .queue-wrap {
   position: relative;
 }
@@ -2120,35 +2278,146 @@ watch(
   background: color-mix(in oklab, var(--primary) 20%, var(--background));
 }
 
+/* 面板：left/right 15px = 1px 边框×2 + 14px 内边距×2，宽度精确等于输入框文字列。
+   旧实现挂在徽标上（right:0 + min/max 220–340），长路径逐字符折行且左缘飞出输入框 */
 .queue-panel {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 10px);
-  min-width: 220px;
-  max-width: 340px;
-  max-height: 260px;
-  overflow-y: auto;
+  left: 15px;
+  right: 15px;
+  bottom: calc(100% + 8px);
+  display: flex;
+  flex-direction: column;
+  max-height: min(52vh, 380px); /* 总高封顶：面板只向上弹，短窗口不能顶出屏幕 */
   background: var(--popover);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  padding: 4px;
   z-index: 700;
   animation: menu-rise 0.15s ease both;
 }
 
+.queue-panel-head {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-list {
+  overflow-y: auto;
+  padding: 3px;
+}
+
 .queue-item {
-  padding: 6px 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 4px 6px 8px;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--foreground);
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
+/* 分隔线用 inset 阴影而非 border-top：条目有圆角，border 会在左右角上断开 */
 .queue-item + .queue-item {
-  border-top: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 var(--border);
+}
+
+/* 序号：队列的核心语义是「按序派发」，没有序号就看不出哪条先走 */
+.queue-idx {
+  flex-shrink: 0;
+  width: 14px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--muted-foreground);
+}
+
+.queue-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 收趟态：强制一行，超出用省略号（用户 2026-09-29 定的口径「内容放在一行，不要换行」）。
+   不用 -webkit-line-clamp：它是纵向折行钳制，这里要的是 nowrap + 横向省略，
+   长粘贴/代码块不会把面板撑成好几行高 */
+.queue-item-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 路径 / 代码：切等宽（启发式见 utils/looksMonospace），混排中文的条目不走这里 */
+.queue-item-text.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* 队列编辑动作（立即 / 取回 / 删除）：常驻（静止 55% 不透明，hover 提亮）。
+   旧实现 hover 才 display，行一高就跟文字对不上 */
+.queue-item-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+
+.queue-item:hover .queue-item-actions,
+.queue-item:focus-within .queue-item-actions {
+  opacity: 1;
+}
+
+.queue-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.queue-act svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 「↵ 立即」：带文字的动作，宽度随文字 */
+.queue-act-now {
+  width: auto;
+  padding: 0 6px;
+  gap: 3px;
+  font-size: 11.5px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.queue-act-now svg {
+  width: 12px;
+  height: 12px;
+}
+
+.queue-act:hover {
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  color: var(--foreground);
+}
+
+.queue-act-danger:hover {
+  background: color-mix(in oklab, var(--destructive) 14%, transparent);
+  color: var(--destructive);
 }
 
 .queue-send {
@@ -2613,11 +2882,27 @@ watch(
 .level-wrap .meta-link.is-max {
   color: var(--gold);
 }
+/* 胶囊上的 max 与浮窗静止态（.level-wrap.is-max .level-item.on .level-t）同一套金色渐变 */
+.level-wrap .meta-link.is-max .level-t {
+  background-image: linear-gradient(90deg,
+    var(--gold-fade) 0%,
+    var(--gold) 50%,
+    var(--gold-fade) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
 
-/* 展开指示三角：随浮窗开合旋转（纯提示，不占位） */
+/* 展开指示三角：随浮窗开合旋转（纯提示，不占位）。
+   下移 1px：flex 居中按 em 盒算，而小写「max」的视觉中心低于 em 盒中心，
+   三角看着贴在字上方。用 relative 而非 transform，避免与 is-open 的 rotate 顶掉。 */
 .level-chev {
   width: 9px;
   height: 9px;
+  position: relative;
+  top: 1px;
   opacity: 0.55;
   transition: transform var(--transition-fast);
 }
@@ -2810,14 +3095,5 @@ watch(
 .cancel-btn svg {
   width: 14px;
   height: 14px;
-}
-</style>
-
-<!-- 暗色 --brand 接近纯白 (oklch 0.88)，常态边框只 0.32，直接切换会突兀。
-     压到 40% brand mix，让聚焦成为几乎看不出的轻微提亮而非跳变；1px 细线不会看出环状。
-     ponytail: 想再亮一点改 50、再压一点改 35。light 不动。 -->
-<style>
-:root[data-theme='dark'] .compose-box:focus-within {
-  border-color: color-mix(in oklab, var(--brand) 40%, transparent);
 }
 </style>

@@ -277,9 +277,12 @@ export class SessionService {
   /**
    * 会话运行时状态驱动（内部辅助，供 rpc 层 / 测试驱动状态）。
    * 直接写入内存状态表；本层不发射事件（事件接线在 rpc 层）。
-   * 附带：非 done→done 的完成转进入口清除已读标记（doneReadAt→null），
-   * 会话树在新一轮完成后重新提示绿点；done→done 重复写不清（避免同轮重复
-   * 事件把已读会话重新点亮）。
+   * 附带两项 store 落盘：
+   * 1. 非 done→done 的完成转进入口清除已读标记（doneReadAt→null），
+   *    会话树在新一轮完成后重新提示绿点；done→done 重复写不清（避免同轮重复
+   *    事件把已读会话重新点亮）。
+   * 2. 进入 running（新的一轮开始）时 touch lastActiveAt 并落盘——会话树
+   *    「运行中置顶且保留」的排序由此持久化（见下方"排序持久化"说明）。
    * @param sessionId 会话 ID
    * @param status 目标状态
    * @param opts 预留选项（当前忽略，供 rpc 层扩展事件发射等行为）
@@ -292,6 +295,18 @@ export class SessionService {
       const session = this.store.getSession(sessionId);
       if (session?.doneReadAt) {
         this.store.saveSession({ ...session, doneReadAt: null });
+      }
+    }
+    // 排序持久化：listSessions 按 lastActiveAt 降序返回，而 lastActiveAt 原本
+    // 只在 createSession 写一次 → 后端序实为"创建时间倒序"，永不随使用变化。
+    // 会话树的置顶因此只能靠 UI 内存态（ProjectTree 的 activatedOrder），重启即丢。
+    // 这里在每轮开始时 touch，使"最近活动在前"名副其实且跨重启/跨窗口一致；
+    // 语义与内存态等价（激活序 = 活动序），UI 内存层保留为同序快路径。
+    // prev !== 'running' 守卫：同一轮内重复 streaming 事件（自动重试恢复等）不重复写盘。
+    if (status === 'running' && prev !== 'running') {
+      const session = this.store.getSession(sessionId);
+      if (session !== undefined) {
+        this.store.saveSession({ ...session, lastActiveAt: new Date().toISOString() });
       }
     }
   }

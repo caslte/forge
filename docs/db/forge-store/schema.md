@@ -56,7 +56,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 | sessionId | string | 否 | - | pi session ID（对应 pi session 目录名，主键） |
 | projectPath | string | 否 | - | 所属项目绝对路径 |
 | alias | string | 是 | null | 会话别名（默认取首条用户消息摘要，可编辑） |
-| lastActiveAt | string(ISO8601) | 否 | 创建时 | 最近活动时间（会话列表排序） |
+| lastActiveAt | string(ISO8601) | 否 | 创建时 | 最近活动时间（会话列表排序）：创建时写一次，之后每轮会话开始（状态转 running）由 `SessionService.setSessionStatus` touch 并落盘，故「最近活动在前」重启后仍成立 |
 | createdAt | string(ISO8601) | 否 | - | 创建时间 |
 | modelOverride | string | 是 | null | 会话级模型覆盖（模块 05；空则用全局默认） |
 | thinkingLevel | string | 是 | null | 会话级思考级别覆盖（模块 05 MP-S05；枚举同 pi：off/minimal/low/medium/high/xhigh/max；空则用全局默认） |

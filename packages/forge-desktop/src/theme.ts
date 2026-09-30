@@ -24,7 +24,7 @@ export type ThemeMode = 'light' | 'dark';
 /**
  * 建窗底色（与 forge-ui/src/design-tokens.css 的 `--background` **逐位一致**）：
  * - light：`oklch(1 0 0)` = #ffffff
- * - dark ：`oklch(0.166 0.009 263.6)` = #0d0f13（D 档设计稿复刻底色，rgb(13 15 19)）
+ * - dark ：`oklch(0.215 0.008 265)` = #18191d（v6.1 可读性调整：抬底+压字档，rgb(24 25 29)）
  *
  * 逐位一致是硬要求：这份底色是 splash 出现前的那一帧，只要与 splash 底色（同一令牌）
  * 有差，交接口就会看到一次色阶跳变。test/theme.test.ts 直接从 design-tokens.css 解析
@@ -32,7 +32,7 @@ export type ThemeMode = 'light' | 'dark';
  */
 export const THEME_BACKGROUND: Record<ThemeMode, string> = {
   light: '#ffffff',
-  dark: '#0d0f13',
+  dark: '#18191d',
 };
 
 /** 缺省主题：与 useTheme.ts 的「无存储 = dark」、index.html 引导脚本同值 */

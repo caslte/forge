@@ -361,7 +361,9 @@ const hasDetail = computed(() => (!props.hideDiff && diffs.value.length > 0) || 
   min-width: 0;
 }
 
-/* 文件类型小标：Seti 式品牌色圆角方标 + 单字标（TS 蓝 / JS 黄 / Vue 绿…）；色值是品牌色，不随明暗主题变 */
+/* 文件类型小标：Seti 式品牌色圆角方标 + 单字标（TS 蓝 / JS 黄 / Vue 绿…）；色值是品牌色，不随明暗主题变。
+   v6.1 可读性调整时曾把它去饱和成单色方标，**用户定稿撤回**——颜色本身承载信息
+   （一眼看出改的是 TS 还是 Vue），不是装饰性噪点，在抬亮后的底色上对比也依然够。 */
 .ft-ico {
   display: inline-flex;
   align-items: center;
