@@ -76,16 +76,42 @@ function withoutTrailingPartialTag(source: string): string {
 /**
  * HTML `<canvas>` 元素（真标签，非 canvas 围栏这个词）。
  *
- * 模型会把「画布卡片」直译成 <canvas>（2026-09-29 真机：MiniMax 交回
- * `<canvas style="background:#fff">` 包一段字符画回退文本）。沙箱禁脚本，
- * <canvas> 永远画不出东西，浏览器只显示回退内容——按普通 HTML 排版，等宽
- * 没了、对齐全毁。判 code 降级进等宽代码块是这种内容唯一不丢信息的落点。
+ * 2026-09-30 用户裁决（语料 G01）：`<canvas>` 是沙箱里的死元素，但只该剥掉元素本身、
+ * 按其余内容重新判决——「好卡片 + 一个装饰性 canvas」不该整卡拖进代码块。剥标签留内容：
+ * - 死画布里的 ASCII 表格回退文本 → 剥后走字符画路径 → 仍判 code（等宽保对齐，落点不变）；
+ * - 纯文本回退 → 剥后按内容判（短句归 prose）；
+ * - 好卡片混装饰 canvas → 剥后照常判 html。
+ * 判决入口（终态与流式）统一先剥；srcdoc 渲染不剥——canvas 在沙箱里本来就不渲染，无害。
  */
-const CANVAS_ELEMENT_RE = /<canvas[\s>]/i;
+const CANVAS_TAG_RE = /<\/?canvas\b[^>]*>/gi;
 
-/** 取标签外的可见文本。先吃掉「标签间纯空白」（模型的排版缩进），缩进不是内容。 */
+/** 判决入口统一先剥 <canvas> 标签（留内容）。只用于判决，不用于 srcdoc。 */
+function withoutCanvasTags(s: string): string {
+  return (s ?? '').replace(CANVAS_TAG_RE, '');
+}
+
+/**
+ * `<script>` / `<style>` 的整块内容（含未闭合的流式半截）。
+ *
+ * 顺序同 stripCanvasProse（那边早就在做这件事，两边口径必须一致）：这类元素的内容
+ * 既不是标签也不是可见文本，不先整块丢掉，它会被后面的 `<[^>]*>` 当成「标签间正文」
+ * ——真机那张注册流程卡（2026-09-30）就是这样被降级成正文的：卡片顶着一个 `<style>`
+ * 定义 .lane/.g2 网格，CSS 整段 1612 字被算成「最长文本片段」，直接顶穿长句阈值。
+ *
+ * 结尾 alternation 是给流式用的：围栏中途只有 `<style>` 没有 `</style>`，此时不能
+ * 因为没闭合就把已写入的 CSS 当正文（骨架会提前塌成正文，正是 2026-09-30 真机
+ * 「画图时一直闪」那类现象）。
+ */
+const RAW_TEXT_BLOCK_RE = /<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
+
+/** 丢掉 script/style 整块（含未闭合的流式半截）。所有「算文本」的地方的唯一入口。 */
+function dropRawTextBlocks(s: string): string {
+  return (s ?? '').replace(RAW_TEXT_BLOCK_RE, '');
+}
+
+/** 取标签外的可见文本。先丢 script/style，再吃掉「标签间纯空白」（模型的排版缩进），缩进不是内容。 */
 function stripTagsToText(s: string): string {
-  return s
+  return dropRawTextBlocks(s)
     .replace(/>\s+</g, '><')
     .replace(/<[^>]*>/g, '');
 }
@@ -105,19 +131,46 @@ function stripTagsToText(s: string): string {
  *
  * 教训（2026-09-29 真机漏网）：初版把箭头 → ← 和边框线型也算特征，结果
  * 「正文里夹内联箭头的伪流程卡」（origin → 你的 fork ← 拉新提交…）畅通进
- * iframe。行文里的 A → B → C 是标点不是布局，中文技术写作里极常见；带边框的
- * 薄壳 wrapper 同理（callout 式排版壳）。这里只留布局信号：flex/grid/绝对定位/
- * 浮动（模型按契约画图必用其中之一）、table/svg/img 图元、制表字符。
- * 误伤方向也核实过：纯文字序列被降级成正文不丢信息，可接受。
+ * iframe。行文里的 A → B → C 是标点不是布局，中文技术写作里极常见。
+ *
+ * 2026-09-30 用户裁决（语料 W03 正文 / G06 页面）把 flex/grid 从本表移出：
+ * `display:flex` 在文字墙包装上和真图示里同样廉价，挡不住谁；区分 W03（无样式
+ * 薄壳包整句 → 正文）与 G06（<style> 块 + 逐盒样式 → 页面）的是「样式投入量」，
+ * 由薄壳路径的文本占比（样式越重占比越低）承担，不靠关键词。保留的信号只剩
+ * 更重的投入：绝对定位/浮动、table/svg/img 图元、制表字符。
  */
 const VISUAL_CUE_RE =
-  /display\s*:\s*(flex|grid)|position\s*:\s*absolute|float\s*:|<(table|svg|img)\b|[─│┌┐└┘├┤┬┴┼]/i;
+  /position\s*:\s*absolute|float\s*:|<(table|svg|img)\b|[─│┌┐└┘├┤┬┴┼]/i;
 
-/** 可见文本占源码的比例上限：超过才算「标签只是壳」。真图示的样式文本通常占一半以上。 */
+/**
+ * 可见文本占源码的比例上限：超过才算「标签只是壳」。真图示的样式文本通常占一半以上。
+ *
+ * 分子（可见文本）不含 script/style 内容，分母（原始源码）**刻意含**——这不是口径
+ * 不一致而是裁决（2026-09-30 语料 G06）：样式投入计入「不是薄壳」的证据，CSS 越重
+ * 越像页面；W03 那类几乎零样式的 div 墙才落进薄壳。两边都丢 CSS 的话 G06 会翻成
+ * prose，违背用户裁决。
+ */
 const PROSE_TEXT_RATIO = 0.6;
 
 /** 可见文本最短长度：低于它不判 prose（带个标题的小图示不值得降级）。 */
 const PROSE_MIN_TEXT = 40;
+
+/**
+ * 空壳地板：有标签但可见文本 ≤ 它，且存在 <style>/<script> 块，判 prose
+ * （2026-09-30 用户裁决，语料 G02）。
+ *
+ * 「大 <style> 块 + 一个字」剥掉 CSS 后只剩 1 个字，判 html 会出一张 320px 空白卡；
+ * 用户裁决「就一个字，是文本」。地板取 4，上端由语料钉住——N08 小卡可见文本 16 字
+ * 仍是 html。但单看字数会误伤「网关/服务」这类两三个短标签的迷你图（可见文本恰好
+ * 4 字），故加 SHELL_MARK_RE 门槛：空壳的标记是样式/脚本投入占绝对主导——卡里真有
+ * 一大块 CSS/JS 而可见内容近零，才算空壳；裸 `<div>甲</div>` 渲染出来仍是个盒子，
+ * 照旧 html。
+ *
+ * 只在终态判：流式期间可见文本从 0 长起，先短后长是常态，放进流式会让每张卡的
+ * 第一个字都闪一次正文。
+ */
+const SHELL_TEXT_MAX = 4;
+const SHELL_MARK_RE = /<(style|script)\b/i;
 
 /**
  * 长句阈值：单个标签间文本片段的字符数超过它就是句子。
@@ -126,8 +179,27 @@ const PROSE_MIN_TEXT = 40;
  * 不可能住在图示的节点里——所以长句是无视布局信号的 prose 铁证。第二轮真机漏网
  * 正是反例：P0/P1/P2 分级列表套着 grid 壳、每条一个带样式 div，布局信号全齐，
  * 本质仍是文字堆。
+ *
+ * 但只看极值会误伤第三轮真机那张流程图卡（2026-09-30：<style> 网格 + 94 个短标签 +
+ * 2 条长说明），故长句还必须**占满**可见文本，见 PROSE_LONG_RUN_SHARE。
  */
 const PROSE_LONG_RUN = 80;
+
+/**
+ * 长句文本占可见文本的比例门槛：低于它不判 prose。
+ *
+ * 为什么极值不够（2026-09-30 真机）：长句判据原本只看「最长片段 ≥80 字」这一条极值，
+ * 于是把两种完全不同的卡片看成同一类——
+ * - 图示的常态是「一堆短标签 + 一两条长说明」（真机注册流程卡：94 个片段、最长 101 字、
+ *   长片段只占总文本 10%）。盒子、箭头、网格都在，长句只是某个格子里的一句话。
+ * - 「文字塞卡片」是长句**占满**（存量 P0/P1/P2 用例：4 个片段、长句占 89%）。
+ * 极值判据对前者是误伤，对后者是唯一抓手，所以补一条占比门槛把两者分开。
+ *
+ * 0.5 的来由：真机两例落在 0.10 与 0.89，取中位。误伤方向也核实过——本判据只负责
+ * 「不出 prose」，判成 prose 后还有薄壳路径（VISUAL_CUE 布局信号）兜底；反过来
+ * 放过一张文字堆的代价是固定 320px 卡片里一段没有结构的文字，比误降级更伤。
+ */
+const PROSE_LONG_RUN_SHARE = 0.5;
 
 /**
  * 图形兜底：含 svg/img 的卡片是「画」，文字判据对它无权重——降级路径靠剥标签取文，
@@ -135,14 +207,38 @@ const PROSE_LONG_RUN = 80;
  */
 const GRAPHIC_RE = /<(svg|img)\b/i;
 
-/** 逐个取标签间的文本片段（trim 后），返回最长片段的字符数。 */
+/** 逐个取标签间的可见文本片段（trim 后，script/style 整块已丢）。 */
+function textRuns(s: string): string[] {
+  return dropRawTextBlocks(s)
+    .split(/<[^>]*>/)
+    .map((frag) => frag.trim())
+    .filter((frag) => frag !== '');
+}
+
+/** 返回最长文本片段的字符数。 */
 function longestTextRun(s: string): number {
   let max = 0;
-  for (const frag of s.split(/<[^>]*>/)) {
-    const len = frag.trim().length;
-    if (len > max) max = len;
+  for (const run of textRuns(s)) {
+    if (run.length > max) max = run.length;
   }
   return max;
+}
+
+/** 长句（≥PROSE_LONG_RUN）在全部可见文本里的字符占比。 */
+function longRunShare(s: string): number {
+  const runs = textRuns(s);
+  let total = 0;
+  let long = 0;
+  for (const run of runs) {
+    total += run.length;
+    if (run.length >= PROSE_LONG_RUN) long += run.length;
+  }
+  return total === 0 ? 0 : long / total;
+}
+
+/** 长句铁证：既有 ≥PROSE_LONG_RUN 的片段，长句又占满（≥PROSE_LONG_RUN_SHARE）可见文本。 */
+function isProseByLongRun(s: string): boolean {
+  return longestTextRun(s) >= PROSE_LONG_RUN && longRunShare(s) >= PROSE_LONG_RUN_SHARE;
 }
 
 /**
@@ -199,32 +295,36 @@ export interface CanvasJudgeOptions {
 /**
  * 卡片源码判成哪一态。
  *
- * 顺序即优先级：
- * 1. 空 → 空态文案；
- * 2. 含 <canvas> 元素 → 判 code——沙箱禁脚本它必然是死的（见 CANVAS_ELEMENT_RE），
- *    排在标签分派之前，不让它走 html 进 iframe；
- * 3. 有标签 → 是 HTML 图示候选，再由 looksLikeProseCanvas 挑出「标签只是排版壳」
- *    的那部分降级成正文（带布局信号的仍留在 iframe）；
- * 4. 无标签 → 不是 HTML。字符画与源码都按代码块降级（等宽保对齐/着色），其余
- *    按 prose 降级成正文流——模型把纯文字说明塞进围栏是高频行为，出代码框是噪声。
+ * 入口统一先剥 <canvas> 标签（留内容，见 CANVAS_TAG_RE）——判决看的永远是
+ * 「剥掉死元素之后还剩什么」。
  *
- * 'undecided'：无标签且文本还没到 PROSE_MIN_TEXT。此时既可能是散文开头，也可能是
- * 模型正要画图的前言，判早了会在闭合瞬间翻面（正文↔卡片），故交给流式骨架占位。
- * 已经判成 prose/code 的不再回退到 undecided——文本只会变长，判据单调。
+ * 终态顺序即优先级（2026-09-30 用户裁决后）：
+ * 1. 空 → 空态文案；
+ * 2. 有标签 →
+ *    a. 字符画薄壳（looksLikeHtmlCanvas 的字符画否决）→ code——薄壳 div 包字符画
+ *       进 iframe 会被空白规则压毁对齐，等宽代码块是唯一不丢信息的落点（G03，
+ *       注释声称此路径多年，实现直到今天才接上）；
+ *    b. 空壳（<style>/<script> 块在场、可见文本 ≤ SHELL_TEXT_MAX 且无图元）→
+ *       prose——剥掉 CSS 只剩一两个字的卡不出空白 iframe（G02）；
+ *    c. looksLikeProseCanvas（长句主导 / 薄壳占比）→ prose，其余 html；
+ * 3. 无标签 → 源码形态或字符画 → code；其余一律 prose——包括短句（G04「画好了」）：
+ *    终态不再有 undecided，围栏既然闭合了，内容是什么就渲染什么，一句话不该进
+ *    等宽代码框。
+ *
+ * 'undecided' 从此只在流式口径出现（还判不出、源码还会长，交给骨架占位）。
  */
 export function judgeCanvasSource(source: string, options: CanvasJudgeOptions = {}): CanvasVerdict {
-  const s = source ?? '';
+  const s = withoutCanvasTags(source ?? '');
   if (options.streaming === true) return judgeStreamingCanvas(s);
   if (s.trim() === '') return 'empty';
-  if (CANVAS_ELEMENT_RE.test(s)) return 'code';
   if (HAS_TAG_RE.test(s)) {
+    if (!looksLikeHtmlCanvas(s)) return 'code';
+    if (SHELL_MARK_RE.test(s) && !GRAPHIC_RE.test(s) && stripTagsToText(s).trim().length <= SHELL_TEXT_MAX) return 'prose';
     return looksLikeProseCanvas(s) ? 'prose' : 'html';
   }
   // 无标签：源码与字符画先判——它们从第一个字符起就有排版信号（import/for/分号/
-  // 管道），不需要等长度门槛，否则流式刚开始写代码时会被误判成 undecided 挂骨架。
+  // 管道），不需要等长度门槛。
   if (looksLikeCodeCanvas(s) || looksLikeAsciiArt(s, 2)) return 'code';
-  // 剩下的是「可能是散文」：太短判不出是散文开头还是画图前言，交给骨架占位。
-  if (s.trim().length < PROSE_MIN_TEXT) return 'undecided';
   return 'prose';
 }
 
@@ -238,13 +338,17 @@ export function judgeCanvasSource(source: string, options: CanvasJudgeOptions = 
  * 2. 有标签时只放行「长句铁证」这一条单调判据（见 streamingProseShell），
  *    薄壳的占比判据留到闭合后判一次——它天生非单调。
  *
+ * 终态独有的三条（字符画薄壳 / 空壳 / 短句 prose）不进流式：字符画的「画行占比」
+ * 会随后续正文变多跌破半数（code→html 翻面），空壳的可见文本会从 1 个字长成一段
+ * （prose→html 翻面）。这三类的流式期间照常挂骨架，闭合时一次性落终态——接受这一
+ * 次闭合翻面，换流式全程零抖动（2026-09-30 方案 A 裁决）。
+ *
  * 空态（'empty'）属于终态结论：中途只能给 'undecided'（挂骨架）。中途就出空态文案，
  * 等于在刚开栏那一帧闪一次「画布没有内容」。
  */
 function judgeStreamingCanvas(raw: string): CanvasVerdict {
   const s = withoutTrailingPartialTag(raw);
   if (s.trim() === '') return 'undecided';
-  if (CANVAS_ELEMENT_RE.test(s)) return 'code';
   if (!HAS_TAG_RE.test(s)) {
     if (looksLikeCodeCanvas(s) || looksLikeAsciiArt(s, 2)) return 'code';
     if (s.trim().length < PROSE_MIN_TEXT) return 'undecided';
@@ -267,7 +371,8 @@ export function decodeCanvasSource(encoded: string): string {
  * 源码是否「文字塞卡片」（prose 降级）：有标签（否则归 looksLikeHtmlCanvas 的代码块降级）、
  * 非图形（svg/img 不碰），且命中其一——
  * 1. 长句路径：任一标签间文本 ≥ PROSE_LONG_RUN（无视布局信号）；
- * 2. 薄壳路径：可见文本占源码六成以上、且无任何布局特征（flex/grid/定位/图元/制表符）。
+ * 2. 薄壳路径：可见文本占源码六成以上、且无任何重投入布局特征（定位/图元/制表符；
+ *    flex/grid 已按 2026-09-30 语料 W03/G06 裁决移出，见 VISUAL_CUE_RE）。
  */
 export function looksLikeProseCanvas(source: string): boolean {
   const s = source ?? '';
@@ -280,7 +385,7 @@ export function looksLikeProseCanvas(source: string): boolean {
   }
   const text = proseShellText(s);
   if (text === null) return false;
-  if (longestTextRun(s) >= PROSE_LONG_RUN) return true;
+  if (isProseByLongRun(s)) return true;
   if (text.length / s.length <= PROSE_TEXT_RATIO) return false;
   return !VISUAL_CUE_RE.test(s);
 }
@@ -293,9 +398,8 @@ export function looksLikeProseCanvas(source: string): boolean {
  * 增长而反复成立-不成立的判据。
  */
 function proseShellText(s: string): string | null {
-  // <canvas 开头（含流式中途没写完的半截标签）：终态归 judgeCanvasSource 的
-  // code 分支，这里只否决 prose——否则开头几十字会被判成正文、提前撤掉骨架。
-  if (/<canvas/i.test(s)) return null;
+  // <canvas 标签已在判决入口剥掉（CANVAS_TAG_RE），这里不需要再否决——带 canvas 的
+  // 卡片按剥掉死元素之后的内容参加 prose 判决（2026-09-30 语料 G01 裁决）。
   if (!looksLikeHtmlCanvas(s)) return null;
   if (GRAPHIC_RE.test(s)) return null;
   const text = stripTagsToText(s).trim();
@@ -310,11 +414,15 @@ function proseShellText(s: string): string | null {
  * 不会在下一个节流点变回骨架。比例那条（薄壳路径）反过来：标签流进来占比就掉、
  * 文字流进来占比就升，是骨架↔正文来回闪的第二来源，留到闭合后判一次。
  *
+ * 长句占比（PROSE_LONG_RUN_SHARE）与终态同判据、同一数值：分档写两套口径才是
+ * 「中途判成 A、闭合判成 B」翻面的根源，这里宁可接受它偶尔提前判 prose（正文不丢
+ * 信息），也不能让骨架在闭合瞬间翻面。
+ *
  * 前哨与终态共用，故中途判成 prose 的，闭合后仍判 prose（长句路径在终态里也排第一，
  * 且 svg/img、字符画、<canvas 的否决两边一样）。
  */
 function streamingProseShell(s: string): boolean {
-  return proseShellText(s) !== null && longestTextRun(s) >= PROSE_LONG_RUN;
+  return proseShellText(s) !== null && isProseByLongRun(s);
 }
 
 /**
