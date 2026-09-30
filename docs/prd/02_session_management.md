@@ -52,7 +52,7 @@
 > - 并发会话数不硬限制，UI 显示"运行中会话数"提示（烧 token 是用户选择）。
 > - 多窗口交互细节（窗口吸附规则、z-index 置顶、自由 resize、4 窗格默认排列）属 UI 交互实现，在第 3 节详细设计展开，不作为技术决策。
 > - 会话别名默认取 pi session 首条用户消息摘要，可编辑。
-> - 会话列表按最近活动时间排序。
+> - 会话列表按最近活动时间排序（持久：`lastActiveAt` 每轮开始 touch 落盘，重启/跨窗口一致；未激活会话等于创建时间倒序）。
 
 > **开发期风险与并发纪律（不阻塞 PRD 确认，已计入 overview）**：
 > - TD-SM-01（源码分析结论，待运行时 spike 最终确认）：pi `AgentSession` 为实例类，无全局单例；每会话独立 `sessionManager`/`resourceLoader`/`modelRuntime`，事件总线 per-loader（`options.eventBus ?? createEventBus()`），扩展实例 per-loader。**架构上支持并发多实例**，前提纪律：(1) 每会话独立 `ResourceLoader`（不共享，否则事件总线/扩展串扰）；(2) forge 扩展**不得用模块级可变状态**存会话数据（jiti 按 path 缓存模块，模块全局量跨会话共享），须用实例字段或 session-keyed Map；(3) `ModelRuntime` 可共享（读多），并发鉴权刷新需验证。运行时 spike 脚本见 `plan/spike-multi-session.ts`（需先构建 pi）。

@@ -5,6 +5,7 @@
  * - U-SM-001：删除运行中会话先 stop 再删除；不经停止直接删除被拦截
  * - U-SM-002：10 会话并行，各会话状态独立、无共享状态串扰
  * - U-SM-003：重命名仅改 forge 元数据，pi 消息文件不变（adapter 不被触碰）
+ * - U-SM-007：排序持久化——转 running touch lastActiveAt 落盘，重开 store 顺序保持
  * 以及本 WU 契约：createSession 1001/1002、deleteSession 幂等、attach/detach
  * 1004/1002、getSessionStatus runningCount、跨项目会话池查询。
  *
@@ -609,6 +610,55 @@ test('markSessionRead + 完成：doneReadAt 落盘，新一轮 done 清已读、
     // 参数校验 1001 / 会话不存在 1002
     assert.equal(service.markSessionRead('').ok, false);
     assert.equal(service.markSessionRead('sess-nope').ok, false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('排序持久化：进入 running touch lastActiveAt，重启后「最近活动在前」仍在（会话树置顶落盘）', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store } = makeService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const [s1, s2, s3] = [
+      await createSessionUnder(service, key),
+      await createSessionUnder(service, key),
+      await createSessionUnder(service, key),
+    ];
+    // 固定三个互异且远早于"现在"的活动时间 → 基线序确定（降序 = s3, s2, s1），
+    // 避免真实时钟同毫秒并列导致断言抖动
+    const pin = (id: string, iso: string): void => {
+      const rec = store.getSession(id);
+      assert.ok(rec);
+      if (rec) store.saveSession({ ...rec, lastActiveAt: iso });
+    };
+    pin(s1!, '2001-01-01T00:00:00.000Z');
+    pin(s2!, '2001-01-02T00:00:00.000Z');
+    pin(s3!, '2001-01-03T00:00:00.000Z');
+
+    const order = (svc: { querySessionList: SessionService['querySessionList'] }): string[] => {
+      const r = svc.querySessionList();
+      assert.ok(r.ok);
+      return r.ok ? r.data.sessions.map((s) => s.sessionId) : [];
+    };
+    assert.deepEqual(order(service), [s3, s2, s1]);
+
+    // 一轮开始 → 该会话顶到最前（与 UI 内存态 activatedOrder 同序，但落盘）
+    service.setSessionStatus(s1!, 'running');
+    assert.deepEqual(order(service), [s1, s3, s2]);
+
+    // 完成不回落：位置保留
+    service.setSessionStatus(s1!, 'done');
+    assert.deepEqual(order(service), [s1, s3, s2]);
+
+    // 换一个会话开跑 → 活动序更新，且同样落盘
+    service.setSessionStatus(s2!, 'running');
+    assert.deepEqual(order(service), [s2, s1, s3]);
+
+    // 关键断言：重开 store（模拟重启 / 新窗口读盘）后顺序保持，不退回"创建时间倒序"
+    const reopened = new ForgeStore(path.join(tmp, 'forge-store.json'));
+    assert.deepEqual(reopened.listSessions().map((s) => s.sessionId), [s2, s1, s3]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -73,6 +73,7 @@
 | U-SM-004 | AC-SM-021 | sessionService 已读落盘 | 状态流转 | 会话 done | sessionId | markSessionRead + setSessionStatus(done) | doneReadAt 落库；新一轮 done 转入清已读；done→done 重复写不清 | 空 ID 1001 / 会话不存在 1002 |
 | U-SM-005 | AC-SM-023/024 | sessionView 纯函数（排序/全收起判定） | 状态/交互 | 混合状态会话集 + 激活序 | sessions + activatedOrder / paths + collapsed 集 | sortSessionsByActivation / nextFoldAllAction | 运行中置顶且保留；未激活稳定后置；任一展开→collapse、全收起→expand | 空列表/空折叠集不抛错，返回稳定结果 |
 | U-SM-006 | AC-SM-030 | App 新建默认落点（onCreateSession） | 状态 | ≥2 项目 + 已选中的旧项目 | 载荷路径 / 无载荷 | onCreateSession(sessionProjectPath?) | 无载荷→归属=选择器列表第一项；行内新建带路径→归属=该项目；均进入草稿态且不创建 pi session | 无项目时不进草稿；旧选中项目不被沿用 |
+| U-SM-007 | AC-SM-023（+ PRD 默认项「会话列表按最近活动时间排序」） | sessionService 排序持久化（setSessionStatus → store） | 状态 | 3 会话、活动时间固定为互异旧值 | sessionId 逐个 setSessionStatus(running/done) | 转 running 时 touch lastActiveAt 落盘 | listSessions 按活动降序：该会话置顶、done 后不回落；**重开 store（重启/新窗口读盘）后顺序保持** | 会话不存在不写盘；同轮重复 running 不重复写 |
 
 ### api（IPC 契约 + pi 对接 + 输出流管理）
 

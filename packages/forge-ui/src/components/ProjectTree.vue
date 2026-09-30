@@ -91,7 +91,10 @@ function sessionDisplayName(s: SessionItem): string {
   return s.alias || t('project.sessionName', { id: s.sessionId.slice(-6) });
 }
 
-// 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序
+// 激活顺序（最近激活在前）：会话进入 streaming 时置顶并**保留**，完成后不回退到后端原序。
+// 注：后端已把该序持久化（setSessionStatus 转 running 时 touch lastActiveAt，见
+// forge-core sessionService），本表退化为「同序快路径」——省掉等 statusChanged 回包的
+// 一次重排，且 mock/异常路径下仍能置顶。两者同序，删掉本表结果不变。
 const activatedOrder = ref<string[]>([]);
 
 watch(
