@@ -52,6 +52,16 @@
   --input: oklch(0.92 0.004 286.32);
   --ring: oklch(0.705 0.015 286.067);
 
+  /* 「选中态」的 mix 比例（色板 / 语言 / 内容宽度 / 模型卡通用）。
+     为什么不能写死一个百分比：这里的两个混入端透明度不同 ——
+     浅色 --border 是不透明的 L=0.92，深色 --border 是 alpha 0.115 的半透明白。
+     同一个 brand% 在两边落到的**实际**环亮度完全不同，写死必然一边过重一边过轻。
+     浅色：ring 78% → 环 ≈L0.475（原来 2px 满圈是 L0.35 的近黑，太重）；
+     hover 60% → ≈L0.58，比选中态浅一档，hover 不会盖过选中。 */
+  --select-ring-pct: 78%;
+  --select-hover-pct: 60%;
+  --select-bg-pct: 10%;
+
   /* 圆角 */
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -205,6 +215,13 @@
   --border: rgba(255, 255, 255, 0.115);
   --input: rgba(255, 255, 255, 0.115);
   --ring: oklch(0.78 0.02 286.3);
+
+  /* 选中态 mix 比例（浅色那套的深色版）。深色 --brand 亮度 0.88（近白），
+     满圈打上去是全屏最亮的元素——「确定」被做成了「喊」。
+     ring 42% 落回 ≈L0.52：仍是四档里最亮的一条，但不再是唯一发光的那个。 */
+  --select-ring-pct: 42%;
+  --select-hover-pct: 26%;
+  --select-bg-pct: 7%;
 
   --overlay: color-mix(in oklab, black 46%, transparent);
   /* 底色 Y 翻倍后同样 alpha 的投影观感减淡，sm/md/lg 各补一档维持原有层次 */
