@@ -369,6 +369,12 @@ export interface ForgeBridge {
   shell: {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
     openPath(path: string): Promise<boolean>;
+    /**
+     * 系统默认浏览器打开本地 HTML（改动文件卡右键「用浏览器打开」）。
+     * 仅 .html/.htm 且必须是已存在的普通文件——主进程校验（shell/openTarget.ts），
+     * 渲染层的扩展名判定只管菜单项显不显示。失败返回 false。
+     */
+    openInBrowser(path: string): Promise<boolean>;
     /** 系统浏览器/邮件客户端打开外链（仅 http/https/mailto，主进程校验）；失败返回 false */
     openExternal(url: string): Promise<boolean>;
     /** pi bash 解析健康探测（对话区横幅数据源，见 ShellProbeResult 注释） */

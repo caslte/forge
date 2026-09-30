@@ -626,6 +626,21 @@ const riseIn = computed(() => {
   color: #ffffff;
 }
 
+/* 暗色：气泡改冷调 + 降亮（#2b2e34 / 字 #d7dae0）。
+   旧值 #3a3a3d 是**纯中性灰**（色相 0），落在一片带蓝调的炭灰里是一块无彩度的大灰板：
+   亮度是底色的 4.4 倍、且配纯白字（19:1），在一屏低对比正文里刺眼。
+   换同色相冷调后亮度比降到 2.8 倍，字色降到 13.6:1，气泡仍在前景但不再抢。
+   --bubble-bg 是 shell 上的局部变量，渐隐叠层（.bubble-fade）都从它派生，无需额外改动。 */
+:root[data-theme='dark'] .msg-user .msg-bubble-shell {
+  --bubble-bg: #2b2e34;
+}
+:root[data-theme='dark'] .msg-user .msg-bubble-shell.is-clamped:hover {
+  --bubble-bg: #3a3e45;
+}
+:root[data-theme='dark'] .msg-user .msg-content {
+  color: #d7dae0;
+}
+
 .msg-assistant {
   max-width: 94%;
 }

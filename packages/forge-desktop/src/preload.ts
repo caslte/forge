@@ -21,6 +21,7 @@ import {
   IPC_SHELL_OPEN_EXTERNAL,
   IPC_SHELL_PROBE,
   IPC_SHELL_OPEN_PATH,
+  IPC_SHELL_OPEN_IN_BROWSER,
   IPC_THEME_SET,
   IPC_LOCALE_SET,
   IPC_ATTACHMENT_SCAN,
@@ -100,10 +101,14 @@ const fileControl = {
   },
 };
 
-/** window.forge.shell 系统能力：文件管理器打开目录 / 系统浏览器打开外链 */
+/** window.forge.shell 系统能力：文件管理器打开目录 / 默认浏览器打开本地 HTML / 系统浏览器打开外链 */
 const shellControl = {
   async openPath(path: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_PATH, path) as Promise<boolean>;
+  },
+  /** 用系统默认浏览器打开本地 HTML；主进程校验（普通文件 + 扩展名白名单），失败 false */
+  async openInBrowser(path: string): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_SHELL_OPEN_IN_BROWSER, path) as Promise<boolean>;
   },
   async openExternal(url: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_EXTERNAL, url) as Promise<boolean>;

@@ -14,6 +14,7 @@ import { detectAtContext, filterAtFiles } from '../utils/atCompletion';
 import { shouldConvertPasteToFile } from '../utils/pasteText';
 import { draftKeyOf, loadDraft, saveDraft } from '../utils/composerDrafts';
 import { prependQueuedText } from '../utils/prependQueuedText';
+import { looksMonospace, isQueueItemClamped } from '../utils/queueText';
 // 浏览器禁根入口 import（node:events 会炸，见 SettingsPanel.vue 注释）：白名单从瘦子路径导入
 import { isAllowedAttachmentPath } from '@forge/core/attachments';
 import { useToast } from '../composables/useToast';
@@ -286,6 +287,75 @@ const inputLocked = computed(() => compacting.value || autoCompacting.value);
 const queueList = computed(() => props.queueItems ?? []);
 const QUEUE_MAX = 5;
 const queuePanelOpen = ref(false);
+
+/** 面板里被点开的条目下标（-webkit-line-clamp 展开态）。重新打开面板时重置。 */
+const queueExpanded = ref<ReadonlySet<number>>(new Set());
+/** 各条目是否因超出 clamp 行数而需要「展开」按钮（渲染后实测，非按字数猜） */
+const queueClamped = ref<ReadonlySet<number>>(new Set());
+const queuePanelRef = ref<HTMLElement | null>(null);
+
+function isQueueClamped(i: number): boolean {
+  return queueClamped.value.has(i);
+}
+function isQueueExpanded(i: number): boolean {
+  return queueExpanded.value.has(i);
+}
+
+/**
+ * 实测哪些条目溢出了 clamp 行数（决定是否给「展开」按钮）。
+ *
+ * 不能按字数猜——同一条 68 字的路径在 660px 宽下 1 行放得下、在 520px 窄窗下要 2 行。
+ * 判据是 `scrollHeight > clientHeight`（clamp 态下被裁掉的部分正好体现为 scrollHeight 更大）。
+ *
+ * 展开中的条目跳过实测：`.open` 下是 display:block + max-height 内部滚动，
+ * 溢出与否取决于展开高度而非 clamp 行数，跳过后沿用展开前的 true（只有真溢出才能点开）。
+ */
+function measureQueueOverflow(): void {
+  const panel = queuePanelRef.value;
+  if (!panel) return;
+  const expanded = queueExpanded.value;
+  const next = new Set<number>();
+  for (const el of Array.from(panel.querySelectorAll<HTMLElement>('.queue-item'))) {
+    const i = Number(el.dataset.index);
+    if (!Number.isInteger(i)) continue;
+    if (expanded.has(i)) {
+      next.add(i);
+      continue;
+    }
+    const textEl = el.querySelector<HTMLElement>('.queue-item-text');
+    if (textEl && isQueueItemClamped(textEl)) next.add(i);
+  }
+  queueClamped.value = next;
+}
+
+/** 宽度变了（窗口缩放 / 内容列切换）行数就会变，必须重测 */
+function onQueueViewportResize(): void {
+  nextTick(measureQueueOverflow);
+}
+
+function toggleQueueExpand(i: number): void {
+  const next = new Set(queueExpanded.value);
+  if (next.has(i)) next.delete(i);
+  else next.add(i);
+  queueExpanded.value = next;
+  // 收起后要重测（展开态不参与实测，收起时才知道是否还溢出）
+  if (!next.has(i)) nextTick(measureQueueOverflow);
+}
+
+/** 打开/关闭面板：打开时重置展开态并重测（队列可能已变，旧的实测值不作数） */
+function toggleQueuePanel(): void {
+  queuePanelOpen.value = !queuePanelOpen.value;
+  if (!queuePanelOpen.value) return;
+  queueExpanded.value = new Set();
+  nextTick(measureQueueOverflow);
+  window.addEventListener('resize', onQueueViewportResize);
+}
+
+// 队列内容变化（入队/派发/删除/切会话）后重测溢出：条目下标整体左移，实测值必须跟着刷新
+watch(queueList, () => {
+  queueExpanded.value = new Set();
+  nextTick(measureQueueOverflow);
+});
 const canSend = computed(
   () => (text.value.trim().length > 0 || attachments.value.length > 0) && !inputLocked.value,
 );
@@ -787,6 +857,18 @@ async function onQueueRemove(i: number): Promise<void> {
   }
 }
 
+/**
+ * 「↩ 取回编辑」：把第 i 条移出队列并回填输入框（与 Esc 停止回填同一套 prependQueuedText 语义）。
+ * 面板保持打开——用户往往要连着取回几条，关掉反而多一次点击。
+ */
+async function onQueueRestore(i: number): Promise<void> {
+  const item = queueList.value[i];
+  if (typeof item !== 'string') return;
+  // 先取文本再删：删除成功后 queueUpdated 到达会让后续条目左移，index 不再指向同一条
+  await onQueueRemove(i);
+  restoreQueuedText([item]);
+}
+
 /** 「↵立即」：立即发送第 i 条，交给上层（user 气泡要本地补进会话消息列表，输入框够不着） */
 function onQueueSendNow(i: number): void {
   emit('queue-send-now', i);
@@ -1216,12 +1298,14 @@ function onDocClick(e: MouseEvent): void {
   const inModel = el && typeof el.closest === 'function' && el.closest('.model-wrap');
   const inLevel = el && typeof el.closest === 'function' && el.closest('.level-wrap');
   const inProj = el && typeof el.closest === 'function' && el.closest('.proj-wrap');
-  const inQueue = el && typeof el.closest === 'function' && el.closest('.queue-wrap');
+  // 面板已是 .compose-box 直接子节点，不再嵌在 .queue-wrap 内，命中判定要认它自己
+  const inQueue = el && typeof el.closest === 'function' && el.closest('.queue-wrap, .queue-panel');
   if (inModel || inLevel || inProj || inQueue) return;
   modelMenuOpen.value = false;
   levelMenuOpen.value = false;
   projMenuOpen.value = false;
   queuePanelOpen.value = false;
+  window.removeEventListener('resize', onQueueViewportResize);
 }
 
 /**
@@ -1231,6 +1315,7 @@ function onDocClick(e: MouseEvent): void {
 function restoreQueuedText(items: string[]): void {
   text.value = prependQueuedText(text.value, items);
   queuePanelOpen.value = false;
+  window.removeEventListener('resize', onQueueViewportResize);
   nextTick(() => {
     autoGrow();
     focus();
@@ -1309,6 +1394,7 @@ watch(levelMenuOpen, (open) => {
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
+  window.removeEventListener('resize', onQueueViewportResize);
   unsubCompacted?.();
   unsubCompacting?.();
   unsubSlash?.();
@@ -1631,42 +1717,19 @@ watch(
       </div>
 
       <div class="compose-actions">
-        <!-- CV-S09 待发送队列徽标 + 浮窗：忙时入队的消息在派发前暂存于此；
-             队列编辑（删除 / 「↵立即」-打断当前轮）经 conversation/queue* RPC -->
+        <!-- CV-S09 待发送队列徽标：面板已是 .compose-box 直接子节点（见下方 queue-panel），
+             这里只留触发器；队列编辑（取回 / 删除 / 「↵立即」-打断当前轮）经 conversation/queue* RPC -->
         <div v-if="queueList.length > 0" class="queue-wrap">
           <button
             class="queue-badge"
             type="button"
+            :aria-expanded="queuePanelOpen"
+            aria-haspopup="true"
             :data-tooltip="t('input.queue.tooltip')"
-            @click.stop="queuePanelOpen = !queuePanelOpen"
+            @click.stop="toggleQueuePanel"
           >
             {{ t('input.queue.badge', { count: queueList.length }) }}
           </button>
-          <div v-if="queuePanelOpen" class="queue-panel">
-            <div class="menu-hint">{{ t('input.queue.hint') }}</div>
-            <div
-              v-for="(item, i) in queueList"
-              :key="`${i}-${item}`"
-              class="queue-item"
-            >
-              <span class="queue-item-text">{{ item }}</span>
-              <span class="queue-item-actions">
-                <button type="button" class="queue-act queue-act-now" @click.stop="onQueueSendNow(i)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="9 10 4 15 9 20" />
-                    <path d="M20 4v7a4 4 0 0 1-4 4H4" />
-                  </svg>
-                  <span>{{ t('input.queue.sendNow') }}</span>
-                </button>
-                <button type="button" class="queue-act queue-act-danger" :data-tooltip="t('input.queue.remove')" @click.stop="onQueueRemove(i)">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
-              </span>
-            </div>
-          </div>
         </div>
 
         <!-- 发送/停止 -->
@@ -1698,6 +1761,64 @@ watch(
         <button v-if="isStreaming" class="cancel-btn" :aria-label="t('input.stop.aria')" :data-tooltip="t('input.stop.tooltip')" @click="onCancel">
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
         </button>
+      </div>
+    </div>
+
+    <!-- CV-S09 待发送队列面板：挂在 .compose-box 而不是徽标上——
+         left/right 对齐输入框文字列（面板宽 = 文字列宽），长路径 / 代码不再逐字符折行；
+         每条默认 2 行截断（真溢出才给「展开」），序号 + 「下一条」标签表达派发顺序。 -->
+    <div v-if="queueList.length > 0 && queuePanelOpen" ref="queuePanelRef" class="queue-panel">
+      <div class="queue-panel-head">{{ t('input.queue.hint') }}</div>
+      <div class="queue-list">
+        <div
+          v-for="(item, i) in queueList"
+          :key="`${i}-${item}`"
+          class="queue-item"
+          :class="{ open: isQueueExpanded(i) }"
+          :data-index="i"
+        >
+          <span class="queue-idx" aria-hidden="true">{{ i + 1 }}</span>
+          <div class="queue-item-main">
+            <div
+              class="queue-item-text"
+              :class="{ mono: looksMonospace(item) }"
+            >{{ item }}</div>
+            <!-- 底栏只放「展开/收起」：字数/「下一条」已按反馈去掉（2026-09-29），
+                 队列顺序由左侧序号表达，不需要再堆一层元信息 -->
+            <div v-if="isQueueClamped(i)" class="queue-item-foot">
+              <button
+                type="button"
+                class="queue-more"
+                @click.stop="toggleQueueExpand(i)"
+              >
+                {{ isQueueExpanded(i) ? t('input.queue.collapse') : t('input.queue.expand') }}
+              </button>
+            </div>
+          </div>
+          <span class="queue-item-actions">
+            <button type="button" class="queue-act queue-act-now" @click.stop="onQueueSendNow(i)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 10 4 15 9 20" />
+                <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+              </svg>
+              <span>{{ t('input.queue.sendNow') }}</span>
+            </button>
+            <button type="button" class="queue-act" :aria-label="t('input.queue.restore')" :data-tooltip="t('input.queue.restoreHint')" @click.stop="onQueueRestore(i)">
+              <!-- 铅笔图标：与 ProjectTree 的重命名图标同款。原用「回转箭头」，和左侧
+                   「立即」的 ↵ 撞脸，两个左箭头摆一起根本分不出谁是谁 -->
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+            </button>
+            <button type="button" class="queue-act queue-act-danger" :data-tooltip="t('input.queue.remove')" @click.stop="onQueueRemove(i)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -2139,7 +2260,8 @@ watch(
   position: relative;
 }
 
-/* CV-S09 待发送队列：徽标 + 向上弹出只读浮窗（对齐 .model-menu 视觉） */
+/* CV-S09 待发送队列：面板挂在 .compose-box 上（宽度对齐输入框文字列），
+   徽标只负责开合（.queue-wrap 不再包面板） */
 .queue-wrap {
   position: relative;
 }
@@ -2161,52 +2283,136 @@ watch(
   background: color-mix(in oklab, var(--primary) 20%, var(--background));
 }
 
+/* 面板：left/right 15px = 1px 边框×2 + 14px 内边距×2，宽度精确等于输入框文字列。
+   旧实现挂在徽标上（right:0 + min/max 220–340），长路径逐字符折行且左缘飞出输入框 */
 .queue-panel {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 10px);
-  min-width: 220px;
-  max-width: 340px;
-  max-height: 260px;
-  overflow-y: auto;
+  left: 15px;
+  right: 15px;
+  bottom: calc(100% + 8px);
+  display: flex;
+  flex-direction: column;
+  max-height: min(52vh, 380px); /* 总高封顶：面板只向上弹，短窗口不能顶出屏幕 */
   background: var(--popover);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  padding: 4px;
   z-index: 700;
   animation: menu-rise 0.15s ease both;
+}
+
+.queue-panel-head {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-list {
+  overflow-y: auto;
+  padding: 3px;
 }
 
 .queue-item {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  padding: 6px 4px 6px 10px;
+  gap: 8px;
+  padding: 6px 4px 6px 8px;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--foreground);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
-.queue-item-text {
+/* 分隔线用 inset 阴影而非 border-top：条目有圆角，border 会在左右角上断开 */
+.queue-item + .queue-item {
+  box-shadow: inset 0 1px 0 var(--border);
+}
+
+/* 序号：队列的核心语义是「按序派发」，没有序号就看不出哪条先走 */
+.queue-idx {
+  flex-shrink: 0;
+  width: 14px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--muted-foreground);
+}
+
+.queue-item-main {
   flex: 1;
   min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
-/* 队列编辑动作（↵立即 / ✕删除）：悬停浮现，不打扰默认阅读 */
+/* 收趟态：强制一行，超出用省略号（用户 2026-09-29 定的口径「内容放在一行，不要换行」）。
+   不用 -webkit-line-clamp：它是纵向折行钳制，这里要的是 nowrap + 横向省略，
+   长粘贴/代码块不会把面板撑成好几行高 */
+.queue-item-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 路径 / 代码：切等宽（启发式见 utils/looksMonospace），混排中文的条目不走这里 */
+.queue-item-text.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* 展开态：脱掉 nowrap，恢复换行 + 省略号 → 全文可读；max-height 保证单条
+   不会把面板吃满，溢出时条目内部滚动 */
+.queue-item.open .queue-item-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-overflow: clip;
+  max-height: 26vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.queue-item-foot {
+  margin-top: 1px;
+  line-height: 1.5;
+}
+
+/* 「展开 / 收起」：只在本条真溢出时出现（实测，不是按字数猜） */
+.queue-more {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.queue-more:hover {
+  color: var(--foreground);
+}
+
+/* 队列编辑动作（立即 / 取回 / 删除）：常驻（静止 55% 不透明，hover 提亮）。
+   旧实现 hover 才 display，行一高就跟文字对不上 */
 .queue-item-actions {
-  display: none;
+  display: inline-flex;
   flex-shrink: 0;
   align-items: center;
   gap: 2px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
 }
 
 .queue-item:hover .queue-item-actions,
 .queue-item:focus-within .queue-item-actions {
-  display: inline-flex;
+  opacity: 1;
 }
 
 .queue-act {
@@ -2222,7 +2428,6 @@ watch(
   cursor: pointer;
   border-radius: 4px;
 }
-
 .queue-act svg {
   width: 13px;
   height: 13px;
@@ -2252,10 +2457,6 @@ watch(
 .queue-act-danger:hover {
   background: color-mix(in oklab, var(--destructive) 14%, transparent);
   color: var(--destructive);
-}
-
-.queue-item + .queue-item {
-  border-top: 1px solid var(--border);
 }
 
 .queue-send {

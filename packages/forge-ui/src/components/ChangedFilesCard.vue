@@ -60,12 +60,22 @@ function toggleRow(path: string): void {
   expandedPath.value = expandedPath.value === path ? null : path;
 }
 
+/** 可交给「用浏览器打开」的扩展名：仅 .html/.htm。与主进程 shell/openTarget.ts
+ *  的白名单同口径；主进程才是「能不能开」的最终裁决者，这里只决定菜单项显不显示。 */
+const BROWSER_OPEN_EXT = /\.html?$/i;
+
+/** 当前右键目标是否展示「用浏览器打开」 */
+const contextMenuIsHtml = computed(() => {
+  const p = contextMenuPath.value;
+  return p !== null && BROWSER_OPEN_EXT.test(p.trim());
+});
+
 function onRowContextMenu(file: ChangedFileEntry, ev: MouseEvent): void {
   ev.preventDefault();
   contextMenuPath.value = file.path;
-  // 视口边界保护：菜单宽 ~160 / 高 ~38，留 8px 余量
+  // 视口边界保护：菜单宽 ~160，单项高 ~30 + 容器内边距 8；html 行多一项，菜单高 ~70
   const w = 168;
-  const h = 38;
+  const h = BROWSER_OPEN_EXT.test(file.path.trim()) ? 72 : 38;
   contextMenuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
   contextMenuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
 }
@@ -80,6 +90,15 @@ function onContextMenuOpenDir(): void {
   if (!filePath) return;
   const dir = dirOf(absoluteFilePath(filePath));
   void window.forge.shell.openPath(dir);
+}
+
+/** 用系统默认浏览器打开该文件本体（不是目录）。绝对路径同样先折叠 ./ 中间段——
+ *  与 openPath 同款：ShellExecuteEx 不归一中间段会弹「找不到文件」。 */
+function onContextMenuOpenInBrowser(): void {
+  const filePath = contextMenuPath.value;
+  closeContextMenu();
+  if (!filePath) return;
+  void window.forge.shell.openInBrowser(absoluteFilePath(filePath));
 }
 
 function onDocumentClick(ev: MouseEvent): void {
@@ -159,6 +178,14 @@ onBeforeUnmount(() => {
       @click.stop
       @contextmenu.prevent
     >
+      <button v-if="contextMenuIsHtml" type="button" class="cf-context-menu-item" @click="onContextMenuOpenInBrowser">
+        <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+          <path d="M2 12h20" />
+        </svg>
+        {{ t('tool.openInBrowser') }}
+      </button>
       <button type="button" class="cf-context-menu-item" @click="onContextMenuOpenDir">
         <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />

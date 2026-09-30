@@ -1,5 +1,36 @@
 # 变更日志
 
+## v6.2 (新增：改动文件卡右键「用浏览器打开」——HTML 原型改完一键看效果)
+
+> 来源：2026-09-29 用户反馈「写完 `prototypes/*.html` 还要自己去文件夹双击」+ 截图（文件行右键只有「打开所在目录」）。诉求是右键里直接开浏览器看效果。
+
+- **前端（`packages/forge-ui`）**：`ChangedFilesCard.vue` 文件行右键菜单**仅在目标是 .html/.htm 时**多出「用浏览器打开」（地球图标，排在「打开所在目录」之前），点它走文件**本体**的绝对路径而不是目录（与「打开所在目录」两条动作互不串味）；菜单视口夹紧高度估算随之分档（单 38 / 双 72px，否则贴底时菜单下半截出屏）。扩展名判定 `/\.html?$/i` 与主进程白名单同口径——但**只管菜单项显不显示**，「能不能开」由主进程裁决。i18n `tool.openInBrowser` 中英双语；`bridge.ts` / `mock-bridge.ts` 增 `shell.openInBrowser`。
+- **主进程（`packages/forge-desktop`）**：新增通道 `forge:shell:openInBrowser`（preload + main handler）。**刻意不复用 `IPC_SHELL_OPEN_PATH`**——那条是 CV-TRUST-02 定下的「只放行目录」通道（Windows 上「打开」指向 .exe/.bat/.lnk 即执行，渲染层任意字符串直传 = RCE 链）。放行文件必须另开一条并把口子收窄，判定抽成纯模块 `src/shell/openTarget.ts`（可单测、不 import electron）：
+  - 白名单**只有 .html/.htm**（大小写不敏感）——`.js`/`.url` 这类协议关联与全部可执行扩展在 fs 访问之前就被拒；
+  - 校验**普通文件**：目录、`.html` 后缀的目录一律拒；
+  - **`lstat` 而非 `stat`**：不跟随软链，指向 .exe 的 `x.html` 软链因此 `isFile()` 为 false 被拒（硬链不构成绕过：系统按**我们给的路径的扩展名**派发 handler，硬链只会被浏览器当二进制渲染，不会执行）；
+  - 词法归一 `.`/`..` 中间段后再校验（渲染层拼接的路径同款问题，ShellExecuteEx 不归一会弹「找不到文件」）；
+  - 不存在 / 无权限 / 非法字符 → `false`，失败原因不透给渲染层。
+- **验证**：`test/shell/openTarget.test.ts` 7 例（白名单矩阵 / 归一 / 非字符串 / 6 类非白名单扩展名真实存在仍拒 / 目录 / 软链（本机 Windows 无软链权限自动 skip，判定逻辑不依赖它）/ 不存在与非法字符），6 过 1 跳；E2E `E-CV-FILES-008`（html 行两项且顺序正确、点第一项 `openInBrowser` 收到文件本体路径且 `openPath` 零调用、html 行「打开所在目录」仍给目录、非 html 行仍只有一项）——`changedFiles.spec.ts` 8/8 全绿。四包 typecheck 0 错；forge-core 461/461、forge-ui 318/318、forge-extensions 69/69 全绿；forge-desktop 344/352（6 红 + 1 跳均为本次之前已存在：`ensurePiShellPath` 环境相关 4 + PiConversationAdapter 2，与本改动零交集）。浏览器 mock 页实测菜单：地球图标项 + 原有目录项同款排版，hover 底色一致。
+- **不做的**：不做「在应用内预览」（画布卡片已有 iframe 沙箱，另开一套是另一件事）；菜单不加「复制路径 / 复制文件名」等无关项；主进程不校验路径是否在项目根内——技能目录（`AppData\Roaming\Electron\agent`）这类项目根外的合法编辑目标不能被这条规则误杀。
+
+## v6.1 (视觉：暗色主题可读性——抬底 + 压字双向收敛)
+
+> 来源：2026-09-29 用户反馈「暗色太黑、长时间看累，对话区看着脏」，并附 GPT 的 Soft Dark / Charcoal 建议求证。诊断后经 `prototypes/dialog-readability-demo.html` 出 A 现状 / B 只抬底（GPT 思路）/ C 只去脏 / D 全改 四档对比，实测指标由脚本从真实渲染结果 `getComputedStyle` 算出（Chromium 对 `oklch()` 原样返回函数串，需自行转 sRGB），用户定稿 **D**，并追加两条约束：**行高不动（保持 2）**、**文件类型徽章保留 Linguist 饱和色**。
+
+- **诊断（先拆因果，再动色）**：反馈里其实是**两条独立因果**，GPT 的建议一条都没碰到。
+  - 疲劳 ← 底色 Y=0.0047 贴黑 **且** 正文对比 12.15:1 过冲（AAA 只要 7:1；深色高对比是光晕与视疲劳来源）。GPT 方案把底色抬对了，文字却同时提到 0.928，对比升到 **14.19:1**，比现状更高——方向反了。
+  - 脏 ← `App.vue .shell-sheen` 以 `z-index:210` 盖在**文字之上**，把阅读区底色从 `#0d0f13` 抬到 `#1f2228`，**亮度差 3.35 倍**，横向色斑直接洗在正文行上。
+  - C 档（只去脏、底色不动）证明两者可分离：背景立刻干净，但对比仍是 12.15:1，疲劳一点没改善。
+- **令牌（`packages/forge-ui/src/design-tokens.css`）**：暗色阶梯保 hue 265 不动、组件层继续 `color-mix` 同源派生（不引第二套灰阶）——`--background` 0.166→**0.215**（Y ×2.06）、`--card` 0.189→**0.243**、`--muted/--secondary/--accent` 0.207→**0.268**、`--foreground` 0.85→**0.82**（**压**字）、`--muted-foreground` 0.62→**0.66**（**提**小字，13px 工具行/时间戳才是真正吃力的字）、`--border` 半透明白 alpha 0.085→**0.115**。正文对比 12.15→**10.07:1**，次级 5.25→5.63:1。`--shadow-sm/md/lg` 各补一档（底色 Y 翻倍后同 alpha 投影观感减淡）。
+- **光场（`App.vue` + `global.css`）**：峰值 0.096→**0.035**（衰减形状不变，整体等比 0.365），不均匀度 3.35×→**1.69×**。两处**必须同步**（`global.css` 是 body 兜底，不同步会在透出 body 的场景看到第二个剖面）。
+- **用户气泡（`MessageCard.vue`）**：暗色下 `--bubble-bg` `#3a3a3d`→**`#2b2e34`**、hover `#4a4a4d`→`#3a3e45`、字 `#ffffff`→**`#d7dae0`**。旧值是纯中性灰（色相 0），亮度是底的 4.4 倍、配 19:1 纯白字，在带蓝调的炭灰里是一块刺眼大灰板；换同色相冷调后亮度比 2.8 倍、字 13.6:1。`--bubble-bg` 是 shell 上的局部变量，`.bubble-fade` 渐隐叠层全部从它派生，无需额外改动。亮色主题不动。
+- **启动帧（`forge-ui/index.html`）**：boot splash 兜底 `--welcome-bg` `rgb(13 15 19)`→**`rgb(24 25 29)`**、`--welcome-muted` 0.62→0.66。这两个值是「模块链加载前」那一帧的底色，与 `theme.ts` 同属不可漂移的锁定项。
+- **窗口底色（`forge-desktop/src/theme.ts`）**：`THEME_BACKGROUND.dark` `#0d0f13`→**`#18191d`**。与 `design-tokens.css` 的 `--background` 逐位锁定（`test/theme.test.ts` 解析 CSS 换算 sRGB 做断言），改令牌不改这里会立刻红。
+- **不做的（用户定稿）**：① **行高保持 `line-height: 2` 不动**（原型初稿曾提议 1.75，未采纳）；② **文件类型徽章保留 GitHub Linguist 饱和色**（`ToolCallCard.vue` 去饱和方案已撤回——颜色承载语言信息，一眼看出改的是 TS 还是 Vue，不是装饰噪点）；③ 不引 GPT 建议的 Accent `#7C8CFF` 靛蓝（与 `design-tokens.css`「中性深灰，非紫色」冲突，且已有琥珀/青瓷绿/金三个色相在跑）；④ 不做「侧栏比主区亮」（与 `App.vue` 一体化壳层「不靠色块台阶」冲突）。
+- **验证**：typecheck 四包 0 错；forge-core 461/461、forge-ui 318/318 全绿；forge-desktop 338/345（6 红经 `git stash` 对比确认全部为改动前已存在的 `ensurePiShellPath` 环境相关 4 + PiConversationAdapter 2，零回归）。vite dev 页实测令牌全部落位（`--background` 解析为 `oklch(0.215 0.008 265)`、`--border` 为 `rgba(255,255,255,0.115)`、暗色 `.shell-sheen` 规则峰值 0.035 已进样式表）。
+- **口径提醒**：`oklch()` 首值是**感知亮度 L**（改色用），`12.15:1` 是 **WCAG 对比度**（验收用，中间量是 sRGB 相对亮度 Y），两者不是同一口径，勿混说。压字 0.85→0.82 只让正文 Y 降 10.3%（配平动作），抬底 0.166→0.215 才是 Y ×2.06 的主调。
+
 ## v3.88.0 (新增：CV-S13 选区复制浮窗——消息内拖选文字松开鼠标即弹「复制文本」)
 
 > 来源：2026-09-29 用户需求「参考图例，选中文本释放鼠标弹浮窗，只要复制文本」。参考图里的三动作（复制文本/添加到任务/在侧边任务中提问）被用户砍到只剩复制。形态先经 `prototypes/selection-copy-demo.html` 出 A（深色卡片浮层）/ B（tooltip 反色）两变体，用户拍板 **B**。

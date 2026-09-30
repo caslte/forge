@@ -93,13 +93,13 @@
   --transition-decelerate: 420ms cubic-bezier(0.22, 1, 0.36, 1);
 
   /* 工具行动效（tool-row-motion-demo 0.5x 节奏，用户选定）：
-     行入场位移/淡入、状态图标交叉淡化、对勾描线、组头文案淡切 */
+     行入场位移/淡入、状态图标交叉淡化、对勾描线。
+     组头文案不做淡切（原 --motion-head-swap 已随「只滚数字」口径删除） */
   --motion-row-move: 720ms cubic-bezier(0.22, 1, 0.36, 1);
   --motion-row-fade: 640ms cubic-bezier(0.4, 0, 0.2, 1);
   --motion-icon-out: 280ms cubic-bezier(0.4, 0, 0.2, 1);
   --motion-icon-in: 520ms cubic-bezier(0.22, 1, 0.36, 1);
   --motion-check-draw: 680ms cubic-bezier(0.4, 0, 0.2, 1);
-  --motion-head-swap: 220ms cubic-bezier(0.4, 0, 0.2, 1);
 
   /* 对话内容列宽（个性化偏好「内容宽度 = 标准」时生效）：
      正文列与输入框同宽居中，两侧留白。改动此值即全局生效（dev HMR 实时可调）。
@@ -111,18 +111,31 @@
   --timeline-rail-w: 28px;
 }
 
-/* 暗色主题：底色/光场复刻设计稿（原型 bg-tone-options-demo.html D 档，v6 定稿）。
-   结构 = 深底（--background 平涂）+ 对角线性光场（global.css / App.vue 的 sheen 层），
-   光场不加磨砂颗粒。D 档底色来自像素采样：右上最亮 rgb(31 34 41) ← 13 + 光场 0.096，
-   左下最暗 rgb(13 15 19)。oklch 写法经 theme.test.ts 同款矩阵验证与 rgb 目标逐位一致：
-   - oklch(0.166 0.009 263.6) = rgb(13 15 19) = #0d0f13（--background，与 theme.ts 逐位锁定）
-   - oklch(0.189 0.011 268.2) = rgb(18 20 25) = #121419（--card）
-   - oklch(0.207 0.012 271)   = rgb(22 24 30) = #16181e（--muted/--secondary/--accent）
-   --border 改半透明白：面板边线融入光场，不随底色形成第二套灰阶。 */
+/* 暗色主题：抬底 + 压字，双向收敛（原型 dialog-readability-demo.html D 档，v6.1 定稿）。
+
+   改动动机是两条**独立**的因果，不是一件事：
+   ① 疲劳 —— 旧底色 Y=0.0047 贴黑，且正文对比 12.15:1 过冲（AAA 只要 7:1；深色高对比是
+      光晕与视疲劳的公认来源）。抬底必须**同时压字**，让对比落回 ~10：
+      只压字 11.00 / 只抬底 11.13 / 两者都做 10.07 / 只抬底+提字 14.19。
+      ⚠️ 两个数不是同一口径：oklch() 首值是**感知亮度 L**（改色用），12.15:1 是
+      **WCAG 对比度**（验收用，中间量是 sRGB 相对亮度 Y）。别混着说。
+   ② 脏 —— 旧光场 0.096 以 z-index:210 盖在**文字之上**，把阅读区底色从 #0d0f13 抬到
+      #1f2228，亮度差 3.35 倍（副因：用户气泡是纯中性灰 #3a3a3d，见 MessageCard）。
+      文件类型徽章的 Linguist 饱和色经复核**保留**（颜色承载语言信息，非装饰噪点）。
+
+   阶梯（保 hue 265，不引新色相；经 theme.test.ts 同款矩阵换算与 rgb 逐位一致）：
+   - oklch(0.215 0.008 265) = rgb(24 25 29)   = #18191d（--background，与 theme.ts 逐位锁定）
+   - oklch(0.243 0.009 266) = rgb(30 32 36)   = #1e2024（--card）
+   - oklch(0.268 0.010 268) = rgb(36 38 43)   = #24262b（--muted/--secondary/--accent）
+   - oklch(0.82 0.004 262)  = rgb(195 196 199) = #c3c4c7（--foreground，**压**自 0.85）
+   - oklch(0.66 0.008 262)  = rgb(143 146 151) = #8f9297（--muted-foreground，**提**自 0.62：
+      13px 工具行/时间戳是真正吃力的小字，与正文方向相反）
+   组件层仍由 color-mix 自 --background/--brand 同源派生（不手写第二套灰阶）。
+   --border 保持半透明白（面板边线融入光场），alpha 随底色抬升 0.085 → 0.115。 */
 :root[data-theme='dark'] {
-  --background: oklch(0.166 0.009 263.6);
-  --foreground: oklch(0.85 0.004 262);
-  --card: oklch(0.189 0.011 268.2);
+  --background: oklch(0.215 0.008 265);
+  --foreground: oklch(0.82 0.004 262);
+  --card: oklch(0.243 0.009 266);
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
@@ -131,12 +144,12 @@
   --primary-hover: color-mix(in oklab, var(--primary) 84%, white);
   --primary-foreground: oklch(0.21 0.01 286.2);
 
-  --secondary: oklch(0.207 0.012 271);
+  --secondary: oklch(0.268 0.010 268);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(0.207 0.012 271);
-  --muted-foreground: oklch(0.62 0.008 262);
+  --muted: oklch(0.268 0.010 268);
+  --muted-foreground: oklch(0.66 0.008 262);
 
-  --accent: oklch(0.207 0.012 271);
+  --accent: oklch(0.268 0.010 268);
   --accent-foreground: var(--foreground);
   --brand: oklch(0.88 0.008 286.3);
   --brand-hover: color-mix(in oklab, var(--brand) 85%, white);
@@ -148,14 +161,15 @@
   --warning: oklch(0.8 0.14 85);
   --info: oklch(0.76 0.01 286.3);
 
-  --border: rgba(255, 255, 255, 0.085);
-  --input: rgba(255, 255, 255, 0.085);
+  --border: rgba(255, 255, 255, 0.115);
+  --input: rgba(255, 255, 255, 0.115);
   --ring: oklch(0.78 0.02 286.3);
 
   --overlay: color-mix(in oklab, black 46%, transparent);
-  --shadow-sm: 0 1px 2px oklch(0 0 0 / 18%);
-  --shadow-md: 0 4px 12px oklch(0 0 0 / 24%);
-  --shadow-lg: 0 24px 60px oklch(0 0 0 / 24%);
+  /* 底色 Y 翻倍后同样 alpha 的投影观感减淡，sm/md/lg 各补一档维持原有层次 */
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 24%);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 30%);
+  --shadow-lg: 0 24px 60px oklch(0 0 0 / 30%);
   --shadow-destructive: 0 12px 38px color-mix(in oklab, var(--destructive) 30%, transparent);
 
   --scrollbar-thumb: oklch(1 0 0 / 18%);

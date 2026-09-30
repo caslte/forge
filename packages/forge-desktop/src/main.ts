@@ -33,7 +33,8 @@ import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode }
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { createNotifyToastManager } from './notifyToast.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -536,6 +537,15 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
       return false;
     }
     return shell.openPath(normalized).then((err) => err === '');
+  });
+  // 系统默认浏览器打开本地 HTML（改动文件卡右键「用浏览器打开」）；成功 true，失败 false。
+  // CV-TRUST-02 的同款红线在「放行文件」这一侧再加一层：只放行已存在的**普通文件** +
+  // .html/.htm 白名单（判定在 shell/openTarget.ts，lstat 不跟随软链）——.exe/.bat/.lnk
+  // 与 .js/.url 之类的协议关联全在放行之前就被拒，不存在「打开 = 运行」的路径。
+  ipcMain.handle(IPC_SHELL_OPEN_IN_BROWSER, (_e, p: unknown) => {
+    const target = resolveBrowserOpenTarget(p);
+    if (target === null) return false;
+    return shell.openPath(target).then((err) => err === '');
   });
   // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
   // URL，其余协议一律拒绝——这条通道绝不能转交 openPath（.exe 会被“打开”=运行）。

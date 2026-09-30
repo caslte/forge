@@ -221,20 +221,22 @@ function isToolMessage(m: ConversationMessage): boolean {
     <button class="tool-group-head" @click="emit('toggle-group', item.key, item.collapsed)">
       <svg class="tg-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="10 8 14 12 10 16" /></svg>
       <span class="tg-title">
-        <Transition name="tg-head" mode="out-in">
-          <span v-if="groupRunning" key="run" class="tg-head-text">{{ groupHeadText }}</span>
-          <span v-else key="count" class="tg-head-text tg-count">
-            <span class="tg-count-text">{{ countParts[0] }}</span>
-            <span v-for="(d, i) in countDigits" :key="`${i}-${item.totalCount}`" class="tg-digit">
-              <!-- 换计数时重挂载整位数字：仅改 CSS 变量不会重播动画，数字只会瞬间跳格不会滚 -->
-              <span class="tg-digit-col" :style="{ '--tg-digit-shift': `-${d * 10}%` }">
-                <span v-for="n in 10" :key="n">{{ n - 1 }}</span>
-              </span>
-              <span class="tg-digit-base">&#8203;</span>
+        <!-- 「正在执行中 · Xs」↔「执行工具 N 次」直接换，不做淡切：
+             组头在两种形态间频繁跳（每个新工具开始都会切回执行中），out-in 淡切
+             每次都留一段空白空档（出场 220ms + 入场 220ms），比直接换更晃。
+             计数形态的动效只由数字滚动（.tg-digit-col）表达，文案本身静止 -->
+        <span v-if="groupRunning" class="tg-head-text">{{ groupHeadText }}</span>
+        <span v-else class="tg-head-text tg-count">
+          <span class="tg-count-text">{{ countParts[0] }}</span>
+          <span v-for="(d, i) in countDigits" :key="`${i}-${item.totalCount}`" class="tg-digit">
+            <!-- 换计数时重挂载整位数字：仅改 CSS 变量不会重播动画，数字只会瞬间跳格不会滚 -->
+            <span class="tg-digit-col" :style="{ '--tg-digit-shift': `-${d * 10}%` }">
+              <span v-for="n in 10" :key="n">{{ n - 1 }}</span>
             </span>
-            <span class="tg-count-text">{{ countParts[1] }}</span>
+            <span class="tg-digit-base">&#8203;</span>
           </span>
-        </Transition>
+          <span class="tg-count-text">{{ countParts[1] }}</span>
+        </span>
       </span>
     </button>
     <div class="tool-group-body-shell">
@@ -381,18 +383,9 @@ function isToolMessage(m: ConversationMessage): boolean {
 .tg-row-move {
   transition: transform var(--motion-row-move);
 }
-/* 组头「正在执行中 · Xs」↔「执行工具 N 次」按 groupRunning 换 key 做 out-in 淡切（220ms×2）；
-   计数递增不换 key、不淡切，只滚数字 */
+/* 组头文案无淡入淡出：两形态直接替换（见模板注释），只保留 inline-block 便于基线对齐 */
 .tg-head-text {
   display: inline-block;
-}
-.tg-head-enter-active,
-.tg-head-leave-active {
-  transition: opacity var(--motion-head-swap);
-}
-.tg-head-enter-from,
-.tg-head-leave-to {
-  opacity: 0;
 }
 /* 滚动数字：每位一列 0-9（grid 强制竖排，普通块级 shrink-to-fit 会排成一行），
    窗口高 1em + overflow 裁切，行高锁 1em 让位移百分比与行高严格对应；

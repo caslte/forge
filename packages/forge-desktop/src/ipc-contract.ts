@@ -145,6 +145,16 @@ export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
 
 /**
+ * preload ↔ main shell 通道：系统默认浏览器打开本地 HTML 文件
+ * （改动文件汇总卡右键「用浏览器打开」）。
+ *
+ * 与 openPath（只放行目录，CV-TRUST-02）刻意分开：这条放行的是**文件**，因此白名单收得
+ * 更紧——必须是「已存在的普通文件 + .html/.htm」（软链/可执行文件/协议关联一律拒，
+ * 见 shell/openTarget.ts）。校验不落在渲染层：渲染层只决定菜单项显不显示。
+ */
+export const IPC_SHELL_OPEN_IN_BROWSER = 'forge:shell:openInBrowser';
+
+/**
  * preload ↔ main shell 通道：系统浏览器/邮件客户端打开外链（消息正文链接拦截）。
  * 与 openPath 刻意分开：这条只收 http/https/mailto 绝对 URL，绝不落到 shell.openPath
  * （后者会把任意字符串交给系统「打开」，指向 .exe 就等于双击运行）。

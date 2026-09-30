@@ -18,6 +18,7 @@ import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
 import { solvePopoverPosition, type Rect } from '../utils/popoverPosition';
 import { createReviewModeController, type ReviewModeState } from '../utils/reviewMode';
+import { createFollowGate, isScrollIntentKey } from '../utils/followGate';
 import { formatElapsed } from '../utils/formatElapsed.ts';
 import { toErrorBannerModel } from '../utils/errorPresentation.ts';
 import { useI18n } from '../i18n/index.ts';
@@ -173,6 +174,7 @@ function resetForSession(): void {
   stoppedNotice.value = false;
   // 回看模式随会话切换重置为浏览模式（AC-CV-016），定位高亮一并清理
   reviewCtrl.reset();
+  followGate.clearUserIntent();
   syncReview();
   clearLocateHighlight();
   beginSettlePin();
@@ -541,6 +543,21 @@ async function maybeExpandHistoryWindow(): Promise<void> {
 /** 上次滚动位置（方向判定用）：用户上滚 vs 程序化滚底（扩窗锚定/定位/置底均为向下） */
 let lastScrollTop = 0;
 
+/** 用户滚动意图 + 「是否该脱离跟随」判定（纯逻辑见 utils/followGate.ts，注入 Date.now 作时钟） */
+const followGate = createFollowGate({ nearBottomPx: NEAR_BOTTOM_PX });
+
+/** 一次用户滚动输入：结束落位稳定期钉底，并给紧随其后的 scroll 事件打上意图标记 */
+function onUserScrollIntent(): void {
+  cancelSettlePin();
+  followGate.markUserIntent(Date.now());
+}
+
+/** 键盘滚动：只有滚动类按键算意图（其余按键沿用 cancelSettlePin 的旧行为） */
+function onScrollIntentKey(e: KeyboardEvent): void {
+  cancelSettlePin();
+  if (isScrollIntentKey(e.key)) followGate.markUserIntent(Date.now());
+}
+
 function onMessagesScroll(): void {
   updateConvFade();
   void maybeExpandHistoryWindow();
@@ -549,10 +566,16 @@ function onMessagesScroll(): void {
     const scrolledUpBy = lastScrollTop - elNow.scrollTop;
     lastScrollTop = elNow.scrollTop;
     // 流式输出期间用户向上翻阅历史：脱离自动跟随（delta 不再强制滚底），
-    // 露出「回到底部」按钮；滚回距底 <NEAR_BOTTOM_PX 停稳后由下方触底判定恢复
+    // 露出「回到底部」按钮；滚回距底 <NEAR_BOTTOM_PX 停稳后由下方触底判定恢复。
+    // 方向只认「新鲜的输入意图」：1px 上移也算数（旧 2px 阈值会让触控板第一下失效、
+    // 随即被 delta 钉底拽回），而无输入却出现的 scrollTop 减少（布局 clamp / smooth 被打断）
+    // 是程序性位移，不得触发 detach。
     if (
-      scrolledUpBy > 2 &&
-      elNow.scrollHeight - elNow.scrollTop - elNow.clientHeight > NEAR_BOTTOM_PX
+      followGate.onScroll(
+        Date.now(),
+        scrolledUpBy,
+        elNow.scrollHeight - elNow.scrollTop - elNow.clientHeight,
+      )
     ) {
       reviewCtrl.detach();
       syncReview();
@@ -711,12 +734,14 @@ onMounted(() => {
     convFadeObserver = new ResizeObserver(onConvResize);
     convFadeObserver.observe(el);
     if (el.firstElementChild) convFadeObserver.observe(el.firstElementChild);
-    // 用户手动滚动 = 明确的位置意图，立即结束稳定期
-    // （pointerdown 覆盖拖动滚动条，它既不触发 wheel 也不触发 touchstart）
-    el.addEventListener('wheel', cancelSettlePin, { passive: true });
-    el.addEventListener('touchstart', cancelSettlePin, { passive: true });
-    el.addEventListener('pointerdown', cancelSettlePin, { passive: true });
-    el.addEventListener('keydown', cancelSettlePin);
+    // 用户手动滚动 = 明确的位置意图，立即结束稳定期并登记滚动意图
+    // （pointerdown 覆盖拖动滚动条，它既不触发 wheel 也不触发 touchstart；
+    //   touchmove 覆盖惯性滚动期间的持续意图）
+    el.addEventListener('wheel', onUserScrollIntent, { passive: true });
+    el.addEventListener('touchstart', onUserScrollIntent, { passive: true });
+    el.addEventListener('touchmove', onUserScrollIntent, { passive: true });
+    el.addEventListener('pointerdown', onUserScrollIntent, { passive: true });
+    el.addEventListener('keydown', onScrollIntentKey);
   }
   // 挂载即带会话（多窗格/切窗口重挂）时同样走稳定期：本钩子晚于 composable 的
   // onMounted（loadHistory/loadSubagents 已发起），此处开窗不会漏掉异步回填

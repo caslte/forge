@@ -1158,6 +1158,7 @@ const bridge: ForgeBridge = {
   },
   shell: {
     openPath: async () => true,
+    openInBrowser: async () => true,
     // 浏览器 dev 无系统浏览器：直接回失败（点击行为由拦截器静默处理，不报错）
     openExternal: async () => false,
     // 浏览器 dev 无主进程解析：回健康占位，shell 横幅只在 Electron 真机上出现
