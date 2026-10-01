@@ -105,6 +105,24 @@
     0 8px 22px rgb(var(--shade) / 11%),
     0 22px 48px rgb(var(--shade) / 10%);
 
+  /* 「纸」层级（design-demos/light-theme-hierarchy.html 定稿）：
+     桌面（app 容器：标题栏/侧栏/composer 状态带所在层）下沉半档到 --desk，
+     聊天主区 .content 成为浮起的纸 —— 四周留沟 + 圆角 12 + 四层环境阴影 --elev-sheet。
+     层级阶梯：桌面 0 → 纸 1 → composer 2（--elev-1/--elev-2 原样保留）。
+     两主题同构、取值反向：浅色白底下沉（#fff → #f7f7f6），纸 = --background 纯白；
+     深色主底下沉（0.215 → 0.19，同 265 色相家族），纸 = --background，内容面不动，
+     保住会话内「以 --card 抬卡片」的既有语言；投影按深色惯例从「变黑」取深度。
+     注意：--desk 只承载 chrome 与静默文本（侧栏/标题栏），正文永远在纸上。 */
+  --desk: #f7f7f6;
+  /* 纸的边缘光（.content::after 绘制）。浅色下纸已经比桌面亮、白边不可见，
+     保持透明即可；深色下才需要它来定义边界。见 :root[data-theme='dark'] 处的 --paper-rim。 */
+  --paper-rim: transparent;
+  --elev-sheet:
+    0 1px 2px rgb(var(--shade) / 4%),
+    0 4px 14px rgb(var(--shade) / 4.5%),
+    0 14px 36px rgb(var(--shade) / 6.5%),
+    0 32px 72px rgb(var(--shade) / 4.5%);
+
   /* 滚动条 */
   --scrollbar-thumb: oklch(0 0 0 / 12%);
   --scrollbar-thumb-hover: oklch(0 0 0 / 20%);
@@ -179,9 +197,9 @@
    组件层仍由 color-mix 自 --background/--brand 同源派生（不手写第二套灰阶）。
    --border 保持半透明白（面板边线融入光场），alpha 随底色抬升 0.085 → 0.115。 */
 :root[data-theme='dark'] {
-  --background: oklch(0.215 0.008 265);
+  --background: oklch(0.235 0.008 265);
   --foreground: oklch(0.82 0.004 262);
-  --card: oklch(0.243 0.009 266);
+  --card: oklch(0.255 0.009 266);
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
@@ -190,12 +208,12 @@
   --primary-hover: color-mix(in oklab, var(--primary) 84%, white);
   --primary-foreground: oklch(0.21 0.01 286.2);
 
-  --secondary: oklch(0.268 0.010 268);
+  --secondary: oklch(0.280 0.010 268);
   --secondary-foreground: var(--foreground);
-  --muted: oklch(0.268 0.010 268);
+  --muted: oklch(0.280 0.010 268);
   --muted-foreground: oklch(0.66 0.008 262);
 
-  --accent: oklch(0.268 0.010 268);
+  --accent: oklch(0.280 0.010 268);
   --accent-foreground: var(--foreground);
   --brand: oklch(0.88 0.008 286.3);
   --brand-hover: color-mix(in oklab, var(--brand) 85%, white);
@@ -253,6 +271,35 @@
     0 1px 1px rgb(var(--shade) / 30%),
     0 8px 20px rgb(var(--shade) / 46%),
     0 22px 46px rgb(var(--shade) / 42%);
+
+  /* 「纸」层级的深色取值（方案 C'：抬纸，不沉桌）。
+     关键认知：阴影是「黑色半透明层叠在底色上」，底色越暗叠加后的绝对差值越小。
+     旧值 --desk 0.205 / --background 0.215 只差 3 个 RGB 阶，叠 16% 黑后仅差 3 阶 →
+     读成「凹下去」而不是「浮起来」；且深色下「变暗」是负向信号（脏），方向本身就反了。
+     浅色同一套 7% 黑能差 20 阶，所以浅色一直正常。
+
+     四件事：
+     ① 明度阶（主因）：抬 --background 0.215 → 0.235，阶差 3 → 8 阶。
+        --desk 保持 0.205 不动 —— chrome（侧栏/标题栏）不跟着变暗。
+     ② 边缘光：--paper-rim，深色 UI 里唯一稳定有效的「抬起」信号（模拟纸边受光）。
+        必须由 .content::after 覆盖层绘制，用 inset 阴影或 outline 会被子元素盖掉。
+     ③ 有色接触影：纯黑在近黑底上没有信息量，换成同色相更暗一档的有色影。
+        28% / 18% 是扫出来的：接触处只比桌面深 3 阶（旧值 16% 纯黑是 4 阶），
+        再重就会重新出现当年被否决的「黑圈」；且现在边缘光已把边界描出来，
+        阴影只需压住纸、不需自己证明高度。
+     ④ 终端面板收起时的 border-top 已移到 .term.open（否则深色下会在纸底留下一条
+        横贯全宽、比纸亮 27 阶的白边）。
+
+     ⑤ 纸面抬高后，表面阶梯必须同步上移，否则会连带压扁会话内的层级：
+        --card 0.243 → 0.255（灰度 30 → 33）、--secondary/--muted/--accent
+        0.268 → 0.280（灰度 36 → 39）。纸面 0.235 时若不动它们，
+        抬卡落差会从 6 阶塔到 2 阶（--card 用在工具卡/变更文件卡/分支徽章/
+        提问面板/ConversationView 多处，塌 2 阶等于把会话内的卡片语言抹平）。 */
+  --desk: oklch(0.205 0.008 265);
+  --paper-rim: rgb(255 255 255 / 4%);
+  --elev-sheet:
+    0 1px 2px oklch(0.12 0.008 265 / 28%),
+    0 8px 24px oklch(0.12 0.008 265 / 18%);
 
   --scrollbar-thumb: oklch(1 0 0 / 18%);
   --scrollbar-thumb-hover: oklch(1 0 0 / 30%);

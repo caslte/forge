@@ -236,14 +236,13 @@ function onConvResize(): void {
   updateConvFade();
 }
 
-// 消息区滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩（同会话树口径）
-const convFadeTop = ref(false);
+// 消息区滚动下沿渐隐：仅当下方还有溢出内容时才显示渐变遮罩（同会话树口径）。
+// 顶部不留渐隐带：消息区顶边紧贴会话标题栏，向上滚动时内容硬切比渐隐更干净。
 const convFadeBottom = ref(false);
 
 function updateConvFade(): void {
   const el = scrollRef.value;
   if (!el) return;
-  convFadeTop.value = el.scrollTop > 1;
   convFadeBottom.value = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
 }
 
@@ -933,7 +932,7 @@ onUnmounted(() => {
         ref="scrollRef"
         v-show="!showResultView"
         class="conv-messages"
-        :class="{ 'fade-t': convFadeTop, 'fade-b': convFadeBottom }"
+        :class="{ 'fade-b': convFadeBottom }"
       >
         <div class="conv-messages-inner">
           <!-- 加载态 -->
@@ -1253,27 +1252,19 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 18px 38px;
   scroll-behavior: smooth;
-  --edge-fade: 28px;
-  --fade-top: 0px;
+  /* 只保留下沿渐隐带：顶部不做虚化（消息区顶边紧贴标题栏） */
+  --edge-fade: 14px;
   --fade-bottom: 0px;
   -webkit-mask-image: linear-gradient(
     to bottom,
-    transparent 0,
-    #000 var(--fade-top),
     #000 calc(100% - var(--fade-bottom)),
     transparent 100%
   );
   mask-image: linear-gradient(
     to bottom,
-    transparent 0,
-    #000 var(--fade-top),
     #000 calc(100% - var(--fade-bottom)),
     transparent 100%
   );
-}
-
-.conv-messages.fade-t {
-  --fade-top: var(--edge-fade);
 }
 
 .conv-messages.fade-b {

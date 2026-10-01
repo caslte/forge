@@ -622,13 +622,17 @@ defineExpose({ togglePanel });
      裁掉（grip 曾因此完全不可命中）。防内容泼溅由 term-body 自身 overflow:hidden 与
      .content 底部裁剪兜底；作为热区的定位基准需 position:relative */
   position: relative;
-  border-top: 1px solid var(--border);
+  border-top: 0;
   background: var(--background);
   transition: height var(--transition-base);
 }
 
 .term.open {
   height: var(--h, 240px);
+  /* 收起态（height:0）也保留顶边会在纸的最底行留下一条横贯全宽的亮线：
+     深色下 rgba(255,255,255,.115) 压在 --background 上 = 0x34，比纸亮 27 阶，
+     浅色下同一条只差 19 阶所以此前一直看不见。边框只在展开时存在。 */
+  border-top: 1px solid var(--border);
 }
 
 /* 拖高期间去过渡：高度必须逐帧跟手 */

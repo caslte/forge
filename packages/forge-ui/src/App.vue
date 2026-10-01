@@ -1179,7 +1179,9 @@ onUnmounted(() => {
 .app-container {
   height: 100vh;
   width: 100vw;
-  background: var(--background);
+  /* 桌面层（「纸」层级）：浅色 #f7f7f6 / 深色 oklch(0.19 0.008 265)，见 design-tokens --desk；
+     聊天主区 .content 在其上以「纸」浮起，层级 桌面 0 → 纸 1 → composer 2 */
+  background: var(--desk);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1217,18 +1219,14 @@ onUnmounted(() => {
   right: 0;
   bottom: 0;
   width: 1px;
-  background: linear-gradient(180deg, transparent 4%, var(--border) 18%, var(--border) 82%, transparent 96%);
+  /* 「纸」层级后，侧栏与主区之间是桌面留沟 + 纸缘阴影，1px 中缝不再承担分界（浅深色一致） */
+  background: none;
 }
 
-/* 暗色：底色不再压黑（压黑会沉到光场剖面之下）；改为自带一层竖向微光
-   （+1~+3 电平）——侧栏是略高于同位置主区的独立面。
-   v6.1 抬底后 alpha 不变：要的是侧栏与主区之间的**差**，光场峰值同时从 0.096 降到 0.035，
-   两者同比缩小，相对关系保持。 */
+/* 「纸」层级：侧栏属于桌面层（与标题栏/沟同一色），不再做"略高于主区的独立面"——
+   原竖向微光会让左列与右侧大底的桌面色不一致（用户实测反馈），纸缘阶梯已替代它的职责 */
 :root[data-theme='dark'] .sidebar {
-  background: linear-gradient(180deg,
-    rgba(205, 218, 235, 0.004) 0%,
-    rgba(205, 218, 235, 0.016) 50%,
-    rgba(205, 218, 235, 0.023) 100%);
+  background: none;
 }
 
 .sidebar.collapsed {
@@ -1443,17 +1441,23 @@ onUnmounted(() => {
    旧值把阅读区底色从 #0d0f13 抬到 #1f2228，**亮度差 3.35 倍**，而这层是 z-index:210
    盖在**文字之上**的——横向的色斑直接洗在正文行上，是「对话区看着脏」的主因
    （副因：用户气泡改冷调，见 MessageCard；文件类型徽章的 Linguist 色经复核保留）。
-   0.035 下不均匀度降到 1.69 倍，正文对底色的对比从 10.10 回到 9.35，口感更平。 */
+   0.035 下不均匀度降到 1.69 倍，正文对底色的对比从 10.10 回到 9.35，口感更平。
+
+   v6.2 色带：0.035 → 0.006（衰减形状不变，整体等比缩到 0.171）。0.035 在 #18191d 纸面上
+   整窗只把红通道从 25 抬到 29（总起伏 4/255），却因为分段色标斜率过缓——每 200~280px 才变化
+   1 阶——8bit 取整后等值线退化成宽平台 + 硬直边（实测边界斜率 dy/dx≈0.71，正是 213.4° 的法线），
+   在空状态整片平铺纸面上读作一条斜的「颜色切割条」：反光几乎看不见，色带却很明显。
+   0.006 下整窗起伏 ≤1/255，等值线收进右上角，色带消失，剖面方向感仍在。 */
 :root[data-theme='dark'] .shell-sheen {
   background:
     linear-gradient(213.4deg,
-      rgba(205, 218, 235, 0.035) 0%,
-      rgba(205, 218, 235, 0.018) 28%,
-      rgba(205, 218, 235, 0.009) 47%,
-      rgba(205, 218, 235, 0.007) 60%,
-      rgba(205, 218, 235, 0.004) 72%,
+      rgba(205, 218, 235, 0.006) 0%,
+      rgba(205, 218, 235, 0.003) 28%,
+      rgba(205, 218, 235, 0.0015) 47%,
+      rgba(205, 218, 235, 0.001) 60%,
+      rgba(205, 218, 235, 0.0005) 72%,
       rgba(205, 218, 235, 0.000) 82%),
-    linear-gradient(0deg, rgba(205, 218, 235, 0.002) 0%, rgba(205, 218, 235, 0) 14%);
+    linear-gradient(0deg, rgba(205, 218, 235, 0.0005) 0%, rgba(205, 218, 235, 0) 14%);
 }
 
 .tree-panel {
@@ -1619,6 +1623,37 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--background);
   overflow: hidden;
+}
+
+/* 「纸」层级（design-demos/light-theme-hierarchy.html 定稿，浅深色同构）：
+   .content 成为浮在桌面上的纸 —— 四周留沟（上/右/下 10px、左 8px）+ 圆角 12 + --elev-sheet，
+   取值随主题（浅色白纸 4~6.5%、深色黑投影 22~34%，见 design-tokens --elev-sheet）。
+   纸面色 = --background：深色内容面不动，保住会话内「以 --card 抬卡片」的既有语言；
+   composer 的 --elev-1/--elev-2 悬浮态原样保留，层级 桌面 0 → 纸 1 → 输入框 2；
+   .content 自带 overflow:hidden，纸的圆角裁切与弹层行为与现状一致，无新增裁切风险。 */
+.content {
+  margin: 10px 10px 10px 8px;
+  border-radius: 12px;
+  position: relative;
+  box-shadow: var(--elev-sheet);
+}
+
+/* 深色「纸」的边缘光：深色 UI 里唯一稳定有效的「抬起」信号（模拟纸边受光）。
+   实现方式必须是伪元素覆盖层，不能用 inset 阴影或 outline：
+   .content 带 overflow:hidden 且子元素（.app-toolbar / .conv-messages / .term）都铺到纸边，
+   而 inset 阴影与 outline 都在子元素之下绘制 —— 实测三者左缘像素分别为
+     inset   → 24（= 纸面色，完全被遮）
+     outline → 24（同上）
+     ::after → 33（可见）
+   pointer-events:none 保证不拦点击，z-index 置于内容之上。 */
+.content::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--paper-rim);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 5;
 }
 
 .content.settings-mode {

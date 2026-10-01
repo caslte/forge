@@ -40,6 +40,9 @@ Open a few sessions on the same project — refactoring here, a bug fix there.
 **👀 Visible Execution · every step, laid out**
 Which tool it called, which file it read, which lines it touched — tool cards next to diffs, all of it there to look back on.
 
+**⌨️ Terminal · fix it and run it without leaving**
+A bottom panel with several tabs, each one opening right where the project you're on lives. Real shell, full color, vim and top included. Drag the top edge to make it taller; collapse it and your dev server keeps running in the background. Start the build, tail a log, poke around — all without leaving the conversation.
+
 **🤖 Sub-Agent Monitoring · the background work stays visible**
 Sub-agents you send off each get their own tab. Check in whenever you like, stop one, or stop them all at once.
 
