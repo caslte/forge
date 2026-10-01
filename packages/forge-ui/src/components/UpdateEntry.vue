@@ -8,7 +8,8 @@
  * - downloading=外圈进度环即进度，无百分比无文字；
  * - ready（downloaded/失败重试）=环形箭头图标（圆底），hover 展开「更新」，点击弹安装确认；
  * - installing=转圈 busy。
- * 配色用品牌青绿 --brand-accent（双主题各一档），不引入新色。
+ * 入口控件配色用品牌青绿 --brand-accent（双主题各一档）；弹窗内按钮复用全局 button.primary
+ * 的中性 --brand，与其余弹窗（关于页 / 退出确认）保持一致，不引入第二套按钮色。
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from '../i18n/index.ts';
@@ -197,75 +198,59 @@ const entryTitle = computed(() => {
   }
 }
 
-/* ===== 安装确认弹窗（样式对齐关于页 up-confirm） ===== */
+/* ===== 安装确认弹窗 =====
+   与关于页 up-confirm / ExitConfirmDialog 同一份配方：遮罩 --overlay + 10px 模糊、
+   盒子 --card / --radius-3xl / --shadow-lg、按钮走全局 button.primary（--brand 中性色）。
+   这里不覆盖按钮样式 —— 青绿 --brand-accent 只留给侧栏入口控件，弹窗内不引入新色，
+   浅色/深色各由 --brand / --brand-foreground 自行取档，无需主题补丁。 */
 .up-entry-confirm {
   position: fixed;
   inset: 0;
-  z-index: 60;
-  background: oklch(0 0 0 / 0.55);
+  z-index: 2000;
+  background: var(--overlay);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
   justify-content: center;
+  animation: fadeIn var(--transition-base);
 }
 
 .uec-box {
-  width: 360px;
-  background: var(--background);
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px;
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-lg);
+  padding: 22px 24px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 16px;
 }
 
 .uec-main {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .uec-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--foreground);
 }
 
 .uec-desc {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted-foreground);
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .uec-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 10px;
-}
-
-.ghost.small {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--foreground);
-  font-size: 12.5px;
-  padding: 6px 14px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.primary.small {
-  background: var(--brand-accent);
-  border: 1px solid var(--brand-accent);
-  color: oklch(0.985 0 0);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 6px 14px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-:root[data-theme='dark'] .primary.small {
-  color: oklch(0.2 0.02 170);
 }
 </style>
