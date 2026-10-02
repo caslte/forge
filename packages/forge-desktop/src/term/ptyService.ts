@@ -3,8 +3,9 @@
  *
  * 职责边界（PRD §1.3 安全红线）：
  * - pty 只在主进程 spawn；渲染进程零文件系统/进程权限，只经 term/* RPC 驱动。
- * - spawn 目标固定为**系统 shell**（Windows `%COMSPEC%`，Unix `$SHELL` 回退 bash），
- *   不接受渲染层传入任何可执行路径（TD-TM-05）。
+ * - spawn 目标固定为**主进程解析的系统 shell**（Windows：pwsh → powershell →
+ *   %COMSPEC% 优先级链；Unix `$SHELL` 回退 bash），不接受渲染层传入任何可执行路径
+ *   （TD-TM-05，2026-10-02 修订）。
  * - cwd 必须存在于主进程已知的项目路径集合（containment 经注入端口强制，AC-10-06）
  *   且目录真实存在，否则拒绝。
  * - 数据通道（TD-TM-03）：下行事件 term:data / term:exit 经注入的 emit（= core eventBus）
@@ -16,6 +17,8 @@
  * 无需原生模块。
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { normalizeProjectPath, type RpcResult } from '@forge/core';
 
 /** node-pty IPty 的最小使用面（测试 fake 对齐此形状即可） */
@@ -61,6 +64,8 @@ export interface TermServiceDeps {
   spawnPty?: SpawnPty;
   /** 测试接缝：替换系统 shell 解析 */
   resolveShell?: () => string;
+  /** 测试接缝：替换「钉住 shell id → 可执行路径」解析（缺省 resolveShellByPref + 真实 fs） */
+  resolveShellByPref?: (pref: TerminalShellId) => string | null;
   /** 生命周期日志出口（缺省 console.log；英文，含 ptyId/cwd/shell，PRD §3.5 可观测性） */
   logger?: (line: string) => void;
 }
@@ -94,15 +99,135 @@ function fail(code: number, message: string): RpcResult<null> {
 }
 
 /**
- * 系统默认 shell（TD-TM-05 方案 A，不做选择 UI）：
- * Windows 取 %COMSPEC%（即 pwsh/cmd 由系统定），Unix 取 $SHELL 回退 bash。
- * 变量缺失时仍回落到通用名——spawn 失败会以 5000 透传原因，不在这里造假路径。
+ * 系统 shell（TD-TM-05 方案 A，2026-10-02 修订为优先级链，仍不做选择 UI）：
+ * Windows 依次探测 pwsh（PowerShell 7，对齐用户独立终端体验——`./xxx.ps1` 直跑、
+ * PSReadLine 补全）→ powershell（系统必装的 5.1）→ %COMSPEC%（cmd 兜底，不差于
+ * 旧版）；Unix 取 $SHELL 回退 bash。探测 = PATH 逐目录 + 标准安装位的存在性检查，
+ * 命中即返回绝对路径——把「shell 在不在」挡在 spawn 之前；全链未命中仍回落
+ * %COMSPEC% 通用名，spawn 失败才以 5000 透传原因，不在这里造假路径。
  */
-export function resolveSystemShell(platform: NodeJS.Platform = process.platform): string {
-  if (platform === 'win32') {
+export function resolveSystemShell(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  if (platform !== 'win32') {
+    return process.env.SHELL ?? '/bin/bash';
+  }
+  for (const candidate of windowsShellCandidates(process.env)) {
+    if (exists(candidate)) return candidate;
+  }
+  return process.env.COMSPEC ?? 'cmd.exe';
+}
+
+/** PATH 逐目录展开（去引号/去空项；Windows 分隔符 ';'） */
+function pathDirs(env: NodeJS.ProcessEnv): string[] {
+  return (env.PATH ?? env.Path ?? '')
+    .split(';')
+    .map((dir) => dir.trim().replace(/^"|"$/g, ''))
+    .filter((dir) => dir !== '');
+}
+
+/** pwsh 档候选：PATH 逐目录优先，标准安装位补漏（MSI 默认 / Store 别名） */
+export function pwshShellCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const candidates = pathDirs(env).map((dir) => join(dir, 'pwsh.exe'));
+  for (const root of [env.ProgramFiles, env['ProgramFiles(x86)']]) {
+    if (root) candidates.push(join(root, 'PowerShell', '7', 'pwsh.exe'));
+  }
+  if (env.LOCALAPPDATA) {
+    candidates.push(join(env.LOCALAPPDATA, 'Microsoft', 'WindowsApps', 'pwsh.exe'));
+  }
+  return candidates;
+}
+
+/** powershell 档候选：PATH（System32\WindowsPowerShell\v1.0 常驻）+ SystemRoot 绝对路径兜底 */
+export function powershellShellCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const candidates = pathDirs(env).map((dir) => join(dir, 'powershell.exe'));
+  if (env.SystemRoot) {
+    candidates.push(join(env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'));
+  }
+  return candidates;
+}
+
+/** pwsh → powershell 的有序候选绝对路径（两档拼接） */
+export function windowsShellCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  return [...pwshShellCandidates(env), ...powershellShellCandidates(env)];
+}
+
+/** 设置页「终端 Shell」的枚举 id（渲染层只传 id，可执行路径永远由主进程解析，TD-TM-05） */
+export type TerminalShellId = 'auto' | 'pwsh' | 'powershell' | 'cmd';
+
+export const TERMINAL_SHELL_IDS: readonly TerminalShellId[] = ['auto', 'pwsh', 'powershell', 'cmd'];
+
+/**
+ * 按设置钉住的 shell id 解析可执行路径（纯函数，exists 注入可测）：
+ * 'auto' → 优先级链；'pwsh'/'powershell' → 档内第一个存在者，全缺返回 null（由调用方
+ * 回退链）；'cmd' → %COMSPEC% ?? 'cmd.exe'（兜底分支永不为 null，与旧版口径一致）。
+ * 非 Windows 钉任何档都回链——候选探测只覆盖 Windows。
+ */
+export function resolveShellByPref(
+  pref: TerminalShellId,
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): string | null {
+  if (pref === 'auto' || platform !== 'win32') {
+    return resolveSystemShell(platform, exists);
+  }
+  if (pref === 'cmd') {
     return process.env.COMSPEC ?? 'cmd.exe';
   }
-  return process.env.SHELL ?? '/bin/bash';
+  const candidates = pref === 'pwsh' ? pwshShellCandidates() : powershellShellCandidates();
+  return candidates.find((candidate) => exists(candidate)) ?? null;
+}
+
+/** 已安装终端 shell（设置页选项数据源）；形状对齐 shell/editorScan 的 InstalledEditor */
+export interface InstalledShell {
+  id: Exclude<TerminalShellId, 'auto'>;
+  label: string;
+  exe: string;
+}
+
+/** 档位 → 展示名（产品名，不本地化——同 editorScan 的 label 口径） */
+const SHELL_LABELS: Record<InstalledShell['id'], string> = {
+  pwsh: 'PowerShell 7',
+  powershell: 'Windows PowerShell',
+  cmd: 'cmd',
+};
+
+/**
+ * 本机已安装的终端 shell 目录，档序即优先级序（pwsh → powershell → cmd；cmd 为
+ * 兜底档恒在）。调用方（main）剥掉 exe 只回 {id,label}。Unix 返回空列表（设置页
+ * 只剩「跟随系统默认」）。
+ */
+export function collectInstalledShells(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+): InstalledShell[] {
+  if (platform !== 'win32') return [];
+  const out: InstalledShell[] = [];
+  const pwsh = pwshShellCandidates().find((candidate) => exists(candidate));
+  if (pwsh !== undefined) out.push({ id: 'pwsh', label: SHELL_LABELS.pwsh, exe: pwsh });
+  const powershell = powershellShellCandidates().find((candidate) => exists(candidate));
+  if (powershell !== undefined) {
+    out.push({ id: 'powershell', label: SHELL_LABELS.powershell, exe: powershell });
+  }
+  out.push({ id: 'cmd', label: SHELL_LABELS.cmd, exe: process.env.COMSPEC ?? 'cmd.exe' });
+  return out;
+}
+
+/**
+ * spawn 参数随 shell 走：PowerShell 系带 -NoLogo（开 tab 不打版本 banner），cmd /
+ * Unix shell 无参。-NoProfile 故意不加：内嵌终端要的就是用户独立终端的同一体验
+ * （profile 里的别名与 PSReadLine 配置照常生效）。
+ */
+export function shellSpawnArgs(shell: string): string[] {
+  switch (basename(shell).toLowerCase()) {
+    case 'pwsh.exe':
+    case 'pwsh':
+    case 'powershell.exe':
+      return ['-NoLogo'];
+    default:
+      return [];
+  }
 }
 
 /** 动态加载 node-pty（只在首次真实 spawn 时发生，测试路径永不触达） */
@@ -141,7 +266,13 @@ function readStringParam(params: unknown, key: string): string | null {
 export function createTermService(deps: TermServiceDeps): TermService {
   const ptys = new Map<string, PtyRecord>();
   const log = deps.logger ?? ((line: string) => console.log('[term]', line));
-  const resolveShell = deps.resolveShell ?? (() => resolveSystemShell());
+  // 缺省 shell 解析带缓存：探测是同步 fs 扫描（PATH + 标准安装位），一次会话算一遍就够
+  let cachedShell: string | null = null;
+  const resolveShell = deps.resolveShell ?? (() => {
+    if (cachedShell === null) cachedShell = resolveSystemShell();
+    return cachedShell;
+  });
+  const shellByPref = deps.resolveShellByPref ?? ((pref: TerminalShellId) => resolveShellByPref(pref));
   let injectedSpawn: SpawnPty | null = deps.spawnPty ?? null;
 
   const getSpawn = async (): Promise<SpawnPty> => {
@@ -163,7 +294,7 @@ export function createTermService(deps: TermServiceDeps): TermService {
 
   return {
     methods: {
-      /** 参数：{ cwd: string; cols?: number; rows?: number } → { ptyId, shell, pid } */
+      /** 参数：{ cwd: string; cols?: number; rows?: number; shellId?: 'auto'|'pwsh'|'powershell'|'cmd' } → { ptyId, shell, pid } */
       'term/create': async (params: unknown) => {
         const cwd = readStringParam(params, 'cwd');
         if (cwd === null) {
@@ -173,6 +304,12 @@ export function createTermService(deps: TermServiceDeps): TermService {
         const rows = readPositiveInt((params as { rows?: unknown } | null)?.rows, DEFAULT_ROWS);
         if (cols === null || rows === null) {
           return fail(1001, '参数错误：cols/rows 必须为正整数');
+        }
+        // 设置页「终端 Shell」（可选，缺省 auto=优先级链）。渲染层只传枚举 id——可执行
+        // 路径由主进程解析（TD-TM-05 红线）；id 合法但本机未装 → 回退链 + 留日志，不阻塞开 tab。
+        const shellId = readStringParam(params, 'shellId') ?? 'auto';
+        if (!(TERMINAL_SHELL_IDS as readonly string[]).includes(shellId)) {
+          return fail(1001, `参数错误：shellId 必须是 ${TERMINAL_SHELL_IDS.join('/')} 之一`);
         }
         // containment（AC-10-06）：normalizeProjectPath 完成 resolve + realpath + 目录
         // 存在性校验（不存在/非目录抛错），再比对主进程项目路径集合——伪造路径/
@@ -186,11 +323,16 @@ export function createTermService(deps: TermServiceDeps): TermService {
         if (!deps.isKnownProjectPath(normalized)) {
           return fail(1002, `工作目录不是已注册项目根: ${normalized}`);
         }
-        const shell = resolveShell();
+        const pref = shellId as TerminalShellId;
+        let shell = pref === 'auto' ? resolveShell() : shellByPref(pref);
+        if (shell === null) {
+          log(`shell pref '${pref}' not installed, falling back to system default`);
+          shell = resolveShell();
+        }
         const id = randomUUID();
         try {
           const spawnPty = await getSpawn();
-          const ptyProcess = spawnPty(shell, [], {
+          const ptyProcess = spawnPty(shell, shellSpawnArgs(shell), {
             name: 'xterm-256color',
             cols,
             rows,

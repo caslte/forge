@@ -109,6 +109,39 @@
       "source": "v3.49 消息队列浮窗真实端不出现（conversation.queueUpdated 漏登白名单）",
       "file": "ipc-events-whitelist.md",
       "createdAt": "2026-09-09"
+    },
+    {
+      "id": "kb-2026-10-02-term-comspec-cmd-not-powershell",
+      "title": "内嵌终端是 cmd.exe 不是 PowerShell：./ 前缀与直跑 .ps1 必失败，Tab 补全跟 cmd 自己的 cwd（新 tab 恒为项目根）",
+      "tags": [
+        "terminal",
+        "pty",
+        "cmd",
+        "COMSPEC",
+        "powershell",
+        "tab补全",
+        "cwd",
+        "项目根"
+      ],
+      "source": "用户反馈「终端执行不了 ./scripts/release.ps1 + Tab 联想不跟目录」",
+      "file": "term-comspec-cmd-not-powershell.md",
+      "createdAt": "2026-10-02"
+    },
+    {
+      "id": "kb-2026-10-02-ctx-menu-keepopen-two-phase-confirm",
+      "title": "共享 ContextMenu 的「选中即关」会杀死两阶段确认：keepOpen 必须显式声明",
+      "tags": [
+        "vue",
+        "context-menu",
+        "两阶段确认",
+        "共享组件",
+        "close 时机",
+        "e2e",
+        "回归"
+      ],
+      "source": "用户反馈「清理所有会话和删除项目没有作用了」（c75dbbb 菜单组件化回归）",
+      "file": "ctx-menu-keepopen-two-phase-confirm.md",
+      "createdAt": "2026-10-02"
     }
   ]
 }

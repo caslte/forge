@@ -6,6 +6,8 @@
  * - 终端面板（模块 10 TM-S05）：高度（默认高 240px）与配色档（auto=跟随应用主题 / dark / light，
  *   用户 2026-09-29 要求面板内可切）跨启动保持；**开/关状态与 tab 列表、终端内容不跨启动**——
  *   首页永远干净，面板只由本次运行里的入口动作打开
+ * - 终端 Shell（模块 10 TD-TM-05 方案 B）：auto=跟随系统默认（主进程 pwsh → powershell →
+ *   cmd 优先级链）/ 钉住某一档；渲染层只存枚举 id，路径解析在主进程（term/create shellId）
  * - 内置代码浏览器（模块 12 CE-S01/S02）：代码查看器布局与分割宽度
  */
 import { computed, ref } from 'vue';
@@ -15,6 +17,13 @@ export type ContentWidth = 'standard' | 'wide';
 
 /** 终端配色档：auto = 跟随应用主题；dark/light = 用户手选，不再跟随 */
 export type TerminalTint = 'auto' | 'dark' | 'light';
+
+/**
+ * 终端 Shell（TD-TM-05 方案 B）：auto = 跟随系统默认（主进程优先级链）；
+ * pwsh/powershell/cmd = 钉住某一档（是否已装由主进程探测，选项来自 listTerminalShells）。
+ * 渲染层只持久化这个 id，可执行路径永远不出主进程。
+ */
+export type TerminalShellPref = 'auto' | 'pwsh' | 'powershell' | 'cmd';
 
 /**
  * 代码查看器布局（模块 12 CE-S01）：
@@ -27,6 +36,7 @@ const SHOW_DIFF_KEY = 'forge:show-diff';
 const CONTENT_WIDTH_KEY = 'forge:content-width';
 const TERM_HEIGHT_KEY = 'forge:terminal-height';
 const TERM_TINT_KEY = 'forge:terminal-tint';
+const TERM_SHELL_KEY = 'forge:terminal-shell';
 const CODE_LAYOUT_KEY = 'forge.codeViewerLayout';
 const CODE_SPLIT_PCT_KEY = 'forge.codeViewerSplitPct';
 
@@ -103,8 +113,10 @@ const terminalOpen = ref(false);
 const terminalHeight = ref(240);
 /** 终端配色档：默认 auto（跟随应用主题） */
 const terminalTint = ref<TerminalTint>('auto');
-/** 代码查看器布局：默认 split（demo 定稿的 A 方案：边看对话边读码；cover 留给窄窗与偏好整屏的人） */
-const codeViewerLayout = ref<CodeViewerLayout>('split');
+/** 终端 Shell：默认 auto（跟随系统默认优先级链）；只存 id，路径解析在主进程 */
+const terminalShell = ref<TerminalShellPref>('auto');
+/** 代码查看器布局：默认 cover（2026-10-02 用户定稿：进代码态默认整屏覆盖读码，分割留给偏好并排的人） */
+const codeViewerLayout = ref<CodeViewerLayout>('cover');
 /** 分割布局下代码纸占宽百分比；写入时恒 clamp 到 [保底, 100−保底]（CE-S03） */
 const codeViewerSplitPct = ref(CODE_SPLIT_PCT_DEFAULT);
 /**
@@ -162,7 +174,10 @@ function load(): void {
     if (Number.isFinite(h) && h > 0) terminalHeight.value = clampTerminalHeight(h);
     const tint = localStorage.getItem(TERM_TINT_KEY);
     if (tint === 'dark' || tint === 'light') terminalTint.value = tint;
-    // 布局：仅显式 'split' / 'cover' 生效，其余（含非法值）回退默认 split
+    // 终端 Shell：仅显式钉住档生效（'auto' 是缺省不落盘），非法值回退 auto
+    const shell = localStorage.getItem(TERM_SHELL_KEY);
+    if (shell === 'pwsh' || shell === 'powershell' || shell === 'cmd') terminalShell.value = shell;
+    // 布局：仅显式 'split' / 'cover' 生效，其余（含非法值）回退默认 cover
     const layout = localStorage.getItem(CODE_LAYOUT_KEY);
     if (layout === 'split' || layout === 'cover') codeViewerLayout.value = layout;
     const pct = Number(localStorage.getItem(CODE_SPLIT_PCT_KEY));
@@ -218,6 +233,15 @@ function saveTerminalTint(v: TerminalTint): void {
   }
 }
 
+function saveTerminalShell(v: TerminalShellPref): void {
+  terminalShell.value = v;
+  try {
+    localStorage.setItem(TERM_SHELL_KEY, v);
+  } catch {
+    // ignore
+  }
+}
+
 function saveCodeViewerLayout(v: CodeViewerLayout): void {
   codeViewerLayout.value = v;
   try {
@@ -254,6 +278,8 @@ export function usePreferences() {
     setTerminalHeight: saveTerminalHeight,
     terminalTint,
     setTerminalTint: saveTerminalTint,
+    terminalShell,
+    setTerminalShell: saveTerminalShell,
     codeViewerLayout,
     setCodeViewerLayout: saveCodeViewerLayout,
     codeViewerSplitPct,

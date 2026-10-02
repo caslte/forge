@@ -12,6 +12,7 @@ import {
   snapRectFor,
   arrangeAutoLayout,
   clampWindowBounds,
+  unshrinkLegacyBounds,
   MW_GAP,
 } from '../../src/multiwin/windowLayout.ts';
 
@@ -81,6 +82,33 @@ test('E-SM-005-7：最小尺寸 clamp（窗口不小于 180×120、不越界）'
   const overflow = clampWindowBounds({ x: 500, y: 300, w: 300, h: 200 }, 600, 400);
   assert.ok(overflow.x + overflow.w <= 600, '不越右界');
   assert.ok(overflow.y + overflow.h <= 400, '不越下界');
+});
+
+test('E-SM-005-9：clamp 不缩短贴边满高窗口（切回画布恢复/拖拽释放后底部不留缝隙）', () => {
+  const cw = 600;
+  const ch = 400;
+  // snapRectFor('left') 与 arrangeAutoLayout(2) 产生的满高窗口（h = ch），
+  // 经 clampWindowBounds（恢复布局/拖拽释放的钳制路径）后必须保持满高，
+  // 否则底部露出 2×MW_GAP 的画布背景缝隙
+  const kept = clampWindowBounds(snapRectFor('left', cw, ch), cw, ch);
+  assert.equal(kept.y, 0);
+  assert.equal(kept.h, ch, '满高窗口 clamp 后仍满高');
+  const keptRight = clampWindowBounds(snapRectFor('right', cw, ch), cw, ch);
+  assert.equal(keptRight.x + keptRight.w, cw, '右窗仍贴右');
+  assert.equal(keptRight.h, ch, '右窗满高');
+  // 上界仍是画布边界：超限窗口被钳回，不越界
+  const oversize = clampWindowBounds({ x: -20, y: -10, w: cw + 50, h: ch + 50 }, cw, ch);
+  assert.ok(oversize.w <= cw && oversize.h <= ch, '超限仍被钳回画布内');
+  assert.ok(oversize.x >= 0 && oversize.y >= 0);
+});
+
+test('E-SM-005-10：迁移还原被旧版 clamp 截短的贴边窗口（差 2g 内补满，正常尺寸不动）', () => {
+  // 旧缺陷持久化形态：满高 400 被截成 392、满宽 600 被截成 592
+  const healed = unshrinkLegacyBounds({ x: 0, y: 0, w: 592, h: 392 }, 600, 400);
+  assert.deepEqual(healed, { x: 0, y: 0, w: 600, h: 400 });
+  // 正常排布尺寸（半宽 298 / 半高 198）不受迁移影响
+  const half = unshrinkLegacyBounds({ x: 302, y: 198, w: 298, h: 198 }, 600, 400);
+  assert.deepEqual(half, { x: 302, y: 198, w: 298, h: 198 });
 });
 
 test('E-SM-005-8：超过 4 个窗口时前 4 个四窗格，其余散放不重叠越界', () => {

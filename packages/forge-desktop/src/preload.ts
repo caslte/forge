@@ -24,6 +24,7 @@ import {
   IPC_SHELL_OPEN_IN_BROWSER,
   IPC_SHELL_OPEN_IN_EDITOR,
   IPC_SHELL_LIST_EDITORS,
+  IPC_SHELL_LIST_TERMINAL_SHELLS,
   IPC_THEME_SET,
   IPC_LOCALE_SET,
   IPC_ATTACHMENT_SCAN,
@@ -118,6 +119,14 @@ const shellControl = {
    */
   async listEditors(): Promise<{ id: string; label: string }[]> {
     return ipcRenderer.invoke(IPC_SHELL_LIST_EDITORS) as Promise<{ id: string; label: string }[]>;
+  },
+  /**
+   * 探测本机可用的内嵌终端 shell（设置 → 个性化 → 终端 Shell 选项源，TD-TM-05 方案 B）。
+   * exe 路径不回渲染层——只回 {id,label}；选定值经 term/create 的 shellId（同一枚举）
+   * 下发，由主进程解析成真实 shell。
+   */
+  async listTerminalShells(): Promise<{ id: string; label: string }[]> {
+    return ipcRenderer.invoke(IPC_SHELL_LIST_TERMINAL_SHELLS) as Promise<{ id: string; label: string }[]>;
   },
   /**
    * 用指定编辑器（id 必须来自 listEditors 的白名单）打开一个文件；

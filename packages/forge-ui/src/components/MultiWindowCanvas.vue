@@ -8,7 +8,7 @@ import {
   snapRectFor,
   arrangeAutoLayout,
   clampWindowBounds,
-  MW_GAP as G,
+  unshrinkLegacyBounds,
   MW_MIN_W,
   MW_MIN_H,
   type SnapZone,
@@ -138,13 +138,25 @@ function restoreLayout(): void {
   const ch = canvasRef.value?.clientHeight ?? 400;
   const sx = saved.canvas ? cw / saved.canvas.w : 1;
   const sy = saved.canvas ? ch / saved.canvas.h : 1;
+  // 旧版 clamp 缺陷会把贴边满高/满宽窗口截短 2g 并持久化，先迁移还原再缩放
+  const refW = saved.canvas?.w ?? cw;
+  const refH = saved.canvas?.h ?? ch;
   for (const item of saved.wins) {
     if (!sessionOf(item.sessionId)) continue;
-    const w = Math.max(MW_MIN_W, Math.min(Math.round(item.w * sx), cw - G * 2));
-    const h = Math.max(MW_MIN_H, Math.min(Math.round(item.h * sy), ch - G * 2));
-    const x = Math.max(0, Math.min(Math.round(item.x * sx), Math.max(0, cw - w)));
-    const y = Math.max(0, Math.min(Math.round(item.y * sy), Math.max(0, ch - h)));
-    openWindow(item.sessionId, x, y, { w, h });
+    const healed = unshrinkLegacyBounds(item, refW, refH);
+    // 等比缩放后统一交给 clampWindowBounds：上界是画布边界本身，
+    // 贴边满高窗口（h=ch）保持满高，底部不露缝隙
+    const rect = clampWindowBounds(
+      {
+        x: Math.round(healed.x * sx),
+        y: Math.round(healed.y * sy),
+        w: Math.round(healed.w * sx),
+        h: Math.round(healed.h * sy),
+      },
+      cw,
+      ch,
+    );
+    openWindow(item.sessionId, rect.x, rect.y, { w: rect.w, h: rect.h });
   }
   // 恢复后写回一次（吸收 clamp 变更），并通知会话池
   saveLayout();
@@ -312,11 +324,8 @@ function onUp(): void {
   if (w && canvas) {
     const cw = canvas.clientWidth;
     const ch = canvas.clientHeight;
-    // 拖动结束 clamp 最小尺寸与画布边界
-    w.w = Math.max(MW_MIN_W, Math.min(w.w, cw - G * 2));
-    w.h = Math.max(MW_MIN_H, Math.min(w.h, ch - G * 2));
-    w.x = Math.max(0, Math.min(w.x, Math.max(0, cw - w.w)));
-    w.y = Math.max(0, Math.min(w.y, Math.max(0, ch - w.h)));
+    // 拖动结束统一 clamp（最小尺寸 + 画布边界）；满高窗口保持满高
+    Object.assign(w, clampWindowBounds(w, cw, ch));
     const zone = detectSnapZone(dragging.lastPx, dragging.lastPy, cw, ch);
     if (zone) {
       Object.assign(w, snapRectFor(zone, cw, ch));

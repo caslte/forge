@@ -142,6 +142,8 @@ export function arrangeAutoLayout(n: number, cw: number, ch: number): AutoWin[] 
 
 /**
  * 尺寸/位置 clamp：保证窗口不小于最小尺寸、不越出画布。
+ * 上界是画布边界本身：贴边/自动排布合法产生满高（h=ch）窗口，
+ * 钳到 ch-2g 会把满高窗口缩短、在底部留出缝隙。
  * @param w 当前窗口几何
  * @param cw 画布宽
  * @param ch 画布高
@@ -151,9 +153,31 @@ export function clampWindowBounds(
   cw: number,
   ch: number,
 ): { x: number; y: number; w: number; h: number } {
-  const gw = Math.max(MW_MIN_W, Math.min(w.w, cw - MW_GAP * 2));
-  const gh = Math.max(MW_MIN_H, Math.min(w.h, ch - MW_GAP * 2));
+  const gw = Math.max(MW_MIN_W, Math.min(w.w, cw));
+  const gh = Math.max(MW_MIN_H, Math.min(w.h, ch));
   const x = Math.max(0, Math.min(w.x, Math.max(0, cw - gw)));
   const y = Math.max(0, Math.min(w.y, Math.max(0, ch - gh)));
   return { x, y, w: gw, h: gh };
+}
+
+/**
+ * 迁移修复：旧版 clampWindowBounds 上界为画布尺寸减 2g，会把贴边满高/满宽
+ * 窗口截短 2g 并随布局持久化，重进画布后底部/右缘留缝。恢复布局时先过本函数，
+ * 差 2g 内视为贴边、还原为满高/满宽；正常排布尺寸不受影响。
+ * @param w 持久化的窗口几何
+ * @param cw 画布宽
+ * @param ch 画布高
+ */
+export function unshrinkLegacyBounds(
+  w: { x: number; y: number; w: number; h: number },
+  cw: number,
+  ch: number,
+): { x: number; y: number; w: number; h: number } {
+  const g2 = MW_GAP * 2;
+  return {
+    x: w.x,
+    y: w.y,
+    w: w.w >= cw - g2 ? cw : w.w,
+    h: w.h >= ch - g2 ? ch : w.h,
+  };
 }

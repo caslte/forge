@@ -649,6 +649,23 @@ const bridge: ForgeBridge = {
         persistSubagents();
         return { code: 0, message: 'ok', data: { removedSessions: removed.length } };
       }
+      case 'project/removeProject': {
+        // E2E：移除项目并级联删名下会话（同真实端 forge-core：逐个广播 session.removed
+        // + project.removed，返回删除会话数；未注册项目幂等成功 removedSessions:0）
+        const p = (params as { path?: string }).path ?? '';
+        const removed = DB.sessions.filter((s) => s.projectPath === p).map((s) => s.sessionId);
+        DB.sessions = DB.sessions.filter((s) => s.projectPath !== p);
+        DB.projects = DB.projects.filter((x) => x.path !== p);
+        for (const sid of removed) {
+          delete DB.subagents[sid];
+          sendScripts.delete(sid);
+          sendQueues.delete(sid);
+          emit('session.removed', { sessionId: sid });
+        }
+        persistSubagents();
+        emit('project.removed', { path: p });
+        return { code: 0, message: 'ok', data: { removedSessions: removed.length } };
+      }
       case 'session/querySessionList':
         return {
           code: 0,
@@ -1356,6 +1373,12 @@ const bridge: ForgeBridge = {
     listEditors: async () => [
       { id: 'vscode', label: 'VS Code' },
       { id: 'cursor', label: 'Cursor' },
+    ],
+    // 浏览器 dev/e2e 演示：终端 Shell 选项（真机由主进程探测决定，TD-TM-05 方案 B）
+    listTerminalShells: async () => [
+      { id: 'pwsh', label: 'PowerShell 7' },
+      { id: 'powershell', label: 'Windows PowerShell' },
+      { id: 'cmd', label: 'cmd' },
     ],
     openInEditor: async () => true,
     // 浏览器 dev 无系统浏览器：直接回失败（点击行为由拦截器静默处理，不报错）

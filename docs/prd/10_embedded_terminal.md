@@ -19,12 +19,12 @@ forge 目前没有任何终端能力：agent 的 bash 工具由 pi SDK 在主进
 | TM-S02 | 多标签管理 | 并行跑多个命令互不干扰 | 点 ＋ 新建 tab，**cwd 自动取当前会话所属项目根**（用户 2026-09-23 定的"自动"口径）；tab 显示项目名；点 ✕ 关闭并销毁对应 pty；切项目不影响已开 tab | 不做 tab 右键菜单/重命名/拖拽排序（本期）；不做"按项目分组 tab" |
 | TM-S03 | 交互式 shell | 真终端体验 | 完整 pty 交互：ANSI 色彩、vim/top 等 TUI、Ctrl+C 中断、窗口 resize 同步列数行数 | 不做管道式伪终端（无 TUI 能力方案已否） |
 | TM-S04 | 进程生命周期 | 心智简单、无泄漏 | 收起面板 pty 保活（回来还在）；关闭 tab 即 kill；窗口关闭全部回收；崩溃的 pty 在 tab 内提示退出码 | 不与 agent 的 bash 执行共享进程/会话（两套独立，用户已拍板） |
-| TM-S05 | 状态记忆 | 不重复摆弄布局 | 面板高度持久化（localStorage，usePreferences 模式）；开/关状态**不跨启动**（2026-10-01 修订：启动首页必须干净，面板只由本次运行的入口动作打开）；shell 类型默认系统默认 | 不持久化 tab 列表与终端内容（重启后新终端）；不跨启动恢复面板开关 |
+| TM-S05 | 状态记忆 | 不重复摆弄布局 | 面板高度持久化（localStorage，usePreferences 模式）；开/关状态**不跨启动**（2026-10-01 修订：启动首页必须干净，面板只由本次运行的入口动作打开）；shell 类型默认系统默认（2026-10-02：可在设置 → 个性化钉住，TD-TM-05 B） | 不持久化 tab 列表与终端内容（重启后新终端）；不跨启动恢复面板开关 |
 
 ### 1.3 边界与权限
 
 - **不可接受方案**：fork/修改 pi SDK 的命令执行链路来"共享"终端；用 webview 内嵌外部终端应用。
-- **必须满足条件**：pty 只在主进程 spawn（渲染进程零文件系统/进程权限）；数据通道过 ipc-contract + bridge 双白名单；spawn 的进程固定为系统 shell（`process.env.COMSPEC`/`SHELL`），不接受渲染层传入任意可执行路径；cwd 必须是已存在目录且来自主进程已知的项目路径。
+- **必须满足条件**：pty 只在主进程 spawn（渲染进程零文件系统/进程权限）；数据通道过 ipc-contract + bridge 双白名单；spawn 的进程固定为主进程解析的系统 shell（Win: `pwsh → powershell → COMSPEC` 优先级链；Unix: `SHELL`），不接受渲染层传入任意可执行路径；cwd 必须是已存在目录且来自主进程已知的项目路径。
 - **角色与权限边界**：单用户本地应用；终端权限即用户本机权限，forge 不做额外沙箱（与外部终端一致）。
 
 ### 1.4 已确认业务决策
@@ -45,7 +45,7 @@ forge 目前没有任何终端能力：agent 的 bash 工具由 pi SDK 在主进
 | TD-TM-02 | TM-S03 | 前端渲染 | A: @xterm/xterm + @xterm/addon-fit（事实标准）；B: 自绘（无意义） | A | 已确认（采纳推荐，无异议） |
 | TD-TM-03 | TM-S03/S04 | 终端数据是高频双向流，现有 RPC 是请求-响应+事件单向。方案：主进程按 ptyId 广播 `term:data`/`term:exit` 事件（沿用 forge.on 通道），渲染层输入走 `term/write` invoke（或专用 ipc channel）；resize 走 invoke | A: 事件下行 + invoke 上行（复用现有 on/invoke 基建，双白名单改动小）；B: 独立 ipcMain.on 裸通道（少一层封装但破坏现有契约治理） | A | 已确认（采纳推荐，无异议） |
 | TD-TM-04 | TM-S01/S05 | 面板高度持久化（开/关状态仅本次运行） | A: usePreferences localStorage 模式（现 showDiff 同款）；B: 后端配置 | A | 已确认 |
-| TD-TM-05 | TM-S02 | 默认 shell 选择 | A: 系统默认（Win: COMSPEC 即 pwsh/cmd；Unix: $SHELL），不做选择 UI；B: 设置页可选 shell | A（本期），B 记入待办 | 已确认 |
+| TD-TM-05 | TM-S02 | 默认 shell 选择 | A: 系统默认优先级链（Win: pwsh → powershell → COMSPEC，主进程 spawn 前做存在性探测；Unix: $SHELL）；B: 设置页可选 shell | A + B（2026-10-02：默认=A 优先级链；B 当期落地——设置 → 个性化「终端 Shell」可钉住 pwsh/powershell/cmd，渲染层只传枚举 id、路径解析仍在主进程，钉住档未装回退链。原 A 单独版 Win 仅取 COMSPEC=cmd，因 `./` 语法/直跑 .ps1 必失败而修订） | 已确认 |
 
 ### 已采用的常规默认项
 
@@ -120,7 +120,7 @@ resize：面板/窗口尺寸变化 → addon.fit → invoke term/resize {ptyId, 
 
 - 目标：安全的 shell 宿主。
 - 前置条件：TD-TM-01 spike 通过。
-- 业务规则：spawn 目标固定为系统 shell（Windows `$COMSPEC`，Unix `$SHELL` 回退 bash）；cwd 校验：目录存在 + 等于某已知项目根（主进程侧数据，不信任渲染层任意路径）；每 pty 记录 ptyId/shell/cwd；kill 幂等（已退出不报错）。
+- 业务规则：spawn 目标固定为系统 shell（Windows：`pwsh → powershell → $COMSPEC` 优先级链，主进程 spawn 前完成存在性探测，PowerShell 系带 `-NoLogo`；Unix `$SHELL` 回退 bash）；cwd 校验：目录存在 + 等于某已知项目根（主进程侧数据，不信任渲染层任意路径）；每 pty 记录 ptyId/shell/cwd；kill 幂等（已退出不报错）。
 - 异常与边界：spawn 失败（shell 不存在/权限）→ 返回错误码，UI 在 tab 内显示原因；pty 意外退出 → term:exit 事件带退出码。
 - 数据一致性与幂等：before-quit 全量回收；渲染层 reload（开发期 HMR）后孤儿 pty 按 ptyId 对账清理（UI 不再引用的 id 一律 kill）。
 

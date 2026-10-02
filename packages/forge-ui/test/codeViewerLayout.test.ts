@@ -15,9 +15,18 @@ import {
   clampCodeSplitPct,
   effectiveCodeLayout,
   nextSplitPct,
+  usePreferences,
 } from '../src/composables/usePreferences.ts';
 
 const W = 1280; // 参照窗宽
+
+// ===== 默认布局（个性化设置里的初始值，无 localStorage 时生效的就是它）=====
+
+test('默认布局是整屏覆盖 cover（2026-10 用户定稿：进代码态默认整屏读码）', () => {
+  // node 单测环境没有 localStorage（load() 静默回退），断言的就是模块默认值
+  const { codeViewerLayout } = usePreferences();
+  assert.equal(codeViewerLayout.value, 'cover');
+});
 
 // ===== clampCodeSplitPct：两侧各保底 320px =====
 

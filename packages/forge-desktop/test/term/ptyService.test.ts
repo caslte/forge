@@ -17,12 +17,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { normalizeProjectPath, type RpcResult } from '@forge/core';
 import {
+  collectInstalledShells,
   createTermService,
+  resolveShellByPref,
   resolveSystemShell,
+  shellSpawnArgs,
+  windowsShellCandidates,
   type PtyLike,
   type PtySpawnOptions,
   type TermDataPayload,
   type TermExitPayload,
+  type TerminalShellId,
 } from '../../src/term/ptyService.ts';
 
 class FakePty implements PtyLike {
@@ -66,7 +71,12 @@ interface Harness {
   projectDir: string; // realpath 归一后的可注册项目根
 }
 
-function makeHarness(opts: { registerProject?: boolean } = {}): Harness {
+function makeHarness(
+  opts: {
+    registerProject?: boolean;
+    resolveShellByPref?: (pref: TerminalShellId) => string | null;
+  } = {},
+): Harness {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-term-test-'));
   const projectDir = normalizeProjectPath(dir);
   const registered = opts.registerProject !== false;
@@ -86,6 +96,7 @@ function makeHarness(opts: { registerProject?: boolean } = {}): Harness {
       return pty;
     },
     resolveShell: () => 'C:\\fake\\shell.exe',
+    resolveShellByPref: opts.resolveShellByPref,
     logger: (line) => logs.push(line),
   });
   return { events, spawned, spawnCalls, logs, methods: svc.methods, killAll: svc.killAll, projectDir };
@@ -210,23 +221,139 @@ test('term/kill：幂等；killAll 全量回收并留日志（TM-S04）', async 
   assert.deepEqual(h.spawned[1]!.writes, []);
 });
 
-test('resolveSystemShell：Windows 取 COMSPEC、缺省回 cmd.exe；Unix 取 SHELL 回退 /bin/bash', () => {
+test('resolveSystemShell（win32）：pwsh → powershell → COMSPEC 优先级链', () => {
+  // exists 探测注入 fake（只看候选文件名），真实 PATH/文件系统不参与断言
+  const isPwsh = (p: string) => p.toLowerCase().endsWith('pwsh.exe');
+  const isPowerShell = (p: string) => p.toLowerCase().endsWith('powershell.exe');
+  // 第一档：pwsh 任一候选存在即命中
+  assert.ok(isPwsh(resolveSystemShell('win32', isPwsh)));
+  // 第二档：pwsh 全缺、powershell 存在
+  assert.ok(isPowerShell(resolveSystemShell('win32', isPowerShell)));
+  // 兜底：全链未命中 → COMSPEC；COMSPEC 也缺 → 'cmd.exe' 通用名（旧口径不变）
   const savedComspec = process.env.COMSPEC;
+  try {
+    process.env.COMSPEC = 'C:\\Windows\\System32\\cmd.exe';
+    assert.equal(resolveSystemShell('win32', () => false), 'C:\\Windows\\System32\\cmd.exe');
+    delete process.env.COMSPEC;
+    assert.equal(resolveSystemShell('win32', () => false), 'cmd.exe');
+  } finally {
+    if (savedComspec !== undefined) process.env.COMSPEC = savedComspec;
+    else delete process.env.COMSPEC;
+  }
+});
+
+test('resolveSystemShell：Unix 取 SHELL 回退 /bin/bash（优先级链不适用）', () => {
   const savedShell = process.env.SHELL;
   try {
-    process.env.COMSPEC = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-    assert.equal(
-      resolveSystemShell('win32'),
-      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-    );
-    delete process.env.COMSPEC;
-    assert.equal(resolveSystemShell('win32'), 'cmd.exe');
     process.env.SHELL = '/bin/zsh';
     assert.equal(resolveSystemShell('darwin'), '/bin/zsh');
     delete process.env.SHELL;
     assert.equal(resolveSystemShell('linux'), '/bin/bash');
   } finally {
-    if (savedComspec !== undefined) process.env.COMSPEC = savedComspec;
     if (savedShell !== undefined) process.env.SHELL = savedShell;
   }
+});
+
+test('windowsShellCandidates：PATH 逐目录在前、标准安装位补漏，pwsh 档先于 powershell 档', () => {
+  const list = windowsShellCandidates({
+    PATH: 'C:\\one;C:\\two',
+    ProgramFiles: 'C:\\Program Files',
+    SystemRoot: 'C:\\WINDOWS',
+  });
+  assert.deepEqual(list.slice(0, 2), ['C:\\one\\pwsh.exe', 'C:\\two\\pwsh.exe']);
+  assert.ok(list.includes('C:\\Program Files\\PowerShell\\7\\pwsh.exe'));
+  assert.ok(list.includes('C:\\two\\powershell.exe'));
+  assert.ok(list.includes('C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'));
+  const firstPowerShell = list.findIndex((p) => p.endsWith('powershell.exe'));
+  const lastPwsh = list.map((p) => p.endsWith('pwsh.exe')).lastIndexOf(true);
+  assert.ok(lastPwsh < firstPowerShell, 'pwsh 档候选必须整体排在 powershell 档之前');
+});
+
+test('shellSpawnArgs：PowerShell 系 -NoLogo，cmd/Unix/未知 shell 无参', () => {
+  assert.deepEqual(shellSpawnArgs('C:\\Program Files\\PowerShell\\7\\pwsh.exe'), ['-NoLogo']);
+  assert.deepEqual(
+    shellSpawnArgs('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'),
+    ['-NoLogo'],
+  );
+  assert.deepEqual(shellSpawnArgs('C:\\Windows\\System32\\cmd.exe'), []);
+  assert.deepEqual(shellSpawnArgs('/bin/bash'), []);
+  assert.deepEqual(shellSpawnArgs('C:\\fake\\shell.exe'), []);
+});
+
+test('term/create：spawn args 随 shell 决定（pwsh → -NoLogo）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-term-pwsh-'));
+  const projectDir = normalizeProjectPath(dir);
+  const spawnCalls: Harness['spawnCalls'] = [];
+  const svc = createTermService({
+    isKnownProjectPath: (p) => p === projectDir,
+    emit: () => {},
+    spawnPty: (file, args, options) => {
+      spawnCalls.push({ file, args, options });
+      return new FakePty();
+    },
+    resolveShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    logger: () => {},
+  });
+  const res = await svc.methods['term/create']!({ cwd: projectDir });
+  assert.equal(res.code, 0, res.message);
+  assert.equal(spawnCalls.length, 1);
+  assert.ok(spawnCalls[0]!.file.endsWith('pwsh.exe'));
+  assert.deepEqual(spawnCalls[0]!.args, ['-NoLogo']);
+});
+
+test('resolveShellByPref：钉住档取首个存在者，未装返回 null；cmd 走 COMSPEC；auto/Unix 回链', () => {
+  const isPwsh = (p: string) => p.toLowerCase().endsWith('pwsh.exe');
+  const isPowerShell = (p: string) => p.toLowerCase().endsWith('powershell.exe');
+  assert.ok(isPwsh(resolveShellByPref('pwsh', 'win32', isPwsh)));
+  assert.ok(isPowerShell(resolveShellByPref('powershell', 'win32', isPowerShell)));
+  // 只认 pwsh 候选 → powershell 档全缺 → null（调用方回退链）
+  assert.equal(resolveShellByPref('powershell', 'win32', isPwsh), null);
+  const savedComspec = process.env.COMSPEC;
+  try {
+    process.env.COMSPEC = 'C:\\Windows\\System32\\cmd.exe';
+    assert.equal(resolveShellByPref('cmd', 'win32', () => false), 'C:\\Windows\\System32\\cmd.exe');
+  } finally {
+    if (savedComspec !== undefined) process.env.COMSPEC = savedComspec;
+    else delete process.env.COMSPEC;
+  }
+  // auto = 优先级链本体；非 win32 钉任何档都回链
+  assert.ok(isPwsh(resolveShellByPref('auto', 'win32', isPwsh)));
+  assert.equal(resolveShellByPref('pwsh', 'linux', isPwsh), resolveSystemShell('linux'));
+});
+
+test('collectInstalledShells：档序 pwsh→powershell→cmd、exists 过滤、Unix 为空', () => {
+  const isPwsh = (p: string) => p.toLowerCase().endsWith('pwsh.exe');
+  const shells = collectInstalledShells('win32', isPwsh);
+  assert.deepEqual(shells.map((s) => s.id), ['pwsh', 'cmd']);
+  assert.equal(shells[0]!.label, 'PowerShell 7');
+  assert.ok(isPwsh(shells[0]!.exe));
+  // 全部不存在也保留 cmd 兜底档
+  assert.deepEqual(collectInstalledShells('win32', () => false).map((s) => s.id), ['cmd']);
+  assert.deepEqual(collectInstalledShells('linux', isPwsh), []);
+});
+
+test('term/create：shellId 非法枚举 1001 且不 spawn', async () => {
+  const h = makeHarness();
+  const res = await h.methods['term/create']!({ cwd: h.projectDir, shellId: 'powershell7' });
+  assert.equal(res.code, 1001);
+  assert.equal(h.spawnCalls.length, 0);
+});
+
+test('term/create：shellId=pwsh → 主进程按 id 解析，渲染层不传路径', async () => {
+  const h = makeHarness({
+    resolveShellByPref: (pref) => (pref === 'pwsh' ? 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' : null),
+  });
+  const res = await h.methods['term/create']!({ cwd: h.projectDir, shellId: 'pwsh' });
+  assert.equal(res.code, 0, res.message);
+  assert.ok(h.spawnCalls[0]!.file.endsWith('pwsh.exe'));
+  assert.deepEqual(h.spawnCalls[0]!.args, ['-NoLogo']);
+});
+
+test('term/create：shellId 钉住档未装 → 回退注入的默认链，不阻塞开 tab', async () => {
+  const h = makeHarness({ resolveShellByPref: () => null });
+  const res = await h.methods['term/create']!({ cwd: h.projectDir, shellId: 'pwsh' });
+  assert.equal(res.code, 0, res.message);
+  assert.equal(h.spawnCalls[0]!.file, 'C:\\fake\\shell.exe');
+  assert.deepEqual(h.spawnCalls[0]!.args, []);
+  assert.ok(h.logs.some((l) => l.includes("shell pref 'pwsh' not installed")));
 });

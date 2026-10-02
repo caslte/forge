@@ -187,6 +187,16 @@ export const IPC_SHELL_OPEN_IN_BROWSER = 'forge:shell:openInBrowser';
 export const IPC_SHELL_LIST_EDITORS = 'forge:shell:listEditors';
 
 /**
+ * preload ↔ main shell 通道：探测本机可用的**内嵌终端** shell
+ * （设置 → 个性化 → 终端 Shell 的选项数据源，TD-TM-05 方案 B）。
+ *
+ * 只回 `{ id, label }`——可执行路径不回渲染层；渲染层选定后经 term/create 的
+ * `shellId`（同一 id 枚举，term/ptyService.ts TERMINAL_SHELL_IDS）下发，由主进程
+ * 解析成真实 shell。探测规则见 term/ptyService.ts collectInstalledShells。
+ */
+export const IPC_SHELL_LIST_TERMINAL_SHELLS = 'forge:shell:listTerminalShells';
+
+/**
  * preload ↔ main shell 通道：用**指定**的外部编辑器打开一个文件
  * （代码树右键「用 VS Code 打开 / 用 Cursor 打开 / …」）。
  *

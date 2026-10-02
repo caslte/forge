@@ -81,7 +81,7 @@ async function openTreeFile(page: Page, name: string): Promise<void> {
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
   await waitForMock(page);
-  // 每个用例从干净的偏好开始：默认左右分割 / 46%
+  // 每个用例从干净的偏好开始：默认整屏覆盖 / 46%
   await page.evaluate(() => {
     localStorage.removeItem('forge.codeViewerLayout');
     localStorage.removeItem('forge.codeViewerSplitPct');
@@ -223,8 +223,7 @@ test('E-CE-05 @P0 @mock-backend：布局 A 整屏覆盖——对话区宽度零�
   const health = attachHealthGuards(page);
   const before = await convWidth(page);
   await openCode(page);
-  // 默认是分割，先切到整屏覆盖再验证「宽度零变化」
-  await page.locator('.ctp-icon').click();
+  // 默认即整屏覆盖（2026-10 用户定稿），打开文件直接验证「宽度零变化」
   await page.locator('.ctp-row', { hasText: 'README.md' }).first().click();
   await expect(page.locator('.cv')).toBeVisible();
   const after = await convWidth(page);
@@ -239,8 +238,11 @@ test('E-CE-05 @P0 @mock-backend：布局 A 整屏覆盖——对话区宽度零�
 
 test('E-CE-06 @P0 @mock-backend：布局 B 分割——5px 沟、两侧贴合、320px 保底', async ({ page }) => {
   const health = attachHealthGuards(page);
-  // 默认即分割，打开文件后代码纸出现在右缘
-  await openCodeWithFile(page);
+  // 默认是整屏覆盖；本用例测分割布局，先点顶栏切换键切到 split
+  await openCode(page);
+  await page.locator('.ctp-icon').click();
+  await page.locator('.ctp-row', { hasText: 'README.md' }).first().click();
+  await expect(page.locator('.cv')).toBeVisible();
   await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'split');
 
   const gutter = page.locator('.csp');
@@ -264,6 +266,9 @@ test('E-CE-06 @P0 @mock-backend：布局 B 分割——5px 沟、两侧贴合、
 test('E-CE-07 @P1 @mock-backend：双击沟复位 46%，←/→ 每次 2 个百分点', async ({ page }) => {
   const health = attachHealthGuards(page);
   await openCodeWithFile(page);
+  // 默认是整屏覆盖，先切到 split 才有沟可拖
+  await page.locator('.ctp-icon').click();
+  await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'split');
 
   const gutter = page.locator('.csp');
   const g = (await gutter.boundingBox())!;
@@ -296,6 +301,8 @@ test('E-CE-08 @P0 @mock-backend：窄窗临时降级为 cover，且不写坏 spl
   const health = attachHealthGuards(page);
   await page.setViewportSize({ width: 1400, height: 900 });
   await openCodeWithFile(page);
+  // 默认是整屏覆盖；本用例测「偏好 split 的窄窗降级」，先显式切到 split（会落盘）
+  await page.locator('.ctp-icon').click();
   await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'split');
   // 顶栏切换键的“当前是分割”态：品牌色选中 + aria-pressed（不只靠颜色传达，
   // 读屏/键盘用户拿到的是同一个信息）
@@ -309,8 +316,8 @@ test('E-CE-08 @P0 @mock-backend：窄窗临时降级为 cover，且不写坏 spl
   await expect(page.locator('.ctp-warn')).toBeVisible();
   await expect(page.locator('.ctp-warn')).toHaveAttribute('title', /窗口过窄/);
   await expect(page.locator('.cex-note')).toBeVisible();
-  // 偏好没被改写（默认即 split，键可能压根没写过；只要不是被降级偷换成 cover 就行）
-  expect(await page.evaluate(() => localStorage.getItem('forge.codeViewerLayout'))).not.toBe('cover');
+  // 偏好没被降级偷换：仍是上面显式选择的 split
+  expect(await page.evaluate(() => localStorage.getItem('forge.codeViewerLayout'))).toBe('split');
 
   // 拉宽 → 自动恢复 split，提示消失
   await page.setViewportSize({ width: 1400, height: 900 });
@@ -349,6 +356,8 @@ test('E-CE-09 @P1 @mock-backend：Esc 逐级退出——先收代码纸，再退
 test('E-CE-10 @P1 @mock-backend：布局偏好与分割宽度刷新后仍在', async ({ page }) => {
   const health = attachHealthGuards(page);
   await openCodeWithFile(page);
+  // 默认是整屏覆盖，先显式切到 split 并落盘，再验证「布局 + 宽度」跨刷新恢复
+  await page.locator('.ctp-icon').click();
   await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'split');
 
   // 拖宽代码纸（向左拖沟）→ 百分比落盘
@@ -375,11 +384,15 @@ test('E-CE-11 @P1 @mock-backend：设置页可改布局与分割宽度，回工�
   await expect(page.locator('.settings-panel, .settings-body')).toBeVisible();
   await page.locator('.settings-tab', { hasText: '个性化' }).click();
 
-  // 默认 split：滑杆可用
+  // 默认整屏覆盖（2026-10 用户定稿）：滑杆禁用而非隐藏
   const slider = page.locator('.split-range');
+  await expect(slider).toBeDisabled();
+
+  // 切到左右分割：滑杆启用
+  await page.locator('.code-layout-option', { hasText: '左右分割' }).click();
   await expect(slider).toBeEnabled();
 
-  // 切到整屏覆盖：滑杆禁用而非隐藏
+  // 再切整屏覆盖：滑杆禁用而非隐藏
   await page.locator('.code-layout-option', { hasText: '整屏覆盖' }).click();
   await expect(slider).toBeDisabled();
 
@@ -434,6 +447,10 @@ function recentName(page: Page, name: string) {
 test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚进视野', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await openCode(page);
+  // 默认整屏覆盖纸太宽，7 个签放得下就不溢出；显式切到 split 恢复本用例的窄纸前提。
+  // 未开文件时 .cex 的 data-layout 恒为 cover（代码纸还没出来），按钮 pressed 态直接反映偏好
+  await page.locator('.ctp-icon').click();
+  await expect(page.locator('.ctp-icon')).toHaveAttribute('aria-pressed', 'true');
   await expandAll(page);
 
   // 逐个打开 7 个文件：tab 顺序由此确定
@@ -489,6 +506,10 @@ test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚
 test('E-CE-15 @P1 @mock-backend：tab 条悬停时竖向滚轮可横滚；代码正文真的是 JetBrains Mono；选中底色无绿', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await openCode(page);
+  // 默认整屏覆盖纸太宽，签条不溢出就滚不动；显式切到 split 恢复溢出前提。
+  // 未开文件时 .cex 的 data-layout 恒为 cover（代码纸还没出来），按钮 pressed 态直接反映偏好
+  await page.locator('.ctp-icon').click();
+  await expect(page.locator('.ctp-icon')).toHaveAttribute('aria-pressed', 'true');
   await expandAll(page);
   const names = [
     'README.md',
@@ -887,6 +908,10 @@ test('E-CE-21 @P1 @mock-backend：tab 可拖拽排序，拖动不切激活签，
 test('E-CE-22 @P1 @mock-backend：拖到签条边缘会自动横向滚动（否则后面的签拖不到）', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await openCode(page);
+  // 默认整屏覆盖纸太宽，签条不溢出就没有「拖到边缘自动滚」；显式切到 split 恢复前提。
+  // 未开文件时 .cex 的 data-layout 恒为 cover（代码纸还没出来），按钮 pressed 态直接反映偏好
+  await page.locator('.ctp-icon').click();
+  await expect(page.locator('.ctp-icon')).toHaveAttribute('aria-pressed', 'true');
   await expandAll(page);
   const names = [
     'README.md',

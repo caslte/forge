@@ -1226,7 +1226,7 @@ onUnmounted(() => {
    内容列会以「消息区」而非「整列视口」为中心，整体右移半个窄条宽，
    与下方输入框错开。补齐后两者严格同轴。 */
 .conv-view.col-standard .conv-main-row.has-rail .conv-messages {
-  padding-right: calc(38px + var(--timeline-rail-w, 28px));
+  padding-right: calc(38px + var(--timeline-rail-w, 32px));
 }
 
 /* 左缘时间线 + 消息区横排容器（CV-S06）：时间线窄条在左，消息流占满余宽；

@@ -37,7 +37,7 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
-const { terminalOpen, terminalHeight, terminalTint, setTerminalOpen, setTerminalHeight, setTerminalTint } =
+const { terminalOpen, terminalHeight, terminalTint, terminalShell, setTerminalOpen, setTerminalHeight, setTerminalTint } =
   usePreferences();
 const { themeMode } = useTheme();
 const { info: toastInfo } = useToast();
@@ -280,6 +280,8 @@ async function createTab(): Promise<void> {
     cwd,
     cols: spawnCols,
     rows: spawnRows,
+    // 设置页「终端 Shell」钉住档（auto=主进程优先级链）；渲染层只传枚举 id，不传路径
+    shellId: terminalShell.value,
   });
   // 临时诊断（模块10 断链排查，定位后删除）
   console.log(`[term-diag] create envelope code=${res.code} ptyId=${res.data?.ptyId.slice(0, 8) ?? 'null'}`);

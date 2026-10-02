@@ -399,6 +399,8 @@ const projectMenuItems = computed<ContextMenuItem[]>(() => {
       icon: ICON_SESSIONS,
       danger: true,
       confirming: clearing,
+      // 两阶段确认：首次点击只切确认文案，菜单必须保持打开等第二次点击
+      keepOpen: true,
     },
     {
       key: 'delete',
@@ -406,6 +408,7 @@ const projectMenuItems = computed<ContextMenuItem[]>(() => {
       icon: ICON_TRASH,
       danger: true,
       confirming: deleting,
+      keepOpen: true,
     },
   ];
 });
@@ -1164,6 +1167,24 @@ onUnmounted(() => {
   background: var(--muted);
   color: var(--foreground);
   border-color: transparent;
+}
+
+/* 项目行尾的三个操作（代码浏览器/新会话/更多）用紧凑尺寸：
+   24px 胶囊在行高里显得墩，缩到 18px 并收紧间距，少占行宽。
+   只作用于项目行；会话行的删除按钮保持原尺寸（危险操作保留更大命中区）。 */
+.tree-project .tree-node-actions {
+  gap: 2px;
+}
+
+.tree-project .tree-icon-button {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+}
+
+.tree-project .tree-icon-button svg {
+  width: 11px;
+  height: 11px;
 }
 
 .confirm-text {

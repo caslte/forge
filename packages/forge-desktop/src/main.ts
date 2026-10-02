@@ -35,11 +35,12 @@ import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './boo
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { createNotifyToastManager } from './notifyToast.ts';
 import { createNotifyGate, type NotifyKind } from './notifyGate.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_LIST_TERMINAL_SHELLS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
 import { resolveEditorOpenTarget } from './shell/openEditorTarget.ts';
 import { collectInstalledEditors } from './shell/editorScan.ts';
 import { gatherScanData } from './shell/editorProbe.ts';
+import { collectInstalledShells } from './term/ptyService.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -569,6 +570,12 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
   // 编辑器装了/卸了不用重启应用。目录 + 解析规则见 shell/editorScan.ts。
   ipcMain.handle(IPC_SHELL_LIST_EDITORS, async () => {
     return collectInstalledEditors(await gatherScanData()).map(({ id, label }) => ({ id, label }));
+  });
+  // 探测本机可用的内嵌终端 shell（设置 → 个性化 → 终端 Shell 选项源）：只回 {id,label}，
+  // exe 路径不出主进程；渲染层选定后经 term/create 的 shellId（同一枚举）回主进程解析。
+  // 每次都现扫（纯 fs existsSync，微秒级），shell 装了/卸了即时生效。规则见 term/ptyService.ts。
+  ipcMain.handle(IPC_SHELL_LIST_TERMINAL_SHELLS, () => {
+    return collectInstalledShells().map(({ id, label }) => ({ id, label }));
   });
   // 用**指定**编辑器（id 来自目录白名单）打开一个文件（代码树右键菜单）；成功 true，失败 false。
   // 这条会**启动外部程序**，所以比 openPath / openInBrowser 都多几道锁：

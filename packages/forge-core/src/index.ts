@@ -130,6 +130,7 @@ export {
   snapRectFor,
   arrangeAutoLayout,
   clampWindowBounds,
+  unshrinkLegacyBounds,
   MW_GAP,
   MW_MIN_W,
   MW_MIN_H,

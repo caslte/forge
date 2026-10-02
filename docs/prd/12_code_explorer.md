@@ -191,7 +191,7 @@ main.content#contentConv │ ▌ │ main.content.content-code
 | ui | `components/CodeSplitter.vue` | 新增：5px 分割条，pointer 拖拽 + 双击复位 + 键盘左右调；`z-index` 高于两纸（否则 pin/浮层会被压） |
 | ui | `components/ProjectTree.vue` | 项目行 `.tree-node-actions` 插入 `<>` 按钮；`emit('open-code', path)`；仅 `view === 'project'` 时渲染 |
 | ui | `App.vue` | `.tree-panel` 内加 `v-if/v-else` 切换；`.content` 外包一层 `.splitwrap` 并加 `<CodeExplorer>` + `<CodeSplitter>`；`codePanelOpen` 状态 |
-| ui | `store/prefs.ts`（或复用 `App.vue` 现有 localStorage 封装） | `codeViewerLayout: 'cover' \| 'split'`（默认 `split`，demo 定稿推荐 A=右缘分割）、`codeViewerSplitPct`（默认 46） |
+| ui | `store/prefs.ts`（或复用 `App.vue` 现有 localStorage 封装） | `codeViewerLayout: 'cover' \| 'split'`（默认 `cover`，2026-10-02 用户定稿：个性化默认整屏覆盖；原 demo 定稿为 `split`）、`codeViewerSplitPct`（默认 46） |
 | ui | 设置页 | 「外观」分区加两项：代码查看器布局（整屏/分割单选）+ 分割宽度滑杆（仅 B 可见） |
 | ui | `bridge.ts` / `mock-bridge.ts` | 三方法类型 + mock 数据 |
 | ui | `i18n/code.ts` | 新增 domain（en / zh-CN 各一份） |

@@ -188,8 +188,9 @@
   --content-col-std: 920px;
 
   /* 左缘时间线窄条宽（历史导航条）：ConversationView 在「标准」宽度下用它
-     给消息区补一份对称右侧 padding，使居中内容列与输入框严格同轴 */
-  --timeline-rail-w: 28px;
+     给消息区补一份对称右侧 padding，使居中内容列与输入框严格同轴。
+     32 = 22px 波峰内容 + 左 7px（与侧栏分界线留出间隙）+ 右 3px */
+  --timeline-rail-w: 32px;
 }
 
 /* 暗色主题：抬底 + 压字，双向收敛（原型 dialog-readability-demo.html D 档，v6.1 定稿）。

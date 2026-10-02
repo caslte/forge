@@ -12,6 +12,8 @@
  *  - document **capture** 阶段的 click 关闭，且点到菜单自身内部不算关闭
  *  - Escape 关闭
  *  - window 滚动/缩放关闭（菜单是 fixed 定位，页面一动它就错位了）
+ *  - 唯一对旧实现的有意扩展：`keepOpen` 条目选中后不自动关（旧 ProjectTree 的
+ *    两阶段确认项本来就不关菜单，收尾关闭由消费方 handler 决定）
  *
  * 宽度/高度：原来两处都是写死 `min-width`（180 / 160）+ 硬编码的钳制宽高。
  * 这里改成先按 items 数量估一个值渲染、下一帧用真实 `getBoundingClientRect()` 再钳一次，
@@ -32,6 +34,11 @@ export interface ContextMenuItem {
   confirming?: boolean;
   /** 禁用：不可点、不触发 */
   disabled?: boolean;
+  /** 选中后保持菜单打开。两阶段确认项必须置位：首次点击只切确认文案，
+   *  若这里照常 close，消费方的 closeMenu 会把确认态一并清掉，第二次点击
+   *  永远等不到，表现为「清理所有会话/删除项目点了没反应」。确认后的
+   *  收尾关闭由消费方 handler 自己调 close()（见 ProjectTree 两阶段流程）。 */
+  keepOpen?: boolean;
 }
 
 const props = withDefaults(
@@ -131,7 +138,7 @@ function onItemClick(item: ContextMenuItem): void {
   // `menuOpenPath` / `contextMenuPath` 这个 ref 拿目标路径，而 close 会把它置空；
   // 先发 close 就等于在 handler 跑之前把目标删了，表现为「点了菜单项但 shell 没被调用」。
   emit('select', item.key);
-  close();
+  if (!item.keepOpen) close();
 }
 
 const style = computed(() => ({ left: `${posX.value}px`, top: `${posY.value}px` }));

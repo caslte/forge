@@ -405,6 +405,11 @@ export interface ForgeBridge {
      */
     listEditors(): Promise<{ id: string; label: string }[]>;
     /**
+     * 探测本机可用的内嵌终端 shell（设置 → 个性化 → 终端 Shell 选项源，TD-TM-05 方案 B）。
+     * exe 路径不出主进程，渲染层只拿 id + 展示名；选定 id 经 term/create 的 shellId 下发。
+     */
+    listTerminalShells(): Promise<{ id: string; label: string }[]>;
+    /**
      * 用**指定**编辑器（id 必须来自 listEditors）打开一个文件（代码树右键菜单）。
      * 失败返回 false（未装、目标不是普通文件、文件名以 `-` 开头等）。
      * 渲染层只能传文件路径 + 编辑器 id：命令名与参数由主进程决定。

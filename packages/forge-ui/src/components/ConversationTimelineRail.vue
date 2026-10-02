@@ -150,13 +150,14 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 窄条纵列（约 28px），与消息区同高；无右边框、透明背景——融入消息区，不做视觉切割。
+/* 窄条纵列（约 32px），与消息区同高；无右边框、透明背景——融入消息区，不做视觉切割。
    条目少时整列垂直居中（safe center：溢出时回退顶部并保持可滚动）。
-   内容宽度预留波峰伸长空间（22px），overflow 裁剪不会切掉伸长段。
+   左 padding 大于右——横条与左侧分界线留出间隙，不贴边；内容宽度预留波峰伸长
+   空间（22px），overflow 裁剪不会切掉伸长段。
    宽度取 token：ConversationView「标准」宽度用它给消息区补对称 padding */
 .history-rail {
   position: relative;
-  width: var(--timeline-rail-w, 28px);
+  width: var(--timeline-rail-w, 32px);
   flex-shrink: 0;
   min-height: 0;
   display: flex;
@@ -164,7 +165,7 @@ onUnmounted(() => {
   align-items: stretch;
   justify-content: safe center;
   gap: 4px;
-  padding: 14px 3px;
+  padding: 14px 3px 14px 7px;
   overflow-y: auto;
   overflow-x: hidden;
   background: transparent;
@@ -184,13 +185,13 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-/* 横条本体：默认 12×3 圆角条；宽度/颜色由波浪逻辑内联驱动（barWidth/barColor），
+/* 横条本体：默认 12×2 圆角条；宽度/颜色由波浪逻辑内联驱动（barWidth/barColor），
    width 过渡让指针扫过时波包平滑流动。flex:none——避免被按钮内容宽度（12px）压缩 */
 .history-rail-bar {
   display: block;
   flex: none;
   width: 12px;
-  height: 3px;
+  height: 2px;
   border-radius: 999px;
   background: color-mix(in oklab, var(--muted-foreground) 42%, transparent);
   transition:

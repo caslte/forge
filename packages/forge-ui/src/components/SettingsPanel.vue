@@ -11,6 +11,7 @@ import {
   usePreferences,
   type CodeViewerLayout,
   type ContentWidth,
+  type TerminalShellPref,
 } from '../composables/usePreferences';
 import { useUpdater } from '../composables/useUpdater';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
@@ -88,14 +89,53 @@ const contentWidthOptions: { value: ContentWidth; labelKey: MessageKey }[] = [
   { value: 'wide', labelKey: 'settings.personal.contentWidthWide' },
 ];
 
-/** 模块 12：代码查看器布局单选项（demo 定稿默认 split 右缘分割；cover 留给整屏阅读偏好） */
+/** 模块 12：代码查看器布局单选项（默认 cover 整屏覆盖，2026-10-02 用户定稿；split 留给偏好并排的人） */
 const codeLayoutOptions: { value: CodeViewerLayout; labelKey: MessageKey }[] = [
   { value: 'cover', labelKey: 'settings.codeViewer.layoutCover' },
   { value: 'split', labelKey: 'settings.codeViewer.layoutSplit' },
 ];
 
+/**
+ * 模块 10 TD-TM-05 方案 B：终端 Shell 选项。首项恒为 auto（跟随系统默认优先级链），
+ * 其余来自主进程探测（listTerminalShells 只回已安装档，label=产品名）。探测失败/空
+ * 列表只剩 auto——静默降级，不报错打扰。
+ */
+const installedShells = ref<{ id: TerminalShellPref; label: string }[]>([]);
+const terminalShellOptions = computed<{ value: TerminalShellPref; label: string }[]>(() => [
+  { value: 'auto', label: t('settings.personal.terminalShellAuto') },
+  ...installedShells.value.map((s) => ({ value: s.id, label: s.label })),
+]);
+
+/** 终端 Shell 下拉（TD-TM-05 B）：开合状态与当前档展示名；选择即落盘并收起 */
+const shellMenuOpen = ref(false);
+const selectedShellLabel = computed(
+  () =>
+    terminalShellOptions.value.find((o) => o.value === terminalShell.value)?.label ??
+    terminalShell.value,
+);
+
+function pickShell(v: TerminalShellPref): void {
+  setTerminalShell(v);
+  shellMenuOpen.value = false;
+}
+
+async function refreshTerminalShells(): Promise<void> {
+  try {
+    const list = await window.forge.shell.listTerminalShells();
+    // 白名单过滤：id 必须落在 TerminalShellPref 枚举内，脏数据不进选项
+    installedShells.value = list.flatMap((s) =>
+      s.id === 'pwsh' || s.id === 'powershell' || s.id === 'cmd'
+        ? [{ id: s.id, label: s.label }]
+        : [],
+    );
+  } catch {
+    installedShells.value = [];
+  }
+}
+
 const toast = useToast();
-const { showDiff, setShowDiff, contentWidth, setContentWidth } = usePreferences();
+const { showDiff, setShowDiff, contentWidth, setContentWidth, terminalShell, setTerminalShell } =
+  usePreferences();
 const {
   codeViewerLayout,
   setCodeViewerLayout,
@@ -549,6 +589,7 @@ onMounted(() => {
   void loadProviders();
   void loadModels();
   void loadPiInfo();
+  void refreshTerminalShells();
   void refreshUpState();
   upEnsureSubscribed();
   void loadUpDebugEnabled();
@@ -887,6 +928,45 @@ onUnmounted(() => {
           >
             <span class="pref-knob"></span>
           </button>
+        </div>
+      </section>
+
+      <!-- 模块 10 TD-TM-05 方案 B：终端 Shell（auto=主进程优先级链；钉住档只显示已探测到的） -->
+      <section class="settings-section">
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">{{ t('settings.personal.terminalShellTitle') }}</span>
+            <span class="pref-desc">{{ t('settings.personal.terminalShellDesc') }}</span>
+          </div>
+          <div class="shell-picker">
+            <button
+              type="button"
+              class="shell-picker-trigger"
+              :aria-label="t('settings.personal.terminalShellTitle')"
+              @click.stop="shellMenuOpen = !shellMenuOpen"
+            >
+              <span class="shell-picker-label">{{ selectedShellLabel }}</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            <div v-if="shellMenuOpen" class="level-overlay" @click="shellMenuOpen = false"></div>
+            <div v-if="shellMenuOpen" class="shell-menu">
+              <button
+                v-for="opt in terminalShellOptions"
+                :key="opt.value"
+                type="button"
+                class="shell-option"
+                :class="{ active: terminalShell === opt.value }"
+                @click="pickShell(opt.value)"
+              >
+                <span>{{ opt.label }}</span>
+                <svg v-if="terminalShell === opt.value" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1889,6 +1969,89 @@ onUnmounted(() => {
 }
 
 /* MP-S07：思考等级多选下拉（位于「思考强度」勾选下方，独立一行） */
+/* 终端 Shell 下拉（TD-TM-05 B）：trigger 与 level-picker 同族；设置行靠面板上方 → 向下弹 */
+.shell-picker {
+  position: relative;
+}
+
+.shell-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 180px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+/* 全局 button:hover 会把边框和字一起染成品牌色（global.css）：本触发器不随 hover 变色 */
+.shell-picker-trigger:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.shell-picker-trigger svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.shell-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-menu {
+  position: absolute;
+  z-index: 11;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 200px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shell-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--foreground);
+  text-align: left;
+}
+
+.shell-option:hover {
+  background: var(--muted);
+}
+
+.shell-option.active {
+  color: var(--brand);
+}
+
+.shell-option svg {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .level-picker {
   position: relative;
 }

@@ -10,8 +10,10 @@
 
 - **TermSession** = ptyId（randomUUID）+ shell + cwd + exited 标记；主进程 Map 持全量，
   渲染层只持 ptyId 字符串，无任何路径/进程权限。
-- **spawn 目标固定为系统 shell**（TD-TM-05）：Windows `%COMSPEC%`、Unix `$SHELL` 回退
-  `/bin/bash`；不接受渲染层传入任何可执行路径或参数。
+- **spawn 目标固定为系统 shell**（TD-TM-05，2026-10-02 修订）：Windows 按
+  `pwsh → powershell → %COMSPEC%` 优先级链探测，命中即返回绝对路径（存在性在
+  spawn 前确认），PowerShell 系带 `-NoLogo` 启动；Unix `$SHELL` 回退 `/bin/bash`；
+  不接受渲染层传入任何可执行路径或参数。
 - **cwd containment（AC-10-06）**：入参 cwd 先过 `normalizeProjectPath`（resolve +
   realpath + 目录存在性），再比对已注册项目根集合；任一环节不过 → 1002。伪造路径、
   路径穿越、未注册目录、已删除目录全部拒绝。
@@ -27,22 +29,31 @@
 
 ## 1. term/create
 
-新建 pty（TM-F03）。**参数**：`{ "cwd": "C:/works/xxx", "cols": 120, "rows": 30 }`
-（cols/rows 可省略 = 80×24）。
+新建 pty（TM-F03）。**参数**：`{ "cwd": "C:/works/xxx", "cols": 120, "rows": 30, "shellId": "auto" }`
+（cols/rows 可省略 = 80×24；`shellId` 可省略 = `'auto'`，枚举 `auto|pwsh|powershell|cmd`，
+TD-TM-05 方案 B——渲染层只传枚举 id，可执行路径永远由主进程解析；钉住档本机未装
+回退优先级链并留日志）。
 
 成功响应 `data`：
 
 ```json
-{ "ptyId": "9f2c…", "shell": "C:\\Windows\\System32\\cmd.exe", "pid": 41736 }
+{ "ptyId": "9f2c…", "shell": "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "pid": 41736 }
 ```
 
 失败：
 
 | code | 条件 | message |
 |---|---|---|
-| 1001 | cwd 非空串缺失 / cols·rows 非正整数 | 参数错误 |
+| 1001 | cwd 非空串缺失 / cols·rows 非正整数 / shellId 不在枚举 | 参数错误 |
 | 1002 | cwd 不存在或不是目录 / 归一后不在已注册项目集合 | 工作目录不是已注册项目根: … |
 | 5000 | spawn 抛错（shell 不存在/权限/pty 分配失败） | 终端启动失败: {原生原因}（tab 内保留展示） |
+
+### 1.1 forge:shell:listTerminalShells（设置页选项源）
+
+静态 IPC 通道（非 RPC，同 `forge:shell:listEditors` 形态）。返回本机已安装的终端
+shell `[{ "id": "pwsh", "label": "PowerShell 7" }, …]`，档序即优先级序（pwsh →
+powershell → cmd 兜底恒在）；只回 `{id,label}`，exe 路径不出主进程。Unix 返回空
+数组（设置页只剩「跟随系统默认」）。
 
 ## 2. term/write
 
