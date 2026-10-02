@@ -178,6 +178,27 @@ export const IPC_SHELL_OPEN_PATH = 'forge:shell:openPath';
 export const IPC_SHELL_OPEN_IN_BROWSER = 'forge:shell:openInBrowser';
 
 /**
+ * preload ↔ main shell 通道：扫描本机已安装的外部代码编辑器
+ * （代码树右键菜单按结果分项：「用 VS Code 打开 / 用 Cursor 打开 / …」）。
+ *
+ * 只回 `{ id, label }`——可执行文件路径不回渲染层，exe 永远由主进程从白名单解析。
+ * 扫描规则见 shell/editorScan.ts。
+ */
+export const IPC_SHELL_LIST_EDITORS = 'forge:shell:listEditors';
+
+/**
+ * preload ↔ main shell 通道：用**指定**的外部编辑器打开一个文件
+ * （代码树右键「用 VS Code 打开 / 用 Cursor 打开 / …」）。
+ *
+ * 与前两条都不同：它会**启动一个外部程序**，所以口子收得最紧——
+ * 目标必须是已存在的普通文件（lstat 不跟随软链）、文件基名不得以 `-` 开头
+ * （防 CLI 参数注入）、可执行文件只按 id 从白名单扫描结果里取且已解析成真实 .exe
+ * （Windows 上绝不 spawn .cmd 垫片——Node ≥18.20 会抛 EINVAL，这正是旧实现失效的根因）、
+ * 永不使用 shell。目标判定在 shell/openEditorTarget.ts，编辑器解析在 shell/editorScan.ts。
+ */
+export const IPC_SHELL_OPEN_IN_EDITOR = 'forge:shell:openInEditor';
+
+/**
  * preload ↔ main shell 通道：系统浏览器/邮件客户端打开外链（消息正文链接拦截）。
  * 与 openPath 刻意分开：这条只收 http/https/mailto 绝对 URL，绝不落到 shell.openPath
  * （后者会把任意字符串交给系统「打开」，指向 .exe 就等于双击运行）。
@@ -310,7 +331,11 @@ export type ForgeEvent =
   | 'boot.splashShown'
   // 系统通知点击跳转（notifyToast.ts）：主进程直发（不经 core eventBus），
   // payload { sessionId }——渲染端收到后切换到该会话（App.vue onSelectSession）
-  | 'notify.focusSession';
+  | 'notify.focusSession'
+  // 模块 12 自动刷新：代码浏览器已打开文件在磁盘上被修改（file/watchSync 的
+  // OpenFileWatcher 经 core eventBus 发出）。payload { projectPath, relPath }——
+  // 渲染层 useCodeExplorer 据此静默重读对应签条（只读无 dirty，无需冲突弹窗）。
+  | 'code.fileChanged';
 
 /** 全部事件名运行时数组（主进程遍历注册转发，避免遗漏事件） */
 export const FORGE_EVENTS: readonly ForgeEvent[] = [
@@ -337,6 +362,8 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'subagent.updated',
   'subagent.removed',
   'updater.stateChanged',
+  // 模块 12 自动刷新：漏登记 → 渲染进程收不到 → 签条永不跟随磁盘变化
+  'code.fileChanged',
   // 主进程不转发未登记事件：term:data/term:exit 漏登记 → 渲染进程收不到 → 终端无输出
   'term:data',
   'term:exit',

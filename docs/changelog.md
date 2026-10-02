@@ -1,5 +1,43 @@
 # 变更日志
 
+## v6.12 (增强：代码浏览器签条跟随磁盘变化自动刷新)
+
+> 来源：2026-10-02 用户追问「现在编辑器的内容会不会更新？」——内置代码浏览器此前是「打开那一刻的快照」，agent 在会话里改文件、用户开着签条看，内容永远停在打开时的版本。
+
+- **原行为**：`useCodeExplorer.openFile` 打开时经 `file/readFile` 读一次存入状态，再点同签只切激活态不重读（注释明示是刻意取舍）；无 fs.watch、无轮询、无失焦重读。只有关签重开才能看到新内容。
+- **修法（core + ui 两端）**：
+  - `forge-core/src/file/watcher.ts`（新增）：`OpenFileWatcher` 纯管理逻辑——监听**父目录**而非文件本身（编辑器保存常用「临时文件 + 原子替换」，文件级 watch 会在替换瞬间失效，真机实测目录级能扛住）；同目录多文件共享一个 watcher；事件按「当前打开集合」过滤；按 relPath 防抖 300ms（编辑器一次保存常触发多轮 fs 事件）；`watchDir` 注入（真实实现 `fsDirWatcher` = fs.watch 薄包装，`persistent:false` + error 静默）。
+  - `fileMethods.ts`：新增 `file/watchSync`（渲染层在打开/关闭文件后发**该项目**的全量 relPaths，主进程做目录级 diff），逐条过 `resolveInside` 与 readFile 同一道越界校验（6103/6104 条目静默剔除）；变化经共享 eventBus 发 `code.fileChanged` {projectPath, relPath}，主进程按 FORGE_EVENTS 登记转发渲染层。
+  - `useCodeExplorer.ts`：模块内订阅 `code.fileChanged` → `refreshOpenFile` 静默重读（只读查看器无 dirty 态，直接覆盖 data，无需确认弹窗；失败不清空已载入 data，6104 打「已删除」标）；`loading` 中的签跳过避免竞态；打开/关闭文件后 `syncWatchers` 对齐监听集合；项目缓存失效时顺带撤监听。旧 preload / 浏览器 mock 无此通道时全部静默降级。
+- **测试**：`test/file/watcher.test.ts`（7 例，RED→GREEN：目录去重、relPath 分发、未打开过滤、防抖、移除停回调并关 watcher、目录不存在容错、dispose）；`test/file/watchApi.test.ts`（4 例：事件发射、越界/失效剔除、参数校验 6101、默认防抖 300ms）。真机 fs.watch 端到端：覆写 / 原子替换 / 关闭后静默三场景全过。
+- **验证**：core 526/526、ui 385/385、desktop 382 过（7 失败为 v6.7/v6.8 已记账存量）；双包 typecheck 0 错。
+- **不做的**：① 不做目录树/搜索结果的自动刷新（树是懒加载缓存，下次展开自然新数据；要做须另评估扫盘开销）；② 不弹「文件已更改」确认框（只读无 dirty，静默覆盖 + 保持滚动位置即可；将来做内置编辑才需要冲突检测）；③ 不做全仓库递归 watch（只监听打开文件的父目录，句柄数与打开数解耦）。
+
+## v6.11 (调整：隐藏代码树「最近打开」分组)
+
+> 来源：2026-10-02 用户反馈（截图：代码浏览器左栏）——「最近打开这个功能先隐藏，我感觉用处不是很大」。
+
+- **做法（隐藏而非删除）**：`CodeTreePanel.vue` 新增 `SHOW_RECENT_GROUP = false` 开关，分组模板挂在该开关后面；`recentFiles` 计算属性、`onPickRecent`、样式与 i18n 文案全部保留，恢复时把开关翻回 `true` 即可。打开历史（`history`）数据层照常记录，不受隐藏影响。
+- **e2e 同步**：`codeExplorer.spec.ts` 中依赖该分组 DOM 的用例同步调整——E-CE-13 去掉「上限 5 个」分组断言（tab 中键关闭/横滚/滚进视野部分保留）；E-CE-15 选中行底色断言改用树内激活文件行（同一套 `.ctp-row.is-active` 样式）；E-CE-18/19（历史与标签页解耦、历史顺序语义）整体标 `test.fixme` 并注明恢复条件。
+
+## v6.10 (修复+增强：编辑器目录三层扫描——右键按已装编辑器分项打开，修掉 Windows 上点了没反应)
+
+> 来源：2026-10-02 用户反馈两轮（截图：代码树右键菜单「用外部编辑器打开」）——①「好像没有用」；②「不仅仅扫描这三种，能不能扫描出来是编辑器」。
+
+- **根因（两个叠加，缺一不会复现全部症状）**：
+  1. **「点了没反应」**：旧实现在 PATH 上 `where code` 只取**首行**（Windows 上那是无扩展名的 sh 脚本，`code.cmd` 在第二行），把 spawn 不了的东西交出去；且 Node ≥18.20 的 spawn **禁止直接启动 .cmd/.bat**（CVE-2024-27980，同步抛 EINVAL），异常被 `try/catch` 吞掉后返回 false——菜单在、文案对、点了静默失败。
+  2. **「进程起来了但窗口永远不出现」**（首轮修复后用户实测：有时能打开、多数不行、但有东西在启动）：spawn 选项里的 **`windowsHide: true`** 会让 Windows 在 STARTUPINFO 写入 `SW_HIDE`，Electron 系编辑器（Code.exe / Cursor / Trae）的首窗口用 `SW_SHOWDEFAULT` 启动时**继承它**——进程活着、窗口永不出现，还会留下无窗口的僵尸实例持续占用单实例管道，让后续 spawn 全部转发进黑洞。偶尔能打开 = 恰好有一个健康实例在跑，新进程把文件转交后退出。真机 A/B 矩阵：`{detached,ignore,hide}` → 0 窗口；`{detached,ignore}` / `{detached}` / `{ignore}` / `{}` → 全部出窗。**修法：编辑器 spawn 只用 `detached + stdio:'ignore'`，绝不加 `windowsHide`**（该参数只对 where/which/reg 这类控制台工具使用）。候选还写死只有 code/cursor 两家。
+- **修法（主进程，不写死厂商）**：
+  - 新增 `shell/editorScan.ts`：内置 **20+ 款编辑器目录**（VS Code / Insiders / VSCodium / Cursor / Windsurf / Trae / Zed / Sublime / Notepad++ / EditPlus / Emacs / Visual Studio / JetBrains 全家 / Android Studio），逐款三层解析，装了什么菜单出什么：
+    1. **PATH**：`where`/`which` 的**全部**命中行（`whichCommand.ts` 改回数组）；`.exe` 直接用、`.cmd` 垫片沿目录**向上最多 3 层**找 GUI 主程序（VSCode：`<root>\bin\code.cmd` → `<root>\Code.exe`；Cursor 垫片嵌在 `resources\app\bin` 要爬 3 层）——覆盖装在 `D:\tools\...` 这类自定义目录的情况；
+    2. **注册表 App Paths**（HKLM+HKCU，`shell/editorProbe.ts`）：先枚举子键，**只对基名命中目录白名单的**再查默认值（不能每个子键都发一次 reg query）；路径必须真实存在——真机验证时 VS 卸载残留的 `devenv.exe` 注册条目正是被这道 lstat 拦掉的；
+    3. **安装根目录扫描**：`%LOCALAPPDATA%\Programs` / `%ProgramFiles%` 向下两层 readdir，按目录名前缀匹配（EditPlus、JetBrains 独立安装这类没进 PATH 也没进注册表的靠这层）。
+  - Windows 上放行条件是**解析出真实存在的 .exe**，绝不 spawn .cmd/脚本；三层并行采集（`editorProbe.gatherScanData`，Promise.all），真机实测 345ms；每次右键现扫，装了/卸了不用重启。reg 输出按控制台代码页（GBK）解码，兼容中文安装路径。
+- **修法（渲染层）**：`CodeTreePanel.vue` 右键菜单按扫描结果分项——「用 VS Code 打开 / 用 Trae 打开 / …」（`tool.openInEditorWith`），一个都没装时保留一条**置灰提示**「未检测到已安装的编辑器」（不再是无声失败）；挂载时扫一次 + 每次右键后台刷新。mock-bridge 回 VS Code + Cursor 供浏览器 dev/e2e 演示。
+- **测试**：新增 `test/shell/editorScan.test.ts`（12 例：目录契约、PATH 全行遍历、垫片解析/拒绝、App Paths 命中/残留拒收、安装目录匹配/防御、层优先级、目录序稳定、全空→空数组，依赖全注入不碰真机）；E-CE-20 断言更新为分项文案 + 校验 `editorId` 通道。
+- **真机验证**：本机 `D:\work\tools` 自定义目录下的 VS Code / Cursor / Trae / Zed 全部扫出并解析到真实 .exe（PATH 层），卸载残留的 Visual Studio 注册条目被正确拒收；`npm run typecheck` 双包 0 错；e2e codeExplorer 25/25。
+- **不做的**：① 不做「选择编辑器」系统对话框（宁可置灰提示也不猜）；② 不做任意 exe 的「启发式识别」（exe 上没有「我是编辑器」的标记，按文件描述猜会误报，目录白名单 + 三层扫描已覆盖主流）；③ 不给自定义命令留后门（渲染层传命令 = 把 spawn 的钥匙交出去，与 CV-TRUST-02 冲突，真有需要再加主进程侧的显式设置项）；④ Trae 与 Trae CN 共用 `trae` 命令名，只出先命中的那个菜单项。
+
 ## v6.9 (修复：待办面板不再跨轮次累积旧已完成任务——新轮次起点隐藏上一轮 completed)
 
 > 来源：2026-10-02 用户反馈（截图：任务清单标题「已完成 15 / 共 20 个」，#16~#20 是新批次，#1~#15 是上一轮做完的旧任务）——「任务列表老的结束了，但是新任务加进去了，为什么没有把老的那批任务删掉」。
@@ -137,6 +175,27 @@
 - **验证**：forge-core 单测 461→469（新增 8 例流式口径：半截标签不落代码块 / 长内联样式全程待在骨架族 / 纯文字仍提前出正文且不回翻 / 无标签源码仍 `code` / 开栏空态只给 `undecided` / 半截 `<canvas` / 比较运算符不误伤 / 薄壳包长句提前出正文且不回翻，其中「长内联样式全程待在骨架族」按 1 字符粒度走完全部前缀）。E2E `canvasCard.spec.ts` 10/10：新增 `E-CA-010`（逐帧 rAF 采样，断言整段流式只出现 `skeleton`、收尾才 `iframe`，任何一帧出现 `PROSE/CODE/EMPTY` 即失败）。四包 typecheck 0 错；`forge-core` 469/469、`forge-ui` 337/337、`forge-extensions` 69/69 全绿。
 - **顺带修掉一个一直红的 P0**：`E-CA-003`（「流式中途是骨架蒙版」）改前用 `seedHistory` 喂半截围栏，而 `blocked` 只在**真流式**期间成立（历史/取消的未闭合围栏按设计直接出半成品，否则骨架永远转圈，见 MessageCard 注释），所以它自 `ead000a` 起就没测到过骨架、长期红（`git stash` 回退本次改动后复跑确认：同样红）。现改为真流式驱动（`seedSendScript` + 补一条 delta 闭栏），零跳变断言保留。
 - **不做的**：不改骨架/终态的高度与视觉（`CANVAS_DEFAULT_HEIGHT` 不动，闭合零跳变是本来的口径）；不把 `<canvas>` 元素改回 iframe（沙箱禁脚本，它必然是死的，`code` 降级是唯一不丢信息的落点）；不给流式档加「薄壳占比」判据——那是非单调的根源，宁可让带标签的文字壳在闭合那一刻出正文（一次翻面），也不要流式期间一直闪。
+
+## v6.5 (修复：代码纸一个字符都选不中——只读不等于不能复制)
+
+> 来源：2026-10 用户需求「编辑器希望能进行选择复制，参考我们对话框的那个选择复制功能」。对话区早就有 CV-S13 选区复制浮窗，但代码纸完全选不中。
+
+- **根因不是没做，而是全站默认不可选**：`global.css` 的 `body` 是 `user-select: none`（拖标题栏/拖边框不要误选文字），全仓只有 `MessageCard` 用 `user-select: text` 开了**对话区那一个口**；代码查看器从来没开过，于是 `.cv-pre` 一个字符都选不中。修：`.cv-pre` 显式 `user-select: text`。
+- **行号不进剪贴板**：`.cv-ln` 保持 `user-select: none`，浏览器会把不可选内容从选区里剔掉——实测选区 3 行得到 `"# forge\nEle"`，既无行号也无制表符拼接。副作用（写进 PRD）：**不能从行号栏起手拖选**，那正是「行号不可选」换来的干净复制。
+- **浮窗触发区域改成清单**（`selectionPopover.ts` 的 `SELECTABLE_REGIONS = ['.msg', '.cv-pre']`）：原先锚点判定写死 `.msg`。刻意不是“页面里任何文本”——终端由 xterm 自管复制、画布 iframe 事件不回传，而签条/面包屑/按钮选中后弹「复制文本」只会让人意外。`E-CE-25` 钉住签条不弹。
+- **一个看起来像 bug 但不是的**：剪贴板里是 `"# forge\r\nEle"` 而选区是 `"\n"`。Windows 剪贴板是 CRLF 文本格式，`navigator.clipboard.writeText` 会归一（对话区复制同款，VSCode 粘贴时按文件 EOL 再归一）。E2E 比对前先归一行尾，注释写明「别去修它」。
+- **验证**：新增 `E-CE-24`（跨 3 行拖选 → 浮窗出现 → 文案为「复制文本」→ 选区带换行且首行就是代码不是行号 → 点它写入剪贴板且归一后相等 → 1.4s 后自动收起并清空选区）、`E-CE-25`（签条不弹）。`codeExplorer.spec.ts` 25/25；对话区 `selectionCopy.spec.ts` + `codeCopy.spec.ts` 5/5（其中 `E-SC-003`「非消息区不弹浮窗」是这次改动的既有守卫，绿）。typecheck 0 错；forge-ui 385/385。
+
+## v6.4 (新增：代码树行右键菜单 + 「用外部编辑器打开」+ 签可重排；右键菜单四处合一)
+
+> 来源：2026-10 用户需求「目录树的文件/文件夹要加个右键菜单，打开项目所在目录；HTML 打开浏览器，跟项目树/改动文件卡复用」+ 三个确认项（tab 能不能移动 / 能不能编辑 / 目录行开哪个）。决定：tab 拖拽与快捷键两套都做；**代码纸保持只读**，写代码入口改为「用外部编辑器打开」；目录行开**它自己**（同项目树口径）；不做「右键先选中」。
+
+- **右键菜单抽成共享组件**（`packages/forge-ui/src/components/ContextMenu.vue`）：项目树（`project-action-menu*`）、改动文件卡（`cf-context-menu*`）原有两套实现除 `min-width`（180/160）与 `.danger` 三条外**逐行相同**，连 Teleport 壳、视口钳制公式、document 监听都各写一份。第三处（代码树）再拄一遍就是三份会各自漂移的真相。组件行为与原两处逐条对齐，并修掉两处原有隐患：视口钳制改成「先按 items 数量估算落位 → 下一帧用真实 `getBoundingClientRect()` 再钳」，原实现写死 `h=184/72/38` 魔法数字，中文长文案会被顶出视口；`items` 化后 danger/confirm 文案切换从模板三元搬进 computed。`changedFiles.spec.ts` / `tooltip.spec.ts` 的 class 定位改成 `.ctx-menu*`（**行为断言一字未改**，仅换 class）。
+  - **两个新坑**：①`select` 必须**先于** `close` 发出——消费方 handler 靠 `menuOpenPath`/`contextMenuPath` 拿目标，先 close 等于在 handler 跑前把目标删了，表现为「点了菜单项但 shell 没被调用」（当时连坐 5 个用例红，含 `tooltip.spec.ts` 两条——它们用菜单点「重命名」做种子，种子静默失败后续全灭）。②「滚动即关闭」是 ProjectTree 特有语义，**不能**直接搬给改动文件卡：它在可滚消息流里，而右键前浏览器/自动化会先把目标行滚进视野、那个 scroll 事件是**下一帧**才派发的（晚于 `contextmenu`），菜单会在打开后 ~16ms 被自己刚触发的 scroll 关掉。改法是给 150ms 宽限期。
+- **代码树右键菜单**：树 / 过滤结果 / 最近打开三类行全挂 `@contextmenu.prevent`。文件行 = 用外部编辑器打开 + 打开所在目录（父目录），`.html/.htm` 额外多项「用浏览器打开」；目录行 = 「打开此目录」（开**它自己**）。绝对路径拼接（`absoluteFilePath` / `dirOf`）从 `ChangedFilesCard` 私有函数提到 `utils/pathSegments.ts`；扩展名判定提到 `utils/browserOpen.ts`，与主进程 `BROWSER_OPENABLE_EXT` 同口径。i18n 新增 `tool.openThisFolder` / `tool.openInEditor`。
+- **「用外部编辑器打开」= 新增第三条 shell 通道**（`forge:shell:openInEditor`）。代码纸**保持只读**（无输入框、无保存、全应用无 dirty 状态），写代码的入口就是这一个菜单项。口子是三条里最紧的（延续 CV-TRUST-02 的思路）：目标必须**已存在的普通文件**（`lstat` 不跟随软链）→ **基名不得以 `-` 开头**（编辑器 CLI 会把 `--user-data-dir=…` 之类当开关而不是文件名，不拼 `--` 也不赌各家 CLI 对 `--` 的支持差异，直接拒）→ 可执行文件**只从白名单里选**（`code` → `cursor`）且先在 PATH 上解析出**绝对路径** → `spawn` 数组参数 + `detached` + `unref`，**永不 `shell: true`**。渲染层只能传一个文件路径，不能指定命令、不能传参数串。没装到 PATH 时返回 false（与另两条通道同约定：失败一律 false、不外抛、不弹选择框）。单测 `test/shell/openEditorTarget.test.ts` 9 例（含「名字里含 - 但不以 - 开头必须放行」防止规则写太宽）。
+- **签可重排（拖拽 + 快捷键/菜单，共用 `useCodeExplorer.moveFile`）**：拖拽仅接主键（与中键关闭互不干涉）、4px 阈值区分点击与拖动、目标下标按指针落在哪个签的左半/右半**逐帧重算**（用累计位移会在跨过半个签宽时抖）、拖到签条左右 48px 内按深入深度**自动横向滚动**（签条本来就溢出，不自动滚就拖不到后面的签）、**拖动不切激活签**且 `pointerup` 后紧跟的 `click` 必须吞掉。快捷键 `Ctrl+Shift+PageUp/PageDown`（与 VSCode 一致；不用裸 PageUp/PageDown 以免与将来的翻页冲突）。签右键菜单给左移/右移/关闭，到边界**置 disabled 而非隐藏**。
+- **验证**：`test/shell/openEditorTarget.test.ts` 8 过 1 跳（软链同款需本机权限）；`openTarget.test.ts` 仍 7 例。E2E 新增 `E-CE-20`（目录行开自己/文件行开父目录/HTML 菜单项集合/外部编辑器拿文件本体路径）、`E-CE-21`（拖拽重排 + 拖动不切激活签 + 拖后仍能关闭）、`E-CE-22`（拖到边缘自动横向滚动）、`E-CE-23`（快捷键移动 + 签菜单左移/右移/关闭 + 边界 disabled），`codeExplorer.spec.ts` 23/23；`changedFiles.spec.ts` + `tooltip.spec.ts` 10/10。四包 typecheck 0 错；forge-core 515/515、forge-ui 376/376。forge-desktop 372/382（7 红与本改动零交集：`theme` 1（`--background` 漂移）、`createPiAgentSessionFactory` 1、`shellProbe` 4——`git stash` 逐文件回退后复跑结果完全相同）。全量 Playwright 181 passed / 16 failed，失败集 = 既有基线 15 + `canvasCard E-CA-006`（带改动单文件连跑 3 次 10/10，负载下 flaky）。
 
 ## v6.2 (新增：改动文件卡右键「用浏览器打开」——HTML 原型改完一键看效果)
 

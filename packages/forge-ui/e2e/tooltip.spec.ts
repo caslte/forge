@@ -95,7 +95,7 @@ async function bootWithOverflowTree(page: Page): Promise<void> {
   // 真实 UI 路径触发 loadProjects()：右键项目 → 菜单「重命名」→ 提交
   // （updateProjectAlias 走 mock 默认成功；rename 提交后 onRenameProject 重新查询项目列表）
   await page.locator('.tree-project').first().click({ button: 'right' });
-  await page.locator('.project-action-menu-item', { hasText: '重命名' }).click();
+  await page.locator('.ctx-menu-item', { hasText: '重命名' }).click();
   const rename = page.locator('.tree-rename-input');
   await expect(rename).toBeVisible();
   await rename.fill('演示项目0');

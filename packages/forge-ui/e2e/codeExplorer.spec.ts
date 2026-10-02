@@ -431,12 +431,12 @@ function recentName(page: Page, name: string) {
     .filter({ has: page.locator('.ctp-name', { hasText: new RegExp(`^${esc}$`) }) });
 }
 
-test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚进视野、最近打开上限 5 个', async ({ page }) => {
+test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚进视野', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await openCode(page);
   await expandAll(page);
 
-  // 逐个打开 7 个文件：最近打开的「最新在最前」和 tab 顺序都由此确定
+  // 逐个打开 7 个文件：tab 顺序由此确定
   const names = [
     'README.md',
     'package.json',
@@ -450,16 +450,8 @@ test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚
   await expect(page.locator('.cv')).toBeVisible();
   await expect(page.locator('.cv-tab')).toHaveCount(names.length);
 
-  // 最近打开只列 5 个，最新的在最前，最旧的被挤出去
-  const recent = page.locator('.ctp-row.is-recent');
-  await expect(recent).toHaveCount(5);
-  await expect(recent.first().locator('.ctp-name')).toHaveText('12_code_explorer.md');
-  await expect(recent.nth(1).locator('.ctp-name')).toHaveText('fileService.test.ts');
-  // 被挤出去的两个最旧项不在分组里
-  await expect(recentName(page, 'README.md')).toHaveCount(0);
-  await expect(recentName(page, 'package.json')).toHaveCount(0);
-  // 上限只作用于这个导航分组：代码纸上的签一个都不该少
-  await expect(page.locator('.cv-tab')).toHaveCount(names.length);
+  // 「最近打开」分组暂时隐藏（CodeTreePanel 的 SHOW_RECENT_GROUP = false），
+  // 上限 5 个的分组断言随 E-CE-18/19 一起挂起，恢复分组时一并恢复。
 
   // 溢出：签数超过纸宽时 tab 条要能横向滚
   const strip = page.locator('.cv-tabs');
@@ -467,7 +459,7 @@ test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚
   expect(box.sw).toBeGreaterThan(box.cw);
   await strip.evaluate((el) => { el.scrollLeft = 0; });
 
-  // 从树/最近打开切到最右边的签（不经 tab 条，避免 Playwright 自己先滚过去）时，
+  // 从树切到最右边的签（不经 tab 条，避免 Playwright 自己先滚过去）时，
   // 激活签必须自动滚进视野——否则签在纸外，眼睛要自己找
   await openTreeFile(page, 'fileService.ts');
   await expect(page.locator('.cv-tab.active .cv-tab-name')).toHaveText('fileService.ts');
@@ -529,7 +521,8 @@ test('E-CE-15 @P1 @mock-backend：tab 条悬停时竖向滚轮可横滚；代码
 
   // 选中行底色不能是品牌绿：项目树用 --surface-active（近乎中性），
   // 代码树曾经硬调 color-mix(--brand-accent 16%)，于是两个列表选中态颜色不同。
-  const bg = await page.locator('.ctp-row.is-recent.is-active').evaluate((el) => {
+  // （「最近打开」分组隐藏期间，改用树里激活的普通文件行验证同一套选中态样式。）
+  const bg = await page.locator('.ctp-scroll .ctp-row.is-active').evaluate((el) => {
     const m = getComputedStyle(el).backgroundColor.match(/[\d.]+/g)!;
     return { r: +m[0], g: +m[1], b: +m[2] };
   });
@@ -673,7 +666,9 @@ test('E-CE-17 @P1 @mock-backend：JetBrains Mono 随应用分发，离线可用�
   expect(cdn).toEqual([]);
 });
 
-test('E-CE-18 @P0 @mock-backend：历史与标签页解耦——关掉签仍在最近打开里，点它能重开', async ({ page }) => {
+// 「最近打开」分组暂时隐藏（CodeTreePanel 的 SHOW_RECENT_GROUP = false），
+// 下面两条历史解耦用例依赖该分组的 DOM，恢复分组时把 fixme 去掉即可。
+test.fixme('E-CE-18 @P0 @mock-backend：历史与标签页解耦——关掉签仍在最近打开里，点它能重开', async ({ page }) => {
   await openCode(page);
   await expandAll(page);
   await openTreeFile(page, 'README.md');
@@ -704,7 +699,7 @@ test('E-CE-18 @P0 @mock-backend：历史与标签页解耦——关掉签仍在�
   await expect(page.locator('.ctp-row.is-recent').first().locator('.ctp-name')).toHaveText('package.json');
 });
 
-test('E-CE-19 @P1 @mock-backend：历史顺序只跟“打开”动作走，切换签不重排', async ({ page }) => {
+test.fixme('E-CE-19 @P1 @mock-backend：历史顺序只跟“打开”动作走，切换签不重排', async ({ page }) => {
   await openCode(page);
   await expandAll(page);
   await openTreeFile(page, 'README.md');
@@ -723,4 +718,242 @@ test('E-CE-19 @P1 @mock-backend：历史顺序只跟“打开”动作走，切�
   await recentName(page, 'README.md').click();
   await expect(page.locator('.ctp-row.is-recent').first().locator('.ctp-name')).toHaveText('README.md');
   await expect(page.locator('.cv-tab')).toHaveCount(3);
+});
+
+test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己、文件开父目录、HTML 多一项、外置编辑器通道', async ({ page }) => {
+  // 记录真正提交给 shell 的绝对路径（必须在 goto 之后挂，reload 会清掉注入）
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __ceOpenPath: string[];
+      __ceOpenBrowser: string[];
+      __ceOpenEditor: string[];
+      __ceOpenEditorId: string[];
+    };
+    w.__ceOpenPath = [];
+    w.__ceOpenBrowser = [];
+    w.__ceOpenEditor = [];
+    w.__ceOpenEditorId = [];
+    const shell = window.forge.shell;
+    const p0 = shell.openPath.bind(shell);
+    shell.openPath = (p: string) => {
+      w.__ceOpenPath.push(p);
+      return p0(p);
+    };
+    const b0 = shell.openInBrowser.bind(shell);
+    shell.openInBrowser = (p: string) => {
+      w.__ceOpenBrowser.push(p);
+      return b0(p);
+    };
+    const e0 = shell.openInEditor.bind(shell);
+    shell.openInEditor = (p: string, editorId: string) => {
+      w.__ceOpenEditor.push(p);
+      w.__ceOpenEditorId.push(editorId);
+      return e0(p, editorId);
+    };
+  });
+  await openCode(page);
+  await expandAll(page);
+
+  const menu = page.locator('.ctx-menu');
+  /** 最后一次调用（数组是累加的，逐步断言时只看新增的那一条） */
+  const lastCall = (
+    k: '__ceOpenPath' | '__ceOpenBrowser' | '__ceOpenEditor' | '__ceOpenEditorId',
+  ) =>
+    page.evaluate((key) => {
+      const arr = (window as unknown as Record<string, string[]>)[key];
+      return arr[arr.length - 1] ?? null;
+    }, k);
+
+  // 目录行：只有「打开此目录」，且开的是**它自己**（不是父目录）
+  // 用 .ctp-row.is-dir + 精确文本：mock 树里 src/file、test/file、forge-core/src 等重名，
+  // hasText 子串匹配会命中另一个（之前就因此选中了项目根的 src）
+  const dirRow = page.locator('.ctp-row.is-dir').filter({ hasText: /^docs$/ }).first();
+  await dirRow.click({ button: 'right' });
+  await expect(menu.locator('.ctx-menu-item')).toHaveText(['打开此目录']);
+  await menu.locator('.ctx-menu-item').click();
+  expect(await lastCall('__ceOpenPath')).toMatch(/forge\/docs$/);
+
+  // 普通文件行：编辑器分项（mock 扫描结果 = VS Code + Cursor）+ 打开所在目录，没有浏览器项
+  const fileRow = page.locator('.ctp-scroll .ctp-row:not(.is-dir):not(.is-recent)').filter({
+    has: page.locator('.ctp-name', { hasText: /^fileService\.ts$/ }),
+  }).first();
+  await fileRow.click({ button: 'right' });
+  await expect(menu.locator('.ctx-menu-item')).toHaveText([
+    '用 VS Code 打开',
+    '用 Cursor 打开',
+    '打开所在目录',
+  ]);
+  await menu.locator('.ctx-menu-item', { hasText: '打开所在目录' }).click();
+  expect(await lastCall('__ceOpenPath')).toMatch(/forge\/packages\/forge-core\/src\/file$/);
+
+  // 外部编辑器：拿到的是**文件本体**的绝对路径 + 对应的编辑器 id
+  await fileRow.click({ button: 'right' });
+  await menu.locator('.ctx-menu-item', { hasText: '用 Cursor 打开' }).click();
+  expect(await lastCall('__ceOpenEditor')).toMatch(
+    /forge\/packages\/forge-core\/src\/file\/fileService\.ts$/,
+  );
+  expect(await lastCall('__ceOpenEditorId')).toBe('cursor');
+
+  // 菜单关掉后不留残影
+  await expect(menu).toHaveCount(0);
+});
+
+/** 签条当前顺序（按可见顺序取文件名） */
+function tabNames(page: Page): Promise<string[]> {
+  return page.locator('.cv-tab .cv-tab-name').allTextContents();
+}
+
+test('E-CE-21 @P1 @mock-backend：tab 可拖拽排序，拖动不切激活签，拖后不误触发点击', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await openCode(page);
+  await expandAll(page);
+  for (const n of ['README.md', 'package.json', 'App.vue']) await openTreeFile(page, n);
+  // 打开顺序即签序（新的在前）
+  expect(await tabNames(page)).toEqual(['App.vue', 'package.json', 'README.md']);
+  const active = await page.locator('.cv-tab.active .cv-tab-name').textContent();
+  expect(active).toBe('App.vue');
+
+  // 把第 3 个签（README.md）拖到最左：按住 → 越过阈值 → 一路拖过第 1、2 个
+  const last = page.locator('.cv-tab').nth(2);
+  const first = page.locator('.cv-tab').nth(0);
+  const a = (await last.boundingBox())!;
+  const b = (await first.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  // 分步移动：超过 4px 阈值才会进入拖拽；一步跳到位也能过，但分步更像真实手势
+  await page.mouse.move(a.x + a.width / 2 - 10, a.y + a.height / 2, { steps: 2 });
+  await page.mouse.move(b.x + 6, b.y + b.height / 2, { steps: 12 });
+  await page.mouse.up();
+
+  expect(await tabNames(page)).toEqual(['README.md', 'App.vue', 'package.json']);
+  // 拖动**不附带**切激活：激活的仍是 App.vue
+  expect(await page.locator('.cv-tab.active .cv-tab-name').textContent()).toBe('App.vue');
+
+  // 顺序变化后仍能正常关闭（拖拽没有破坏中键/× 关闭）
+  await page.locator('.cv-tab', { hasText: 'App.vue' }).first().hover();
+  await page.locator('.cv-tab', { hasText: 'App.vue' }).first().locator('.cv-tab-x').click();
+  expect(await tabNames(page)).toEqual(['README.md', 'package.json']);
+});
+
+test('E-CE-22 @P1 @mock-backend：拖到签条边缘会自动横向滚动（否则后面的签拖不到）', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await openCode(page);
+  await expandAll(page);
+  const names = [
+    'README.md',
+    'package.json',
+    'App.vue',
+    'bridge.ts',
+    'fileService.ts',
+    'fileService.test.ts',
+    '12_code_explorer.md',
+  ];
+  for (const n of names) await openTreeFile(page, n);
+  const strip = page.locator('.cv-tabs');
+  await strip.evaluate((el) => { el.scrollLeft = 0; });
+  const before = await strip.evaluate((el) => el.scrollLeft);
+  expect(before).toBe(0);
+
+  // 抓住第 1 个签，按到签条**右边缘**（落在自动滚动区内）
+  const tab = page.locator('.cv-tab').first();
+  const t = (await tab.boundingBox())!;
+  const s = (await strip.boundingBox())!;
+  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(t.x + t.width / 2 + 20, t.y + t.height / 2, { steps: 2 });
+  // 多给几帧：自动滚动是按每次 pointermove 推进的，单帧只能滚 18px
+  for (let i = 0; i < 6; i += 1) {
+    await page.mouse.move(s.x + s.width - 10, t.y + t.height / 2);
+  }
+  const during = await strip.evaluate((el) => el.scrollLeft);
+  await page.mouse.up();
+  expect(during).toBeGreaterThan(before);
+});
+
+test('E-CE-23 @P1 @mock-backend：签右键菜单可左移/右移/关闭，到边界置 disabled', async ({ page }) => {
+  await openCode(page);
+  await expandAll(page);
+  for (const n of ['README.md', 'package.json', 'App.vue']) await openTreeFile(page, n);
+  expect(await tabNames(page)).toEqual(['App.vue', 'package.json', 'README.md']);
+
+  // 签右键菜单：到边界的项 disabled 而不是消失
+  await page.locator('.cv-tab', { hasText: 'App.vue' }).first().click({ button: 'right' });
+  const menu = page.locator('.ctx-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.ctx-menu-item')).toHaveText(['标签页左移', '标签页右移', '关闭标签页']);
+  await expect(menu.locator('.ctx-menu-item').first()).toBeDisabled();
+
+  await menu.locator('.ctx-menu-item', { hasText: '标签页右移' }).click();
+  expect(await tabNames(page)).toEqual(['package.json', 'App.vue', 'README.md']);
+
+  // 菜单里的关闭
+  await page.locator('.cv-tab', { hasText: 'App.vue' }).first().click({ button: 'right' });
+  await page.locator('.ctx-menu-item', { hasText: '关闭标签页' }).click();
+  expect(await tabNames(page)).toEqual(['package.json', 'README.md']);
+});
+
+test('E-CE-24 @P0 @mock-backend：代码可选中复制，浮窗与对话区同款；行号不混入剪贴板', async ({ page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await openCodeWithFile(page);
+  await expect(page.locator('.cv-lc').first()).toBeVisible();
+
+  // 跨 3 行拖选（真 mouse 事件：selection 与 mouseup 都是真的）
+  const a = (await page.locator('.cv-line').nth(0).locator('.cv-lc').boundingBox())!;
+  const b = (await page.locator('.cv-line').nth(2).locator('.cv-lc').boundingBox())!;
+  await page.mouse.move(a.x + 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + 40, b.y + b.height / 2, { steps: 10 });
+  await page.mouse.up();
+
+  const pop = page.locator('.selection-pop');
+  const btn = page.locator('.selection-pop-btn');
+  await expect(pop).toHaveClass(/is-visible/);
+  await expect(btn).toHaveText('复制文本');
+
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected.length).toBeGreaterThan(0);
+  // 跨行选区必须带换行，且**不能**以行号数字开头——
+  // .cv-ln 是 user-select:none，浏览器会把不可选内容从选区里剔掉。
+  // 这两条断言就是钉住「别哪天为了「能选行号」把 user-select 去掉」的那个回归。
+  expect(selected).toContain('\n');
+  expect(selected.split('\n')[0]?.trim()).toBe('# forge');
+  // 选区内不应出现「光秃秃的一串数字」独占一行（那就是漏进来的行号）
+  expect(selected).not.toMatch(/^\s*\d+\s*$/m);
+
+  await btn.click();
+  await expect(btn).toHaveText('已复制');
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  // Windows 剪贴板是 CRLF 文本格式，writeText 会把 \n 转成 \r\n（对话区复制同款，
+  // VSCode 粘贴时会按文件 EOL 归一）。所以比对前先归一行尾，别去「修」它。
+  expect(clip.replace(/\r\n/g, '\n')).toBe(selected);
+
+  // 反馈 1.4s 后收起并清空选区（与对话区同一套契约）
+  await expect(pop).not.toHaveClass(/is-visible/, { timeout: 4000 });
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+});
+
+test('E-CE-25 @P1 @mock-backend：签条等外壳不弹复制浮窗（选区区域是清单，不是全页面）', async ({ page }) => {
+  await openCode(page);
+  await expandAll(page);
+  // 签条只在 ≥2 个文件时渲染
+  await openTreeFile(page, 'README.md');
+  await openTreeFile(page, 'package.json');
+  await expect(page.locator('.cv-tab')).toHaveCount(2);
+  await expect(page.locator('.cv-lc').first()).toBeVisible();
+  // 代码正文选了会弹
+  const a = (await page.locator('.cv-line').nth(0).locator('.cv-lc').boundingBox())!;
+  await page.mouse.move(a.x + 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 60, a.y + a.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.locator('.selection-pop')).toHaveClass(/is-visible/);
+
+  // 换到签条上选：必须不弹（外壳没有 user-select:text，且不在登记区域内）
+  await page.keyboard.press('Escape');
+  const tab = (await page.locator('.cv-tab').first().boundingBox())!;
+  await page.mouse.move(tab.x + 6, tab.y + tab.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(tab.x + 90, tab.y + tab.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.locator('.selection-pop')).not.toHaveClass(/is-visible/);
 });

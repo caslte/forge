@@ -15,6 +15,8 @@ import {
   fileListDir,
   fileReadFile,
   fileSearchFiles,
+  fileWatchSync,
+  subscribe,
   FILE_ERR,
   type FileNode,
   type ListDirData,
@@ -101,6 +103,56 @@ export function invalidateProjectState(projectPath: string): void {
   if (!states.value.has(projectPath)) return;
   states.value.delete(projectPath);
   states.value = new Map(states.value);
+  // 项目缓存没了 = 它的打开集合也没了：把主进程侧的监听一并撤掉
+  syncWatchers(projectPath);
+}
+
+/**
+ * 把主进程侧的磁盘监听对齐到当前打开集合（自动刷新，CE-S10）。
+ * 打开/关闭文件后调用；主进程按目录做增量 diff，重复全量同步代价可忽略。
+ * 旧 preload / 浏览器 mock 没有这个方法时静默跳过。
+ */
+function syncWatchers(projectPath: string): void {
+  const s = states.value.get(projectPath);
+  const relPaths = [...new Set(s?.openFiles.map((f) => f.relPath) ?? [])];
+  try {
+    void fileWatchSync(projectPath, relPaths).catch(() => {});
+  } catch {
+    /* 旧 bridge 无此方法：自动刷新不可用，不影响其余功能 */
+  }
+}
+
+/**
+ * 磁盘上该文件被外部修改（agent 写入 / 用户在外部编辑器保存）：静默重读。
+ * 只读查看器没有 dirty 态，直接覆盖 data 即可，无需「文件已更改」确认弹窗；
+ * 失败不清空已载入的 data（与首读同语义：missing 打「已删除」标，data 留底）。
+ */
+async function refreshOpenFile(projectPath: string, relPath: string): Promise<void> {
+  const s = stateOf(projectPath);
+  const cur = s.openFiles.find((f) => f.relPath === relPath);
+  if (!cur || cur.loading) return; // 没开着 / 首读还在路上：避免竞态覆盖
+  const res = await fileReadFile(projectPath, relPath);
+  const latest = stateOf(projectPath);
+  const idx = latest.openFiles.findIndex((f) => f.relPath === relPath);
+  if (idx === -1) return; // 重读期间被关掉了
+  const old = latest.openFiles[idx];
+  if (!old) return; // 与 idx === -1 同义（noUncheckedIndexedAccess 口径下仍需显式守卫）
+  const next: OpenFile =
+    res.code === 0 && res.data
+      ? { ...old, data: res.data, loading: false, error: null, missing: false }
+      : { ...old, loading: false, missing: res.code === FILE_ERR.NOT_FOUND, error: describe(res.code, res.message) };
+  const openFiles = [...latest.openFiles];
+  openFiles[idx] = next;
+  commit(projectPath, { ...latest, openFiles });
+}
+
+// 订阅主进程的磁盘变化事件（模块内一次性；payload 按项目分流到对应的打开签）
+if (typeof window !== 'undefined' && typeof window.forge?.on === 'function') {
+  subscribe('code.fileChanged', (payload) => {
+    const p = payload as { projectPath?: unknown; relPath?: unknown };
+    if (typeof p?.projectPath !== 'string' || typeof p?.relPath !== 'string') return;
+    void refreshOpenFile(p.projectPath, p.relPath);
+  });
 }
 
 /**
@@ -191,6 +243,7 @@ export function useCodeExplorer() {
     // 新文件置顶：让标签栏保持“刚点的在最前”（历史由上面的 withHistory 负责）
     const openFiles = [file, ...s.openFiles];
     commit(projectPath, { ...s, openFiles, activeRel: relPath, history });
+    syncWatchers(projectPath); // 打开集合变了：主进程侧补上这个文件的磁盘监听
     const res = await fileReadFile(projectPath, relPath);
     const cur = stateOf(projectPath);
     const idx = cur.openFiles.findIndex((f) => f.relPath === relPath);
@@ -225,11 +278,37 @@ export function useCodeExplorer() {
       activeRel = openFiles[Math.min(idx, openFiles.length - 1)]?.relPath ?? null;
     }
     commit(projectPath, { ...s, openFiles, activeRel });
+    syncWatchers(projectPath); // 关掉的文件撤掉磁盘监听
   }
 
   /** 切换激活标签 */
   function setActive(projectPath: string, relPath: string | null): void {
     commit(projectPath, { ...stateOf(projectPath), activeRel: relPath });
+  }
+
+  /**
+   * 把某个签移到新位置（拖拽排序 / 左移右移共用）。
+   *
+   * **不碰 activeRel**：拖动一个未激活的签不应该顺手切换激活签（和中键关闭同一个原则：
+   * 手势只做手势那一件事）。位置参数用「目标下标」而不是「位移量」——拖拽过程中每帧
+   * 都会拿当前布局重新算目标下标，用位移量会在跨过半个签宽时抖动。
+   *
+   * @param toIndex 目标下标；越界会被夹到 [0, openFiles.length-1]
+   * @returns 是否真的移动了（已在目标位置时返回 false，调用方据此决定要不要收尾）
+   */
+  function moveFile(projectPath: string, relPath: string, toIndex: number): boolean {
+    const s = stateOf(projectPath);
+    const from = s.openFiles.findIndex((f) => f.relPath === relPath);
+    if (from === -1) return false;
+    const to = Math.max(0, Math.min(Math.round(toIndex), s.openFiles.length - 1));
+    if (to === from) return false;
+    const openFiles = [...s.openFiles];
+    const removed = openFiles.splice(from, 1);
+    const moved = removed[0];
+    if (!moved) return false;
+    openFiles.splice(to, 0, moved);
+    commit(projectPath, { ...s, openFiles });
+    return true;
   }
 
   /** 按文件名过滤（CE-S06：只搜文件名，不做内容搜索） */
@@ -268,6 +347,7 @@ export function useCodeExplorer() {
     openFile,
     closeFile,
     setActive,
+    moveFile,
     search,
     loadGitStatus,
     invalidateProjectState,

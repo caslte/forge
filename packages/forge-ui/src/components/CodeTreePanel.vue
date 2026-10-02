@@ -9,9 +9,12 @@
  * 树的渲染是「已加载层 + 懒加载占位」的混合结构：某层没拉过数据就只渲染一行
  * 展开箭头占位，点开时才 listDir。这样项目根再大也只发一次请求。
  */
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useCodeExplorer, type ProjectCodeState, type TreeRow } from '../composables/useCodeExplorer';
 import { fileBadgeOf } from '../utils/fileBadge';
+import { absoluteFilePath, dirOf } from '../utils/pathSegments';
+import { hasBrowserOpenableExt } from '../utils/browserOpen';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import type { GitStatusFile } from '../types';
 import type { CodeViewerLayout } from '../composables/usePreferences';
 import { useI18n } from '../i18n/index.ts';
@@ -69,6 +72,9 @@ const searchResults = computed(() => state.value.searchResults);
  * 头部插入意味着打开第 6 个文件自动把最旧的挤出去，不需要额外维护顺序。
  */
 const RECENT_LIMIT = 5;
+// 「最近打开」分组暂时隐藏（用处不大）；分组渲染与 e2e 用例都还留着，
+// 要恢复把它翻回 true 即可。
+const SHOW_RECENT_GROUP = false;
 const recentFiles = computed(() =>
   state.value.history.slice(0, RECENT_LIMIT).map((relPath) => ({
     relPath,
@@ -214,6 +220,103 @@ async function onPickRecent(relPath: string): Promise<void> {
   await openFile(props.projectPath, relPath, relPath.slice(relPath.lastIndexOf('/') + 1));
 }
 
+/** 右键菜单：目标行（null = 收起）+ 视口坐标。
+ *  不做「右键先选中」：行的高亮与菜单目标分离反而更清楚（菜单项写的是动作，不是选中）。 */
+const ctxTarget = ref<{ relPath: string; kind: 'file' | 'dir' } | null>(null);
+const ctxX = ref(0);
+const ctxY = ref(0);
+
+function onRowContextMenu(ev: MouseEvent, relPath: string, kind: 'file' | 'dir'): void {
+  ev.preventDefault();
+  ctxTarget.value = { relPath, kind };
+  ctxX.value = ev.clientX;
+  ctxY.value = ev.clientY;
+  // 每次右键都后台刷新一次编辑器列表：装了/卸了编辑器不用重启应用。
+  // 当前菜单用上次的结果渲染（列表为空时是置灰提示），下一帧到的刷新下一次右键生效。
+  void refreshEditors();
+}
+
+function closeContextMenu(): void {
+  ctxTarget.value = null;
+}
+
+const ICON_FOLDER = 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z';
+const ICON_GLOBE =
+  'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20';
+const ICON_EDITOR = 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM8 9l-3 3 3 3M16 9l3 3-3 3';
+
+/**
+ * 已安装的外部编辑器（主进程扫描：白名单 + PATH/常见安装路径，见 shell/editorScan.ts）。
+ * 懒加载：首次右键/挂载时拉一次，之后每次右键后台刷新。
+ */
+const installedEditors = ref<{ id: string; label: string }[]>([]);
+
+async function refreshEditors(): Promise<void> {
+  try {
+    installedEditors.value = await window.forge.shell.listEditors();
+  } catch (e) {
+    console.warn('[code-tree] listEditors 失败，右键菜单将显示置灰提示', e);
+    installedEditors.value = [];
+  }
+}
+
+/**
+ * 菜单项。目录行与文件行不同：
+ *  - 目录：打开**它自己**（与项目树「打开项目所在目录」同口径，都是系统文件管理器）
+ *  - 文件：打开**父目录**；.html/.htm 多一项「用浏览器打开」；
+ *    另按扫描结果给每个编辑器一项「用 VS Code 打开 / 用 Cursor 打开 / …」，
+ *    一个都没装时保留一条置灰提示（解释为什么没有「用 … 打开」）。
+ */
+const ctxItems = computed<ContextMenuItem[]>(() => {
+  const tgt = ctxTarget.value;
+  if (!tgt) return [];
+  const items: ContextMenuItem[] = [];
+  if (tgt.kind === 'file') {
+    if (hasBrowserOpenableExt(tgt.relPath)) {
+      items.push({ key: 'browser', label: t('tool.openInBrowser'), icon: ICON_GLOBE });
+    }
+    if (installedEditors.value.length > 0) {
+      for (const ed of installedEditors.value) {
+        items.push({
+          key: `editor:${ed.id}`,
+          label: t('tool.openInEditorWith', { name: ed.label }),
+          icon: ICON_EDITOR,
+        });
+      }
+    } else {
+      items.push({ key: 'editor-none', label: t('tool.openInEditorNone'), icon: ICON_EDITOR, disabled: true });
+    }
+  }
+  items.push({
+    key: 'dir',
+    label: tgt.kind === 'dir' ? t('tool.openThisFolder') : t('tool.openContainingDir'),
+    icon: ICON_FOLDER,
+  });
+  return items;
+});
+
+function onContextMenuSelect(key: string): void {
+  const tgt = ctxTarget.value;
+  closeContextMenu();
+  if (!tgt) return;
+  const abs = absoluteFilePath(props.projectPath, tgt.relPath);
+  if (key === 'browser') return void window.forge.shell.openInBrowser(abs);
+  if (key.startsWith('editor:')) {
+    return void window.forge.shell.openInEditor(abs, key.slice('editor:'.length)).then((ok) => {
+      if (!ok) console.warn('[code-tree] openInEditor 失败：', abs, key.slice('editor:'.length));
+    });
+  }
+  if (key === 'dir') {
+    // 目录行开它自己，文件行开父目录
+    return void window.forge.shell.openPath(tgt.kind === 'dir' ? abs : dirOf(abs));
+  }
+}
+
+/** 挂载时先扫一次：第一次右键菜单就能出分项，不用等到第二次 */
+onMounted(() => {
+  void refreshEditors();
+});
+
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 function onFilterInput(v: string): void {
   searchInput.value = v as '' | string;
@@ -326,6 +429,7 @@ function onFilterEsc(e: KeyboardEvent): void {
           type="button"
           :class="{ 'is-active': r.row.relPath === activeRel }"
           @click="onPickFiltered(r.row.relPath)"
+          @contextmenu.prevent="onRowContextMenu($event, r.row.relPath, r.row.kind)"
         >
           <span
             class="ctp-badge"
@@ -347,7 +451,7 @@ function onFilterEsc(e: KeyboardEvent): void {
       <template v-else>
         <!-- 最近打开：只看得到“树里已展开可见”的会漏掉跳转到深处的文件，
              所以这里列全部已打开项的上限 5 个（见 RECENT_LIMIT）。 -->
-        <template v-if="recentFiles.length > 0">
+        <template v-if="SHOW_RECENT_GROUP && recentFiles.length > 0">
           <div class="ctp-group">{{ t('code.groupRecent') }}</div>
           <button
             v-for="f in recentFiles"
@@ -357,6 +461,7 @@ function onFilterEsc(e: KeyboardEvent): void {
             type="button"
             :title="f.relPath"
             @click="onPickRecent(f.relPath)"
+            @contextmenu.prevent="onRowContextMenu($event, f.relPath, 'file')"
           >
             <span
               class="ctp-badge"
@@ -383,6 +488,7 @@ function onFilterEsc(e: KeyboardEvent): void {
           tabindex="-1"
           @click="onClickRow(r.row)"
           @keydown.enter.prevent="onClickRow(r.row)"
+          @contextmenu.prevent="onRowContextMenu($event, r.row.relPath, r.row.kind)"
         >
           <template v-if="r.row.kind === 'dir'">
             <span class="ctp-caret" aria-hidden="true">
@@ -422,6 +528,17 @@ function onFilterEsc(e: KeyboardEvent): void {
         </span>
       </div>
     </footer>
+
+    <!-- 行右键菜单：打开所在目录 / 用浏览器打开（HTML）/ 用 VS Code、Cursor、Zed… 打开（扫描结果分项，写代码的唯一入口） -->
+    <ContextMenu
+      v-if="ctxTarget"
+      :x="ctxX"
+      :y="ctxY"
+      :items="ctxItems"
+      :min-width="176"
+      @select="onContextMenuSelect"
+      @close="closeContextMenu"
+    />
   </div>
 </template>
 

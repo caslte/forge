@@ -26,3 +26,40 @@ export function collapseDotSegments(p: string): string {
   }
   return prefix + [...Array(ups).fill('..'), ...segs].join('/');
 }
+
+/** 看起来是不是绝对路径（正斜杠口径：/ 开头、盘符开头、UNC 开头） */
+function looksAbsolute(p: string): boolean {
+  return p.startsWith('/') || /^[a-zA-Z]:\//.test(p) || p.startsWith('//');
+}
+
+/**
+ * 把「项目内相对路径」或「已是绝对路径」统一成可交给主进程的绝对路径。
+ *
+ * 为什么要折叠中间段：见本文件顶部——Windows 的 ShellExecuteEx 不归一 `/./`，
+ * 拼接后残留 `./` 会直接弹「找不到文件」。
+ *
+ * 为什么不判断 relPath 是否越界（`../../etc/passwd`）：这里只做**词法**拼接，
+ * 越界与软链的最终裁决在主进程（shell/openTarget.ts 用 lstat 拒软链、
+ * openPath 恒校验目标是真实目录）。渲染层再抄一份边界判断只会出现两套不一致的口径。
+ *
+ * @param projectRoot 项目根；为空时原样返回（让主进程自己失败）
+ */
+export function absoluteFilePath(projectRoot: string | null | undefined, p: string): string {
+  if (looksAbsolute(p)) return collapseDotSegments(p);
+  const root = (projectRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return root !== '' ? collapseDotSegments(`${root}/${p}`) : p;
+}
+
+/**
+ * 取正斜杠路径的目录部分。根目录 / 单段名原样返回——
+ * 调用方（如「打开所在目录」）把这种值交给 openPath，让它自己失败即可。
+ */
+export function dirOf(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i > 0 ? p.slice(0, i) : p;
+}
+
+/** 正斜杠路径的最后一段（文件名 / 目录名） */
+export function baseNameOf(p: string): string {
+  return p.slice(p.lastIndexOf('/') + 1);
+}

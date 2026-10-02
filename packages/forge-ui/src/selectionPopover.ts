@@ -6,7 +6,8 @@
 // - 任意滚动即隐（fixed 留原地会盖住内容，同款口径）。
 //
 // 行为定稿（prototypes/selection-copy-demo.html，2026-09-29 用户选变体 B）：
-// - 仅消息区触发：选区锚点须落在 .msg 内（终端选区有 xterm 自己的 Ctrl+C/右键复制，画布 iframe 事件不回传，均天然不冲突）；
+// - 仅**已登记的区域**触发（见 SELECTABLE_REGIONS）：终端选区有 xterm 自己的 Ctrl+C/右键复制，
+//   画布 iframe 事件不回传，均天然不冲突；而应用外壳（签条、面包屑、按钮）不该弹复制按钮。
 // - 复制 → 「已复制」打勾 1.4s → 收起并清空选区；
 // - 重新按下鼠标 / Escape / 滚动 → 立即收起。
 import { watch } from 'vue';
@@ -15,6 +16,20 @@ import { i18n } from './i18n/index.ts';
 const GAP = 8;
 const EDGE = 8;
 const COPIED_FEEDBACK_MS = 1400;
+
+/**
+ * 允许触发复制浮窗的选区区域。
+ *
+ * 刻意是**清单**而不是「页面里任何文本」：终端由 xterm 自己管复制、画布 iframe 的事件
+ * 不回传，而应用外壳（标签条 / 面包屑 / 按钮文案）选中后弹「复制文本」只会让人意外。
+ * 新增可复制区域时往这里加一条，并确认该区域自己开了 `user-select: text`
+ * ——全站 body 是 `user-select: none`，不显式开口就选不中（代码纸就踩过这个坑）。
+ */
+const SELECTABLE_REGIONS = ['.msg', '.cv-pre'] as const;
+
+function inSelectableRegion(el: Element | null): boolean {
+  return !!el && SELECTABLE_REGIONS.some((sel) => el.closest(sel));
+}
 
 const ICON_COPY =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>';
@@ -86,7 +101,7 @@ document.addEventListener('mouseup', () => {
         ? (anchor as Element)
         : anchor.parentElement
       : null;
-    if (!anchorEl?.closest('.msg')) {
+    if (!inSelectableRegion(anchorEl)) {
       hide();
       return;
     }

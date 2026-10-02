@@ -787,6 +787,8 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       }
       return r.data.projects.some((p) => p.path === key);
     },
+    // 磁盘变化事件汇：file/watchSync 监听的文件变化 → code.fileChanged → 渲染层刷新签条
+    events: eventBus,
   });
 
   const methodTable: MethodTable = {

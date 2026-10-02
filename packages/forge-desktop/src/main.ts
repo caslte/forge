@@ -14,6 +14,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electro
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // v3.76 欢迎页启动链：createForgeCore（连带整个 pi SDK，静态 import 实测 2.4s）不再
 // 顶层静态加载——whenReady 先建窗口显示欢迎页，再动态 import 组装 core，完成后推
@@ -34,8 +35,11 @@ import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './boo
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { createNotifyToastManager } from './notifyToast.ts';
 import { createNotifyGate, type NotifyKind } from './notifyGate.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
 import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
+import { resolveEditorOpenTarget } from './shell/openEditorTarget.ts';
+import { collectInstalledEditors } from './shell/editorScan.ts';
+import { gatherScanData } from './shell/editorProbe.ts';
 import type { ForgeEvent } from './ipc-contract.ts';
 
 /** ESM 下 __dirname 不可用，从 import.meta.url 计算 */
@@ -558,6 +562,43 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
     const target = resolveBrowserOpenTarget(p);
     if (target === null) return false;
     return shell.openPath(target).then((err) => err === '');
+  });
+  // 扫描本机已安装的外部编辑器（代码树右键菜单分项数据源）：只回 {id,label}。
+  // exe 路径不出主进程——渲染层拿 id 展示菜单项，打开时再按 id 回主进程解析一次。
+  // 每次右键都现扫（where×N / reg query / readdir 三层并行，几十毫秒级），
+  // 编辑器装了/卸了不用重启应用。目录 + 解析规则见 shell/editorScan.ts。
+  ipcMain.handle(IPC_SHELL_LIST_EDITORS, async () => {
+    return collectInstalledEditors(await gatherScanData()).map(({ id, label }) => ({ id, label }));
+  });
+  // 用**指定**编辑器（id 来自目录白名单）打开一个文件（代码树右键菜单）；成功 true，失败 false。
+  // 这条会**启动外部程序**，所以比 openPath / openInBrowser 都多几道锁：
+  //   目标普通文件（lstat 不跟随软链）→ 基名不得以 `-` 开头（CLI 参数注入）→
+  //   可执行文件按 id 从扫描结果里取、已解析成真实 .exe（Windows 上 spawn .cmd 垫片
+  //   会抛 EINVAL——旧实现点了没反应的根因）→ spawn 数组参数、永不 shell。
+  // 渲染层只能传文件路径 + 编辑器 id，不能指定命令、不能传参数串。
+  ipcMain.handle(IPC_SHELL_OPEN_IN_EDITOR, async (_e, payload: unknown) => {
+    const p = (payload ?? {}) as { path?: unknown; editorId?: unknown };
+    const target = resolveEditorOpenTarget(p.path);
+    if (target === null) return false;
+    if (typeof p.editorId !== 'string') return false;
+    const editors = collectInstalledEditors(await gatherScanData());
+    const editor = editors.find((e) => e.id === p.editorId);
+    if (!editor) return false;
+    try {
+      // detached + 立即 unref：编辑器是长驻 GUI 进程，不能让主进程等它退出，
+      // 也不能因为用户关掉编辑器而让主进程收到 child 退出事件做任何事。
+      // **不能加 windowsHide**：它会在 STARTUPINFO 写入 SW_HIDE，Electron 系编辑器
+      // （Code.exe / Cursor / Trae）的首窗口用 SW_SHOWDEFAULT 启动时会继承它——
+      // 进程活着、窗口永远不出现（真机 A/B 验证：去掉后全部出窗）。只用 detached。
+      const child = spawn(editor.exe, [target], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      return true;
+    } catch {
+      return false;
+    }
   });
   // 系统浏览器/邮件客户端打开外链（消息正文链接拦截）：只收 http/https/mailto 绝对
   // URL，其余协议一律拒绝——这条通道绝不能转交 openPath（.exe 会被“打开”=运行）。

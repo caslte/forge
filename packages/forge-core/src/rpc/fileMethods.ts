@@ -18,8 +18,14 @@
  * 纯 Node，不 import Electron / Vue / pi。
  */
 
-import type { RpcResult } from './projectMethods.ts';
-import { FileService, type FileServiceOptions } from '../file/fileService.ts';
+import type { RpcResult, EventSink } from './projectMethods.ts';
+import { FileService, resolveInside, type FileServiceOptions } from '../file/fileService.ts';
+import {
+  OpenFileWatcher,
+  fsDirWatcher,
+  type WatchEntry,
+  type OpenFileWatcherDeps,
+} from '../file/watcher.ts';
 
 /** 构造成功信封 */
 function ok<T>(data: T): RpcResult<T> {
@@ -63,7 +69,20 @@ function optionalRelPath(params: unknown, key: string): string | null {
 export interface FileApiDeps extends FileServiceOptions {
   /** 可注入服务实例（测试接替身用） */
   fileService?: FileService;
+  /**
+   * 事件汇（与 git/term 同款）：`file/watchSync` 监听的文件在磁盘上变化时，
+   * 经此发射 `code.fileChanged`（payload {projectPath, relPath}），createForgeCore
+   * 传共享 eventBus，主进程按 FORGE_EVENTS 登记转发渲染层。缺省 = 不发事件。
+   */
+  events?: EventSink;
+  /** 目录监听工厂（测试接替身用）；缺省真实 fs.watch */
+  watchDirFactory?: OpenFileWatcherDeps['watchDir'];
+  /** 防抖窗口（测试用小值）；缺省 300ms */
+  watchDebounceMs?: number;
 }
+
+/** 同一文件连续变化合并为一轮刷新的窗口：编辑器一次保存常触发多轮 fs 事件 */
+export const FILE_WATCH_DEBOUNCE_MS = 300;
 
 /**
  * 文件 RPC 方法层。
@@ -71,13 +90,20 @@ export interface FileApiDeps extends FileServiceOptions {
 export class FileApi {
   readonly methods: Record<string, (params: unknown) => RpcResult>;
   private readonly fileService: FileService;
+  private readonly watcher: OpenFileWatcher;
 
   constructor(deps: FileApiDeps) {
     this.fileService = deps.fileService ?? new FileService({ isProjectRegistered: deps.isProjectRegistered });
+    this.watcher = new OpenFileWatcher({
+      watchDir: deps.watchDirFactory ?? fsDirWatcher,
+      debounceMs: deps.watchDebounceMs ?? FILE_WATCH_DEBOUNCE_MS,
+      onFileChanged: (projectPath, relPath) => deps.events?.emit('code.fileChanged', { projectPath, relPath }),
+    });
     this.methods = {
       'file/listDir': (params) => this.listDir(params),
       'file/readFile': (params) => this.readFile(params),
       'file/searchFiles': (params) => this.searchFiles(params),
+      'file/watchSync': (params) => this.watchSync(params),
     };
   }
 
@@ -141,6 +167,43 @@ export class FileApi {
       return this.wrap('file/searchFiles', this.fileService.searchFiles(projectPath, query));
     } catch (err) {
       console.error('[file/searchFiles] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /**
+   * file/watchSync：以传入集合为准对齐「已打开文件」的磁盘监听。
+   *
+   * 渲染层在打开/关闭文件后发**该项目**的全量 relPaths；本方法逐条过 resolveInside
+   * （与 readFile 同一道越界校验，6103/6104 的条目静默剔除——读的时刻会自然暴露），
+   * 然后交 OpenFileWatcher 做目录级 diff。磁盘变化经 deps.events 发
+   * `code.fileChanged` {projectPath, relPath}。空 relPaths = 该项目全部关闭监听。
+   */
+  private watchSync(params: unknown): RpcResult {
+    const projectPath = requireString(params, 'path');
+    if (projectPath === null) {
+      return fail(6101, '参数错误：path 必须为非空字符串');
+    }
+    const relPathsRaw = isRecord(params) ? params['relPaths'] : undefined;
+    if (!Array.isArray(relPathsRaw) || relPathsRaw.some((r) => typeof r !== 'string')) {
+      return fail(6101, '参数错误：relPaths 必须为字符串数组');
+    }
+    const entries: WatchEntry[] = [];
+    for (const rel of relPathsRaw as string[]) {
+      try {
+        const r = resolveInside(projectPath, rel);
+        if (r.ok) entries.push({ projectPath, relPath: r.rel, abs: r.abs });
+        // 解析失败（文件已删/越界）：跳过。重读时 readFile 会给出确定的错误码。
+      } catch (err) {
+        console.error('[file/watchSync] internal error', err);
+        return fail(5000, 'internal error');
+      }
+    }
+    try {
+      this.watcher.sync(entries);
+      return ok({});
+    } catch (err) {
+      console.error('[file/watchSync] internal error', err);
       return fail(5000, 'internal error');
     }
   }

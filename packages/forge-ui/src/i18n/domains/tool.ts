@@ -22,6 +22,15 @@ export const zhTool = {
   'tool.changedFilesCount': '{n} 个文件已更改',
   'tool.openContainingDir': '打开所在目录',
   'tool.openInBrowser': '用浏览器打开',
+  /** 代码树目录行专用：打开的是**该目录本身**（文件行走 tool.openContainingDir 打开父目录） */
+  'tool.openThisFolder': '打开此目录',
+  /**
+   * 用指定编辑器打开（按主进程扫描结果分项，目录内 20+ 款）。
+   * 代码纸保持只读（CE-S08），所以写代码的唯一入口就是这些菜单项。
+   */
+  'tool.openInEditorWith': '用 {name} 打开',
+  /** 一个编辑器都没扫到：菜单里保留一条置灰提示，解释为什么没有「用 … 打开」 */
+  'tool.openInEditorNone': '未检测到已安装的编辑器',
   'tool.mermaidEmpty': 'Mermaid 内容为空',
   'tool.mermaidFailed': 'Mermaid 渲染失败：',
   'tool.mermaidNotDiagram': '内容不是 mermaid 语法，按代码块显示',
@@ -61,6 +70,9 @@ export const enTool: Record<string, string> = {
   'tool.changedFilesCount': '{n} files changed',
   'tool.openContainingDir': 'Open containing folder',
   'tool.openInBrowser': 'Open in browser',
+  'tool.openThisFolder': 'Open this folder',
+  'tool.openInEditorWith': 'Open with {name}',
+  'tool.openInEditorNone': 'No installed editor detected',
   'tool.mermaidEmpty': 'Mermaid content is empty',
   'tool.mermaidFailed': 'Mermaid render failed: ',
   'tool.mermaidNotDiagram': 'Content is not mermaid syntax, shown as a code block',

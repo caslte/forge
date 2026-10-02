@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
 import { sortSessionsByActivation, projectTagOf } from '../utils/sessionView';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import { useI18n, type MessageKey } from '../i18n/index.ts';
 
 const { t } = useI18n();
@@ -48,7 +49,6 @@ const expandedSessionLists = ref<Set<string>>(new Set());
 const menuOpenPath = ref<string | null>(null);
 const menuX = ref(0);
 const menuY = ref(0);
-const menuRef = ref<HTMLElement | null>(null);
 
 // 项目重命名（inline input）
 const renamingProjectPath = ref<string | null>(null);
@@ -376,6 +376,47 @@ function onMenuDelete(): void {
   if (project) requestDeleteProject(project);
 }
 
+/** 共享菜单的条目：文案与 danger/confirm 态都在这里算，与旧模板里的内联写法逐条对应。
+ *  两个危险项的「确认中」文案切换也在这里（原来靠模板里三元表达式）。 */
+const ICON_OPEN_DIR = 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z';
+const ICON_RENAME =
+  'M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z';
+const ICON_TRASH = 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2';
+const ICON_SESSIONS =
+  'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6';
+
+const projectMenuItems = computed<ContextMenuItem[]>(() => {
+  const path = menuOpenPath.value;
+  if (!path) return [];
+  const clearing = clearSessionsConfirmPath.value === path;
+  const deleting = projectDeleteConfirmPath.value === path;
+  return [
+    { key: 'open-dir', label: t('project.openProjectDir'), icon: ICON_OPEN_DIR },
+    { key: 'rename', label: t('project.rename'), icon: ICON_RENAME },
+    {
+      key: 'clear-sessions',
+      label: clearing ? t('project.confirmClear') : t('project.clearSessions'),
+      icon: ICON_SESSIONS,
+      danger: true,
+      confirming: clearing,
+    },
+    {
+      key: 'delete',
+      label: deleting ? t('project.confirmDelete') : t('project.deleteProject'),
+      icon: ICON_TRASH,
+      danger: true,
+      confirming: deleting,
+    },
+  ];
+});
+
+function onMenuSelect(key: string): void {
+  if (key === 'open-dir') return onMenuOpenDir();
+  if (key === 'rename') return onMenuRename();
+  if (key === 'clear-sessions') return onMenuClearSessions();
+  if (key === 'delete') return onMenuDelete();
+}
+
 // 项目拖拽排序：记录拖拽源；指针在目标节点上半部=插入其前，下半部=其后
 function onProjectDragStart(p: ProjectItem): void {
   draggedPath.value = p.path;
@@ -467,23 +508,12 @@ function focusAndSelect(el: Element | ComponentPublicInstance | null): void {
   }
 }
 
-function onDocumentClick(ev: MouseEvent): void {
-  if (menuOpenPath.value === null) return;
-  const target = ev.target as Node | null;
-  const menuEl = menuRef.value;
-  if (menuEl && target && menuEl.contains(target)) return;
-  closeMenu();
-}
-
+/** 菜单的关闭与「点外面关闭」已由 ContextMenu 接管；这里只管重命名输入框的 Esc 取消。
+ *  两者共存才是旧行为（Esc 同时关菜单 + 取消重命名）。 */
 function onDocumentKeydown(ev: KeyboardEvent): void {
   if (ev.key !== 'Escape') return;
-  if (menuOpenPath.value) closeMenu();
   if (renamingProjectPath.value) cancelRenameProject();
   if (renamingSessionId.value) cancelRenameSession();
-}
-
-function onWindowScroll(): void {
-  if (menuOpenPath.value) closeMenu();
 }
 
 // 滚动上下沿渐隐：仅当该方向还有溢出内容时才显示对应渐变遮罩
@@ -517,17 +547,13 @@ watch(
 );
 
 onMounted(() => {
-  document.addEventListener('click', onDocumentClick, true);
   document.addEventListener('keydown', onDocumentKeydown);
-  window.addEventListener('scroll', onWindowScroll, true);
   window.addEventListener('resize', updateTreeFade);
   observeTreeFadeSource();
 });
 
 onUnmounted(() => {
-  document.removeEventListener('click', onDocumentClick, true);
   document.removeEventListener('keydown', onDocumentKeydown);
-  window.removeEventListener('scroll', onWindowScroll, true);
   window.removeEventListener('resize', updateTreeFade);
   fadeObserver?.disconnect();
   fadeObserver = null;
@@ -862,57 +888,15 @@ onUnmounted(() => {
     </div>
     </template>
 
-    <!-- 项目操作菜单：Teleport 到 body，避免被 sidebar overflow/stacking 裁剪遮挡 -->
-    <Teleport to="body">
-      <div
-        v-if="menuOpenPath"
-        ref="menuRef"
-        class="project-action-menu"
-        :style="{ left: menuX + 'px', top: menuY + 'px' }"
-        @click.stop
-        @contextmenu.prevent
-      >
-        <button type="button" class="project-action-menu-item" @click="onMenuOpenDir">
-          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          {{ t('project.openProjectDir') }}
-        </button>
-        <button type="button" class="project-action-menu-item" @click="onMenuRename">
-          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-          </svg>
-          {{ t('project.rename') }}
-        </button>
-        <button
-          type="button"
-          class="project-action-menu-item danger"
-          :class="{ confirming: clearSessionsConfirmPath === menuOpenPath }"
-          @click="onMenuClearSessions"
-        >
-          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-            <line x1="10" y1="11" x2="10" y2="17" />
-            <line x1="14" y1="11" x2="14" y2="17" />
-          </svg>
-          {{ clearSessionsConfirmPath === menuOpenPath ? t('project.confirmClear') : t('project.clearSessions') }}
-        </button>
-        <button
-          type="button"
-          class="project-action-menu-item danger"
-          :class="{ confirming: projectDeleteConfirmPath === menuOpenPath }"
-          @click="onMenuDelete"
-        >
-          <svg class="project-action-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-          </svg>
-          {{ projectDeleteConfirmPath === menuOpenPath ? t('project.confirmDelete') : t('project.deleteProject') }}
-        </button>
-      </div>
-    </Teleport>
+    <!-- 项目操作菜单：共享组件（原先这里是 Teleport + 自写的一套，与改动文件卡重复） -->
+    <ContextMenu
+      v-if="menuOpenPath"
+      :x="menuX"
+      :y="menuY"
+      :items="projectMenuItems"
+      @select="onMenuSelect"
+      @close="closeMenu"
+    />
   </div>
 </template>
 
@@ -1468,68 +1452,5 @@ onUnmounted(() => {
 .tree-empty-centered {
   padding: 24px 12px;
   text-align: center;
-}
-
-.project-action-menu {
-  position: fixed;
-  z-index: 1000;
-  min-width: 180px;
-  padding: 4px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.project-action-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--foreground);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.project-action-menu-item:hover {
-  background: var(--muted);
-  border-color: transparent;
-  color: var(--foreground);
-}
-
-.project-action-menu-item.danger {
-  color: var(--destructive);
-}
-
-.project-action-menu-item.danger:hover {
-  background: color-mix(in oklab, var(--destructive) 10%, transparent);
-  color: var(--destructive);
-  border-color: transparent;
-}
-
-.project-action-menu-item.danger.confirming {
-  background: var(--destructive);
-  color: #fff;
-  font-weight: 600;
-}
-
-.project-action-menu-item.danger.confirming:hover {
-  background: color-mix(in oklab, var(--destructive) 85%, black);
-  color: #fff;
-}
-
-.project-action-menu-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
 }
 </style>

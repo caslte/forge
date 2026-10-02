@@ -49,6 +49,9 @@ Sub-agents you send off each get their own tab. Check in whenever you like, stop
 **🔌 Bring Your Own Models · use the one you like**
 Any provider connects here, keys kept in your system keychain. Set the thinking level yourself, with contexts up to 1M tokens.
 
+**🔍 Code Explorer · read code without switching to VSCode**
+One click turns the sidebar into the project's file tree — reading code feels just like an IDE.
+
 **🌿 Git Commit & Push · committing fits right in**
 Commit and push from the conversation, with the AI writing up the message for you.
 

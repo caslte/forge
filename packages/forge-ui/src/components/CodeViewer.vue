@@ -18,6 +18,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { detectDiffLanguage, highlightDiffLine } from '@forge/core/side-by-side-diff';
 import { markBlockCommentLines } from '../utils/codeBlockComment';
 import { fileBadgeOf } from '../utils/fileBadge';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import type { OpenFile } from '../composables/useCodeExplorer';
 import type { GitStatusFile } from '../types';
 import { useI18n } from '../i18n/index.ts';
@@ -43,6 +44,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select', relPath: string): void;
   (e: 'close', relPath: string): void;
+  /** 拖拽排序 / 左移右移：把 relPath 移到 toIndex（组件不直接改 props） */
+  (e: 'move', relPath: string, toIndex: number): void;
 }>();
 
 const activeFile = computed(
@@ -157,6 +160,139 @@ function onTabAuxUp(e: MouseEvent, relPath: string): void {
     emit('close', relPath);
   }
   auxDown = null;
+}
+
+/* ===== tab 拖拽排序 =====
+ *
+ * 四个约束，每一个都是实测出来的：
+ * 1. **阈值 4px**：不设阈值的话，“手按下签时抖一下”会把签抽走。
+ * 2. **只用主键**：中键已经用于关闭（onTabAuxDown/Up），主键拖拽与它互不干涉。
+ * 3. **拖过就不再响应 click**：pointerup 后浏览器还会补一个 click，不吞掉就会在
+ *    “拖完了签” 的同时把它切激活（手势附带副作用，和中键关闭一个道理）。
+ * 4. **拖动不切激活签**：moveFile 只改顺序。
+ */
+const DRAG_THRESHOLD = 4;
+/** 拖到签条左右这个距离以内就开始自动滚动 */
+const EDGE_SCROLL_ZONE = 48;
+
+interface DragState {
+  relPath: string;
+  startX: number;
+  /** 已越过阈值、真的在拖 */
+  active: boolean;
+}
+/** ref 而非普通变量：拖拽中的签需要淡化反馈，那是模板要读的响应式状态 */
+const drag = ref<DragState | null>(null);
+/** pointerup 之后紧跟的那个 click 需要被吞掉 */
+let suppressClick = false;
+
+function onTabPointerDown(e: PointerEvent, relPath: string): void {
+  // 只接主键；中键归关闭处理
+  if (e.button !== 0) return;
+  drag.value = { relPath, startX: e.clientX, active: false };
+}
+
+function onTabPointerMove(e: PointerEvent): void {
+  const d = drag.value;
+  if (!d) return;
+  if (!d.active) {
+    if (Math.abs(e.clientX - d.startX) < DRAG_THRESHOLD) return;
+    d.active = true;
+  }
+  e.preventDefault();
+  const strip = tabsEl.value;
+  if (!strip) return;
+
+  // 拖到边缘时自动滚动：签条本来就溢出，不自动滚就拖不到后面的签。
+  // 力度按「深入边缘的距离」线性给，浅擦一下不滚，贴到底才最快。
+  const r = strip.getBoundingClientRect();
+  const leftGap = e.clientX - r.left;
+  const rightGap = r.right - e.clientX;
+  const speed = (gap: number): number => {
+    if (gap > EDGE_SCROLL_ZONE) return 0;
+    return Math.round(((EDGE_SCROLL_ZONE - gap) / EDGE_SCROLL_ZONE) * 18);
+  };
+  if (speed(leftGap)) strip.scrollLeft -= speed(leftGap);
+  if (speed(rightGap)) strip.scrollLeft += speed(rightGap);
+
+  // 目标下标：取指针落在哪个签的左半/右半。直接用当前布局算，不用累计位移。
+  const tabs = [...strip.querySelectorAll<HTMLElement>('.cv-tab')];
+  let target = tabs.length - 1;
+  for (let i = 0; i < tabs.length; i += 1) {
+    const tr = tabs[i]?.getBoundingClientRect();
+    if (!tr) continue;
+    if (e.clientX < tr.left + tr.width / 2) {
+      target = i;
+      break;
+    }
+  }
+  emit('move', d.relPath, target);
+}
+
+function onTabPointerUp(): void {
+  if (!drag.value) return;
+  // 拖过就吞掉紧随的 click（见约束 3）
+  suppressClick = drag.value.active;
+  drag.value = null;
+}
+
+function onTabClick(e: MouseEvent, relPath: string): void {
+  if (suppressClick) {
+    suppressClick = false;
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  emit('select', relPath);
+}
+
+/** tab 右键菜单：左移 / 右移 / 关闭 =====
+ * 拖拽是鼠标用户的手段，但「移到最左/最右」这类操作拖拽做起来很憋屈
+ * （要一路贴着边缘自动滚），所以给一份显式菜单。
+ * 到边界的项置 disabled 而不是隐藏：位置不变、用户能看到“它存在但现在不行”。
+ *
+ * 注：曾同时提供 Ctrl+Shift+PageUp/PageDown 快捷键，已按用户要求去掉——
+ * 保留拖拽 + 菜单两套就够，再加快捷键反而多一处与 VSCode 绑定的不一致。 */
+const tabCtx = ref<{ relPath: string; x: number; y: number } | null>(null);
+
+function onTabContextMenu(e: MouseEvent, relPath: string): void {
+  e.preventDefault();
+  e.stopPropagation();
+  tabCtx.value = { relPath, x: e.clientX, y: e.clientY };
+}
+
+const ICON_LEFT = 'M15 18l-6-6 6-6';
+const ICON_RIGHT = 'M9 18l6-6-6-6';
+const ICON_X = 'M18 6L6 18M6 6l12 12';
+
+const tabCtxItems = computed<ContextMenuItem[]>(() => {
+  // 局部变量**不能叫 t**：那会把 useI18n 的 t() 遮蔽掉，报错是
+  // 「This expression is not callable」，与真因隔着十万八千里
+  const target = tabCtx.value;
+  if (!target) return [];
+  const i = props.files.findIndex((f) => f.relPath === target.relPath);
+  if (i === -1) return [];
+  return [
+    { key: 'left', label: t('code.tabMoveLeft'), icon: ICON_LEFT, disabled: i === 0 },
+    {
+      key: 'right',
+      label: t('code.tabMoveRight'),
+      icon: ICON_RIGHT,
+      disabled: i === props.files.length - 1,
+    },
+    { key: 'close', label: t('code.tabClose'), icon: ICON_X, danger: true },
+  ];
+});
+
+function onTabCtxSelect(key: string): void {
+  const target = tabCtx.value;
+  tabCtx.value = null;
+  if (!target) return;
+  const i = props.files.findIndex((f) => f.relPath === target.relPath);
+  if (i === -1) return;
+  if (key === 'left') emit('move', target.relPath, i - 1);
+  else if (key === 'right') emit('move', target.relPath, i + 1);
+  else if (key === 'close') emit('close', target.relPath);
 }
 
 watch(
@@ -321,6 +457,7 @@ function formatBytes(n: number): string {
       <div
         ref="tabsEl"
         class="cv-tabs"
+        :class="{ 'is-dragging': drag?.active === true }"
         role="tablist"
         @scroll.passive="syncTabsOverflow"
         @wheel="onTabsWheel"
@@ -329,15 +466,20 @@ function formatBytes(n: number): string {
           v-for="f in files"
           :key="f.relPath"
           class="cv-tab"
-          :class="{ active: f.relPath === activeRel, 'is-missing': f.missing }"
+          :class="{ active: f.relPath === activeRel, 'is-missing': f.missing, 'is-dragging': drag?.relPath === f.relPath && drag.active }"
           role="tab"
           :aria-selected="f.relPath === activeRel"
           :title="f.relPath"
           tabindex="0"
-          @click="emit('select', f.relPath)"
+          @click="onTabClick($event, f.relPath)"
           @keydown.enter.prevent="emit('select', f.relPath)"
           @mousedown="onTabAuxDown($event, f.relPath)"
           @mouseup="onTabAuxUp($event, f.relPath)"
+          @pointerdown="onTabPointerDown($event, f.relPath)"
+          @pointermove="onTabPointerMove"
+          @pointerup="onTabPointerUp"
+          @pointercancel="onTabPointerUp"
+          @contextmenu.prevent="onTabContextMenu($event, f.relPath)"
         >
           <span
             class="cv-tab-badge"
@@ -399,6 +541,17 @@ function formatBytes(n: number): string {
       <span class="cv-ro" :title="t('code.roHint')">{{ t('code.readOnly') }}</span>
       <span v-for="s in statusText" :key="s" class="cv-stat">{{ s }}</span>
     </footer>
+
+    <!-- 签条右键：左移 / 右移 / 关闭（拖拽的键盘与长距离替代） -->
+    <ContextMenu
+      v-if="tabCtx"
+      :x="tabCtx.x"
+      :y="tabCtx.y"
+      :items="tabCtxItems"
+      :min-width="140"
+      @select="onTabCtxSelect"
+      @close="tabCtx = null"
+    />
   </section>
 </template>
 
@@ -438,6 +591,16 @@ function formatBytes(n: number): string {
      之前那条深色带让 tab 条看着像另一个面板，而它描述的其实是**同一张纸里的文件**。 */
   overflow-x: auto;
   scrollbar-width: none;
+}
+/* 拖拽中的签：跟着指针走。不用 transform 整个签条，而是单个签偏移——
+   签条有横向滚动，transform 会让被拖的签从滚动区里「飘」出去。 */
+.cv-tab.is-dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+/* 拖拽中禁止文字选中与指针事件抢走（否则拖到签上会变成选文本） */
+.cv-tabs.is-dragging {
+  user-select: none;
 }
 .cv-tabs::-webkit-scrollbar {
   display: none;
@@ -655,6 +818,14 @@ function formatBytes(n: number): string {
   margin: 0;
   padding: 8px 0 16px;
   font-family: var(--font-mono);
+  /* 必须显式开口：global.css 的 body 是 user-select:none（全站默认不可选，
+     只有 MessageCard 用 user-select:text 开了对话区这一个口），
+     于是代码纸一个字符都选不中，「选择复制」整个不成立。
+     开了之后：
+       - 行号列 .cv-ln 保持 user-select:none，复制时自动跳过（已验证）
+       - 签条 / 面包屑 / 状态栏不在 .cv-pre 里，仍不可选
+       - 选中样式走全局 ::selection（--brand 25%） */
+  user-select: text;
   /* 12.5px / 20px = prototypes/code-tree-viewer-demo.html:256 `.code` 的原值。
      曾经为了「看得清」改成 14px / 1.6（对照 Qoder），代价是同一份文件在应用里
      比原型大一圈（行距 22.4 vs 20），截图并排一眼能看出来——而这个功能的存在

@@ -1106,6 +1106,11 @@ const bridge: ForgeBridge = {
           .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
         return { code: 0, message: 'ok', data: { relPath: rel, nodes } };
       }
+      case 'file/watchSync': {
+        // 浏览器 mock 无 fs.watch：接受即成功（e2e 要模拟磁盘变化时直接触发
+        // 事件回调即可，见 useCodeExplorer 的 code.fileChanged 订阅）
+        return { code: 0, message: 'ok', data: {} };
+      }
       case 'file/readFile': {
         const fp = (params as { path?: string; relPath?: string });
         const root = fp.path ?? '';
@@ -1347,6 +1352,12 @@ const bridge: ForgeBridge = {
   shell: {
     openPath: async () => true,
     openInBrowser: async () => true,
+    // 浏览器 dev/e2e 演示：回两个编辑器让右键菜单出分项（真机由主进程扫描决定）
+    listEditors: async () => [
+      { id: 'vscode', label: 'VS Code' },
+      { id: 'cursor', label: 'Cursor' },
+    ],
+    openInEditor: async () => true,
     // 浏览器 dev 无系统浏览器：直接回失败（点击行为由拦截器静默处理，不报错）
     openExternal: async () => false,
     // 浏览器 dev 无主进程解析：回健康占位，shell 横幅只在 Electron 真机上出现

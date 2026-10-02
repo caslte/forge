@@ -6,10 +6,12 @@
  * 交互：头部折叠/展开（默认折叠，状态不持久化）；点击文件行内联展开该文件 diff
  * （行间互斥，再点收起）；edit 多 hunk 逐块渲染（hunk i/n 标签分隔），单 hunk 不显示头部条。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { ChangedFileEntry, ChangedFileSummary } from '../composables/useChangedFiles';
 import { useI18n } from '../i18n/index.ts';
-import { collapseDotSegments } from '../utils/pathSegments.ts';
+import { absoluteFilePath as toAbsolute, dirOf } from '../utils/pathSegments.ts';
+import { hasBrowserOpenableExt } from '../utils/browserOpen.ts';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import DiffView from './DiffView.vue';
 
 const { t } = useI18n();
@@ -28,7 +30,6 @@ const expandedPath = ref<string | null>(null);
 const contextMenuPath = ref<string | null>(null);
 const contextMenuX = ref(0);
 const contextMenuY = ref(0);
-const contextMenuRef = ref<HTMLElement | null>(null);
 
 const files = computed(() => props.summary.files);
 
@@ -40,44 +41,27 @@ function relPath(path: string): string {
   return p;
 }
 
-/** 把工具入参 path 规整为绝对路径：相对路径则拼项目根前缀；空 / 已是绝对 → 原样返回。
- *  已 normalize 为正斜杠（useChangedFiles.parseFileToolInput），无需再替换 \\；
- *  折叠 . / .. 中间段——工具入参 ./x 常见，ShellExecuteEx 不归一这种段（见 pathSegments.ts） */
+/** 把工具入参 path 规整为绝对路径（已折叠 . / .. 中间段，见 utils/pathSegments.ts） */
 function absoluteFilePath(p: string): string {
-  const looksAbsolute = p.startsWith('/') || /^[a-zA-Z]:\//.test(p);
-  if (looksAbsolute) return collapseDotSegments(p);
-  const root = props.projectPath?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
-  return root !== '' ? collapseDotSegments(`${root}/${p}`) : p;
-}
-
-/** 取正斜杠路径的目录部分；根目录 / 单段名原样返回（让 openPath 自己失败即可） */
-function dirOf(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i > 0 ? p.slice(0, i) : p;
+  return toAbsolute(props.projectPath, p);
 }
 
 function toggleRow(path: string): void {
   expandedPath.value = expandedPath.value === path ? null : path;
 }
 
-/** 可交给「用浏览器打开」的扩展名：仅 .html/.htm。与主进程 shell/openTarget.ts
- *  的白名单同口径；主进程才是「能不能开」的最终裁决者，这里只决定菜单项显不显示。 */
-const BROWSER_OPEN_EXT = /\.html?$/i;
-
-/** 当前右键目标是否展示「用浏览器打开」 */
+/** 当前右键目标是否展示「用浏览器打开」（口径见 utils/browserOpen.ts） */
 const contextMenuIsHtml = computed(() => {
   const p = contextMenuPath.value;
-  return p !== null && BROWSER_OPEN_EXT.test(p.trim());
+  return p !== null && hasBrowserOpenableExt(p);
 });
 
 function onRowContextMenu(file: ChangedFileEntry, ev: MouseEvent): void {
   ev.preventDefault();
   contextMenuPath.value = file.path;
-  // 视口边界保护：菜单宽 ~160，单项高 ~30 + 容器内边距 8；html 行多一项，菜单高 ~70
-  const w = 168;
-  const h = BROWSER_OPEN_EXT.test(file.path.trim()) ? 72 : 38;
-  contextMenuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
-  contextMenuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
+  // 视口钳制交给 ContextMenu（它拿到真实尺寸后再钳），这里只记触发点
+  contextMenuX.value = ev.clientX;
+  contextMenuY.value = ev.clientY;
 }
 
 function closeContextMenu(): void {
@@ -101,27 +85,26 @@ function onContextMenuOpenInBrowser(): void {
   void window.forge.shell.openInBrowser(absoluteFilePath(filePath));
 }
 
-function onDocumentClick(ev: MouseEvent): void {
-  if (contextMenuPath.value === null) return;
-  const menuEl = contextMenuRef.value;
-  const target = ev.target as Node | null;
-  if (menuEl && target && menuEl.contains(target)) return;
-  closeContextMenu();
-}
+const ICON_GLOBE =
+  'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20';
+const ICON_FOLDER = 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z';
 
-function onDocumentKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && contextMenuPath.value !== null) closeContextMenu();
-}
-
-onMounted(() => {
-  document.addEventListener('click', onDocumentClick, true);
-  document.addEventListener('keydown', onDocumentKeydown);
+/** 菜单项：HTML 行多一项「用浏览器打开」，顺序与旧实现一致（浏览器项在上） */
+const contextMenuItems = computed<ContextMenuItem[]>(() => {
+  const p = contextMenuPath.value;
+  if (p === null) return [];
+  const items: ContextMenuItem[] = [];
+  if (hasBrowserOpenableExt(p)) {
+    items.push({ key: 'browser', label: t('tool.openInBrowser'), icon: ICON_GLOBE });
+  }
+  items.push({ key: 'dir', label: t('tool.openContainingDir'), icon: ICON_FOLDER });
+  return items;
 });
 
-onBeforeUnmount(() => {
-  document.removeEventListener('click', onDocumentClick, true);
-  document.removeEventListener('keydown', onDocumentKeydown);
-});
+function onContextMenuSelect(key: string): void {
+  if (key === 'browser') onContextMenuOpenInBrowser();
+  else if (key === 'dir') onContextMenuOpenDir();
+}
 </script>
 
 <template>
@@ -168,32 +151,16 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <!-- 文件右键菜单：Teleport 到 body，避免被卡片 overflow / stacking 裁剪遮挡 -->
-  <Teleport to="body">
-    <div
-      v-if="contextMenuPath !== null"
-      ref="contextMenuRef"
-      class="cf-context-menu"
-      :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
-      @click.stop
-      @contextmenu.prevent
-    >
-      <button v-if="contextMenuIsHtml" type="button" class="cf-context-menu-item" @click="onContextMenuOpenInBrowser">
-        <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" />
-          <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-          <path d="M2 12h20" />
-        </svg>
-        {{ t('tool.openInBrowser') }}
-      </button>
-      <button type="button" class="cf-context-menu-item" @click="onContextMenuOpenDir">
-        <svg class="cf-context-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-        </svg>
-        {{ t('tool.openContainingDir') }}
-      </button>
-    </div>
-  </Teleport>
+  <!-- 文件右键菜单：共享组件（原先这里是 Teleport + 自写的一套，与项目树重复） -->
+  <ContextMenu
+    v-if="contextMenuPath"
+    :x="contextMenuX"
+    :y="contextMenuY"
+    :items="contextMenuItems"
+    :min-width="160"
+    @select="onContextMenuSelect"
+    @close="closeContextMenu"
+  />
 </template>
 
 <style scoped>
@@ -361,45 +328,5 @@ onBeforeUnmount(() => {
   background: var(--card);
 }
 
-/* 文件右键菜单：Teleport 到 body，避免被卡片 overflow 裁剪；样式沿用 project-action-menu 视觉 */
-.cf-context-menu {
-  position: fixed;
-  z-index: 1000;
-  min-width: 160px;
-  padding: 4px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.cf-context-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--foreground);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.cf-context-menu-item:hover {
-  background: var(--muted);
-  color: var(--foreground);
-}
-
-.cf-context-menu-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-}
+/* 文件右键菜单的样式已搬到 components/ContextMenu.vue（与项目树共用一套） */
 </style>

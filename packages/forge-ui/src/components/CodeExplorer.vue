@@ -38,7 +38,7 @@ const props = defineProps<{
 
 const { t } = useI18n();
 const { codeViewerLayout, codeViewerSplitPct, setCodeViewerSplitPct } = usePreferences();
-const { getState, setActive, closeFile, loadGitStatus } = useCodeExplorer();
+const { getState, setActive, closeFile, moveFile, loadGitStatus } = useCodeExplorer();
 
 /** 宿主的像素宽度：拖拽增量与保底换算都要用它 */
 const hostWidth = ref(0);
@@ -133,6 +133,11 @@ function onCloseTab(relPath: string): void {
   if (props.projectPath) closeFile(props.projectPath, relPath);
 }
 
+/** 拖拽排序 / 左移右移：只改签顺序，不改激活签（手势不做额外的事） */
+function onMoveTab(relPath: string, toIndex: number): void {
+  if (props.projectPath) moveFile(props.projectPath, relPath, toIndex);
+}
+
 /** Esc 逐级退出（PRD）由 App 的 window keydown 统一决定，这里只渲染宽度读数 */
 const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
 </script>
@@ -164,6 +169,7 @@ const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
             :git-status="activeGit"
             @select="onSelectTab"
             @close="onCloseTab"
+            @move="onMoveTab"
           />
           <div v-if="isDegraded" class="cex-note">{{ t('code.layoutDegraded') }}</div>
         </div>
@@ -188,6 +194,7 @@ const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
             :git-status="activeGit"
             @select="onSelectTab"
             @close="onCloseTab"
+            @move="onMoveTab"
           />
           <footer class="cex-foot">
             <span class="cex-pct" :title="t('code.splitterHint')">

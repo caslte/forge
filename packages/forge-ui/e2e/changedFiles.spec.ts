@@ -279,12 +279,12 @@ test('E-CV-FILES-005 @P1 @mock-backend：文件行右键菜单「打开所在目
 
   // 右键触发菜单：Teleport 到 body，不在 card 子树下
   await row.click({ button: 'right' });
-  const menu = page.locator('.cf-context-menu');
+  const menu = page.locator('.ctx-menu');
   await expect(menu).toBeVisible();
-  await expect(menu.locator('.cf-context-menu-item')).toHaveText('打开所在目录');
+  await expect(menu.locator('.ctx-menu-item')).toHaveText('打开所在目录');
 
   // 点菜单项 → shell.openPath 收到包含目录（剥文件名）
-  await menu.locator('.cf-context-menu-item').click();
+  await menu.locator('.ctx-menu-item').click();
   const calls = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
   expect(calls).toEqual([`${PROJECT}/packages/forge-ui/src`]);
 
@@ -403,10 +403,10 @@ test('E-CV-FILES-007 @P1 @mock-backend：工具入参带 ./ 前缀时「打开�
   await expect(row).toBeVisible();
 
   await row.click({ button: 'right' });
-  const menu = page.locator('.cf-context-menu');
+  const menu = page.locator('.ctx-menu');
   await expect(menu).toBeVisible();
 
-  await menu.locator('.cf-context-menu-item').click();
+  await menu.locator('.ctx-menu-item').click();
   const calls = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
   expect(calls).toEqual([`${PROJECT}/packages/forge-ui/src`]);
 
@@ -458,15 +458,15 @@ test('E-CV-FILES-008 @P1 @mock-backend：HTML 文件行右键多出「用浏览�
   const tsRow = card.locator('.cf-row', { hasText: 'a.ts' });
   await expect(htmlRow).toBeVisible();
   await expect(tsRow).toBeVisible();
-  const menu = page.locator('.cf-context-menu');
+  const menu = page.locator('.ctx-menu');
 
   // HTML 行：两项，「用浏览器打开」在前
   await htmlRow.click({ button: 'right' });
   await expect(menu).toBeVisible();
-  await expect(menu.locator('.cf-context-menu-item')).toHaveText(['用浏览器打开', '打开所在目录']);
+  await expect(menu.locator('.ctx-menu-item')).toHaveText(['用浏览器打开', '打开所在目录']);
 
   // 点第一项 → shell.openInBrowser 收到**文件本体**的绝对路径（不是目录）
-  await menu.locator('.cf-context-menu-item').first().click();
+  await menu.locator('.ctx-menu-item').first().click();
   await expect(menu).toHaveCount(0);
   const browserCalls = await page.evaluate(() => (window as unknown as { __openInBrowserCalls: string[] }).__openInBrowserCalls);
   expect(browserCalls).toEqual([`${PROJECT}/prototypes/queue-panel-redesign.html`]);
@@ -475,14 +475,14 @@ test('E-CV-FILES-008 @P1 @mock-backend：HTML 文件行右键多出「用浏览�
 
   // HTML 行的「打开所在目录」仍是目录，两条动作互不串味
   await htmlRow.click({ button: 'right' });
-  await menu.locator('.cf-context-menu-item', { hasText: '打开所在目录' }).click();
+  await menu.locator('.ctx-menu-item', { hasText: '打开所在目录' }).click();
   const dirCalls2 = await page.evaluate(() => (window as unknown as { __openPathCalls: string[] }).__openPathCalls);
   expect(dirCalls2).toEqual([`${PROJECT}/prototypes`]);
 
   // 非 HTML 行：仍只有「打开所在目录」一项
   await tsRow.click({ button: 'right' });
   await expect(menu).toBeVisible();
-  await expect(menu.locator('.cf-context-menu-item')).toHaveText('打开所在目录');
+  await expect(menu.locator('.ctx-menu-item')).toHaveText('打开所在目录');
 
   health.assertHealthy();
 });

@@ -22,6 +22,8 @@ import {
   IPC_SHELL_PROBE,
   IPC_SHELL_OPEN_PATH,
   IPC_SHELL_OPEN_IN_BROWSER,
+  IPC_SHELL_OPEN_IN_EDITOR,
+  IPC_SHELL_LIST_EDITORS,
   IPC_THEME_SET,
   IPC_LOCALE_SET,
   IPC_ATTACHMENT_SCAN,
@@ -101,7 +103,7 @@ const fileControl = {
   },
 };
 
-/** window.forge.shell 系统能力：文件管理器打开目录 / 默认浏览器打开本地 HTML / 系统浏览器打开外链 */
+/** window.forge.shell 系统能力：文件管理器打开目录 / 默认浏览器打开本地 HTML / 外部编辑器打开文件 / 系统浏览器打开外链 */
 const shellControl = {
   async openPath(path: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_PATH, path) as Promise<boolean>;
@@ -109,6 +111,21 @@ const shellControl = {
   /** 用系统默认浏览器打开本地 HTML；主进程校验（普通文件 + 扩展名白名单），失败 false */
   async openInBrowser(path: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_IN_BROWSER, path) as Promise<boolean>;
+  },
+  /**
+   * 扫描本机已安装的外部编辑器，回 [{id,label}]（代码树右键菜单按结果分项）。
+   * exe 路径不回渲染层——主进程从白名单解析，渲染层只拿 id 和展示名。
+   */
+  async listEditors(): Promise<{ id: string; label: string }[]> {
+    return ipcRenderer.invoke(IPC_SHELL_LIST_EDITORS) as Promise<{ id: string; label: string }[]>;
+  },
+  /**
+   * 用指定编辑器（id 必须来自 listEditors 的白名单）打开一个文件；
+   * 主进程校验（普通文件 + 文件名不得以 `-` 开头）并自行解析 exe，失败 false。
+   * 只传文件路径 + id——命令名与参数由主进程决定，不接受渲染层指定。
+   */
+  async openInEditor(path: string, editorId: string): Promise<boolean> {
+    return ipcRenderer.invoke(IPC_SHELL_OPEN_IN_EDITOR, { path, editorId }) as Promise<boolean>;
   },
   async openExternal(url: string): Promise<boolean> {
     return ipcRenderer.invoke(IPC_SHELL_OPEN_EXTERNAL, url) as Promise<boolean>;

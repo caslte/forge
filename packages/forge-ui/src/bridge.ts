@@ -65,6 +65,8 @@ export type ForgeMethod =
   | 'file/listDir'
   | 'file/readFile'
   | 'file/searchFiles'
+  // 自动刷新：以传入集合为准对齐「已打开文件」的磁盘监听；变化经 code.fileChanged 事件回报
+  | 'file/watchSync'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
   // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
@@ -113,7 +115,10 @@ export type ForgeEvent =
   | 'boot.ready'
   // 系统通知点击跳转（主进程 notifyToast 直发，不经 core eventBus）：payload { sessionId }，
   // UI 收到后切换到该会话（App.vue onSelectSession）
-  | 'notify.focusSession';
+  | 'notify.focusSession'
+  // 模块 12 自动刷新：已打开文件在磁盘上被修改。payload { projectPath, relPath }，
+  // useCodeExplorer 据此静默重读对应签条
+  | 'code.fileChanged';
 
 /**
  * 启动状态（与 @forge/desktop ipc-contract.ts BootState 同构，本地声明惯例）。
@@ -394,6 +399,17 @@ export interface ForgeBridge {
      * 渲染层的扩展名判定只管菜单项显不显示。失败返回 false。
      */
     openInBrowser(path: string): Promise<boolean>;
+    /**
+     * 扫描本机已安装的外部编辑器（内置编辑器目录 20+ 款：VS Code 家族 / Cursor / Windsurf / Trae / Zed / JetBrains…，主进程三层解析），
+     * 代码树右键菜单按结果分项。exe 路径不出主进程，渲染层只拿 id + 展示名。
+     */
+    listEditors(): Promise<{ id: string; label: string }[]>;
+    /**
+     * 用**指定**编辑器（id 必须来自 listEditors）打开一个文件（代码树右键菜单）。
+     * 失败返回 false（未装、目标不是普通文件、文件名以 `-` 开头等）。
+     * 渲染层只能传文件路径 + 编辑器 id：命令名与参数由主进程决定。
+     */
+    openInEditor(path: string, editorId: string): Promise<boolean>;
     /** 系统浏览器/邮件客户端打开外链（仅 http/https/mailto，主进程校验）；失败返回 false */
     openExternal(url: string): Promise<boolean>;
     /** pi bash 解析健康探测（对话区横幅数据源，见 ShellProbeResult 注释） */
@@ -624,6 +640,15 @@ export function fileListDir(path: string, relPath = ''): Promise<ForgeResult<Lis
 /** 读文本文件（二进制 / 截断 / 失效都走 data 字段表达，不走错误码） */
 export function fileReadFile(path: string, relPath: string): Promise<ForgeResult<ReadFileData>> {
   return invokeRaw<ReadFileData>('file/readFile', { path, relPath });
+}
+
+/**
+ * 对齐「已打开文件」的磁盘监听（自动刷新）：打开/关闭文件后把**该项目**的
+ * 全量 relPaths 发给主进程；主进程 diff 目录级 fs.watch，变化经
+ * `code.fileChanged` {projectPath, relPath} 事件回报。空数组 = 全部关闭。
+ */
+export function fileWatchSync(path: string, relPaths: string[]): Promise<ForgeResult<Record<string, never>>> {
+  return invokeRaw('file/watchSync', { path, relPaths });
 }
 
 /** 按文件名过滤（只搜文件名，不做内容搜索） */
