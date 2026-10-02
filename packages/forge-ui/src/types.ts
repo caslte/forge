@@ -90,6 +90,17 @@ export interface GitStatusInfo {
   unpushedCount: number | null;
   /** 仓库是否已有 HEAD（新仓库 false） */
   hasHead: boolean;
+  /** 逐文件状态（模块 12 代码树行尾 M/A/D/U 徽标；与 fileCount 同源） */
+  files: GitStatusFile[];
+}
+
+/** 单个变更文件的状态（模块 12 代码树行尾徽标） */
+export interface GitStatusFile {
+  /** 相对仓库根的 POSIX 路径 */
+  path: string;
+  status: 'M' | 'A' | 'D' | 'U' | 'R' | 'C' | '?';
+  /** true=已进暂存区 */
+  staged: boolean;
 }
 
 /** git/commit 成功 data（docs/api/11_git_commit_push.md §2） */

@@ -19,7 +19,7 @@ forge 目前没有任何终端能力：agent 的 bash 工具由 pi SDK 在主进
 | TM-S02 | 多标签管理 | 并行跑多个命令互不干扰 | 点 ＋ 新建 tab，**cwd 自动取当前会话所属项目根**（用户 2026-09-23 定的"自动"口径）；tab 显示项目名；点 ✕ 关闭并销毁对应 pty；切项目不影响已开 tab | 不做 tab 右键菜单/重命名/拖拽排序（本期）；不做"按项目分组 tab" |
 | TM-S03 | 交互式 shell | 真终端体验 | 完整 pty 交互：ANSI 色彩、vim/top 等 TUI、Ctrl+C 中断、窗口 resize 同步列数行数 | 不做管道式伪终端（无 TUI 能力方案已否） |
 | TM-S04 | 进程生命周期 | 心智简单、无泄漏 | 收起面板 pty 保活（回来还在）；关闭 tab 即 kill；窗口关闭全部回收；崩溃的 pty 在 tab 内提示退出码 | 不与 agent 的 bash 执行共享进程/会话（两套独立，用户已拍板） |
-| TM-S05 | 状态记忆 | 不重复摆弄布局 | 面板开/关状态与高度持久化（localStorage，usePreferences 模式）；shell 类型默认系统默认 | 不持久化 tab 列表与终端内容（重启后新终端） |
+| TM-S05 | 状态记忆 | 不重复摆弄布局 | 面板高度持久化（localStorage，usePreferences 模式）；开/关状态**不跨启动**（2026-10-01 修订：启动首页必须干净，面板只由本次运行的入口动作打开）；shell 类型默认系统默认 | 不持久化 tab 列表与终端内容（重启后新终端）；不跨启动恢复面板开关 |
 
 ### 1.3 边界与权限
 
@@ -44,7 +44,7 @@ forge 目前没有任何终端能力：agent 的 bash 工具由 pi SDK 在主进
 | TD-TM-01 | TM-S03 | pty 是唯一硬依赖，node-pty 为原生模块：Electron ABI 重编译 + Windows ConPTY + 依赖安装 allowScripts 白名单需放行 install 脚本 | A: node-pty（官方，需 rebuild）；B: @lydell/node-pty（预编译产物 fork，免 compile，社区 Electron 终端广泛使用）；C: child_process 管道（无 TUI，已被 D3 否） | B（A 失败回退），**前置 spike：先验证安装+rebuild+Electron 内 spawn 成功，再进入面板开发** | 已确认（spike 列为开发第一步） |
 | TD-TM-02 | TM-S03 | 前端渲染 | A: @xterm/xterm + @xterm/addon-fit（事实标准）；B: 自绘（无意义） | A | 已确认（采纳推荐，无异议） |
 | TD-TM-03 | TM-S03/S04 | 终端数据是高频双向流，现有 RPC 是请求-响应+事件单向。方案：主进程按 ptyId 广播 `term:data`/`term:exit` 事件（沿用 forge.on 通道），渲染层输入走 `term/write` invoke（或专用 ipc channel）；resize 走 invoke | A: 事件下行 + invoke 上行（复用现有 on/invoke 基建，双白名单改动小）；B: 独立 ipcMain.on 裸通道（少一层封装但破坏现有契约治理） | A | 已确认（采纳推荐，无异议） |
-| TD-TM-04 | TM-S01/S05 | 面板与高度持久化 | A: usePreferences localStorage 模式（现 showDiff 同款）；B: 后端配置 | A | 已确认 |
+| TD-TM-04 | TM-S01/S05 | 面板高度持久化（开/关状态仅本次运行） | A: usePreferences localStorage 模式（现 showDiff 同款）；B: 后端配置 | A | 已确认 |
 | TD-TM-05 | TM-S02 | 默认 shell 选择 | A: 系统默认（Win: COMSPEC 即 pwsh/cmd；Unix: $SHELL），不做选择 UI；B: 设置页可选 shell | A（本期），B 记入待办 | 已确认 |
 
 ### 已采用的常规默认项
@@ -89,7 +89,7 @@ resize：面板/窗口尺寸变化 → addon.fit → invoke term/resize {ptyId, 
 
 - 目标：可开关、可拖高、状态记忆的面板壳。
 - 前置条件：App.vue `.content` 布局。
-- 业务规则：开关按钮在 `.app-toolbar` 右侧（纯图标+1px 外框，激活态描边变 brand 色，demo 定稿样式）；`Ctrl+\`` 全局快捷键（输入框聚焦时同样生效，与 VSCode 一致）；拖高 grip 在面板顶边（hover 有品牌色提示条）；高度范围 120px ~ (窗口高度 − 280px)，绝对上限 1200px（2026-09-29 修订：固定 520 上限在大屏/最大化窗口下不够用，改为随窗口高度走，始终给顶栏+对话区+输入框留 280px 可用高度）；开/关与高度写 localStorage，重启恢复。
+- 业务规则：开关按钮在 `.app-toolbar` 右侧（纯图标+1px 外框，激活态描边变 brand 色，demo 定稿样式）；`Ctrl+\`` 全局快捷键（输入框聚焦时同样生效，与 VSCode 一致）；拖高 grip 在面板顶边（hover 有品牌色提示条）；高度范围 120px ~ (窗口高度 − 280px)，绝对上限 1200px（2026-09-29 修订：固定 520 上限在大屏/最大化窗口下不够用，改为随窗口高度走，始终给顶栏+对话区+输入框留 280px 可用高度）；高度写 localStorage，重启恢复；开/关状态只保本次运行，启动时面板恒为收起（2026-10-01 修订）。
 - 交互与反馈：展开/收起 200ms 过渡（--transition-base）；恢复时直接以记忆高度展开。
 - 异常与边界：恢复的高度超当前窗口高度 → clamp 到上限。
 - 跨模块影响：会话区被压缩属预期，不改 ConversationView 内部。

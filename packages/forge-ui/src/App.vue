@@ -5,11 +5,14 @@ import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } fro
 import { projectTagOf } from './utils/sessionView';
 import { dropDraft } from './utils/composerDrafts';
 import { useTheme } from './composables/useTheme';
-import { usePreferences } from './composables/usePreferences';
+import { usePreferences, codeLayoutDegraded } from './composables/usePreferences';
+import { useCodeExplorer } from './composables/useCodeExplorer';
 import { useToast } from './composables/useToast';
 import { useI18n } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
 import ProjectTree from './components/ProjectTree.vue';
+import CodeTreePanel from './components/CodeTreePanel.vue';
+import CodeExplorer from './components/CodeExplorer.vue';
 import ConversationView from './components/ConversationView.vue';
 import LandingHero from './components/LandingHero.vue';
 import MultiWindowCanvas from './components/MultiWindowCanvas.vue';
@@ -237,6 +240,81 @@ function onFoldAll(): void {
   else projectTreeRef.value?.collapseAll();
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * 内置代码浏览器（模块 12）
+ *
+ * 一个状态 codeOpenPath 驱动三处：左栏互斥切换、右栏代码纸、<> 入口高亮。
+ * 之所以用一个标量而不是「面板是否打开 + 当前项目」两个 ref：它们在产品上是
+ * 同一件事的两种说法，写成两个必然会写出「开着但没项目」的非法组合。
+ *
+ * 左栏用 v-if 互斥而非 v-show：退出代码态时项目树被重新挂载，而 ProjectTree 的
+ * 展开态是组件内 ref，重挂载就丢了。所以改成 v-if 时必须确认 ProjectTree 不被销毁
+ * ——现状是它始终在 DOM 里被 toggle 掉，这里靠「同一侧只渲染一个」保证互斥。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** 当前打开代码浏览器的项目路径；null = 左栏显示项目树、右栏无代码纸 */
+const codeOpenPath = ref<string | null>(null);
+
+/** 代码浏览器的宿主项目（用于取项目名；与 ProjectTree 的显示名规则保持一致） */
+const codeProjectName = computed(() => {
+  const p = projects.value.find((x) => x.path === codeOpenPath.value);
+  if (!p) return '';
+  if (p.alias) return p.alias;
+  const segs = p.path.split(/[\\/]/);
+  return segs[segs.length - 1] || p.path;
+});
+
+function openCode(path: string): void {
+  // 重复点同一个项目的 <>：当作「回到代码」，而不是无反应
+  codeOpenPath.value = codeOpenPath.value === path ? null : path;
+}
+
+function closeCode(): void {
+  codeOpenPath.value = null;
+}
+
+/**
+ * Esc 逐级退出（CE-S05）：
+ *   有选中文件 → 关掉文件（CodeExplorer 根节点先处理并 stopPropagation，window 收不到）
+ *   只剩空态  → 退出代码浏览器，回到项目树
+ *
+ * 为什么挂在 window 而不是某个面板：焦点可能在项目树、过滤框、终端任何一处，
+ * 冒泡链不经过它们。挂 window（泡泡阶段）能接住所有情况；内层用 stopPropagation
+ * 切断冒泡，window 就只会看到真正没人消费的那次 Esc。
+ */
+const { getState: getCodeState, closeFile: closeCodeFile } = useCodeExplorer();
+
+function onCodeEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || codeOpenPath.value === null) return;
+  // 组合键（如 Esc 本身之外的修饰键）不抢：留给浏览器/别的快捷键
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  // Esc 是**逐级**退出的，这里是唯一做决定的地方：
+  // 有激活文件 → 先关文件；没有文件 → 退出代码态。
+  //
+  // 为什么不能靠「焦点在哪、内层 stopPropagation」来决定层级：焦点可能在左栏代码树
+  // （CodeTreePanel 是 .content 的兄弟子树），事件冒泡根本不经过 CodeExplorer，
+  // 内层处理器再正确也接不到，实测表现为一次 Esc 就把整个代码浏览器关掉了。
+  // 状态在这里读，内层只管自己的输入框等「先于文件」的行为。
+  const s = getCodeState(codeOpenPath.value);
+  if (s.activeRel) {
+    closeCodeFile(codeOpenPath.value, s.activeRel);
+    return;
+  }
+  closeCode();
+}
+
+function toggleCodeLayout(): void {
+  const { setCodeViewerLayout } = usePreferences();
+  setCodeViewerLayout(codeViewerLayout.value === 'split' ? 'cover' : 'split');
+}
+
+/** 设置页与任务视角不参与代码浏览器：切走时收起来，避免隐藏态里还挂着代码纸 */
+watch([activeView, treeView], () => {
+  if (codeOpenPath.value !== null && (activeView.value === 'settings' || treeView.value === 'task')) {
+    codeOpenPath.value = null;
+  }
+});
+
 /** 下拉项目排序记忆：最近使用置顶（新建项目/创建会话触发），localStorage 持久（SM-S01 v3.29，v3.45 改 MRU） */
 const PICK_ORDER_KEY = 'forge:project-pick-order';
 const pickOrder = ref<string[]>(readPickOrder());
@@ -309,7 +387,7 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 // 设置
 const { themeMode, setTheme } = useTheme();
 const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
-const { terminalOpen, setTerminalOpen } = usePreferences();
+const { terminalOpen, setTerminalOpen, codeViewerLayout } = usePreferences();
 
 // ===== 内嵌终端（模块 10）入口状态 =====
 // tab 标题的项目显示名：别名优先，回退目录名（与会话归属标签同口径）
@@ -812,6 +890,7 @@ onMounted(() => {
 
   // 终端快捷键（TM-S01）：window 级 keydown，捕获阶段即可——Ctrl+` 在任何焦点下生效
   window.addEventListener('keydown', onTerminalHotkey);
+  window.addEventListener('keydown', onCodeEscape);
 });
 
 onUnmounted(() => {
@@ -824,6 +903,7 @@ onUnmounted(() => {
   viewSegRo?.disconnect();
   viewSegRo = null;
   window.removeEventListener('keydown', onTerminalHotkey);
+  window.removeEventListener('keydown', onCodeEscape);
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
 </script>
@@ -881,7 +961,13 @@ onUnmounted(() => {
     <section class="main-layout">
       <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <header class="workspace-header"></header>
-        <div class="tree-panel">
+        <div class="tree-panel" :class="{ 'is-code': codeOpenPath !== null }">
+          <!-- 项目树：代码态下用 CSS 隐藏让位，而不是 v-if 卸载。
+               ProjectTree 的展开/折叠/选中/滚动全是组件内 ref，v-if 卸载后全丢——
+               用户「看一眼代码回来发现项目全折叠了」是最不能接受的体验。
+               display:none 不销毁组件，ref 原样活着，视觉上仍是「整栏替换」，
+               但退出代码态时展开态 / 选中项 / 滚动位置一点不差地回来。 -->
+          <div class="tree-view" :class="{ 'is-hidden': codeOpenPath !== null }">
           <div class="sidebar-top">
             <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" ref="viewSegEl" role="tablist" :aria-label="t('app.sessionListPerspective')">
               <button
@@ -938,6 +1024,8 @@ onUnmounted(() => {
             :current-project-path="currentProjectPath"
             :current-session-id="currentSessionId"
             :opened-session-ids="openedSessionIds"
+            :code-open-path="codeOpenPath"
+            @open-code="openCode"
             @select-project="selectProject"
             @remove-project="onRemoveProject"
             @clear-sessions="onClearProjectSessions"
@@ -948,6 +1036,18 @@ onUnmounted(() => {
             @delete-session="onDeleteSession"
             @rename-session="onRenameSession"
             @fold-state="allCollapsed = $event"
+          />
+          </div>
+
+          <!-- 模块 12：左栏整栏切成代码树。与项目树同一位置的两个视图，不是嵌套关系 -->
+          <CodeTreePanel
+            v-if="codeOpenPath !== null"
+            :project-path="codeOpenPath"
+            :project-name="codeProjectName"
+            :degraded="codeLayoutDegraded"
+            :layout="codeViewerLayout"
+            @back="closeCode"
+            @toggle-layout="toggleCodeLayout"
           />
         </div>
         <div class="sidebar-footer">
@@ -978,6 +1078,10 @@ onUnmounted(() => {
       <div class="rightcol">
         <TitleBar @request-exit="requestExit" />
       <main class="content" :class="{ 'settings-mode': activeView === 'settings' }">
+      <!-- 模块 12：CodeExplorer 始终挂载并拥有这行 flex（无项目时退化为「只包对话列」）。
+           不用「有项目才 v-if」：v-if 会把对话纸整块卸载重建，流式输出、滚动位置、
+           输入框草稿全丢。始终挂载也让「谁决定布局」只有一个答案。 -->
+      <CodeExplorer :project-path="codeOpenPath">
         <div v-if="sessionError" class="error-toast" @click="clearError">
           {{ sessionError }}
         </div>
@@ -1125,6 +1229,7 @@ onUnmounted(() => {
           :project-path="currentProjectPath"
           :project-name="terminalProjectName"
         />
+      </CodeExplorer>
       </main>
       </div>
     </section>
@@ -1460,6 +1565,18 @@ onUnmounted(() => {
     linear-gradient(0deg, rgba(205, 218, 235, 0.0005) 0%, rgba(205, 218, 235, 0) 14%);
 }
 
+.tree-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 代码态下项目树让位但**不卸载**：展开态/选中/滚动全是组件内 ref，
+   v-if 卸载会让用户「看一眼代码回来发现项目全折叠了」。 */
+.tree-view.is-hidden {
+  display: none;
+}
+
 .tree-panel {
   flex: 1;
   min-height: 0;
@@ -1637,6 +1754,10 @@ onUnmounted(() => {
   position: relative;
   box-shadow: var(--elev-sheet);
 }
+
+/* 模块 12：对话列的布局规则已上收到 CodeExplorer（.cex-conv）。
+   App 这里只负责一件事——.content 保持 position:relative，因为 cover 模式下
+   代码纸是 absolute inset:0，靠它当定位参照；一旦改成 static 就会飞到窗口左上角。 */
 
 /* 深色「纸」的边缘光：深色 UI 里唯一稳定有效的「抬起」信号（模拟纸边受光）。
    实现方式必须是伪元素覆盖层，不能用 inset 阴影或 outline：

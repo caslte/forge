@@ -18,6 +18,13 @@ import type {
   AskUserQuestionAnswer,
   AskUserQuestionItem,
   AskUserQuestionOption,
+  // 内置代码浏览器（12）的只读数据形状：从 @forge/core 按类型再导出（本文件是
+  // preload 不引 node:fs 的关键——类型导入不会把 fs 拖进 bundle，值导入会）。
+  FileNode,
+  ListDirData,
+  ReadFileData,
+  SearchFilesData,
+  TruncatedBy,
 } from '@forge/core';
 import type { AppUpdaterSnapshot } from './pi/appUpdater.ts';
 
@@ -63,6 +70,7 @@ export type ForgeMethod =
   // model（05）
   | 'model/queryProviderList'
   | 'model/saveProvider'
+  | 'model/testProvider'
   | 'model/deleteProvider'
   | 'model/queryModels'
   | 'model/setDefault'
@@ -87,6 +95,12 @@ export type ForgeMethod =
   | 'term/write'
   | 'term/kill'
   | 'term/resize'
+  // file（12：内置代码浏览器，docs/prd/12_code_explorer.md）
+  // 安全口径：relPath 一律视为不可信输入，主进程过 path.resolve + realpath 两道
+  // containment；越界返回 6103 且不落到磁盘。三个方法均只读。
+  | 'file/listDir'
+  | 'file/readFile'
+  | 'file/searchFiles'
   // pi（07）
   | 'pi/getInfo'
   | 'pi/updatePlugins'

@@ -28,6 +28,7 @@ forge-core 暴露 **方法（Method）+ 事件（Event）** 两类接口，**不
 | 1002 | 资源不存在 |
 | 1004 | provider 未配置 |
 | 1005 | 信任未通过 |
+| 1006 | 模型连通性测试失败（网络/超时/鉴权/模型不可用；message 不含密钥，见 api/05_model.md §10） |
 | 4090 | skill 同名冲突待用户确认（data.conflictPath；正常分支，UI 弹确认后带 overwrite=true 重调） |
 | 6001 | git 切换失败（data.stderr 附 git 原始错误） |
 | 6002 | 组件更新失败（data.output 附更新器输出尾部） |

@@ -55,6 +55,43 @@ async function headBody(dir: string): Promise<string> {
 
 // ---------------------------------------------------------------- getStatus
 
+test('getStatus：files 逐文件状态覆盖 M/A/D/?/U（模块 12 代码树徽标数据源）', async () => {
+  const dir = await makeRepo();
+  try {
+    const svc = new GitService();
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'line1\nline2\nline3\n'); // 未暂存 M
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.writeFileSync(path.join(dir, 'sub', 'c.txt'), 'x\n');
+    await git(dir, 'add', 'sub/c.txt'); // 已暂存 A
+    fs.rmSync(path.join(dir, 'a.txt'));
+    await git(dir, 'add', '-A'); // 已暂存 D
+    // b.txt 必须在 add -A 之后建，否则会被顺带暂存成 A（而不是未跟踪 ?）
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'new\n'); // 未跟踪 ?
+
+    const st = await svc.getStatus(dir);
+    assert.equal(st.isGitRepo, true);
+    const byPath = new Map(st.files.map((f) => [f.path, f]));
+    assert.deepEqual(byPath.get('a.txt'), { path: 'a.txt', status: 'D', staged: true });
+    assert.deepEqual(byPath.get('b.txt'), { path: 'b.txt', status: '?', staged: false });
+    assert.deepEqual(byPath.get('sub/c.txt'), { path: 'sub/c.txt', status: 'A', staged: true });
+    // files 与 fileCount 同源，不得漂移
+    assert.equal(st.files.length, st.fileCount);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('getStatus：非仓库时 files 为空数组（不是 undefined）', async () => {
+  const dir = tmpDir();
+  try {
+    const st = await new GitService().getStatus(dir);
+    assert.equal(st.isGitRepo, false);
+    assert.deepEqual(st.files, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('getStatus：干净仓库 fileCount=0、stagedEmpty=true、hasHead=true、branch=main', async () => {
   const dir = await makeRepo();
   try {
@@ -71,6 +108,8 @@ test('getStatus：干净仓库 fileCount=0、stagedEmpty=true、hasHead=true、b
       stagedCount: 0,
       unpushedCount: null,
       hasHead: true,
+      // 模块 12 新增的逐文件字段（干净仓库为空数组）
+      files: [],
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

@@ -74,6 +74,21 @@ export type GitResult<T> =
 /** switchBranch 结果 */
 export type SwitchResult = GitResult<SwitchBranchData>;
 
+/** 单个变更文件的状态（模块 12 代码树行尾 M/A/D/U 徽标的唯一数据源） */
+export interface GitStatusFile {
+  /** 相对仓库根的 POSIX 路径（porcelain 原生即 `/` 分隔，无需转换） */
+  path: string;
+  /**
+   * 归一后的单字母状态；X（索引）优先于 Y（工作区），与 VSCode 资源管理器一致。
+   * 1=已暂存新增 2=已暂存修改 3=已暂存删除
+   * M=未暂存修改 D=未暂存删除 U=冲突
+   * ?=未跟踪 A=按意图新增（`git add -N`） R/C=重命名/复制（取原状态）
+   */
+  status: 'M' | 'A' | 'D' | 'U' | 'R' | 'C' | '?';
+  /** true=已进暂存区（X 列非空且非 ?） */
+  staged: boolean;
+}
+
 /** 提交弹窗状态数据（模块 11 git/getStatus 响应，docs/prd/11 §GC-F01） */
 export interface GitStatusInfo {
   isGitRepo: boolean;
@@ -94,6 +109,14 @@ export interface GitStatusInfo {
   unpushedCount: number | null;
   /** HEAD 是否存在（空仓库=false，影响 diff 基线与推送语义） */
   hasHead: boolean;
+  /**
+   * 逐文件状态（模块 12 CE-S07：代码树行尾 M/A/D/U 徽标）。
+   *
+   * 纯**新增字段**：同一份 porcelain 输出切两刀，不额外起 git 进程——模块 12 要的
+   * 就是这份数据，单独开一条 RPC 会让「进代码态」先等一次 git status 冷启动。
+   * 提交弹窗等既有消费方忽略此字段即可，行为不变。
+   */
+  files: GitStatusFile[];
 }
 
 /** 非仓库时的空值状态数据 */
@@ -108,7 +131,39 @@ const NOT_A_STATUS: GitStatusInfo = {
   stagedCount: 0,
   unpushedCount: null,
   hasHead: false,
+  files: [],
 };
+
+/**
+ * 解析一行 `git status --porcelain=v1`。
+ *
+ * 格式：`XY <path>`，重命名为 `XY <new> -> <old>`（取箭头后的 new，与工作区一致）。
+ * 未跟踪（`??`）归一为单字母 `?` 而非两个 `?`，UI 只需处理 6 个字面量。
+ * X（索引）优先于 Y（工作区）：`MM` 显示 M（索引态），` M` 也显示 M——两者在代码树
+ * 行尾只占一格，区分它们没有信息量，而在提交弹窗里 staged 已有独立计数。
+ */
+function parseStatusLine(line: string): GitStatusFile | null {
+  if (line.length < 4) return null;
+  const x = line[0] ?? ' ';
+  const y = line[1] ?? ' ';
+  let p = line.slice(3);
+  const arrow = p.indexOf(' -> ');
+  if (arrow !== -1) p = p.slice(0, arrow);
+  if (p === '') return null;
+  const staged = x !== ' ' && x !== '?';
+  const pick = (c: string): GitStatusFile['status'] | null => {
+    if (c === 'M' || c === 'T') return 'M';
+    if (c === 'A') return 'A';
+    if (c === 'D') return 'D';
+    if (c === 'U') return 'U';
+    if (c === 'R') return 'R';
+    if (c === 'C') return 'C';
+    if (c === '?') return '?';
+    return null;
+  };
+  const status = pick(x) ?? pick(y);
+  return status === null ? null : { path: p, status, staged };
+}
 
 /** name-only / log --name-only 输出的文件路径计数（去重、去空行） */
 function uniquePaths(out: string): number {
@@ -280,6 +335,7 @@ export class GitService {
     const isStagedLine = (l: string): boolean => (l.charCodeAt(0) ?? 32) !== 32 && l[0] !== '?';
     const stagedEmpty = !lines.some(isStagedLine);
     const stagedCount = lines.filter(isStagedLine).length;
+    const files = lines.map(parseStatusLine).filter((f): f is GitStatusFile => f !== null);
     const head = await this.run(cwd, ['rev-parse', 'HEAD']);
     const hasHead = head.ok;
     const num = await this.run(
@@ -347,6 +403,7 @@ export class GitService {
       stagedCount,
       unpushedCount,
       hasHead,
+      files,
     };
   }
 

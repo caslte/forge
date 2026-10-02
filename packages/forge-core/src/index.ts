@@ -39,6 +39,7 @@ export type {
   PushResult,
   CommitDiffContext,
   GitWriteResult,
+  GitStatusFile,
 } from './git/gitService.ts';
 
 // Git RPC 方法层（wu-01-project-git-core）
@@ -190,6 +191,41 @@ export type {
 
 // 附件格式白名单（选择器过滤 + 粘贴/拖拽校验三入口共用，单一事实来源）
 export { ATTACHMENT_EXTENSIONS, ATTACHMENT_DIALOG_FILTER, isAllowedAttachmentPath } from './attachments.ts';
+
+// 内置代码浏览器 · 文件系统服务（模块 12，docs/prd/12_code_explorer.md）
+export {
+  FileService,
+  compileIgnoreMatcher,
+  readGitignorePatterns,
+  resolveInside,
+  normalizeRelPath,
+  toPosixRel,
+  displayRelPath,
+  looksBinary,
+  statSize,
+  DEFAULT_IGNORES,
+  FILE_ERROR,
+  MAX_READ_BYTES,
+  MAX_READ_LINES,
+  BINARY_SNIFF_BYTES,
+  MAX_SEARCH_RESULTS,
+  MAX_SEARCH_DEPTH,
+  MAX_SEARCH_NODES,
+} from './file/fileService.ts';
+export type {
+  FileResult,
+  FileServiceOptions,
+  FileNode,
+  ListDirData,
+  ReadFileData,
+  SearchFilesData,
+  TruncatedBy,
+  IgnoreMatcher,
+} from './file/fileService.ts';
+
+// 内置代码浏览器 · 文件 RPC 方法层（模块 12）
+export { FileApi, createFileApi } from './rpc/fileMethods.ts';
+export type { FileApiDeps } from './rpc/fileMethods.ts';
 
 /** forge-core 当前版本号（骨架期固定为 0.1.0） */
 export const FORGE_CORE_VERSION = '0.1.0';

@@ -16,6 +16,8 @@ const props = defineProps<{
   openedSessionIds?: string[];
   /** 会话列表视角（SM-S06）：project=按项目分组（现状）；task=平摊全部会话 */
   view?: 'project' | 'task';
+  /** 模块 12：当前项目正开着代码浏览器时，<> 按钮常驻高亮 */
+  codeOpenPath?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -29,6 +31,8 @@ const emit = defineEmits<{
   (e: 'rename-session', id: string, alias: string): void;
   (e: 'reorder-project', paths: string[]): void;
   (e: 'fold-state', allCollapsed: boolean): void;
+  /** 模块 12：点项目行尾的 <> 进入内置代码浏览器（左栏整栏切成代码树） */
+  (e: 'open-code', path: string): void;
 }>();
 
 const VISIBLE_SESSION_LIMIT = 5;
@@ -711,6 +715,17 @@ onUnmounted(() => {
           <div class="tree-node-actions">
             <button
               type="button"
+              class="tree-icon-button code-entry"
+              :class="{ active: codeOpenPath === project.path }"
+              :aria-label="t('code.entryTooltip')"
+              :data-tooltip="t('code.entryTooltip')"
+              :aria-pressed="codeOpenPath === project.path"
+              @click.stop="emit('open-code', project.path)"
+            >
+              <span class="code-entry-glyph" aria-hidden="true">&lt;&gt;</span>
+            </button>
+            <button
+              type="button"
               class="tree-icon-button"
               :aria-label="t('project.newSession')"
               :data-tooltip="t('project.newSession')"
@@ -1091,6 +1106,22 @@ onUnmounted(() => {
   pointer-events: auto;
 }
 
+/* 代码浏览器已打开时，<> 入口常驻可见：它此刻是一条「返回代码」的路径，
+   藏进 hover 里等于让用户找不到回去的路。 */
+.tree-project .code-entry.active {
+  opacity: 1;
+  color: var(--brand);
+  background: color-mix(in oklab, var(--brand) 12%, transparent);
+}
+
+.code-entry-glyph {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  transform: translateY(-0.5px);
+}
+
 .tree-icon-button {
   display: inline-flex;
   align-items: center;
@@ -1098,7 +1129,7 @@ onUnmounted(() => {
   min-width: 24px;
   height: 24px;
   padding: 0 6px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 999px;
   background: var(--background);
   color: var(--muted-foreground);
@@ -1109,8 +1140,8 @@ onUnmounted(() => {
 }
 
 .tree-icon-button:hover {
-  border-color: var(--brand);
-  background: var(--background);
+  border-color: transparent;
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
   color: var(--brand);
 }
 
@@ -1148,7 +1179,7 @@ onUnmounted(() => {
 .tree-icon-button.project-more-trigger.active {
   background: var(--muted);
   color: var(--foreground);
-  border-color: var(--border);
+  border-color: transparent;
 }
 
 .confirm-text {

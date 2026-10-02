@@ -224,11 +224,38 @@
 
 ---
 
+## 10. 连通性测试
+
+### `model/testProvider`
+
+**用途**：设置页「添加/编辑模型」表单中的「测试」按钮，验证填写的地址 / Key / 模型 ID 能否正常收发。
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| baseUrl | string | 是 | API 地址，须以 `http(s)://` 开头；服务端拼接 `{baseUrl}/chat/completions`（去尾斜杠） |
+| model | string | 是 | 模型 ID |
+| apiKey | string | 否 | API Key；空串视为无鉴权（本地推理服务），此时不发 `authorization` 头 |
+
+**行为口径**：
+- 参数取**表单当前值**，无需先保存——新建与编辑态都可测。
+- 一次 OpenAI 兼容非流式 `chat/completions` 调用（不起 agent 会话、不落盘），`max_tokens: 64`、提示词 `Reply with exactly: ok`，超时 15s。
+- 判定「通」= HTTP 200 且响应体无网关业务错误（`base_resp.status_code` / `error`）。思考型模型 200 但 `content` 为空（预算被 reasoning 吃满）**仍判成功**，避免假阴性。
+- `apiKey` 即用即弃：只进请求头，绝不入日志、绝不进错误 message。
+
+响应：`data: { latencyMs: number }`（往返耗时，UI 展示「连接成功（342ms）」）。
+
+失败：`1001` 参数非法（不发请求）；`1006` 测试失败，`message` 为人话原因——网络不可达（附 Node 错误原因）、超时、`401/403` Key 无效、`404` 地址或模型不存在、`429` 限流、其它状态码附 provider 错误摘要（截断 200 字符）。
+
+---
+
 ## 错误码
 
 | code | 说明 |
 |------|------|
-| 1001 | 参数错误（baseUrl 非法 / apiKey 为空 / level 非法思考级别） |
+| 1001 | 参数错误（baseUrl 非法 / apiKey 为空 / level 非法思考级别；testProvider 地址非 http(s) 亦此码） |
 | 1002 | provider / 会话不存在 |
 | 1004 | provider 未配置 / 模型未配置（getModelThinkingLevels 的模型不可用） |
+| 1006 | 模型连通性测试失败（网络/超时/鉴权/模型不可用；message 不含密钥） |
 | 5000 | 内部错误（models.json 写失败 / 思考级别解析异常） |

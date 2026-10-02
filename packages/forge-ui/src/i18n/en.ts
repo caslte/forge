@@ -14,6 +14,7 @@ import { enPanels } from './domains/panels.ts';
 import { enSkills } from './domains/skills.ts';
 import { enGit } from './domains/git.ts';
 import { enTerminal } from './domains/terminal.ts';
+import { enCode } from './domains/code.en.ts';
 
 export const en: Partial<Record<MessageKey, string>> = {
   ...enCommon,
@@ -28,4 +29,5 @@ export const en: Partial<Record<MessageKey, string>> = {
   ...enSkills,
   ...enGit,
   ...enTerminal,
+  ...enCode,
 };

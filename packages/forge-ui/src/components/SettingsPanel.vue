@@ -2,10 +2,16 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 // 从瘦 subpath 导入：@forge/core 根入口 re-export 含 node:events 的 RPC 层，浏览器打包会炸
 import { DEFAULT_THINKING_LEVELS, THINKING_LEVELS } from '@forge/core/model';
-import { call, subscribe } from '../bridge';
+import { call, invokeRaw, subscribe } from '../bridge';
 import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
-import { usePreferences, type ContentWidth } from '../composables/usePreferences';
+import {
+  CODE_SPLIT_PCT_DEFAULT,
+  clampCodeSplitPct,
+  usePreferences,
+  type CodeViewerLayout,
+  type ContentWidth,
+} from '../composables/usePreferences';
 import { useUpdater } from '../composables/useUpdater';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import SkillsSection from './SkillsSection.vue';
@@ -52,6 +58,9 @@ const formReasoning = ref(false);
 const formLevels = ref<ThinkingLevel[]>([...DEFAULT_THINKING_LEVELS]);
 const levelMenuOpen = ref(false);
 const saving = ref(false);
+/** 连通性测试进行中 / 结果文案（结果紧挨按钮下方展示，不弹 toast 免遮挡表单） */
+const testing = ref(false);
+const testResult = ref<{ ok: boolean; text: string } | null>(null);
 const formError = ref<string | null>(null);
 const apiKeyVisible = ref(false);
 
@@ -79,14 +88,60 @@ const contentWidthOptions: { value: ContentWidth; labelKey: MessageKey }[] = [
   { value: 'wide', labelKey: 'settings.personal.contentWidthWide' },
 ];
 
+/** 模块 12：代码查看器布局单选项（demo 定稿默认 split 右缘分割；cover 留给整屏阅读偏好） */
+const codeLayoutOptions: { value: CodeViewerLayout; labelKey: MessageKey }[] = [
+  { value: 'cover', labelKey: 'settings.codeViewer.layoutCover' },
+  { value: 'split', labelKey: 'settings.codeViewer.layoutSplit' },
+];
+
 const toast = useToast();
 const { showDiff, setShowDiff, contentWidth, setContentWidth } = usePreferences();
+const {
+  codeViewerLayout,
+  setCodeViewerLayout,
+  codeViewerSplitPct,
+  setCodeViewerSplitPct,
+} = usePreferences();
+
+/**
+ * 分割宽度滑杆区间：以 1280px 宽窗为参照算出的 320px 保底百分比。
+ * 设置页写的是「比例」不是「像素」——用户换台显示器时，按比例存的值仍然合理。
+ *
+ * 上下限必须**取偶数**：滑杆 step=2，而 <input type=range> 的取值序列是
+ * `min + n*step`。min=25（奇）时序列是 25,27,…,59,61 —— 里面根本没有 60，
+ * 浏览器会把用户拖到的 60 静默吸附成 61。默认 46 与 2 点步进都是偶数，
+ * 所以这里把下限向上取偶、上限由 100-下限 得出，整条序列都落在偶数上。
+ */
+const SPLIT_SLIDER_MIN = Math.ceil((320 / 1280) * 100 / 2) * 2;
+const SPLIT_SLIDER_MAX = 100 - SPLIT_SLIDER_MIN;
+const splitPctForSlider = computed(() =>
+  Math.round(clampCodeSplitPct(codeViewerSplitPct.value, 1280)),
+);
+function onSplitPctInput(e: Event): void {
+  const v = Number((e.target as HTMLInputElement).value);
+  if (Number.isFinite(v)) setCodeViewerSplitPct(clampCodeSplitPct(v, 1280));
+}
 
 const canSubmitForm = computed(() => {
   return (
     formName.value.trim().length > 0 &&
     formBaseUrl.value.trim().length > 0 &&
     formModel.value.trim().length > 0 &&
+    !saving.value
+  );
+});
+
+/** 改动作废上一次结果：换了地址/Key/模型后仍挂着「连接成功」会误导 */
+watch([formBaseUrl, formApiKey, formModel], () => {
+  testResult.value = null;
+});
+
+/** 测试只需 API 地址 + 模型 ID（本地推理服务常无 Key），且不与保存/另一次测试并发 */
+const canTestForm = computed(() => {
+  return (
+    formBaseUrl.value.trim().length > 0 &&
+    formModel.value.trim().length > 0 &&
+    !testing.value &&
     !saving.value
   );
 });
@@ -170,6 +225,32 @@ async function onSaveProvider(): Promise<void> {
   }
 }
 
+/**
+ * 用表单当前值（无需先保存）发一次最小 chat/completions 探活。
+ * 经 invokeRaw 而非 call：call 的抛错带 `model/testProvider 失败（1006）:` 前缀，
+ * 这里要的是后端已写好人话的 message 原文。
+ */
+async function onTestProvider(): Promise<void> {
+  if (!canTestForm.value) return;
+  testing.value = true;
+  testResult.value = null;
+  try {
+    const res = await invokeRaw<{ latencyMs: number }>('model/testProvider', {
+      baseUrl: formBaseUrl.value.trim(),
+      apiKey: formApiKey.value.trim(),
+      model: formModel.value.trim(),
+    });
+    testResult.value =
+      res.code === 0
+        ? { ok: true, text: t('settings.model.testOk', { ms: res.data?.latencyMs ?? 0 }) }
+        : { ok: false, text: res.message };
+  } catch (e) {
+    testResult.value = { ok: false, text: e instanceof Error ? e.message : String(e) };
+  } finally {
+    testing.value = false;
+  }
+}
+
 /** 点击列表「编辑」：回填表单进入编辑态（apiKey 由服务层解析为明文返回） */
 function onEdit(p: ProviderItem): void {
   editingId.value = p.id;
@@ -221,6 +302,7 @@ function resetForm(): void {
   formLevels.value = [...DEFAULT_THINKING_LEVELS];
   levelMenuOpen.value = false;
   formError.value = null;
+  testResult.value = null;
   apiKeyVisible.value = false;
 }
 
@@ -696,9 +778,22 @@ onUnmounted(() => {
           </div>
           <div v-if="formError" class="form-error">{{ formError }}</div>
           <div class="form-actions">
+            <!-- 连通性测试：用当前表单值直连一次，不需要先保存 -->
+            <button
+              type="button"
+              class="ghost"
+              :disabled="!canTestForm"
+              :data-tooltip="t('settings.model.testTooltip')"
+              @click="onTestProvider"
+            >
+              {{ testing ? t('settings.model.testing') : t('settings.model.test') }}
+            </button>
             <button class="primary" :disabled="!canSubmitForm" @click="onSaveProvider">
               {{ saving ? t('settings.model.saving') : (editingId ? t('settings.model.saveChanges') : t('settings.model.add')) }}
             </button>
+          </div>
+          <div v-if="testResult" class="form-test-result" :class="testResult.ok ? 'is-ok' : 'is-fail'">
+            {{ testResult.text }}
           </div>
         </div>
         </div>
@@ -792,6 +887,67 @@ onUnmounted(() => {
           >
             <span class="pref-knob"></span>
           </button>
+        </div>
+      </section>
+
+      <!-- 模块 12：代码查看器布局（CE-S01/CE-S03）。分割宽度只对 split 生效，
+           所以 cover 时禁用而不是隐藏——隐藏会让用户以为这个设置不存在了。 -->
+      <section class="settings-section">
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">{{ t('settings.codeViewer.title') }}</span>
+            <span class="pref-desc">{{ t('settings.codeViewer.desc') }}</span>
+          </div>
+          <div
+            class="width-options code-layout-options"
+            role="radiogroup"
+            :aria-label="t('settings.codeViewer.layout')"
+          >
+            <button
+              v-for="opt in codeLayoutOptions"
+              :key="opt.value"
+              class="code-layout-option"
+              :class="{ active: codeViewerLayout === opt.value }"
+              role="radio"
+              :aria-checked="codeViewerLayout === opt.value"
+              :data-tooltip="
+                opt.value === 'cover'
+                  ? t('settings.codeViewer.layoutCoverDesc')
+                  : t('settings.codeViewer.layoutSplitDesc')
+              "
+              @click="setCodeViewerLayout(opt.value)"
+            >{{ t(opt.labelKey) }}</button>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section" :class="{ 'is-disabled': codeViewerLayout !== 'split' }">
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">{{ t('settings.codeViewer.splitPct') }}</span>
+            <span class="pref-desc">{{ t('code.splitterHint') }}</span>
+          </div>
+          <div class="split-slider">
+            <input
+              class="split-range"
+              type="range"
+              :min="SPLIT_SLIDER_MIN"
+              :max="SPLIT_SLIDER_MAX"
+              step="2"
+              :value="splitPctForSlider"
+              :disabled="codeViewerLayout !== 'split'"
+              :aria-label="t('settings.codeViewer.splitPct')"
+              @input="onSplitPctInput"
+            />
+            <span class="split-value">{{
+              t('settings.codeViewer.splitPctValue', { n: splitPctForSlider })
+            }}</span>
+            <button
+              class="code-layout-option split-reset"
+              type="button"
+              :disabled="codeViewerLayout !== 'split'"
+              @click="setCodeViewerSplitPct(CODE_SPLIT_PCT_DEFAULT)"
+            >{{ t('common.reset') }}</button>
+          </div>
         </div>
       </section>
     </div>
@@ -1129,7 +1285,15 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.width-option {
+/*
+ * 选项片的视觉规则由「内容宽度」与「代码查看器布局」两组共用，所以每条规则都写成
+ * 两个类名。**不要**把代码查看器那组也挂上 .width-option：两组的选项数不一样
+ * （宽度 2 档、布局 2 档，但 reset 按钮又是个 .width-option），
+ * E2E 里 locator('.width-option.active') 会同时命中两组，直接 strict mode violation。
+ * 类名分开 = 选择器各打各的，互不干扰。
+ */
+.width-option,
+.code-layout-option {
   /* 1px 环（原型 prototypes/selection-highlight-options.html B 档）：
      2px 满圈在深色主题是全屏最亮的元素，形状语言也和 focus 撞脸。
      描边每边减 1px，padding 每边补 1px → **外框尺寸逐像素不变**，
@@ -1146,11 +1310,13 @@ onUnmounted(() => {
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
-.width-option:hover {
+.width-option:hover,
+.code-layout-option:hover {
   border-color: color-mix(in oklab, var(--brand) var(--select-hover-pct), var(--border));
 }
 
-.width-option.active {
+.width-option.active,
+.code-layout-option.active {
   /* 环色不再用 --brand 原值，改由 --select-ring-pct 统一给出（比例按主题定，见 design-tokens.css）；
      存在感由底色补。 */
   border-color: color-mix(in oklab, var(--brand) var(--select-ring-pct), var(--border));
@@ -1159,6 +1325,41 @@ onUnmounted(() => {
 
 .pref-switch.on .pref-knob {
   transform: translateX(18px);
+}
+
+/* ===== 模块 12：代码查看器布局设置 ===== */
+.settings-section.is-disabled {
+  opacity: 0.5;
+}
+
+.split-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.split-range {
+  width: 160px;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+.split-range:disabled {
+  cursor: not-allowed;
+}
+.split-value {
+  min-width: 38px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-align: right;
+}
+.split-reset {
+  padding: 6px 12px;
+  font-size: 11px;
+}
+.split-reset:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 /* 「关于」Tab：单栏承载版本更新分区；不限制宽度——版本行拉满到底，右侧不留空 */
@@ -1846,6 +2047,21 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* 测试结果一行内联反馈（成功绿/失败红，长错误可换行） */
+.form-test-result {
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.form-test-result.is-ok {
+  color: var(--success);
+}
+
+.form-test-result.is-fail {
+  color: var(--destructive);
 }
 
 /* 模型列表 */

@@ -151,10 +151,11 @@ textarea:focus {
   box-shadow: none;
 }
 
-/* 滚动条 */
+/* 滚动条：槽宽 10px 保留拖拽热区，thumb 用 3px 透明边框 + background-clip
+   压到 4px 视觉宽度（直接改窄 width 会让热区一起变小，难以拖动）。 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -163,6 +164,8 @@ textarea:focus {
 
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+  border: 3px solid transparent;
   border-radius: 999px;
 }
 

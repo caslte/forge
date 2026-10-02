@@ -36,6 +36,7 @@ export type ForgeMethod =
   | 'tool/queryToolEvents'
   | 'model/queryProviderList'
   | 'model/saveProvider'
+  | 'model/testProvider'
   | 'model/deleteProvider'
   | 'model/queryModels'
   | 'model/setDefault'
@@ -58,6 +59,12 @@ export type ForgeMethod =
   | 'term/write'
   | 'term/kill'
   | 'term/resize'
+  // file（12：内置代码浏览器，docs/prd/12_code_explorer.md）
+  // 安全口径：relPath 一律视为不可信输入，主进程过 path.resolve + realpath 两道
+  // containment，越界返回 6103 且不落到磁盘；三个方法均只读。
+  | 'file/listDir'
+  | 'file/readFile'
+  | 'file/searchFiles'
   | 'git/getBranchInfo'
   | 'git/switchBranch'
   // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
@@ -506,6 +513,74 @@ export interface TermExitPayload {
 }
 
 /**
+ * ===== 内置代码浏览器（12）类型 =====
+ * 事实来源在 @forge/core file/fileService.ts；按本文件惯例本地声明同形类型
+ * （forge-ui 不依赖 @forge/core，契约变更时两边同步）。
+ */
+
+/** file/listDir 的一个条目（目录或文件） */
+export interface FileNode {
+  /** 文件/目录名（单段，不含路径） */
+  name: string;
+  /** 相对项目根的 POSIX 路径（UI 侧一切寻址都用它，绝不自己拼绝对路径） */
+  relPath: string;
+  kind: 'file' | 'dir';
+  /** 字节数（目录为 0） */
+  size: number;
+  /** 修改时间（ms，目录为 0） */
+  mtimeMs: number;
+}
+
+/** file/listDir 响应 data */
+export interface ListDirData {
+  /** 本次列举的目录相对路径（'' = 项目根） */
+  relPath: string;
+  nodes: FileNode[];
+  /** 被忽略规则隐藏的条目数（底栏「已忽略 N 项」） */
+  hidden: number;
+}
+
+/** 截断原因；null = 未截断 */
+export type TruncatedBy = 'bytes' | 'lines' | null;
+
+/** file/readFile 响应 data */
+export interface ReadFileData {
+  relPath: string;
+  name: string;
+  /** 正文；二进制时为 ''（UI 据 binary=true 渲染降级态） */
+  content: string;
+  /** 实际返回行数 */
+  lineCount: number;
+  eol: 'lf' | 'crlf' | 'mixed';
+  size: number;
+  mtimeMs: number;
+  binary: boolean;
+  truncated: boolean;
+  truncatedBy: TruncatedBy;
+  /** 截断前的总行数（未截断时等于 lineCount） */
+  totalLines: number;
+}
+
+/** file/searchFiles 响应 data */
+export interface SearchFilesData {
+  /** 命中的文件（按路径深度、再字典序） */
+  files: string[];
+  /** 因触达上限而提前停止（UI 提示「结果已截断」） */
+  limitReached: boolean;
+}
+
+/** file 域错误码（UI 按它分支：6103 安全事件 / 6104 标签页失效 / 6106 类型不符） */
+export const FILE_ERR = {
+  INVALID_PARAMS: 6101,
+  PROJECT_NOT_FOUND: 6102,
+  PATH_ESCAPE: 6103,
+  NOT_FOUND: 6104,
+  NOT_A_DIRECTORY: 6105,
+  NOT_A_FILE: 6106,
+  READ_FAILED: 6107,
+} as const;
+
+/**
  * 调用主进程方法并原样返回信封（不抛错）。
  * Skill 管理用：4090 冲突是需要 UI 弹确认的**正常分支**，不适合 call() 的抛错语义。
  */
@@ -531,6 +606,29 @@ export async function call<T>(
     throw new Error(`${method} 失败（${res.code}）: ${res.message}`);
   }
   return res.data as T;
+}
+
+// ── 内置代码浏览器（12）专用封装 ────────────────────────────────────────────
+//
+// 三个方法**不**走 call() 的抛错语义，而是返回信封让调用方按 code 分支：
+//   6103 越界（安全事件，只写日志不弹窗）
+//   6104 路径失效（把标签页标记为「文件已删除」，不清空当前内容）
+//   6105/6106 类型不符（目录/文件搞反了，给对应提示）
+// 抛错会让这些分支退化成 try/catch + message 字符串判断，而 code 才是契约。
+
+/** 列单层目录；relPath 缺省 ''= 项目根 */
+export function fileListDir(path: string, relPath = ''): Promise<ForgeResult<ListDirData>> {
+  return invokeRaw<ListDirData>('file/listDir', { path, relPath });
+}
+
+/** 读文本文件（二进制 / 截断 / 失效都走 data 字段表达，不走错误码） */
+export function fileReadFile(path: string, relPath: string): Promise<ForgeResult<ReadFileData>> {
+  return invokeRaw<ReadFileData>('file/readFile', { path, relPath });
+}
+
+/** 按文件名过滤（只搜文件名，不做内容搜索） */
+export function fileSearchFiles(path: string, query: string): Promise<ForgeResult<SearchFilesData>> {
+  return invokeRaw<SearchFilesData>('file/searchFiles', { path, query });
 }
 
 /**

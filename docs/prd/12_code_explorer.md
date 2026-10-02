@@ -1,0 +1,203 @@
+# 12 内置代码浏览器（Code Explorer）
+
+> 状态：`草稿-待确认`
+> 原型：`prototypes/code-tree-viewer-demo.html`（2026-10-01，浅/深双主题 × 2 种布局 × 6 个状态可交互）
+> 定位：让 forge 用户**不必再切到 VSCode** 就能读项目代码 —— 目录树 + 只读代码查看器。
+
+---
+
+## 1. 背景与问题
+
+forge 是「带代码能力的对话工作台」，但当前**读代码必须离开应用**：
+
+- AI 说「问题在 `ConversationView.vue` 的 `.conv-messages`」，用户只能自己在资源管理器里找、在 VSCode 里打开；
+- 会话里的 tool 卡片（`read` / `edit`）已经知道文件路径，但**路径不可点**；
+- `ChangedFilesCard` 列出了本会话改过的文件，同样点不开。
+
+已有的相邻能力（`TerminalPanel`、`GitCommitDialog`、`DiffView`）都验证了「面板化内嵌」这条路是走得通的，缺的就是一个常驻的代码阅读面。
+
+## 2. 范围
+
+**做**：项目视角下的文件树 + 只读代码查看器（语法高亮、行号、面包屑、多标签），**两种可选布局（整屏覆盖 / 左右分割）**。
+
+**不做（本期明确排除）**：
+
+| 排除项 | 理由 |
+|---|---|
+| 编辑 / 保存文件 | 改代码应继续走对话 + tool，避免与 pi 的文件写工具产生双写冲突 |
+| 任务视角（`treeView === 'task'`）下的代码树 | 任务视角是「跨项目平摊会话」，无单一项目根，语义不成立 |
+| 全文搜索 / 跨文件跳转定义 | 属 IDE 能力，交给外部编辑器；forge 只做「看得见、点得开」 |
+| 代码树内拖拽打开 / 多根工作区 | 单项目单根，YAGNI |
+
+## 3. 关键设计决策
+
+### 3.1 入口：项目行尾第三个按钮
+
+项目行（`ProjectTree.vue` `.tree-project`）的 `.tree-node-actions` 里已有 `+`（新建会话）与 `⋯`（更多）两个按钮，均为 `opacity:0` → hover 显形。**新增第三个 `<>` 按钮，夹在两者之间**，完全复用 `.tree-icon-button` 规格与 hover 显形规则。
+
+> 为什么不放进 `⋯` 菜单：读代码是高频动作，藏进二级菜单等于把功能藏没了；而行尾多一个同规格按钮的视觉重量几乎为零。
+
+进入代码态后该按钮转为**常驻高亮**（`--brand-accent` 描边 + 10% 底），充当「我正在看这个项目的代码」的状态指示。
+
+> 进入语义（demo 定稿）：点 `<>` **只把左栏切成代码树**，右列保持对话原样；点开第一个文件才出现代码纸，关掉最后一个标签自动收回。不允许「一进代码态就被『请选择文件』空态盖住对话」。
+
+### 3.2 侧栏：整栏替换 + 返回
+
+`tree-panel` 内部做**互斥切换**（`v-if` / `v-else`，不是叠加）：
+
+```
+项目视角（现状）                      代码树（新增）
+┌──────────────────────┐             ┌──────────────────────┐
+│ [项目] [任务]    ⌄   │             │ ‹项目 │ forge     ⟳  │
+├──────────────────────┤             │ [🔍 按文件名过滤…]    │
+│ ▾ 📁 forge  + <> ⋯   │      →      ├──────────────────────┤
+│    ○ 会话 A           │             │ 最近打开             │
+│    ✓ 会话 B           │             │  V App.vue         M  │
+│ ▸ 📁 docs-site        │             │ 文件                  │
+└──────────────────────┘             │ ▾ 📁 src           M  │
+                                       └──────────────────────┘
+```
+
+- 返回按钮 `‹ 项目` 回到项目列表，**原项目展开态、会话选中态、滚动位置全部保留**（因为 `ProjectTree` 只是被 `v-if` 摘掉，组件状态自然留存）；
+- 树数据按项目懒加载：进入时才 `file/listDir`，切走时释放；
+- 展开态与最后浏览文件写 `forgeStore`，按项目维度记忆。
+
+**为什么不做「树中树」**：项目行下方长出文件子树会让侧栏变成三层层级（项目 → 文件夹 → 文件），在 292px 宽度里缩进只剩 ~10px，且项目多时无法一眼扫完。整栏替换的代价是「换项目要先返回」，但返回是一次点击，可接受。
+
+### 3.3 右侧：两种布局，用户可选
+
+代码查看器**只有一份组件**，两种布局只改「定位方式 + elevation」，切换零成本。布局是**用户偏好**：`localStorage` 记忆，代码树顶栏的 `⇄` 按钮随时可切，窄窗时临时降级但不丢失偏好。
+
+```
+.rightcol[data-layout='cover' | 'split']
+└─ .splitwrap                      flex row，两种布局共用
+   ├─ main.content #contentConv    对话纸（永远 flex:1，拖不塌）
+   ├─ .splitter                    5px，仅 split 显示
+   └─ main.content.content-code    代码纸，仅 split 显示
+```
+
+#### 布局 A：整屏覆盖（用户可选）
+
+`#codePaper` 用 `position:absolute; inset:0` 盖在对话纸上。**对话纸宽度零变化**、节点不销毁。
+
+```
+.main-layout
+├─ aside.sidebar ─────────────────┐  宽度不变
+└─ div.rightcol                   │  宽度不变
+   ├─ TitleBar                     │
+   └─ main.content                 │  ← position:relative（已有）
+      ├─ .app-toolbar              │  保持挂载
+      ├─ .conv (对话)              │  保持挂载 ★ 不销毁
+      ├─ TerminalPanel             │  保持挂载
+      └─ section#codePaper         │  ★ inset:0 覆盖，--elev-codepaper 抬高一档
+```
+
+| 方案 | 对话宽度 | 对话可见 | 评价 |
+|---|---|---|---|
+| **整屏覆盖** | **0 变化** | 不可见 | 对话零风险（宽度不变 + 不销毁），代价是**读代码时看不到 AI 回复**；`--elev-codepaper` 比 `--elev-sheet` 再抬一档，读作「另一张纸」而非换皮 |
+| 右侧浮层 | 0 变化 | 部分 | 代码只剩 ~45% 宽，长行与缩进代码阅读吃力 |
+| 纸内标签页 | 0 变化 | 不可见 | 同覆盖纸，但会让人以为对话被「删了」，且要改 `.app-toolbar` 结构 |
+| 整窗接管 | — | 不可见 | 侧栏项目树 / 会话全消失，来回切换成本最高 |
+| ~~分屏 / 拖拽分割~~ | **压缩** | 可见 | **降级为布局 B**（用户可选） |
+
+#### 布局 B：左右分割
+
+`#codePaperB` 作为 `.content-code` 的**普通流子节点**，与对话纸平级并置。
+
+```
+main.content#contentConv │ ▌ │ main.content.content-code
+  对话纸（flex:1）          │   │  代码纸（flex: 0 0 var(--split-w)）
+                           5px  │
+                         splitter
+```
+
+- **间距**：两纸贴合，只留 **5px 沟**（`.splitter` 宽 5px，中间 1px 分隔线）；左右纸各自 `margin-right/left: 0`，圆角改为 `12px 0 0 12px` / `0 12px 12px 0`，读作**一块被 divider 切开的面板**而不是两张飘着的纸；
+- **elevation**：两纸同用 `--elev-sheet`（平级）—— 这是与布局 A 最直观的语义差别：*A 是「盖上去」，B 是「并排站」*；
+- **拖拽**：指针拖拽，两侧各保底 **320px**（`min-width:0` + flex-basis 百分比）；双击分割条恢复 46%；`tabIndex=0` + `←/→` 每次 2%，键盘可达；宽度写入 `localStorage`；
+- **状态栏**在分割下追加 `宽度 N%`，提示这条沟可以拖。
+
+#### 两者的取舍（写进设计文档，而不是替用户做决定）
+
+| | 布局 A 整屏 | 布局 B 分割 |
+|---|---|---|
+| 对话宽度 | 零变化 | 被压窄（代码 ≥ 320px） |
+| 边看 AI 回复边看代码 | ✗ | ✓ |
+| 长行 / 缩进代码阅读 | 满宽 | 受分割宽度限制 |
+| 对话流式状态 | 存活但不可见 | 存活**且可见** |
+| 窄窗（< 820px） | 正常 | **自动临时降为 A**，偏好本身不变 |
+
+**默认选 A**（对话零风险是硬约束），B 作为偏好开放给「习惯边看边聊」的用户。
+
+### 3.4 代码查看器细节
+
+- **语法高亮**：轻量自实现（按扩展名分派，`<pre>` + 逐行 token span），不引 shiki/highlight.js —— 避免为一个只读视图拖进 ~1MB wasm 与一套主题体系。若后续要 Markdown 预览再评估。
+- **行号列**：`position:sticky; left:0` 独立单元格，横向滚动时钉住。列本身要成“栏”：左侧留白 16px、右侧 14px 加一条 1px 竖线、代码侧再留 14px——缺竖线时数字悬在纸边、代码紧贴数字，读起来是一长条数字而不是一张对齐的表。
+- **标签页**：只在 ≥2 个文件时出现；记录本项目最近打开顺序。签超出纸宽时 tab 条横向可滚，切换激活签时把它滚进视野（`inline:'nearest'`）；滚动条隐藏，所以溢出时右缘挂一层渐隐作为“右边还有”的提示。**中键关闭**（编辑器通用手势）：`mousedown`+`mouseup` 配对且落在同一个签上才关，据此区分关闭与中键拖拽；中键不附带切签。
+- **最近打开分组 = 打开历史，与标签页解耦**：存 relPath（名字从 relPath 现算，文件改名后不留指向旧名的死条目），头部插入去重，上限 5 项、打开第 6 个时把最旧的挤出。**关掉签不会从历史里消失**，再点一下就重新打开成签（不依赖它在树里是否展开可见）。排序按“打开时间”——即 `openFile` 发生的时刻：点已打开的签只是切换、**不重排**（与 VSCode Open Recent 同语义，否则看一眼就把历史搅乱）；但从左栏历史点一个还开着的文件也算重新打开，会把时间刷到最前。存储侧另有 20 条上限兜底（防长会话单调增长），与展示上限各管各的。
+- **最近打开分组**：最多 5 项。**不截断 tab 列表**——签想开多少开多少。
+- **面包屑**：点任一级跳到该目录（收起其下层、滚动到该目录）。
+- **状态栏**：行/列 · 总行数 · 编码 · 换行态 · 常驻「只读预览」。
+- **降级态**：
+  - 二进制 / 图片 → 不渲染，给「用系统默认程序打开」；
+  - > 2 MB 或 > 50,000 行 → 顶部横幅提示已省略，给「用编辑器打开」；
+  - 无权限 / 已删除 → 明确的错误态，不是空白。
+
+### 3.5 Git 状态角标
+
+文件/目录行尾复用**模块 11 已有的 git 能力**（`git/getStatus`）标注 `M` / `A` / `D` / `U`（未跟踪），与会话内 `ChangedFilesCard` 呼应 —— 「AI 刚改了哪些文件」在树上直接可见。
+
+只在**进入代码态时拉一次**并缓存，监听 forge 的 git 刷新事件失效；不轮询。
+
+## 4. 需要新增的接口
+
+现有 IPC 契约（`packages/forge-desktop/src/ipc-contract.ts`）只有 `project/*`（7 个）与 `git/*`（7 个），**没有任何文件读方法**。需新增：
+
+| 方法 | 入参 | 出参 | 说明 |
+|---|---|---|---|
+| `file/listDir` | `{ projectPath, relPath? }` | `{ entries: Array<{ name, path, kind:'file'\|'dir', size, ext }> }` | 单层懒加载；主进程内置 ignore 规则（`node_modules` `.git` `dist` `release` `.sisyphus` `test-results`）与符号链接防逃逸（realpath 必须仍在 projectPath 内） |
+| `file/readFile` | `{ projectPath, relPath }` | `{ content, encoding, truncated, totalLines, size, binary }` | 体积/行数超限即截断并回 `truncated:true`；二进制直接回 `binary:true` 不传 content |
+| `file/searchFiles` | `{ projectPath, query }` | `{ paths: string[] }` | 只按文件名过滤（对应 3.1 的过滤框），不做内容搜索 |
+
+均走 `forge-core/src/rpc/` 新建 `fileMethods.ts`，`ipc-contract.ts` 补白名单，`bridge.ts` 加类型签名。
+
+**安全要点**：所有 `relPath` 必须先 `path.resolve` + `realpath` 校验前缀，防 `../` 与符号链接越界读取任意文件（这是唯一一处把「用户可控路径」交给主进程读盘的地方）。
+
+## 5. 改动清单
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| ui | `components/CodeTreePanel.vue` | 新增：侧栏代码树（头/过滤/树/脚） |
+| ui | `components/CodeViewer.vue` | 新增：代码纸（顶栏/标签/正文/状态栏 + 四种降级态） |
+| ui | `components/CodeExplorer.vue` | 新增：薄壳，持有 `projectPath / openFile / tabs` 状态 |
+| ui | `components/CodeSplitter.vue` | 新增：5px 分割条，pointer 拖拽 + 双击复位 + 键盘左右调；`z-index` 高于两纸（否则 pin/浮层会被压） |
+| ui | `components/ProjectTree.vue` | 项目行 `.tree-node-actions` 插入 `<>` 按钮；`emit('open-code', path)`；仅 `view === 'project'` 时渲染 |
+| ui | `App.vue` | `.tree-panel` 内加 `v-if/v-else` 切换；`.content` 外包一层 `.splitwrap` 并加 `<CodeExplorer>` + `<CodeSplitter>`；`codePanelOpen` 状态 |
+| ui | `store/prefs.ts`（或复用 `App.vue` 现有 localStorage 封装） | `codeViewerLayout: 'cover' \| 'split'`（默认 `split`，demo 定稿推荐 A=右缘分割）、`codeViewerSplitPct`（默认 46） |
+| ui | 设置页 | 「外观」分区加两项：代码查看器布局（整屏/分割单选）+ 分割宽度滑杆（仅 B 可见） |
+| ui | `bridge.ts` / `mock-bridge.ts` | 三方法类型 + mock 数据 |
+| ui | `i18n/code.ts` | 新增 domain（en / zh-CN 各一份） |
+| desktop | `ipc-contract.ts` / `preload.ts` | 三通道白名单 |
+| core | `rpc/fileMethods.ts` | `listDir` / `readFile` / `searchFiles` + ignore + 越界防护 |
+| core | `store/forge-store.ts` | 按项目记展开态 + 最近文件 |
+
+## 6. 验收
+
+- 入口：`view === 'project'` 时项目行 hover 出现第三个按钮；`view === 'task'` 时**不出现**。
+- 侧栏：进入/返回各一次点击；返回后项目展开态、会话选中态、滚动位置与进入前一致。
+- **返回**：顶栏 `← 返回`、`Esc`、侧栏 `‹ 项目` 均可退出；两种布局下语义一致（关闭代码视图）。
+- 对话状态：进入/退出代码态后，对话区 DOM 节点未被销毁（`MutationObserver` 断言），流式输出不丢。
+- 布局 A：进入代码态前后，`.content` 的 `getBoundingClientRect().width` **完全相等**。
+- 布局 B：拖拽分割条，两侧均不得小于 320px；双击恢复 46%；`←/→` 键每次 2%；刷新后布局与宽度均从 `localStorage` 恢复。
+- 布局切换：代码树顶栏 `⇄` 与设置项双向同步；切回项目视角再进入，偏好仍在。
+- 窄窗：窗口 < 820px 且偏好为 B 时，自动临时降为 A，代码树顶栏出现「⚠ 窗口过窄」；拉宽窗口自动恢复 B，**偏好值始终不变**。
+- 文件树：展开/收起、过滤、Git 角标、文件类型徽章均正确；`node_modules` 等被忽略。
+- 降级：二进制、>2 MB、被删除文件三种各有明确态，不是空白。
+- 主题：浅/深双主题下对比度与纸层级关系（`--elev-codepaper` 高于 `--elev-sheet`）成立。
+- i18n：`zh-CN` / `en` 全量覆盖，无硬编码文案。
+
+## 7. 待确认
+
+1. 代码树是否需要**右键菜单**（在此处打开 / 在资源管理器中显示 / 复制相对路径）？—— 原型里只放了顶栏动作。
+2. 展开态与**布局偏好**是否需要跨设备同步（走 forgeStore 同步）还是仅本机 `localStorage`？
+3. 是否需要「只显示 AI 改过的文件」过滤开关（复用模块 11 的会话变更集）？
+4. 布局 B 是否需要支持**上下分割**（代码在对话下方）？当前只做左右；底部已被 `TerminalPanel` 占用，上下分割会与终端抢位置。

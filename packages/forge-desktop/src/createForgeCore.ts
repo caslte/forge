@@ -28,6 +28,7 @@ import {
   createModelApi,
   SubagentService,
   SUBAGENT_DONE_TIMEOUT_MS,
+  createFileApi,
   type RpcResult,
   type ModelsFileAdapter,
   type KeychainAdapter,
@@ -69,6 +70,7 @@ import {
 } from './pi/appUpdater.ts';
 import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
 import { createCommitMessageMethods } from './git/commitMessageService.ts';
+import { createModelTestMethods } from './model/modelTestService.ts';
 import { createTermService } from './term/ptyService.ts';
 import { recordManualComponentUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
 
@@ -588,6 +590,11 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
   });
 
+  // model/testProvider（模型连通性测试）：设置页表单「测试」按钮——用表单当前值（可未保存）
+  // 单次 chat/completions 探活。与 generateCommitMessage 同一 fetch 口径，不经
+  // resolveChatTarget（那里解析的是「已保存」provider，测试恰恰要验未保存的输入）。
+  const modelTestMethods = createModelTestMethods();
+
   // wu-06：subagent/queryList | subagent/stop | subagent/clearFinished RPC 方法映射
   // 三个方法都委托 SubagentService，返回信封与错误码（1001/1002/5000）严格按 service 输出。
   // 取消 sendMessage 末尾的重复 pushStatus：onStatusChange 回调已处理状态推送（原 completionHandler
@@ -765,6 +772,23 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     emit: (event, payload) => eventBus.emit(event, payload),
   });
 
+  // file（12：内置代码浏览器）：三个只读方法。projectRegistered 判定与 git/term 同口径
+  // （归一后比对已注册项目列表）；真正的越界防护在 FileService.resolveInside 内，
+  // 不在这里重复实现——安全规则保持单一事实来源。
+  const fileApi = createFileApi({
+    isProjectRegistered: (targetPath) => {
+      const r = projectService.queryProjectList();
+      if (!r.ok) return false;
+      let key: string;
+      try {
+        key = normalizeProjectPath(targetPath);
+      } catch {
+        key = path.resolve(targetPath);
+      }
+      return r.data.projects.some((p) => p.path === key);
+    },
+  });
+
   const methodTable: MethodTable = {
     ...projectApi.methods,
     ...gitApi.methods,
@@ -772,10 +796,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...conversationApi.methods,
     ...toolApi.methods,
     ...modelApi.methods,
+    ...modelTestMethods,
     ...commitMessageMethods,
     ...subagentMethods,
     ...skillMethods,
     ...termService.methods,
+    ...fileApi.methods,
     ...piMethods,
     ...updaterMethods,
     // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）

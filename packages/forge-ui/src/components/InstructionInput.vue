@@ -1314,9 +1314,10 @@ function resetHeightIfEmpty(): void {
 // currentLevel 供父组件读取：草稿态发送首条消息时随新会话写入（见 ConversationView.onSend）
 defineExpose({ focus, currentLevel, restoreQueuedText, resetHeightIfEmpty });
 
-/** 压缩开始/完成事件订阅（自动压缩锁定输入 + 刷新用量；手动压缩同样经此收尾） */
+// 压缩事件订阅的卸载句柄（onMounted 内赋值）
 let unsubCompacted: (() => void) | null = null;
 let unsubCompacting: (() => void) | null = null;
+let unsubCompactError: (() => void) | null = null;
 /** 命令上报扩展（slashCommandsUpdated）订阅：收到后清空命令缓存，下次触发重拉（AC-CV-032） */
 let unsubSlash: (() => void) | null = null;
 
@@ -1348,6 +1349,18 @@ onMounted(() => {
     // （手动压缩 RPC 返回时也会清一次，幂等）
     if (props.sessionId) clearCompactBanner(props.sessionId);
   });
+  // 压缩失败收尾（A-CV-010：失败只发 error 不发 compacted）：终态 error 即压缩
+  // 区间的终点，按载荷 sessionId 收横幅+解锁（后台会话的失败也要收，否则切回
+  // 时旧横幅挂底）；retry 载荷轮次未终止（压缩摘要请求正在重连），不收。
+  unsubCompactError = subscribe('conversation.error', (payload) => {
+    const p = payload as { sessionId?: string; retry?: unknown };
+    if (typeof p.sessionId !== 'string' || p.retry !== undefined) return;
+    clearCompactBanner(p.sessionId);
+    if (p.sessionId === props.sessionId) {
+      autoCompacting.value = false;
+      void refreshUsage();
+    }
+  });
 });
 
 /** 浮窗开合时观察分段条尺寸：等宽字体异步加载 / 窗口缩放会改档位宽窄，
@@ -1375,6 +1388,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', onQueueViewportResize);
   unsubCompacted?.();
   unsubCompacting?.();
+  unsubCompactError?.();
   unsubSlash?.();
   if (attachErrorTimer) clearTimeout(attachErrorTimer);
   if (maxSweepTimer) clearTimeout(maxSweepTimer);
@@ -1383,13 +1397,15 @@ onUnmounted(() => {
 });
 
 // 会话回到空闲时自动聚焦输入框；一轮回复完成后刷新上下文用量（P3-A）。
-// 同时兜底解除自动压缩锁定：compaction 被中止时 compacted 事件不成对发射，
-// 轮次结束即可安全解锁（压缩不可能跨轮次存活）
+// 同时兜底解除自动压缩锁定与横幅：compaction 被中止时 compacted 事件不成对发射
+//（aborted 路径无事件，失败路径由上方 conversation.error 订阅收尾），
+// 轮次结束即可安全解锁收横幅（压缩不可能跨轮次存活）
 watch(
   () => props.sessionStatus,
   (s) => {
     if (s === 'idle' || s === 'done') {
       autoCompacting.value = false;
+      if (props.sessionId) clearCompactBanner(props.sessionId);
       nextTick(focus);
       void refreshUsage();
     }

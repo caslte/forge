@@ -170,8 +170,8 @@ const highlightedRows = computed(() =>
 <style>
 .diff-view .hljs-comment,
 .diff-view .hljs-quote {
+  /* 与 CodeViewer 同规：注释不斜体（中文合成倾斜不可读） */
   color: #6e7781;
-  font-style: italic;
 }
 .diff-view .hljs-keyword,
 .diff-view .hljs-selector-tag,

@@ -60,6 +60,8 @@ const DB: {
       stagedCount?: number;
       unpushedCount?: number | null;
       hasHead?: boolean;
+      /** 模块 12：逐文件状态（代码树的 Git 徽标）；缺省 = 非 git 项目或干净仓库 */
+      files?: Array<{ path: string; status: string; staged?: boolean }>;
     }
   >;
 } = {
@@ -116,9 +118,107 @@ const DB: {
       stagedCount: 0,
       unpushedCount: 2,
       hasHead: true,
+      // 模块 12：代码树的 Git 徽标。与 fileMock 的假路径对齐，让 Mock 下 M/A/? 三态可见
+      files: [
+        { path: 'packages/forge-ui/src/App.vue', status: 'M', staged: false },
+        { path: 'packages/forge-core/src/file/fileService.ts', status: 'A', staged: true },
+        { path: 'packages/forge-ui/src/mock-bridge.ts', status: 'M', staged: false },
+        { path: 'docs/prd/12_code_explorer.md', status: '?', staged: false },
+      ],
     },
   },
 };
+
+/** mock 项目路径（与 DB.projects 首项一致，代码树 fixture 挂在它下面） */
+const MOCK_PROJECT_PATH = 'D:/work/aiwork/forge';
+
+/** 与 forge-core 的 MAX_SEARCH_NODES 同值：mock 的 limitReached 阈值不另起一套 */
+const FILE_SEARCH_MAX_NODES = 20_000;
+
+/**
+ * 模块 12：Mock 假文件系统。
+ *
+ * 刻意不穷举——只为把**每条降级路径**都跑一遍：目录排序、忽略项、二进制、超大截断、
+ * 空文件、路径不存在。真实文件系统的行为在 fileService 的 36 个单测里覆盖；mock 的
+ * 职责是让 UI 在没有真实仓库时也能把每个状态屏都点亮。
+ */
+const fileMock = new Map<string, string>([
+  ['README.md', '# forge\n\nElectron + Vue 3 的 AI 编码工作台。\n\n## 快速开始\n\n```bash\nnpm run dev\n```\n'],
+  [
+    'package.json',
+    '{\n  "name": "forge",\n  "private": true,\n  "workspaces": ["packages/*"],\n  "scripts": {\n    "dev": "electron .",\n    "test": "npm run test --workspaces"\n  }\n}\n',
+  ],
+  [
+    'packages/forge-ui/src/App.vue',
+    '<script setup lang="ts">\nimport { ref } from \'vue\';\n\n// 主视图：左项目树 + 右对话纸\nconst activeView = ref<\'sessions\' | \'settings\'>(\'sessions\');\n</script>\n\n<template>\n  <main class="content">\n    <p>{{ activeView }}</p>\n  </main>\n</template>\n',
+  ],
+  [
+    'packages/forge-ui/src/bridge.ts',
+    '/** UI → 主进程 RPC 封装；保留原始信封以便按错误码分支 */\nexport async function fileListDir(path: string, relPath: string) {\n  return call(\'file/listDir\', { path, relPath });\n}\n',
+  ],
+  [
+    'packages/forge-core/src/file/fileService.ts',
+    'import { promises as fs } from \'node:fs\';\nimport path from \'node:path\';\n\n/*\n * 路径边界在这里收口：所有相对路径都经 path.resolve + realpath 双重校验，\n * 任何指向项目根之外的请求一律拒绝（6103）。\n */\nexport class FileService {\n  async listDir(root: string, relPath: string) {\n    const abs = this.safeResolve(root, relPath);\n    const entries = await fs.readdir(abs, { withFileTypes: true });\n    return entries.map(toNode);\n  }\n}\n',
+  ],
+  [
+    'packages/forge-core/test/file/fileService.test.ts',
+    "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { FileService } from '../../src/file/fileService.ts';\n\ntest('listDir: 目录优先排序', () => {\n  assert.equal(1, 1);\n});\n",
+  ],
+  [
+    'docs/prd/12_code_explorer.md',
+    '# 模块 12 内置代码浏览器\n\n状态：草稿-待确认\n\n- A 整屏覆盖：默认，对话区宽度零变化\n- B 左右分割：可选偏好，两侧各保底 320px\n',
+  ],
+  ['src/__demo__/binary.png', '\u0000\u0001binary'],
+  [
+    'src/__demo__/huge.log',
+    Array.from({ length: 60000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n',
+  ],
+  ['src/__demo__/empty.txt', ''],
+]);
+
+/**
+ * 目录 → 直接子项。用扁平表的前缀反推而非显式父子表：mock 只需单层懒加载，
+ * 扁平表已经能回答「这个目录下有什么」，新增文件只要加一条 map。
+ */
+function fileMockChildren(relPath: string): string[] {
+  const prefix = relPath === '' ? '' : `${relPath}/`;
+  const seen = new Set<string>();
+  for (const p of fileMock.keys()) {
+    if (!p.startsWith(prefix) || p === relPath) continue;
+    const head = p.slice(prefix.length).split('/')[0];
+    if (head) seen.add(head);
+  }
+  return [...seen].sort();
+}
+
+/** 某个子项是目录 = 扁平表里存在以它为前缀的**更深**路径。
+ *  不能写成「扁平表里有这个名字」——那会把文件也判成目录（文件本身就是一条以名字结尾的路径）。 */
+function fileMockIsDir(relPath: string, name: string): boolean {
+  const childRel = relPath === '' ? name : `${relPath}/${name}`;
+  const prefix = `${childRel}/`;
+  for (const p of fileMock.keys()) {
+    if (p.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/** 按行切分：去掉末尾那一行「\n 之后」的空气，但不改内容本身 */
+function fileMockLines(content: string): string[] {
+  const lines = content.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/** mock 文件名过滤：只匹配 basename，与真实 searchFiles 语义一致 */
+function fileMockSearch(query: string): string[] {
+  const q = query.toLowerCase();
+  const out: string[] = [];
+  for (const p of fileMock.keys()) {
+    if (out.length >= 200) break;
+    if (p.slice(p.lastIndexOf('/') + 1).toLowerCase().includes(q)) out.push(p);
+  }
+  return out.sort();
+}
 
 const HISTORY: Record<string, unknown[]> = {
   'sess-code-review': [
@@ -901,6 +1001,7 @@ const bridge: ForgeBridge = {
             stagedCount: g.stagedCount ?? 0,
             unpushedCount: g.unpushedCount ?? null,
             hasHead: g.hasHead ?? true,
+            files: g.files ?? [],
           },
         };
       }
@@ -969,6 +1070,91 @@ const bridge: ForgeBridge = {
             ? `feat: update ${g.fileCount} files on ${g.branch} (mock generated)`
             : `feat: 在 ${g.branch} 上更新 ${g.fileCount} 个文件（mock 生成）`;
         return { code: 0, message: 'ok', data: { message: msg } };
+      }
+      // ===== 模块 12：内置代码浏览器（CE-S01 ~ CE-S07）=====
+      // 错误码与 fileService 一一对应（6101~6107），UI 靠它们分支，
+      // 所以 mock 必须用同一套码，否则 Mock 模式会把降级态走成白屏。
+      case 'file/listDir': {
+        const fp = (params as { path?: string; relPath?: string });
+        const root = fp.path ?? '';
+        const rel = (fp.relPath ?? '').replace(/^\/+|\/+$/g, '');
+        if (root !== MOCK_PROJECT_PATH) return { code: 6102, message: '项目未注册: ' + root, data: null };
+        if (!root || (fp.relPath === undefined)) {
+          return { code: 6101, message: '参数错误：path / relPath 必填', data: null };
+        }
+        // 越界与不存在要分开报：UI 给的是两种完全不同的引导（改路径 vs 建文件）
+        if (rel.startsWith('..') || /^[a-zA-Z]:/.test(rel)) {
+          return { code: 6103, message: '路径越界', data: null };
+        }
+        const children = fileMockChildren(rel);
+        if (rel !== '' && children.length === 0) {
+          return { code: 6105, message: '不是目录: ' + rel, data: null };
+        }
+        // 目录优先、同组字典序（与真实 FileService 一致）
+        const nodes = children
+          .map((name) => {
+            const childRel = rel === '' ? name : `${rel}/${name}`;
+            const isDir = fileMockIsDir(rel, name);
+            return {
+              name,
+              relPath: childRel,
+              kind: isDir ? 'dir' : 'file',
+              size: isDir ? 0 : (fileMock.get(childRel) ?? '').length,
+              mtimeMs: 0,
+            };
+          })
+          .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
+        return { code: 0, message: 'ok', data: { relPath: rel, nodes } };
+      }
+      case 'file/readFile': {
+        const fp = (params as { path?: string; relPath?: string });
+        const root = fp.path ?? '';
+        const rel = (fp.relPath ?? '').replace(/^\/+|\/+$/g, '');
+        if (root !== MOCK_PROJECT_PATH) return { code: 6102, message: '项目未注册: ' + root, data: null };
+        if (rel.startsWith('..') || /^[a-zA-Z]:/.test(rel)) {
+          return { code: 6103, message: '路径越界', data: null };
+        }
+        if (rel === '') return { code: 6101, message: '参数错误：relPath 不能为空', data: null };
+        const isDir = fileMockChildren(rel).length > 0;
+        if (isDir) return { code: 6106, message: '不是文件: ' + rel, data: null };
+        if (!fileMock.has(rel)) return { code: 6104, message: '文件不存在: ' + rel, data: null };
+        const raw = fileMock.get(rel) ?? '';
+        const totalLines = fileMockLines(raw).length;
+        // 二进制：含 NUL 或其他控制字节（真实实现用启发式，这里等价）
+        // eslint-disable-next-line no-control-regex
+        const binary = /[\u0000-\u0008\u000E-\u001F]/.test(raw);
+        const lines = binary ? [] : fileMockLines(raw);
+        const MAX_LINES = 50000;
+        const kept = lines.slice(0, MAX_LINES);
+        let truncatedBy = null;
+        if (!binary && totalLines > MAX_LINES) truncatedBy = 'lines';
+        else if (!binary && raw.length > 2 * 1024 * 1024) truncatedBy = 'bytes';
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            relPath: rel,
+            content: kept.join('\n'),
+            totalLines,
+            truncated: truncatedBy !== null,
+            truncatedBy,
+            binary,
+            size: raw.length,
+            mtimeMs: 0,
+          },
+        };
+      }
+      case 'file/searchFiles': {
+        const fp = (params as { path?: string; query?: string });
+        const root = fp.path ?? '';
+        if (root !== MOCK_PROJECT_PATH) return { code: 6102, message: '项目未注册: ' + root, data: null };
+        const q = (fp.query ?? '').trim();
+        if (q === '') return { code: 6101, message: '参数错误：query 不能为空', data: null };
+        const files = fileMockSearch(q);
+        // 字段名必须与 forge-core 的 SearchFilesData 一致（files/limitReached）。
+        // 曾经写成 { matches, truncated }，UI 读 res.data.files 拿到 undefined，
+        // 表现为「输入什么都搜不到」——mock 漂移就是这么坑人的。
+        return { code: 0, message: 'ok', data: { files, limitReached: files.length >= FILE_SEARCH_MAX_NODES } };
       }
       case 'model/queryModels':
         return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };

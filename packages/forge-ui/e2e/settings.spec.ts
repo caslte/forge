@@ -14,6 +14,7 @@ declare global {
   interface Window {
     __mockProviders?: Array<Record<string, unknown>>;
     __mockSaveParams?: Record<string, unknown> | null;
+    __mockTestParams?: Record<string, unknown> | null;
   }
 }
 
@@ -91,6 +92,56 @@ test('设置页：明文 provider 与引用 provider 编辑表现一致（无特
   await grokItem.getByRole('button', { name: '编辑' }).click();
   await expect(page.locator('.api-key-input')).toHaveValue('sk-grok-plain-key');
   await expect(page.locator('.key-stored-tag')).toHaveCount(0);
+});
+
+/**
+ * 模型连通性测试（表单「测试」按钮）：
+ * 后端 model/testProvider 用人话 message 表达失败原因，UI 原样展示（不加前缀）；
+ * 参数取表单当前值（编辑态即回填值），无需先保存。
+ */
+test('模型连通性测试：编辑态点「测试」用表单当前值调用，成功后按钮下显示耗时', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('model/testProvider', (params) => {
+      window.__mockTestParams = params;
+      return { code: 0, message: 'ok', data: { latencyMs: 342 } };
+    });
+  });
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
+  const minimaxItem = page.locator('.provider-item').filter({ hasText: 'MiniMax-M3' });
+  await minimaxItem.getByRole('button', { name: '编辑' }).click();
+
+  await page.locator('.form-actions .ghost').click();
+  await expect(page.locator('.form-test-result.is-ok')).toHaveText(
+    '连接成功（342ms），该模型可正常收发',
+  );
+  expect(await page.evaluate(() => window.__mockTestParams)).toMatchObject({
+    baseUrl: 'https://api.minimaxi.com/v1',
+    apiKey: 'sk-minimax-plain-real-key',
+    model: 'MiniMax-M3',
+  });
+});
+
+test('模型连通性测试：失败原因原样展示；清空 API 地址后按钮禁用', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('model/testProvider', () => ({
+      code: 1006,
+      message: 'API Key 无效或无权限（HTTP 401）',
+      data: null,
+    }));
+  });
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
+  const grokItem = page.locator('.provider-item').filter({ hasText: 'Grok 4.5' });
+  await grokItem.getByRole('button', { name: '编辑' }).click();
+
+  await page.locator('.form-actions .ghost').click();
+  await expect(page.locator('.form-test-result.is-fail')).toHaveText(
+    'API Key 无效或无权限（HTTP 401）',
+  );
+
+  await page.locator('.form-field', { hasText: 'API 地址' }).locator('input').fill('');
+  await expect(page.locator('.form-actions .ghost')).toBeDisabled();
+  // 结果随输入态重置：清空后重新测试才再出现
+  await expect(page.locator('.form-test-result')).toHaveCount(0);
 });
 
 /**

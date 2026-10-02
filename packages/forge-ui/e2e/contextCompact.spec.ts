@@ -150,6 +150,35 @@ test('自动压缩：compacting 锁定输入并显示横幅，compacted 后重�
   guard.assertHealthy();
 });
 
+// 压缩失败收尾（2026-10 修复）：契约 A-CV-010 规定失败只发 conversation.error、
+// 不发 compacted，UI 必须自己收横幅，否则「正在压缩上下文」永久挂底。
+test('自动压缩失败：retry 载荷横幅保留，终态 error 收横幅并解锁输入', async ({ page }) => {
+  const guard = attachHealthGuards(page);
+  await boot(page);
+  await page.evaluate((sid) => {
+    window.__forgeMock!.emit(sid, 'conversation.compacting', { reason: 'auto' });
+  }, SESSION_ID);
+  await expect(page.locator('.compact-banner.working')).toContainText('正在压缩上下文');
+  await expect(page.locator('.compose-input')).toBeDisabled();
+
+  // 压缩摘要请求断流重试（带 retry 字段）：轮次未终止，横幅必须保留
+  await page.evaluate((sid) => {
+    window.__forgeMock!.emit(sid, 'conversation.error', {
+      message: '模型连接中断，正在自动重试…',
+      retry: { attempt: 1, maxAttempts: 3 },
+    });
+  }, SESSION_ID);
+  await expect(page.locator('.compact-banner.working')).toHaveCount(1);
+
+  // 终态错误（压缩失败的唯一收尾信号）：横幅收掉、输入解锁
+  await page.evaluate((sid) => {
+    window.__forgeMock!.emit(sid, 'conversation.error', { message: '压缩失败：上游无响应' });
+  }, SESSION_ID);
+  await expect(page.locator('.compact-banner')).toHaveCount(0);
+  await expect(page.locator('.compose-input')).toBeEnabled();
+  guard.assertHealthy();
+});
+
 // CV-S07 口径修正：压缩只替换喂给模型的上下文，用户看到的 transcript 必须完整，
 // 历史加载走 pi getBranch()（而非 buildContextEntries()），压缩点之上保留原文。
 // 2026-09-28 用户反馈：分隔条下不再外显压缩摘要预览。

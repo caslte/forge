@@ -27,6 +27,11 @@ asar: true
 extraResources:
   - from: ../forge-ui/dist
     to: forge-ui/dist
+  # JetBrains Mono 是 OFL 1.1：允许打包与再分发，但要求随分发附带版权与许可文本。
+  # 字体二进制本身已经随 forge-ui/dist/assets/*.woff2 进去了（Vite 从 CSS url() 产出），
+  # 这里额外把许可正文放进 resources/licenses/。
+  - from: ../forge-ui/src/assets/fonts/OFL.txt
+    to: licenses/JetBrainsMono-OFL.txt
 win:
   # 不在此声明 arch：交给 CLI 的 --x64 / --arm64。
   # 本地 `npm run dist` 默认当前架构（行为与改动前一致）；CI 按矩阵逐架构构建。

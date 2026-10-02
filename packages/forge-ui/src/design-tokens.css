@@ -146,7 +146,24 @@
   --gold-hi: color-mix(in srgb, var(--gold) 55%, black);
 
   /* 字体 */
-  --font-sans: "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* --font-sans 故意**不逐字跟原型一致**，第一段相同、后面多了一段中文系统字体。
+   *
+   * 原型靠 Google Fonts 的 webfont 渲染 Noto Sans SC（101 个 CJK 切片，运行时联网
+   * 下载）；应用不打包它（4.22 MB，且 AI 回复/文件名里的中文是任意的，做子集必然
+   * 出现“正文中间换字体”）。所以这里保留「本地有 Noto 就用 Noto」，后面显式补上
+   * 各平台的中文系统字体：CSS 的字体回退是**逐字符**的，拉丁字符仍由 Segoe UI /
+   * 苹方渲染，只有汉字落到雅黑 / 苹方——这正是 VSCode、微信、TRAE 的做法。
+   *
+   * 别把这段“修”回逐字等于原型：原型有 webfont 兜底，应用没有，两边一致的前提
+   * 就是应用自己把系统字体写全。中文界面字形随系统而变是刻意接受的取舍。
+   *
+   * 第一档必须是 "Noto Sans SC"（原型同名 token 的第一档）：少了它就直接落到
+   * "Noto Sans CJK SC"——两者在同机共存时是**两款不同的字体**（实测 14px 下字宽
+   * 132.89 vs 133.19，字形也不同），于是同一台机器上「原型」和「应用」的 UI 字体
+   * 不是同一款。 */
+  --font-sans: "Noto Sans SC", "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  /* JetBrains Mono 随应用分发（src/assets/fonts/），不依赖系统安装——
+     行号列宽（3ch + 52px）就是按它量的，缺了会换成 Consolas，字宽差 8%。 */
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* 过渡 */
