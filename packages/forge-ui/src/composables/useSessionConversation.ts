@@ -13,7 +13,12 @@ import type { DisplayItem } from '../components/MessageListItem.vue';
 import { computeTurnFooters } from './useTurnFooter.ts';
 import { collectTurnChangedFiles } from './useChangedFiles.ts';
 import { useStreamPhase } from './useStreamPhase.ts';
-import { applyTodoCompletion, applyTerminalCleanup, type TodoSnapshot } from '../utils/todoPanel.ts';
+import {
+  applyTodoCompletion,
+  applyTodoTurnStart,
+  applyTerminalCleanup,
+  type TodoSnapshot,
+} from '../utils/todoPanel.ts';
 import { createAskQuestionStore, clearAskQuestionSession } from './askQuestionStore.ts';
 import { clearTodoPanelSessionState } from './todoPanelUiState.ts';
 import { i18n } from '../i18n/index.ts';
@@ -801,6 +806,11 @@ function dismissAskAnswered(): void {
     if (p.status === 'streaming') {
       // 新轮次起点：无条件刷新（防上一轮终态在切走期间被过滤后残留旧起点串入新轮次）
       turnStartAt.set(p.sessionId, Date.now());
+      // rpiv-todo 同款：新轮次开始把上一轮完成的 todo 任务转入隐藏集（显示层过滤，
+      // 数据保留）。工具每次返回全量快照，不在这里收口旧 completed 会跨轮次累积。
+      const prevTodoSnap = todoSnapshots.get(p.sessionId) ?? null;
+      const nextTodoSnap = applyTodoTurnStart(prevTodoSnap);
+      if (nextTodoSnap !== prevTodoSnap) todoSnapshots.set(p.sessionId, nextTodoSnap);
       isStreaming.value = true;
       startElapsed(p.sessionId);
       resetStreamPhase();

@@ -37,6 +37,9 @@ test('applyTodoCompletion: initial null + 合法 todo 完成事件 → 全量替
       { id: 2, subject: '加单元测试', status: 'completed', activeForm: '提交测试' },
     ],
     nextId: 3,
+    // 2026-10 起新增显示层隐藏（rpiv-todo 同款）：事件中出现的 completed 记入
+    // 待隐藏集 —— 本轮内保持可见，下一轮起点（applyTodoTurnStart）转入隐藏集
+    pendingHideCompletedIds: [2],
   });
 });
 

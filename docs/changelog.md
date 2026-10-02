@@ -1,5 +1,19 @@
 # 变更日志
 
+## v6.9 (修复：待办面板不再跨轮次累积旧已完成任务——新轮次起点隐藏上一轮 completed)
+
+> 来源：2026-10-02 用户反馈（截图：任务清单标题「已完成 15 / 共 20 个」，#16~#20 是新批次，#1~#15 是上一轮做完的旧任务）——「任务列表老的结束了，但是新任务加进去了，为什么没有把老的那批任务删掉」。
+
+- **根因（不是模型没删，也不是插件 bug，是 forge 缺了 pi TUI 的一条显示层规则）**：todo 工具来自 rpiv-todo 插件，其状态设计为「只增不自动删」（数据层保留全量是它能扛住 /reload 与 compaction 的基础），每次调用都返回包含所有已完成任务的全量快照。pi 终端不堆积，是因为它的 overlay 在**渲染层**做了收口：`agent_start` 时调 `hideCompletedTasksFromPreviousTurn()`，把上一轮完成的行从面板中过滤掉（数据还在，只是不显示；README："Completed rows stay visible for the rest of the turn, then drop at the start of the next one"）。forge TodoPanel 只做了「工具完成 → `applyTodoCompletion` 全量替换快照」，没有这条规则，插件数据层的只增不删被原样暴露给用户。面板的自动隐藏条件又是「全部 completed」，新任务一到，旧 completed 就被顶得长期可见。
+- **修法（仅 forge-ui 三个文件，纯显示层，不碰插件与主进程）**：
+  - `src/utils/todoPanel.ts`：`TodoSnapshot` 新增两个可选集合——`hiddenCompletedIds`（上一轮及更早完成，不再显示）与 `pendingHideCompletedIds`（本轮新完成、本轮内保持可见、下轮起点转入隐藏集），空则缺省省略（旧形状快照不受影响）。`applyTodoCompletion` 透传并修剪两个集合（任务复活 completed→pending 移出隐藏集重新显示）、把新出现的 completed 记入待隐藏集、`nextId` 回退（clear 动作）时重置（对应 overlay 的 `resetCompletedDisplayState`）；新增纯函数 `applyTodoTurnStart`（对应 `hideCompletedTasksFromPreviousTurn`）：把快照中全部 completed 并入隐藏集；`selectVisibleTasks` 在墓碑之外再过滤隐藏集中的 completed。
+  - `src/composables/useSessionConversation.ts`：`onStatus` 收到 `streaming`（新轮次起点）时对当前会话快照调用 `applyTodoTurnStart`。
+  - **关键细节：不能只在轮次起点滤一次**——工具每次返回的全量快照会把旧 completed 反复带回快照，隐藏集必须随快照持久并在每次 `applyTodoCompletion` 后重新生效，这也是终态兜底 `applyTerminalCleanup` 补成的 completed 能在下一轮被正确隐藏的原因（轮次起点并入的是「全部 completed」，不依赖集合成员资格）。
+  - `TodoPanel.vue` 零改动：`selectVisibleTasks(snapshot)` 签名不变，标题计数与「全部完成自动收起」自动只统计可见任务。
+- **新增回归用例** `packages/forge-ui/test/todoHideCompleted.test.ts`（9 例，node:test 纯函数）：用户报告场景（15 条旧 completed + 新批次 → 面板只显示新 5 条）、核心缺陷回归（同轮后续全量快照带回旧 completed 不得再显示）、本轮新完成停留到本轮结束的时序、复活重新显示、clear 重置、引用稳定性、畸形任务项防御。基线 `todoPanel.test.ts` 的 initial-replace 用例显式更新（事件中的 completed 现在记入待隐藏集，属本次行为扩展，非弱化）。
+- **验证**：RED 先行（`applyTodoTurnStart` 不存在时新用例按预期失败）；GREEN 后 forge-ui 全量单测 **385/385** 通过，`vue-tsc --noEmit` 0 错。
+- **不做的**：① 不真删数据——快照本就随进程消失，隐藏是纯显示层语义，与 pi TUI 一致；② 不依赖模型自觉调 `delete`/`clear` 清旧任务（工具虽有该动作，TUI 端也没赌这个）；③ 不改自动收起/折叠的交互与时长。
+
 ## v6.8 (修复：选区复制浮窗的「已复制」在鼠标停留时变成隐形的灰药丸)
 
 > 来源：2026-09-30 用户反馈（截图：深色主题、对话区拖选后点复制）「复制点了之后看不清」。截图像素实测：药丸底 `rgb(180,181,183)`，字与勾 `rgb(198,198,203)`——两者亮度差 18/255，肉眼就是“一片灰”。

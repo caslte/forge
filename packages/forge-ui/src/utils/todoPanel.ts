@@ -32,6 +32,17 @@ export interface TodoTask {
 export interface TodoSnapshot {
   tasks: TodoTask[];
   nextId: number;
+  /**
+   * 已完成且不再显示的任务 id（上一轮及更早完成）。数据层保留全量（与 pi 工具语义一致），
+   * 仅显示层过滤 —— rpiv-todo TUI overlay 的 hiddenCompletedTaskIds 同款。
+   * 两个集合恒为空则缺省省略字段（保持快照形状与旧版一致）。
+   */
+  hiddenCompletedIds?: number[];
+  /**
+   * 本轮内新完成、当前仍显示、下一轮起点转入 hiddenCompletedIds 的任务 id
+   * （rpiv-todo overlay 的 completedTaskIdsPendingHide 同款）。
+   */
+  pendingHideCompletedIds?: number[];
 }
 
 /** tool.completed 事件 payload（CV-S11 关心的最小形状） */
@@ -43,12 +54,28 @@ export interface TodoCompletedEvent {
 
 // ===== reducer =====
 
+/** 收集 tasks 中合法的 completed 任务 id（缺 id / 非对象的畸形项跳过） */
+function collectCompletedIds(tasks: TodoTask[]): Set<number> {
+  const ids = new Set<number>();
+  for (const t of tasks) {
+    if (t && typeof t.id === 'number' && t.status === 'completed') ids.add(t.id);
+  }
+  return ids;
+}
+
 /**
  * 归约 todo 工具完成事件（AC-CV-037/041）。
  *
  * 合法 todo 事件（toolName='todo' 且 details 含 tasks 数组）→ 全量替换快照；
  * 非 todo 工具 / todo 工具无 details / details 非对象 / details.tasks 非数组
  * → 静默返回原快照引用（不抛错、不污染、引用稳定以便 Vue 跳过无效更新）。
+ *
+ * 上一轮 completed 的显示层隐藏（见 applyTodoTurnStart）：工具每次返回全量快照，
+ * 旧 completed 会被反复带回，隐藏集必须随快照持久并在每次替换后重新生效：
+ * - 隐藏集/待隐藏集透传，且按「新快照中仍是 completed」修剪（任务复活 → 重新显示）；
+ * - 新出现的 completed（不在两个集合中）记入待隐藏集 —— 本轮内可见，下一轮起点隐藏
+ *   （rpiv-todo overlay 渲染期把新 displayed completed 记入 pendingHide 的同款时序）；
+ * - nextId 回退（clear 动作）→ 两个集合重置（resetCompletedDisplayState 同款）。
  */
 export function applyTodoCompletion(
   prev: TodoSnapshot | null,
@@ -59,9 +86,43 @@ export function applyTodoCompletion(
   if (!d || typeof d !== 'object' || Array.isArray(d)) return prev;
   const obj = d as Record<string, unknown>;
   if (!Array.isArray(obj.tasks)) return prev;
-  const nextId = typeof obj.nextId === 'number' ? obj.nextId : prev?.nextId ?? 0;
   const tasks = obj.tasks as TodoTask[];
-  return { tasks, nextId };
+  const nextId = typeof obj.nextId === 'number' ? obj.nextId : prev?.nextId ?? 0;
+  const completedIds = collectCompletedIds(tasks);
+  // clear 动作使 nextId 回退 → 列表已重置，历史隐藏态不再有意义
+  const reset = prev !== null && nextId < prev.nextId;
+  const hidden = new Set(reset ? [] : (prev?.hiddenCompletedIds ?? []));
+  const pendingHide = new Set(reset ? [] : (prev?.pendingHideCompletedIds ?? []));
+  // 修剪：不再是 completed 的 id 移出集合（复活的任务重新显示）
+  for (const id of hidden) if (!completedIds.has(id)) hidden.delete(id);
+  for (const id of pendingHide) if (!completedIds.has(id)) pendingHide.delete(id);
+  // 新出现的 completed → 待隐藏（本轮保持可见）
+  for (const id of completedIds) {
+    if (!hidden.has(id) && !pendingHide.has(id)) pendingHide.add(id);
+  }
+  const snap: TodoSnapshot = { tasks, nextId };
+  if (hidden.size > 0) snap.hiddenCompletedIds = [...hidden];
+  if (pendingHide.size > 0) snap.pendingHideCompletedIds = [...pendingHide];
+  return snap;
+}
+
+/**
+ * 新轮次起点（conversation.statusChanged(streaming)）的显示层兑底：
+ * 快照里所有 completed 任务都已归属上一轮 → 全部并入 hiddenCompletedIds，
+ * 清空待隐藏集。对应 rpiv-todo overlay 在 agent_start 时的
+ * hideCompletedTasksFromPreviousTurn()（数据层保留，仅面板不再显示）。
+ * 无新增可隐藏任务时返回原引用（引用稳定，方便 Vue 跳过无效更新）。
+ */
+export function applyTodoTurnStart(prev: TodoSnapshot | null): TodoSnapshot | null {
+  if (!prev) return prev;
+  const completedIds = collectCompletedIds(prev.tasks);
+  const hidden = new Set(prev.hiddenCompletedIds ?? []);
+  const pendingHide = prev.pendingHideCompletedIds ?? [];
+  for (const id of pendingHide) hidden.add(id);
+  for (const id of completedIds) hidden.add(id);
+  // 无新增可隐藏（已全部隐藏且无待隐藏）→ 原引用返回
+  if (hidden.size === (prev.hiddenCompletedIds?.length ?? 0)) return prev;
+  return { tasks: prev.tasks, nextId: prev.nextId, hiddenCompletedIds: [...hidden] };
 }
 
 /**
@@ -83,14 +144,22 @@ export function applyTerminalCleanup(prev: TodoSnapshot | null): TodoSnapshot | 
 // ===== selectors =====
 
 /**
- * 过滤墓碑（status='deleted'）后的可见任务（AC-CV-038/040）。
+ * 过滤墓碑（status='deleted'）与上一轮已完成（hiddenCompletedIds，见 applyTodoTurnStart）
+ * 后的可见任务（AC-CV-038/040）。
  * 按 (completed, in_progress, pending) 三段顺序、组内按 id 升序；与 rpiv-todo TUI 端 selectOverlayTasks 同款。
  */
 export function selectVisibleTasks(snapshot: TodoSnapshot | null): TodoTask[] {
   if (!snapshot || !Array.isArray(snapshot.tasks)) return [];
+  const hidden = snapshot.hiddenCompletedIds;
+  const hiddenSet = hidden !== undefined && hidden.length > 0 ? new Set(hidden) : null;
   const order: Record<TodoStatus, number> = { completed: 0, in_progress: 1, pending: 2, deleted: 3 };
   return snapshot.tasks
-    .filter((t) => t && t.status !== 'deleted')
+    .filter(
+      (t) =>
+        t &&
+        t.status !== 'deleted' &&
+        !(hiddenSet !== null && t.status === 'completed' && hiddenSet.has(t.id)),
+    )
     .slice()
     .sort((a, b) => {
       const oa = order[a.status] ?? 9;
