@@ -1077,7 +1077,7 @@ onUnmounted(() => {
 
       <div class="rightcol">
         <TitleBar @request-exit="requestExit" />
-      <main class="content" :class="{ 'settings-mode': activeView === 'settings' }">
+      <main class="content" :class="{ 'settings-mode': activeView === 'settings', 'code-mode': codeOpenPath !== null }">
       <!-- 模块 12：CodeExplorer 始终挂载并拥有这行 flex（无项目时退化为「只包对话列」）。
            不用「有项目才 v-if」：v-if 会把对话纸整块卸载重建，流式输出、滚动位置、
            输入框草稿全丢。始终挂载也让「谁决定布局」只有一个答案。 -->
@@ -1740,6 +1740,20 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--background);
   overflow: hidden;
+}
+
+/* 代码态终端 = 全宽底部抽屉（CE-S10 终端唤醒的落位）：
+   cover 布局的代码纸是 absolute inset:0 z-20 整张盖上去的，流内终端被压在纸**下面**
+   （用户实测：右上角点了终端按钮但看不见面板）；split 下终端又只缩在左列底部，
+   两种布局落点不一致。统一提为覆盖在纸之上的全宽抽屉（z-30 > 纸 z-20），
+   宽度横贯 .content、grip 拖拽调高照旧；对话态（无 code-mode）保持原流内行为不动。
+   锚定基准是 .content 自身的 position:relative（纸的定位参照同款，见上）。 */
+.content.code-mode :deep(.term) {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
 }
 
 /* 「纸」层级（design-demos/light-theme-hierarchy.html 定稿，浅深色同构）：

@@ -21,9 +21,11 @@ import { fileBadgeOf } from '../utils/fileBadge';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import type { OpenFile } from '../composables/useCodeExplorer';
 import type { GitStatusFile } from '../types';
+import { usePreferences } from '../composables/usePreferences';
 import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
+const { setTerminalOpen, terminalOpen } = usePreferences();
 
 /**
  * 一次性渲染多少行。50,000 行的文件若全量 v-html，渲染进程会卡住数秒。
@@ -441,13 +443,20 @@ function formatBytes(n: number): string {
         >{{ fileBadge.text }}</span
       >
       <button
-        v-if="activeFile"
-        class="cv-close"
+        class="cv-term"
         type="button"
-        :title="t('code.close')"
-        aria-label="close"
-        @click="emit('close', activeFile.relPath)"
-      >×</button>
+        :title="t('terminal.toggle')"
+        :aria-label="t('terminal.toggle')"
+        :aria-pressed="terminalOpen"
+        @click="setTerminalOpen(!terminalOpen)"
+      >
+        <!-- 与顶栏终端开关同款图标（>_）：原先是「关闭当前文件」，与签条 × 完全重复，
+             换成终端唤醒——代码态不必回对话区也能随手拉起终端（Ctrl+` 的鼠标入口） -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="4 17 10 11 4 5" />
+          <line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+      </button>
     </header>
 
     <!-- 标签栏：多文件打开时可见；active 页顶部品牌色条（与 demo 一致）。
@@ -743,23 +752,25 @@ function formatBytes(n: number): string {
 .cv-badge[data-git='?'] {
   color: var(--warning);
 }
-.cv-close {
+.cv-term {
   flex: none;
   width: 22px;
   height: 22px;
-  /* 同 .cv-tab-x：清掉全局 button 的 6px 14px 内边距，否则 × 被挤到框角 */
+  /* 同 .cv-tab-x：清掉全局 button 的 6px 14px 内边距，否则图标被挤到框角 */
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: 17px;
-  line-height: 1;
   cursor: pointer;
   display: grid;
   place-items: center;
 }
-.cv-close:hover {
+.cv-term svg {
+  width: 14px;
+  height: 14px;
+}
+.cv-term:hover {
   background: var(--surface-hover);
   color: var(--foreground);
 }

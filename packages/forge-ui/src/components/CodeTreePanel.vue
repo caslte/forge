@@ -244,6 +244,7 @@ const ICON_FOLDER = 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h
 const ICON_GLOBE =
   'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20';
 const ICON_EDITOR = 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM8 9l-3 3 3 3M16 9l3 3-3 3';
+const ICON_COPY = 'M9 9h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V11a2 2 0 0 1 2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1';
 
 /**
  * 已安装的外部编辑器（主进程扫描：白名单 + PATH/常见安装路径，见 shell/editorScan.ts）。
@@ -262,6 +263,7 @@ async function refreshEditors(): Promise<void> {
 
 /**
  * 菜单项。目录行与文件行不同：
+ *  - 通用：「复制路径」（文件=文件本体，目录=目录本体，都是绝对路径）
  *  - 目录：打开**它自己**（与项目树「打开项目所在目录」同口径，都是系统文件管理器）
  *  - 文件：打开**父目录**；.html/.htm 多一项「用浏览器打开」；
  *    另按扫描结果给每个编辑器一项「用 VS Code 打开 / 用 Cursor 打开 / …」，
@@ -287,6 +289,7 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       items.push({ key: 'editor-none', label: t('tool.openInEditorNone'), icon: ICON_EDITOR, disabled: true });
     }
   }
+  items.push({ key: 'copy-path', label: t('tool.copyPath'), icon: ICON_COPY });
   items.push({
     key: 'dir',
     label: tgt.kind === 'dir' ? t('tool.openThisFolder') : t('tool.openContainingDir'),
@@ -305,6 +308,10 @@ function onContextMenuSelect(key: string): void {
     return void window.forge.shell.openInEditor(abs, key.slice('editor:'.length)).then((ok) => {
       if (!ok) console.warn('[code-tree] openInEditor 失败：', abs, key.slice('editor:'.length));
     });
+  }
+  if (key === 'copy-path') {
+    // 与选区复制浮窗同通道（navigator.clipboard）；写失败静默——菜单动作不该弹错误
+    return void navigator.clipboard.writeText(abs).catch(() => {});
   }
   if (key === 'dir') {
     // 目录行开它自己，文件行开父目录

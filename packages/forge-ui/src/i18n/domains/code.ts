@@ -53,7 +53,6 @@ export const zhCode = {
   'code.nonText': '非文本',
   'code.readOnly': '只读',
   'code.roHint': '内置查看器不支持编辑与保存',
-  'code.close': '关闭（Esc）',
   'code.lines': '行',
   'code.shownLines': '显示 {n} 行（已截断）',
   'code.eolMixed': '混合行尾',

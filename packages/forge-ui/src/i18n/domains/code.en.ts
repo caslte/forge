@@ -49,7 +49,6 @@ export const enCode = {
   'code.nonText': 'non-text',
   'code.readOnly': 'read-only',
   'code.roHint': 'The built-in viewer does not support editing or saving',
-  'code.close': 'Close (Esc)',
   'code.lines': 'lines',
   'code.shownLines': 'showing {n} lines (truncated)',
   'code.eolMixed': 'mixed EOL',

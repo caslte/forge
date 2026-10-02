@@ -31,6 +31,8 @@ export const zhTool = {
   'tool.openInEditorWith': '用 {name} 打开',
   /** 一个编辑器都没扫到：菜单里保留一条置灰提示，解释为什么没有「用 … 打开」 */
   'tool.openInEditorNone': '未检测到已安装的编辑器',
+  /** 复制行对应的绝对路径（文件=文件本体，目录=目录本体） */
+  'tool.copyPath': '复制路径',
   'tool.mermaidEmpty': 'Mermaid 内容为空',
   'tool.mermaidFailed': 'Mermaid 渲染失败：',
   'tool.mermaidNotDiagram': '内容不是 mermaid 语法，按代码块显示',
@@ -73,6 +75,7 @@ export const enTool: Record<string, string> = {
   'tool.openThisFolder': 'Open this folder',
   'tool.openInEditorWith': 'Open with {name}',
   'tool.openInEditorNone': 'No installed editor detected',
+  'tool.copyPath': 'Copy path',
   'tool.mermaidEmpty': 'Mermaid content is empty',
   'tool.mermaidFailed': 'Mermaid render failed: ',
   'tool.mermaidNotDiagram': 'Content is not mermaid syntax, shown as a code block',

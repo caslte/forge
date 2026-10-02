@@ -720,7 +720,9 @@ test.fixme('E-CE-19 @P1 @mock-backend：历史顺序只跟“打开”动作走�
   await expect(page.locator('.cv-tab')).toHaveCount(3);
 });
 
-test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己、文件开父目录、HTML 多一项、外置编辑器通道', async ({ page }) => {
+test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己、文件开父目录、HTML 多一项、编辑器分项、复制路径', async ({ page }) => {
+  // 复制路径要走剪贴板断言（与 E-CE-24 同款授权）
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   // 记录真正提交给 shell 的绝对路径（必须在 goto 之后挂，reload 会清掉注入）
   await page.evaluate(() => {
     const w = window as unknown as {
@@ -764,16 +766,20 @@ test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己�
       return arr[arr.length - 1] ?? null;
     }, k);
 
-  // 目录行：只有「打开此目录」，且开的是**它自己**（不是父目录）
+  // 目录行：复制路径 + 打开此目录，且开的是**它自己**（不是父目录）
   // 用 .ctp-row.is-dir + 精确文本：mock 树里 src/file、test/file、forge-core/src 等重名，
   // hasText 子串匹配会命中另一个（之前就因此选中了项目根的 src）
   const dirRow = page.locator('.ctp-row.is-dir').filter({ hasText: /^docs$/ }).first();
   await dirRow.click({ button: 'right' });
-  await expect(menu.locator('.ctx-menu-item')).toHaveText(['打开此目录']);
-  await menu.locator('.ctx-menu-item').click();
+  await expect(menu.locator('.ctx-menu-item')).toHaveText(['复制路径', '打开此目录']);
+  await menu.locator('.ctx-menu-item', { hasText: '复制路径' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/forge\/docs$/);
+
+  await dirRow.click({ button: 'right' });
+  await menu.locator('.ctx-menu-item', { hasText: '打开此目录' }).click();
   expect(await lastCall('__ceOpenPath')).toMatch(/forge\/docs$/);
 
-  // 普通文件行：编辑器分项（mock 扫描结果 = VS Code + Cursor）+ 打开所在目录，没有浏览器项
+  // 普通文件行：编辑器分项（mock 扫描结果 = VS Code + Cursor）+ 复制路径 + 打开所在目录，没有浏览器项
   const fileRow = page.locator('.ctp-scroll .ctp-row:not(.is-dir):not(.is-recent)').filter({
     has: page.locator('.ctp-name', { hasText: /^fileService\.ts$/ }),
   }).first();
@@ -781,8 +787,14 @@ test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己�
   await expect(menu.locator('.ctx-menu-item')).toHaveText([
     '用 VS Code 打开',
     '用 Cursor 打开',
+    '复制路径',
     '打开所在目录',
   ]);
+  await menu.locator('.ctx-menu-item', { hasText: '复制路径' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(
+    /forge\/packages\/forge-core\/src\/file\/fileService\.ts$/,
+  );
+  await fileRow.click({ button: 'right' });
   await menu.locator('.ctx-menu-item', { hasText: '打开所在目录' }).click();
   expect(await lastCall('__ceOpenPath')).toMatch(/forge\/packages\/forge-core\/src\/file$/);
 
@@ -802,6 +814,43 @@ test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己�
 function tabNames(page: Page): Promise<string[]> {
   return page.locator('.cv-tab .cv-tab-name').allTextContents();
 }
+
+test('E-CE-26 @P1 @mock-backend：代码区右上角按钮唤醒终端（原关闭当前文件位，功能与签条 × 重复）', async ({ page }) => {
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await openCode(page);
+  await page.locator('.ctp-row', { hasText: 'README.md' }).first().click();
+  await expect(page.locator('.cv')).toBeVisible();
+
+  // 显式切到 **cover** 布局再验证：split 下纸是普通流内元素盖不住终端，
+  // cover 下纸是 absolute inset:0 z-20 整张盖——遮挡 bug 只在这条路径上复现
+  const layoutBtn = page.locator('.ctp-icon');
+  if ((await layoutBtn.getAttribute('aria-pressed')) === 'false') {
+    await layoutBtn.click(); // 当前是 cover → 切到 split
+    await layoutBtn.click(); // 再切回 cover
+  } else {
+    await layoutBtn.click(); // 当前是 split → 切到 cover
+  }
+  await expect(layoutBtn).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('.cv')).toBeVisible();
+
+  // 默认终端收起（面板常驻 DOM，.open 才展开）；点右上角终端按钮 → 展开；再点 → 收起
+  const termBtn = page.locator('.cv-term');
+  await expect(page.locator('.term.open')).toHaveCount(0);
+  await termBtn.click();
+  await expect(page.locator('.term.open')).toBeVisible();
+  // 关键回归：cover 布局的代码纸是 absolute z-20 整张盖上去的，终端必须浮在纸**上面**
+  // （用 elementFromPoint 验证：终端中心点命中的必须是终端自身/其后代，而不是代码纸）
+  const covered = await page.evaluate(() => {
+    const term = document.querySelector('.term.open');
+    if (!term) return true;
+    const r = term.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return !(hit instanceof Node && term.contains(hit));
+  });
+  expect(covered).toBe(false);
+  await termBtn.click();
+  await expect(page.locator('.term.open')).toHaveCount(0);
+});
 
 test('E-CE-21 @P1 @mock-backend：tab 可拖拽排序，拖动不切激活签，拖后不误触发点击', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
