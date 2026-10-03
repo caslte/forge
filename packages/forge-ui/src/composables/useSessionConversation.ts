@@ -99,13 +99,23 @@ export interface ErrorBannerState {
  *
  * retry 事件与 error 分类互斥：重试中轮次未终止，横幅（v-if）会盖住重试进度条
  * （v-else-if），两者同时存在时用户只看到旧错误。
+ *
+ * 'activity' = 本轮**恢复了正常输出**（delta / message / tool 事件）。重试提示的语义
+ * 是「暂时出不了字，正在重试」，因此一旦有内容回来就该消失 —— 它不该和下方正常输出
+ * 并存（「已恢复还在提示重试」）。只清 retry，**不动 error 分类**：终态错误之后不会再有
+ * 本会话的 delta/工具事件，真出现时（切回会话的迟到事件）保留错误横幅更安全。
  */
 export function reduceErrorBanner(
   cur: ErrorBannerState,
   input:
     | { kind: 'status'; status: string }
+    | { kind: 'activity' }
     | { kind: 'event'; payload: unknown; fallbackMessage: string },
 ): ErrorBannerState {
+  if (input.kind === 'activity') {
+    if (cur.retry === null) return cur;
+    return { message: cur.message, info: cur.info, retry: null };
+  }
   if (input.kind === 'status') {
     if (input.status === 'error') return cur;
     return { message: null, info: null, retry: null };
@@ -155,6 +165,16 @@ export function useSessionConversation(options: {
     errorMsg.value = s.message;
     errorInfo.value = s.info;
     retryInfo.value = s.retry;
+  }
+
+  /**
+   * 本轮恢复正常输出（delta / assistant message / 工具事件）：撤掉「正在自动重试」
+   * 提示条。提示条只在**出不了字**期间成立；重试一旦跑通（内容回来）或再次中断
+   * （新的 retry 事件覆盖），都不该让旧提示与正常输出同时挂在消息流下方。
+   */
+  function noteStreamActivity(): void {
+    if (retryInfo.value === null) return;
+    applyBannerState(reduceErrorBanner(bannerState(), { kind: 'activity' }));
   }
 
   /** toolEventId -> messages 数组索引，用于 started→completed 聚合 */
@@ -687,6 +707,8 @@ function dismissAskAnswered(): void {
       scheduleScroll();
       return;
     }
+    // 恢复了正常输出：撤掉可能还挂着的「正在自动重试」
+    noteStreamActivity();
     // 流式阶段已通过 delta（平滑缓冲）构建了 assistant 占位消息，最终 message 到达时
     // 以其为权威内容覆盖，避免"delta 累积 + 完整消息再推一条"成双；
     // 覆盖前丢掉未放完的平滑缓冲（权威内容已含全部文本，继续放字反而画蛇添足）
@@ -796,6 +818,8 @@ function dismissAskAnswered(): void {
     if (p.sessionId !== options.getSessionId()) return;
     const text = typeof p.delta === 'string' ? p.delta : (p.delta.text ?? '');
     if (text === '') return;
+    // 恢复了正常输出：撤掉可能还挂着的「正在自动重试」
+    noteStreamActivity();
     markOutputting();
     enqueueSmoothText(p.sessionId, text);
   }
@@ -940,6 +964,8 @@ function dismissAskAnswered(): void {
     // tool 事件可能不带 sessionId（按 ToolDescriptor 结构），保守处理：无 sessionId 归当前会话
     if (p.sessionId !== undefined && p.sessionId !== options.getSessionId()) return;
     if (toolEventIndex.has(p.toolEventId)) return;
+    // 工具跑起来了 = 模型连接已恢复：撤掉可能还挂着的「正在自动重试」
+    noteStreamActivity();
     // 真实后端载荷为 tool:{name,input}（docs/api/04_tool.md §1），toolName 为 mock/旧格式兼容
     markTool(p.toolEventId, p.tool?.name ?? p.toolName ?? null);
     toolStartedAt.set(p.toolEventId, Date.now());
@@ -1030,6 +1056,8 @@ function dismissAskAnswered(): void {
     };
     if (p.sessionId !== undefined && p.sessionId !== options.getSessionId()) return;
     if (!toolEventIndex.has(p.toolEventId)) return;
+    // 工具报错也说明连接是通的（模型还在正常编排工具）：同样算「已恢复」
+    noteStreamActivity();
     markToolEnd(p.toolEventId);
     // 真实后端为 error:{message}，summary/message 为 mock/旧格式兼容
     const text = p.error?.message ?? p.summary ?? p.message;

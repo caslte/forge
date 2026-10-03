@@ -5,7 +5,6 @@
 export const enCode = {
   'code.entryTooltip': 'Browse directory',
   'code.backToProjects': 'Projects',
-  'code.hiddenIgnored': '{n} items hidden',
   'code.groupRecent': 'Recent',
   'code.groupFiles': 'Files',
   'code.groupDirs': 'Folder',

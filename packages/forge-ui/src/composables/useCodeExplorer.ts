@@ -51,7 +51,6 @@ export interface ProjectCodeState {
   expanded: Set<string>;
   /** relPath -> 该层子项 */
   children: Map<string, TreeRow[]>;
-  hiddenCount: number;
   openFiles: OpenFile[];
   activeRel: string | null;
   /** 打开历史：relPath，最新的在前。**与 openFiles 解耦**——
@@ -67,7 +66,6 @@ function freshState(): ProjectCodeState {
   return {
     expanded: new Set(),
     children: new Map(),
-    hiddenCount: 0,
     openFiles: [],
     activeRel: null,
     history: [],
@@ -192,7 +190,6 @@ export function useCodeExplorer() {
     const d: ListDirData = res.data;
     const next: ProjectCodeState = {
       ...s,
-      hiddenCount: d.hidden,
       children: new Map(s.children).set(relPath, toRows(d.nodes)),
     };
     commit(projectPath, next);

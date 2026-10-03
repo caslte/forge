@@ -228,6 +228,58 @@ test('CV-ERR-UI-112 轮次正常终态（done/idle/canceled）清横幅与重试
   }
 });
 
+test('CV-ERR-UI-113 恢复正常输出（activity）撤掉重试提示：不再与正常输出并存', () => {
+  const retrying = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    {
+      kind: 'event',
+      payload: { sessionId: 's1', code: 5000, message: '正在自动重试…', retry: { attempt: 1, maxAttempts: 3 } },
+      fallbackMessage: FALLBACK,
+    },
+  );
+  assert.notEqual(retrying.retry, null, '前置条件：先进入重试中');
+
+  const recovered = reduceErrorBanner(retrying, { kind: 'activity' });
+  assert.equal(recovered.retry, null, '内容一回来就该撤掉「正在自动重试」');
+});
+
+test('CV-ERR-UI-114 activity 只清 retry，不动错误分类', () => {
+  const failed = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    { kind: 'event', payload: TERMINAL_ERROR, fallbackMessage: FALLBACK },
+  );
+  const after = reduceErrorBanner(
+    { ...failed, retry: { attempt: 1, maxAttempts: 3 } },
+    { kind: 'activity' },
+  );
+  assert.deepEqual(after.info, failed.info, '终态错误横幅不因 activity 消失');
+  assert.equal(after.message, failed.message);
+  assert.equal(after.retry, null);
+});
+
+test('CV-ERR-UI-115 activity 无重试时是 noop（不产生新对象，避免多余渲染）', () => {
+  const cur = { message: null, info: null, retry: null };
+  assert.equal(reduceErrorBanner(cur, { kind: 'activity' }), cur);
+});
+
+test('CV-ERR-UI-116 再次中断（新的 retry 事件）会重新出现提示，不被 activity 永久压住', () => {
+  let st = reduceErrorBanner(
+    { message: null, info: null, retry: null },
+    {
+      kind: 'event',
+      payload: { sessionId: 's1', code: 5000, message: 'r1', retry: { attempt: 1, maxAttempts: 3 } },
+      fallbackMessage: FALLBACK,
+    },
+  );
+  st = reduceErrorBanner(st, { kind: 'activity' });
+  st = reduceErrorBanner(st, {
+    kind: 'event',
+    payload: { sessionId: 's1', code: 5000, message: 'r2', retry: { attempt: 2, maxAttempts: 3 } },
+    fallbackMessage: FALLBACK,
+  });
+  assert.deepEqual(st.retry, { attempt: 2, maxAttempts: 3 });
+});
+
 test('CV-ERR-UI-107 切回 error 会话：连同分类一起恢复横幅', async () => {
   const info = classifyError('unknown error, 722 (1000)');
   const { conv, status } = setup({ message: 'unknown error, 722 (1000)', error: info });

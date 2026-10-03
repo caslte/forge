@@ -78,3 +78,32 @@ test('E-CV-ERR-002 @P0 @mock-backend：新轮次起点清错误横幅（恢复�
 
   health.assertHealthy();
 });
+
+test('E-CV-ERR-003 @P0 @mock-backend：重试跑通（恢复输出）后提示条立即消失', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await boot(page);
+
+  await emit(page, 'conversation.statusChanged', { status: 'streaming' });
+  // 1) 自动重试进行中：只出现进度条
+  await emit(page, 'conversation.error', {
+    code: 5000,
+    message: '模型连接中断，正在自动重试（第 1/3 次）…',
+    retry: { attempt: 1, maxAttempts: 3 },
+  });
+  await expect(page.locator('.conv-error--info')).toBeVisible();
+  await expect(page.locator('.conv-error--info')).toContainText('1/3');
+
+  // 2) 重试跑通：模型又开始出字 → 提示条必须消失，不得与正常输出并存
+  await emit(page, 'conversation.delta', { delta: { kind: 'text', text: '重试后的正文' } });
+  await expect(page.locator('.conv-error')).toHaveCount(0);
+
+  // 3) 再次中断：新的重试轮次重新出现提示（不能被上一次的“已恢复”永久压住）
+  await emit(page, 'conversation.error', {
+    code: 5000,
+    message: '模型连接中断，正在自动重试（第 2/3 次）…',
+    retry: { attempt: 2, maxAttempts: 3 },
+  });
+  await expect(page.locator('.conv-error--info')).toContainText('2/3');
+
+  health.assertHealthy();
+});

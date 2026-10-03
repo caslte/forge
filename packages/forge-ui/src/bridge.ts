@@ -557,7 +557,7 @@ export interface ListDirData {
   /** 本次列举的目录相对路径（'' = 项目根） */
   relPath: string;
   nodes: FileNode[];
-  /** 被忽略规则隐藏的条目数（底栏「已忽略 N 项」） */
+  /** 被忽略规则隐藏的条目数（底栏不展示，仅供调试/未来「显示被忽略项」用） */
   hidden: number;
 }
 

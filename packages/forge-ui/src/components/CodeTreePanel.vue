@@ -530,9 +530,6 @@ function onFilterEsc(e: KeyboardEvent): void {
       <div class="ctp-stats">
         <span v-if="isFiltering" class="ctp-stat">{{ t('code.filterCount', { n: filteredRows.length }) }}</span>
         <span v-else-if="visibleCount > 0" class="ctp-stat">{{ t('code.treeItems', { n: visibleCount }) }}</span>
-        <span v-if="state.hiddenCount > 0" class="ctp-stat ctp-stat-dim">
-          {{ t('code.hiddenIgnored', { n: state.hiddenCount }) }}
-        </span>
       </div>
     </footer>
 
@@ -921,8 +918,4 @@ function onFilterEsc(e: KeyboardEvent): void {
   font-size: 11px;
   color: var(--muted-foreground);
 }
-.ctp-stat-dim {
-  opacity: 0.75;
-}
-
 </style>

@@ -8,7 +8,6 @@ export const zhCode = {
   // ===== 入口与面板 =====
   'code.entryTooltip': '浏览目录',
   'code.backToProjects': '返回项目',
-  'code.hiddenIgnored': '已忽略 {n} 项',
   'code.groupRecent': '最近打开',
   'code.groupFiles': '文件',
   'code.groupDirs': '目录',
