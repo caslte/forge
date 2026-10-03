@@ -2,7 +2,7 @@
  * 内置代码浏览器 E2E（CE-S01 ~ CE-S08，mock-backend）。
  *
  * 覆盖：<> 入口与左栏整栏互斥、目录懒加载与排序、文件只读查看与降级态、
- * 文件名过滤、多标签、A 整屏「对话宽度零变化」硬指标、B 分割 5px 沟与 320px 保底、
+ * 文件名过滤、多标签、A 整屏「对话宽度零变化」硬指标、B 分割 4px 沟与 320px 保底、
  * 双击复位、←/→ 步进、窄窗临时降级、Esc 逐级退出、偏好持久化、设置页。
  *
  * 进入语义（demo 定稿）：点 `<>` 只切左栏，**打开第一个文件才出代码纸**；
@@ -236,7 +236,7 @@ test('E-CE-05 @P0 @mock-backend：布局 A 整屏覆盖——对话区宽度零�
   health.assertHealthy();
 });
 
-test('E-CE-06 @P0 @mock-backend：布局 B 分割——5px 沟、两侧贴合、320px 保底', async ({ page }) => {
+test('E-CE-06 @P0 @mock-backend：布局 B 分割——4px 沟、沟内无线、两侧贴合、320px 保底', async ({ page }) => {
   const health = attachHealthGuards(page);
   // 默认是整屏覆盖；本用例测分割布局，先点顶栏切换键切到 split
   await openCode(page);
@@ -248,10 +248,13 @@ test('E-CE-06 @P0 @mock-backend：布局 B 分割——5px 沟、两侧贴合、
   const gutter = page.locator('.csp');
   await expect(gutter).toBeVisible();
   const g = await gutter.boundingBox();
-  // 视觉沟宽 5px；负 margin 把命中区扩到两侧各 3px，故实测应是 5
-  expect(g!.width).toBeCloseTo(5, 0);
+  // 沟宽 = CODE_SPLITTER_PX（4），既是缝也是命中区；无负 margin 补偿，实测即 4
+  expect(g!.width).toBeCloseTo(4, 0);
+  // 沟里不再有可见分隔线：代码态下终端是覆盖全宽的底部抽屉（z-30），而沟 z-60 恒在其上，
+  // 画线就等于「分割线伸进终端」（用户 2026-10-03 报）。边界只由两纸的 4px 缝表达。
+  await expect(page.locator('.csp-line')).toHaveCount(0);
 
-  // 拖到最左：代码区变宽并顶到上限，对话区被钳在 320px 保底线（含 5px 沟）
+  // 拖到最左：代码区变宽并顶到上限，对话区被钳在 320px 保底线（含 4px 沟）
   const host = await page.locator('.cex').boundingBox();
   await page.mouse.move(g!.x + 2, g!.y + g!.height / 2);
   await page.mouse.down();
@@ -378,40 +381,55 @@ test('E-CE-10 @P1 @mock-backend：布局偏好与分割宽度刷新后仍在', a
   health.assertHealthy();
 });
 
-test('E-CE-11 @P1 @mock-backend：设置页可改布局与分割宽度，回工作台立即生效', async ({ page }) => {
+test('E-CE-11 @P1 @mock-backend：设置页切代码查看器布局，回工作台立即生效且落盘', async ({ page }) => {
   const health = attachHealthGuards(page);
+  await page.setViewportSize({ width: 1500, height: 900 });
   await page.locator('.sidebar-link').click();
   await expect(page.locator('.settings-panel, .settings-body')).toBeVisible();
   await page.locator('.settings-tab', { hasText: '个性化' }).click();
 
-  // 默认整屏覆盖（2026-10 用户定稿）：滑杆禁用而非隐藏
-  const slider = page.locator('.split-range');
-  await expect(slider).toBeDisabled();
+  // 默认整屏覆盖（2026-10-02 用户定稿）：单选组选中「整屏覆盖」
+  const cover = page.locator('.code-layout-option', { hasText: '整屏覆盖' });
+  const split = page.locator('.code-layout-option', { hasText: '左右分割' });
+  await expect(cover).toHaveAttribute('aria-checked', 'true');
+  await expect(split).toHaveAttribute('aria-checked', 'false');
 
-  // 切到左右分割：滑杆启用
-  await page.locator('.code-layout-option', { hasText: '左右分割' }).click();
-  await expect(slider).toBeEnabled();
+  // 分割比例的**手动设置项已删**（2026-10 用户定稿）：宽度只由沟拖拽 / 双击 / ←→ 决定。
+  // 这条断言是给它的墓碑——谁想把它加回来，先看看用户已经说过不要。
+  await expect(page.locator('.split-range')).toHaveCount(0);
+  await expect(page.locator('.split-value')).toHaveCount(0);
 
-  // 再切整屏覆盖：滑杆禁用而非隐藏
-  await page.locator('.code-layout-option', { hasText: '整屏覆盖' }).click();
-  await expect(slider).toBeDisabled();
+  // 切到左右分割：单选态当场翻转
+  await split.click();
+  await expect(split).toHaveAttribute('aria-checked', 'true');
+  await expect(cover).toHaveAttribute('aria-checked', 'false');
 
-  await page.locator('.code-layout-option', { hasText: '左右分割' }).click();
-  await expect(slider).toBeEnabled();
-  // range 控件不能用 fill（Playwright 对它报 Malformed value），直接设值 + 派发 input
-  await slider.evaluate((el) => {
-    const input = el as HTMLInputElement;
-    input.value = '60';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  await expect(page.locator('.split-value')).toContainText('60%');
-
+  // 落盘：刷新后仍是 split
+  await page.reload();
+  await expect(page.locator('.sidebar-link')).toBeVisible();
+  await page.locator('.sidebar-link').click();
+  await page.locator('.settings-tab', { hasText: '个性化' }).click();
+  await expect(page.locator('.code-layout-option', { hasText: '左右分割' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
   await page.locator('.settings-back, .settings-close').first().click();
+
+  // 回工作台：开文件即出代码纸，且真的并排（不是又盖上去）
   await openCodeWithFile(page);
   await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'split');
+  // 没有手动比例了 → 走默认值 46%（拖沟改宽度由 E-CE-07 覆盖）
   const host = (await page.locator('.cex').boundingBox())!.width;
   const w = (await page.locator('.cex-split').boundingBox())!.width;
-  expect(Math.abs(w / host - 0.6)).toBeLessThan(0.03);
+  expect(Math.abs(w / host - 0.46)).toBeLessThan(0.03);
+
+  // 反向再切回 cover：代码纸盖上去，沟消失
+  await page.locator('.sidebar-link').click();
+  await page.locator('.settings-tab', { hasText: '个性化' }).click();
+  await page.locator('.code-layout-option', { hasText: '整屏覆盖' }).click();
+  await page.locator('.settings-back, .settings-close').first().click();
+  await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'cover');
+  await expect(page.locator('.csp')).toHaveCount(0);
   health.assertHealthy();
 });
 
@@ -871,6 +889,71 @@ test('E-CE-26 @P1 @mock-backend：代码区右上角按钮唤醒终端（原关�
   expect(covered).toBe(false);
   await termBtn.click();
   await expect(page.locator('.term.open')).toHaveCount(0);
+});
+
+test('E-CE-27 @P1 @mock-backend：终端展开时，两处终端开关的激活底色一致（用户 2026-10-03 报）', async ({ page }) => {
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await openCodeWithFile(page);
+  // 必须切到 split：cover 下代码纸整张盖住对话区，顶栏开关点不到（真实用户也点不到）
+  const layoutBtn = page.locator('.ctp-icon');
+  if ((await layoutBtn.getAttribute('aria-pressed')) === 'false') await layoutBtn.click();
+  await expect(page.locator('.cex')).toHaveAttribute('data-layout', 'split');
+
+  // 同一 terminalOpen 偏好驱动两个按钮：对话区顶栏 .term-toggle 与代码纸右上 .cv-term。
+  // 展开后两者的计算底色/字色必须逐值相同，否则同一状态两张脸。
+  const readState = () =>
+    page.evaluate(() => {
+      const pick = (sel: string) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, fg: cs.color, pressed: el.getAttribute('aria-pressed') };
+      };
+      const tb = document.querySelector('.app-toolbar .term-toggle');
+      return {
+        // 顶栏开关没有 aria-pressed，激活态走 .is-active class（App.vue 既有约定）
+        toolbar: pick('.app-toolbar .term-toggle'),
+        toolbarActive: tb?.classList.contains('is-active') ?? false,
+        viewer: pick('.cv-term'),
+        open: document.querySelectorAll('.term.open').length,
+      };
+    });
+
+  const before = await readState();
+  expect(before.open).toBe(0);
+  expect(before.viewer?.pressed).toBe('false');
+  expect(before.toolbarActive).toBe(false);
+
+  await page.locator('.app-toolbar .term-toggle').click();
+  await expect(page.locator('.term.open')).toBeVisible();
+
+  const after = await readState();
+  expect(after.open).toBe(1);
+  // 两个按钮都进入激活态
+  expect(after.toolbarActive).toBe(true);
+  expect(after.viewer?.pressed).toBe('true');
+  // 底色/字色一致。**必须轮询到相等**：两边都有 120ms 的 background/color transition，
+  // 点击后立刻读会读到过渡中间值（oklab 插值带 alpha，肉眼是「差一档灰」）。
+  await expect
+    .poll(
+      async () => {
+        const s = await readState();
+        return s.viewer?.bg === s.toolbar?.bg && s.viewer?.fg === s.toolbar?.fg;
+      },
+      { timeout: 3000 },
+    )
+    .toBe(true);
+  const active = await readState();
+  // 激活底色不能是透明——相等但都透明等于没上激活态
+  expect(active.viewer?.bg).not.toBe('rgba(0, 0, 0, 0)');
+
+  // 收起后代码纸那个按钮回落到透明底（顶栏按钮静息底是 --card，本来就不透明，
+  // 两种静息态不必一致——用户要的是「展开时两张脸一致」）
+  await page.locator('.app-toolbar .term-toggle').click();
+  await expect(page.locator('.term.open')).toHaveCount(0);
+  await expect
+    .poll(async () => (await readState()).viewer?.bg, { timeout: 3000 })
+    .toBe('rgba(0, 0, 0, 0)');
 });
 
 test('E-CE-21 @P1 @mock-backend：tab 可拖拽排序，拖动不切激活签，拖后不误触发点击', async ({ page }) => {

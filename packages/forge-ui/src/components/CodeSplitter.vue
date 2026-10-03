@@ -2,9 +2,15 @@
 /**
  * 分割沟（模块 12 CE-S03）。
  *
- * 只有 5px 宽——两纸贴合，中间仅留一道细缝。这是刻意的：沟宽一旦超过 10px，
- * 它就不再是「分界线」而是「第三块区域」，视觉上代码纸和对话纸就不像同一张面板
- * 被切开了。沟内那条 1px 的分隔线才是真正承担边界语义的元素。
+ * 只有 4px 宽，且**不画可见分隔线**（沟内那条 1px 竖线已删）。
+ * 两者都是被实图打回来的：
+ * - 沟一旦超过 10px 就不再是「缝」而是「第三块区域」，代码纸和对话纸不像同一张面板被切开；
+ * - 代码态下终端是覆盖在纸之上的**全宽底部抽屉**（App 的 `.content.code-mode .term`
+ *   z-30），而这条沟 z-60 恒在其上，于是那条 1px 竖线会从纸顶一路画到终端顶边，
+ *   读作「分割线伸进了终端」（用户 2026-10-03 报）。
+ *   5px → 4px 之后线宽归零，直接把分隔线去掉：边界交给「两纸的 4px 缝 + 圆角」表达，
+ *   沟只保留命中区与 hover/拖拽流光两种**瞬时**反馈。
+ * 宽度取自 usePreferences.CODE_SPLITTER_PX（唯一真源，别在 CSS 里另写死一个数）。
  *
  * 为什么用 Pointer Events 而非 mousedown/touchstart：一套代码同时覆盖鼠标与触摸，
  * 且 `setPointerCapture` 能保证指针滑出沟外甚至滑出窗口时仍持续收到 move。
@@ -15,6 +21,7 @@ import {
   CODE_SIDE_MIN_PX,
   CODE_SPLIT_PCT_DEFAULT,
   CODE_SPLIT_STEP,
+  CODE_SPLITTER_PX,
   clampCodeSplitPct,
   nextSplitPct,
 } from '../composables/usePreferences';
@@ -131,6 +138,7 @@ function onKeydown(e: KeyboardEvent): void {
     :aria-valuenow="Math.round(clamped)"
     :aria-valuemin="0"
     :aria-valuemax="100"
+    :style="{ width: `${CODE_SPLITTER_PX}px` }"
     :aria-label="t('settings.codeViewer.splitPct')"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
@@ -138,34 +146,26 @@ function onKeydown(e: KeyboardEvent): void {
     @pointercancel="onPointerUp"
     @dblclick="onDblclick"
     @keydown="onKeydown"
-  >
-    <span class="csp-line" />
-  </div>
+  />
 </template>
 
 <style scoped>
 .csp {
   position: relative;
   flex: none;
-  /* 沟宽就是 5px（PRD：两纸贴合，中间只一道缝）。曾用 `margin: 0 -3px` 把命中区
-     向外扩，但 .content 带 overflow:hidden——向右溢出的 3px 被裁掉，向左的 3px 又
-     盖在对话纸上。实测点击点命中的是 .rightcol，拖拽完全失效。
-     hover 反馈不改布局：用骑在线上的 110px 流光段（侧栏右缘同款）。 */
-  width: 5px;
+  /* 沟宽由内联的 CODE_SPLITTER_PX 给出（唯一真源），这里只声明不写死数字。
+     曾用 `margin: 0 -3px` 把命中区向外扩，但 .content 带 overflow:hidden——向右
+     溢出的 3px 被裁掉，向左的 3px 又盖在对话纸上。实测点击点命中的是 .rightcol，
+     拖拽完全失效。hover 反馈不改布局：用骑在缝上的 110px 流光段（侧栏右缘同款）。 */
   z-index: 60;
   cursor: col-resize;
   background: transparent;
   outline: none;
   touch-action: none;
 }
-.csp-line {
-  position: absolute;
-  inset: 0 2px;
-  background: var(--border);
-}
-
-/* 流光（侧栏右缘 / 终端顶边同款）：110px 两端渐隐柔光段骑在分隔线上，
-   --seg-y 由 pointermove 写入鼠标 Y，停哪亮哪，不自动流动 */
+/* 流光（侧栏右缘 / 终端顶边同款）：110px 两端渐隐柔光段骑在缝中央，
+   --seg-y 由 pointermove 写入鼠标 Y，停哪亮哪，不自动流动。
+   沟内已无静态分隔线，这段瞬时光就是它唯一的视觉反馈 */
 .csp::after {
   content: '';
   position: absolute;

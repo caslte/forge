@@ -765,6 +765,9 @@ function formatBytes(n: number): string {
   cursor: pointer;
   display: grid;
   place-items: center;
+  /* 与顶栏 .app-toolbar-btn 同一条（120ms bg/color）：两个开关共用一个偏好，
+     过渡时长不一致会让它们看上去一个先亮一个后亮 */
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 .cv-term svg {
   width: 14px;
@@ -773,6 +776,14 @@ function formatBytes(n: number): string {
 .cv-term:hover {
   background: var(--surface-hover);
   color: var(--foreground);
+}
+/* 激活态（终端已展开）与对话区顶栏的终端开关同款：同样的品牌底 + 品牌字色。
+   两处同用一个 terminalOpen 偏好，若这里不给激活反馈，展开终端时左边的开关亮着
+   、右边这个还是灰的，同一状态两种脸色（用户 2026-10-03 报）。
+   取值抄 App.vue 的 `.app-toolbar-btn.is-active`，改一处要改另一处。 */
+.cv-term[aria-pressed='true'] {
+  background: color-mix(in oklab, var(--brand) 8%, var(--background));
+  color: var(--brand);
 }
 
 .cv-body {

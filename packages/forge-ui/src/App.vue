@@ -1747,7 +1747,9 @@ onUnmounted(() => {
    （用户实测：右上角点了终端按钮但看不见面板）；split 下终端又只缩在左列底部，
    两种布局落点不一致。统一提为覆盖在纸之上的全宽抽屉（z-30 > 纸 z-20），
    宽度横贯 .content、grip 拖拽调高照旧；对话态（无 code-mode）保持原流内行为不动。
-   锚定基准是 .content 自身的 position:relative（纸的定位参照同款，见上）。 */
+   锚定基准是 .content 自身的 position:relative（纸的定位参照同款，见上）。
+   附注：分屏沟 .csp 是 z-60，恒压在这条抽屉之上——所以沟内那条 1px 竖线已删
+   （CodeSplitter 宽度收到 4px），否则线会从纸顶一路画到终端顶边，读作「分割线伸进终端」。 */
 .content.code-mode :deep(.term) {
   position: absolute;
   left: 0;

@@ -50,8 +50,9 @@ const CODE_SPLIT_PCT_KEY = 'forge.codeViewerSplitPct';
 export const CODE_SPLIT_PCT_DEFAULT = 46;
 /** 单侧最小宽度（px）。比例保底由此换算，故与窗口宽度绑定。 */
 export const CODE_SIDE_MIN_PX = 320;
-/** 拖拽沟宽度（px）。两纸贴合、仅留一道细缝；沟内含 1px 分隔线。 */
-export const CODE_SPLITTER_PX = 5;
+/** 拖拽沟宽度（px）。两纸贴合、仅留一道 4px 缝，**不含可见分隔线**（线已删）。
+ *  实现在 CodeSplitter.vue 的内联 style 上——改这里必须同步改那里，两处都别再写死。 */
+export const CODE_SPLITTER_PX = 4;
 /** 键盘 ←/→ 每次调整的步长（百分点） */
 export const CODE_SPLIT_STEP = 2;
 /**

@@ -72,7 +72,7 @@ forge 是「带代码能力的对话工作台」，但当前**读代码必须离
 .rightcol[data-layout='cover' | 'split']
 └─ .splitwrap                      flex row，两种布局共用
    ├─ main.content #contentConv    对话纸（永远 flex:1，拖不塌）
-   ├─ .splitter                    5px，仅 split 显示
+   ├─ .splitter                    4px 命中区（无可视线），仅 split 显示
    └─ main.content.content-code    代码纸，仅 split 显示
 ```
 
@@ -107,11 +107,12 @@ forge 是「带代码能力的对话工作台」，但当前**读代码必须离
 ```
 main.content#contentConv │ ▌ │ main.content.content-code
   对话纸（flex:1）          │   │  代码纸（flex: 0 0 var(--split-w)）
-                           5px  │
+                           4px  │
                          splitter
 ```
 
-- **间距**：两纸贴合，只留 **5px 沟**（`.splitter` 宽 5px，中间 1px 分隔线）；左右纸各自 `margin-right/left: 0`，圆角改为 `12px 0 0 12px` / `0 12px 12px 0`，读作**一块被 divider 切开的面板**而不是两张飘着的纸；
+- **间距**：两纸贴合，只留 **4px 沟**（`.splitter` 宽 4px，**沟内不画分隔线**）；左右纸各自 `margin-right/left: 0`，圆角改为 `12px 0 0 12px` / `0 12px 12px 0`，读作**一块被切开的面板**而不是两张飘着的纸；
+  - 沟宽从 5px 收到 4px、分隔线删除（2026-10-03 用户定稿）：代码态终端是**全宽底部抽屉**（`z-30`）而沟 `z-60` 恒在其上，那条 1px 竖线会从纸顶一路画到终端顶边，读作「分割线伸进终端」。边界改由「两纸的 4px 缝 + 圆角」表达，沟只保留命中区与 hover/拖拽流光两种瞬时反馈；
 - **elevation**：两纸同用 `--elev-sheet`（平级）—— 这是与布局 A 最直观的语义差别：*A 是「盖上去」，B 是「并排站」*；
 - **拖拽**：指针拖拽，两侧各保底 **320px**（`min-width:0` + flex-basis 百分比）；双击分割条恢复 46%；`tabIndex=0` + `←/→` 每次 2%，键盘可达；宽度写入 `localStorage`；
 - **状态栏**在分割下追加 `宽度 N%`，提示这条沟可以拖。
@@ -146,7 +147,7 @@ main.content#contentConv │ ▌ │ main.content.content-code
   - 选中样式走全局 `::selection`（`--brand 25%`），与对话区一致，不单开一套。
   - 浮窗的触发区域是**清单**（`selectionPopover.ts` 的 `SELECTABLE_REGIONS`：`.msg` + `.cv-pre`）而不是“页面里任何文本”——终端由 xterm 自己管复制、画布 iframe 事件不回传，而应用外壳选中后弹「复制文本」只会让人意外。往清单里加区域时，记得确认该区域自己开了 `user-select: text`。
   - 剪贴板换行：Windows 剪贴板是 CRLF 文本格式，`writeText` 会把 `\n` 转成 `\r\n`（对话区复制同款，VSCode 粘贴时按文件 EOL 归一），这是平台行为不是缺陷。
-- **面包屑**：点任一级跳到该目录（收起其下层、滚动到该目录）。面包屑行右侧是**终端开关**（与顶栏开关、Ctrl+` 共用同一 `terminalOpen` 偏好；原「关闭当前文件」按钮与签条 × 重复，已替换）。代码态下终端以**全宽底部抽屉**呈现（`.content.code-mode .term` absolute bottom，z 高于代码纸的 z-20）——cover 布局的纸是整张盖上去的，流内终端会被压在纸下；对话态保持原流内落位不动。
+- **面包屑**：点任一级跳到该目录（收起其下层、滚动到该目录）。面包屑行右侧是**终端开关**（与顶栏开关、Ctrl+` 共用同一 `terminalOpen` 偏好；原「关闭当前文件」按钮与签条 × 重复，已替换）。代码态下终端以**全宽底部抽屉**呈现（`.content.code-mode .term` absolute bottom，z-30 高于代码纸的 z-20）——cover 布局的纸是整张盖上去的，流内终端会被压在纸下；对话态保持原流内落位不动。分屏时抽屉会横跨分割沟，但沟内不画分隔线（见布局 B），所以抽屉不会被一条竖线切开。
 - **右键菜单（共享组件 `ContextMenu`）**：项目树、改动文件卡、代码树行、签条四处共用一套实现（原先前三处各有一份几乎逐行相同的 CSS 与监听器）。行为：Teleport 到 body + `position:fixed`；先按估算值落位、下一帧用真实 rect 再钳一次视口；document **capture** 阶段 click 关闭（点到菜单自身不算）；ESC 关闭；滚动/缩放关闭，**但给刚打开的 150ms 宽限期**——右键前往往先把目标行滚进视野，而那个 scroll 事件是下一帧才派发的（晚于 `contextmenu`），不给宽限期会出现“菜单刚开就被自己关掉”。
   - 代码树**行**（树 / 过滤结果三类行都有）：文件行 = 按扫描结果给每个已安装编辑器一项「用 VS Code 打开 / 用 Cursor 打开 / …」+ **复制路径** + 打开所在目录（父目录），`.html/.htm` 额外多项「用浏览器打开」；目录行 = **复制路径** + 打开**此目录**（与项目树「打开项目所在目录」同口径，都是系统文件管理器）。**不做“右键先选中”**：行高亮与菜单目标分离反而更清楚。
   - **只读 ≠ 不能写代码**：代码纸保持只读（无输入框、无保存、无 dirty 状态），写代码的入口就是这些「用 … 打开」菜单项。编辑器扫描（`shell/editorScan.ts` + `shell/editorProbe.ts`）：**不写死厂商**，内置一个 20+ 款的编辑器目录（VS Code 家族 / Cursor / Windsurf / Trae / Zed / Sublime / Notepad++ / EditPlus / JetBrains 全家 / Android Studio…），逐款走三层解析，装了什么菜单出什么：
@@ -188,7 +189,7 @@ main.content#contentConv │ ▌ │ main.content.content-code
 | ui | `components/CodeTreePanel.vue` | 新增：侧栏代码树（头/过滤/树/脚） |
 | ui | `components/CodeViewer.vue` | 新增：代码纸（顶栏/标签/正文/状态栏 + 四种降级态） |
 | ui | `components/CodeExplorer.vue` | 新增：薄壳，持有 `projectPath / openFile / tabs` 状态 |
-| ui | `components/CodeSplitter.vue` | 新增：5px 分割条，pointer 拖拽 + 双击复位 + 键盘左右调；`z-index` 高于两纸（否则 pin/浮层会被压） |
+| ui | `components/CodeSplitter.vue` | 新增：4px 分割条（无可视线），pointer 拖拽 + 双击复位 + 键盘左右调；`z-index` 高于两纸（否则 pin/浮层会被压） |
 | ui | `components/ProjectTree.vue` | 项目行 `.tree-node-actions` 插入 `<>` 按钮；`emit('open-code', path)`；仅 `view === 'project'` 时渲染 |
 | ui | `App.vue` | `.tree-panel` 内加 `v-if/v-else` 切换；`.content` 外包一层 `.splitwrap` 并加 `<CodeExplorer>` + `<CodeSplitter>`；`codePanelOpen` 状态 |
 | ui | `store/prefs.ts`（或复用 `App.vue` 现有 localStorage 封装） | `codeViewerLayout: 'cover' \| 'split'`（默认 `cover`，2026-10-02 用户定稿：个性化默认整屏覆盖；原 demo 定稿为 `split`）、`codeViewerSplitPct`（默认 46） |
