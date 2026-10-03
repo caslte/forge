@@ -6,8 +6,6 @@ import { call, invokeRaw, subscribe } from '../bridge';
 import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
 import {
-  CODE_SPLIT_PCT_DEFAULT,
-  clampCodeSplitPct,
   usePreferences,
   type CodeViewerLayout,
   type ContentWidth,
@@ -136,31 +134,7 @@ async function refreshTerminalShells(): Promise<void> {
 const toast = useToast();
 const { showDiff, setShowDiff, contentWidth, setContentWidth, terminalShell, setTerminalShell } =
   usePreferences();
-const {
-  codeViewerLayout,
-  setCodeViewerLayout,
-  codeViewerSplitPct,
-  setCodeViewerSplitPct,
-} = usePreferences();
-
-/**
- * 分割宽度滑杆区间：以 1280px 宽窗为参照算出的 320px 保底百分比。
- * 设置页写的是「比例」不是「像素」——用户换台显示器时，按比例存的值仍然合理。
- *
- * 上下限必须**取偶数**：滑杆 step=2，而 <input type=range> 的取值序列是
- * `min + n*step`。min=25（奇）时序列是 25,27,…,59,61 —— 里面根本没有 60，
- * 浏览器会把用户拖到的 60 静默吸附成 61。默认 46 与 2 点步进都是偶数，
- * 所以这里把下限向上取偶、上限由 100-下限 得出，整条序列都落在偶数上。
- */
-const SPLIT_SLIDER_MIN = Math.ceil((320 / 1280) * 100 / 2) * 2;
-const SPLIT_SLIDER_MAX = 100 - SPLIT_SLIDER_MIN;
-const splitPctForSlider = computed(() =>
-  Math.round(clampCodeSplitPct(codeViewerSplitPct.value, 1280)),
-);
-function onSplitPctInput(e: Event): void {
-  const v = Number((e.target as HTMLInputElement).value);
-  if (Number.isFinite(v)) setCodeViewerSplitPct(clampCodeSplitPct(v, 1280));
-}
+const { codeViewerLayout, setCodeViewerLayout } = usePreferences();
 
 const canSubmitForm = computed(() => {
   return (
@@ -970,8 +944,8 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- 模块 12：代码查看器布局（CE-S01/CE-S03）。分割宽度只对 split 生效，
-           所以 cover 时禁用而不是隐藏——隐藏会让用户以为这个设置不存在了。 -->
+      <!-- 模块 12：代码查看器布局（CE-S01）。分割宽度的设置项已撤下——
+           这类细节用户基本不会调，拖代码区中间的分隔线即可调整（双击复位）。 -->
       <section class="settings-section">
         <div class="pref-row">
           <div class="pref-text">
@@ -997,36 +971,6 @@ onUnmounted(() => {
               "
               @click="setCodeViewerLayout(opt.value)"
             >{{ t(opt.labelKey) }}</button>
-          </div>
-        </div>
-      </section>
-      <section class="settings-section" :class="{ 'is-disabled': codeViewerLayout !== 'split' }">
-        <div class="pref-row">
-          <div class="pref-text">
-            <span class="pref-title">{{ t('settings.codeViewer.splitPct') }}</span>
-            <span class="pref-desc">{{ t('code.splitterHint') }}</span>
-          </div>
-          <div class="split-slider">
-            <input
-              class="split-range"
-              type="range"
-              :min="SPLIT_SLIDER_MIN"
-              :max="SPLIT_SLIDER_MAX"
-              step="2"
-              :value="splitPctForSlider"
-              :disabled="codeViewerLayout !== 'split'"
-              :aria-label="t('settings.codeViewer.splitPct')"
-              @input="onSplitPctInput"
-            />
-            <span class="split-value">{{
-              t('settings.codeViewer.splitPctValue', { n: splitPctForSlider })
-            }}</span>
-            <button
-              class="code-layout-option split-reset"
-              type="button"
-              :disabled="codeViewerLayout !== 'split'"
-              @click="setCodeViewerSplitPct(CODE_SPLIT_PCT_DEFAULT)"
-            >{{ t('common.reset') }}</button>
           </div>
         </div>
       </section>
@@ -1408,39 +1352,6 @@ onUnmounted(() => {
 }
 
 /* ===== 模块 12：代码查看器布局设置 ===== */
-.settings-section.is-disabled {
-  opacity: 0.5;
-}
-
-.split-slider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-.split-range {
-  width: 160px;
-  accent-color: var(--brand);
-  cursor: pointer;
-}
-.split-range:disabled {
-  cursor: not-allowed;
-}
-.split-value {
-  min-width: 38px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--muted-foreground);
-  text-align: right;
-}
-.split-reset {
-  padding: 6px 12px;
-  font-size: 11px;
-}
-.split-reset:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
 
 /* 「关于」Tab：单栏承载版本更新分区；不限制宽度——版本行拉满到底，右侧不留空 */
 .about-body {
