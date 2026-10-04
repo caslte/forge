@@ -61,7 +61,7 @@ const DB: {
       unpushedCount?: number | null;
       hasHead?: boolean;
       /** 模块 12：逐文件状态（代码树的 Git 徽标）；缺省 = 非 git 项目或干净仓库 */
-      files?: Array<{ path: string; status: string; staged?: boolean }>;
+      files?: Array<{ path: string; status: string; staged?: boolean; added?: number; removed?: number }>;
     }
   >;
 } = {
@@ -118,12 +118,16 @@ const DB: {
       stagedCount: 0,
       unpushedCount: 2,
       hasHead: true,
-      // 模块 12：代码树的 Git 徽标。与 fileMock 的假路径对齐，让 Mock 下 M/A/? 三态可见
+      // 模块 12：代码树的 Git 徽标 + 变更视图清单。与 fileMock 的假路径对齐，
+      // 让 Mock 下 M/A/? 三态可见。added/removed 是**逐文件**行数（含未跟踪，
+      // 与汇总口径不同——见 core GitStatusFile 的注释）。
+      // 注：此处刻意不列 mock-bridge.ts——文件树 fixture 里没有它，
+      // 列了就是一条永远渲染不出来的死数据（踩过一次）。
       files: [
-        { path: 'packages/forge-ui/src/App.vue', status: 'M', staged: false },
-        { path: 'packages/forge-core/src/file/fileService.ts', status: 'A', staged: true },
-        { path: 'packages/forge-ui/src/mock-bridge.ts', status: 'M', staged: false },
-        { path: 'docs/prd/12_code_explorer.md', status: '?', staged: false },
+        { path: 'packages/forge-ui/src/App.vue', status: 'M', staged: false, added: 12, removed: 3 },
+        { path: 'packages/forge-core/src/file/fileService.ts', status: 'A', staged: true, added: 340, removed: 0 },
+        { path: 'packages/forge-ui/src/bridge.ts', status: 'M', staged: false, added: 8, removed: 5 },
+        { path: 'docs/prd/12_code_explorer.md', status: '?', staged: false, added: 24, removed: 0 },
       ],
     },
   },
@@ -1072,6 +1076,70 @@ const bridge: ForgeBridge = {
           };
         }
         return { code: 0, message: 'ok', data: { branch: g.branch, remote: 'origin' } };
+      }
+      case 'git/getFileDiff': {
+        // 模块 12 P2：单文件 unified diff。种子变更文件给可演示的小 diff
+        //（含上下文/增/删，行号真实连续，CodeViewer 的解析层直接可吃）；
+        // 未跟踪（?）回 null（UI 用已加载正文合成全新增）；其余文件 = 无差异空串。
+        const dp = params as { path?: string; relPath?: string };
+        if (typeof dp.path !== 'string' || dp.path.trim() === '') {
+          return { code: 1001, message: '参数错误：path 必须为非空字符串', data: null };
+        }
+        if (typeof dp.relPath !== 'string' || dp.relPath.trim() === '') {
+          return { code: 1001, message: '参数错误：relPath 必须为非空字符串', data: null };
+        }
+        if (!DB.git[dp.path]) return { code: 0, message: 'ok', data: { diff: null } };
+        const MOCK_DIFFS: Record<string, string> = {
+          'packages/forge-ui/src/App.vue': [
+            'diff --git a/packages/forge-ui/src/App.vue b/packages/forge-ui/src/App.vue',
+            'index 3f2a1bc..8c4d92e 100644',
+            '--- a/packages/forge-ui/src/App.vue',
+            '+++ b/packages/forge-ui/src/App.vue',
+            '@@ -2,7 +2,8 @@',
+            ' <script setup lang="ts">',
+            " import { ref } from 'vue';",
+            '',
+            ' // 主视图：左项目树 + 右对话纸',
+            "-const activeView = ref<'sessions' | 'settings'>('sessions');",
+            "+import { useCodeExplorer } from './composables/useCodeExplorer';",
+            '+',
+            "+const activeView = ref<'sessions' | 'settings'>('sessions');",
+            ' </script>',
+            '',
+            ' <template>',
+          ].join('\n'),
+          'packages/forge-ui/src/bridge.ts': [
+            'diff --git a/packages/forge-ui/src/bridge.ts b/packages/forge-ui/src/bridge.ts',
+            'index 1a2b3c4..5d6e7f8 100644',
+            '--- a/packages/forge-ui/src/bridge.ts',
+            '+++ b/packages/forge-ui/src/bridge.ts',
+            '@@ -70,6 +70,9 @@',
+            "   | 'term/kill'",
+            "   | 'term/resize'",
+            "   | 'file/listDir'",
+            '+  // 模块 12 P2：单文件 unified diff（并排 diff 数据源）',
+            "+  | 'git/getFileDiff'",
+            '+',
+            "   | 'file/readFile'",
+            "   | 'file/searchFiles'",
+          ].join('\n'),
+          'packages/forge-core/src/file/fileService.ts': [
+            'diff --git a/packages/forge-core/src/file/fileService.ts b/packages/forge-core/src/file/fileService.ts',
+            'new file mode 100644',
+            'index 0000000..1111111',
+            '--- /dev/null',
+            '+++ b/packages/forge-core/src/file/fileService.ts',
+            '@@ -0,0 +1,3 @@',
+            '/** 文件服务（模块 12）：listDir / readFile / searchFiles 三只读方法。',
+            ' *  relPath 一律视为不可信输入，过 path.resolve + realpath 两道 containment。',
+            ' */',
+          ].join('\n'),
+        };
+        // 口径对齐 core：未跟踪 → null（UI 合成全新增）；其余文件无 diff 文本 = 空串
+        const g = DB.git[dp.path];
+        const st = (g?.files ?? []).find((x) => x.path === dp.relPath);
+        if (st?.status === '?') return { code: 0, message: 'ok', data: { diff: null } };
+        return { code: 0, message: 'ok', data: { diff: MOCK_DIFFS[dp.relPath] ?? '' } };
       }
       case 'git/generateCommitMessage': {
         // GC-S11：mock 即时返回固定文案（无真 LLM 调用）；无变更演示 6008

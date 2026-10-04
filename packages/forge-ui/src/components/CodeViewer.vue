@@ -15,9 +15,23 @@
  * markBlockCommentLines 负责把这些行捞出来整体按注释渲染。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { detectDiffLanguage, highlightDiffLine } from '@forge/core/side-by-side-diff';
+import {
+  buildSideBySideDiff,
+  detectDiffLanguage,
+  highlightDiffLine,
+  type SideBySideRow,
+} from '@forge/core/side-by-side-diff';
+import {
+  collectDiffOmissions,
+  parseGitInlineDiff,
+  parseGitUnifiedDiff,
+  type InlineDelBlock,
+  type ParsedInlineDiff,
+} from '../utils/gitDiffRows';
 import { markBlockCommentLines } from '../utils/codeBlockComment';
 import { fileBadgeOf } from '../utils/fileBadge';
+import { gitStatusUi } from '../utils/gitStatusUi';
+import { useCodeExplorer } from '../composables/useCodeExplorer';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import type { OpenFile } from '../composables/useCodeExplorer';
 import type { GitStatusFile } from '../types';
@@ -26,6 +40,7 @@ import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
 const { setTerminalOpen, terminalOpen } = usePreferences();
+const { getFileDiff, setViewerMode } = useCodeExplorer();
 
 /**
  * 一次性渲染多少行。50,000 行的文件若全量 v-html，渲染进程会卡住数秒。
@@ -39,8 +54,15 @@ const props = defineProps<{
   files: OpenFile[];
   /** 当前激活文件的 relPath */
   activeRel: string | null;
+  /** 当前项目绝对路径（并排 diff 经 git/getFileDiff 拉取要用；null=不可拉） */
+  projectPath: string | null;
   /** 行尾 Git 徽标（仅文件级） */
   gitStatus?: GitStatusFile | null;
+  /**
+   * 请求的正文形态（file/inline/side）：状态在 useCodeExplorer（左栏变更视图
+   * 点文件要把右侧切到对比，两组件共用一份）。缺省 = file。
+   */
+  mode?: 'file' | 'inline' | 'side';
 }>();
 
 const emit = defineEmits<{
@@ -48,10 +70,25 @@ const emit = defineEmits<{
   (e: 'close', relPath: string): void;
   /** 拖拽排序 / 左移右移：把 relPath 移到 toIndex（组件不直接改 props） */
   (e: 'move', relPath: string, toIndex: number): void;
+  /** 正文形态切换（文件 / 行内 / 并排），回写给 useCodeExplorer 统一保管 */
+  (e: 'set-mode', mode: 'file' | 'inline' | 'side'): void;
 }>();
 
 const activeFile = computed(
   () => props.files.find((f) => f.relPath === props.activeRel) ?? null,
+);
+
+/** 该文件有未提交变更才谈得上对比 */
+const hasGitChanges = computed(() => props.gitStatus != null);
+
+/** 实际生效的正文形态：请求对比但该文件没有变更时落回文件正文
+ *  （没改动不给 diff——按钮置灰，正文绝不弹全空对比） */
+const effectiveMode = computed<'file' | 'inline' | 'side'>(() =>
+  props.mode === 'inline' || props.mode === 'side'
+    ? hasGitChanges.value
+      ? props.mode
+      : 'file'
+    : 'file',
 );
 
 /** 行号列宽：随总行数位数增长，下限 3 位（101 行与 1001 行的观感一致） */
@@ -406,10 +443,259 @@ const statusText = computed(() => {
   return out;
 });
 
+/* ===== diff 数据（模块 12 P2：并排 + 行内两种视图共用同一份拉取）=====
+ *
+ * 数据流：git/getFileDiff 的 unified 文本 → 一次解析成两种投影
+ * （parseGitUnifiedDiff → 并排行；parseGitInlineDiff → 行级标记 + 删除块锚点）。
+ * 对齐交给 git（hunk 内行序就是对齐结果），不在 UI 里对整文件跑 LCS——
+ * 几千行的文件是几百 MB 级的 DP 表。
+ * 未跟踪文件是例外：git 根本不给它 diff，用已加载正文合成「全新增」视角
+ * （与变更视图把未跟踪整文件算 +N 的口径一致）。
+ */
+type DiffLoad = 'idle' | 'loading' | 'binary' | 'fail';
+const diffLoad = ref<DiffLoad>('idle');
+const diffRows = ref<SideBySideRow[]>([]);
+/** 行内投影（文件正文上色用）；只在 effectiveMode === 'inline' 时被模板消费 */
+const inlineParsed = ref<ParsedInlineDiff | null>(null);
+
+/**
+ * diff 为空 = git 状态已过期（文件其实没有未提交变更，多半是刚在外部提交过）：
+ * **静默落回文件正文**，不渲染「此文件没有未提交的改动」空态页——
+ * 未变更的文件就该直接是文件正文（用户 2026-10-03：不需要跳这个页面）。
+ */
+function fallBackToFile(): void {
+  if (props.projectPath) setViewerMode(props.projectPath, 'file');
+  diffLoad.value = 'idle';
+  diffRows.value = [];
+  inlineParsed.value = null;
+}
+
+/** relPath → 按 size+mtime 键缓存的解析结果；文件被外部改写后自动失效 */
+interface DiffCacheEntry {
+  key: string;
+  binary: boolean;
+  rows: SideBySideRow[];
+  inline: ParsedInlineDiff;
+  /** 相对基线零差异（两种投影都为空）→ 状态过期，落回文件正文 */
+  empty: boolean;
+}
+const diffCache = new Map<string, DiffCacheEntry>();
+/** 竞态防护：切签/切模式后，先前在途的响应不许覆盖新状态 */
+let diffSeq = 0;
+
+function applyEntry(e: DiffCacheEntry): void {
+  if (e.binary) {
+    diffLoad.value = 'binary';
+    return;
+  }
+  if (e.empty) {
+    fallBackToFile();
+    return;
+  }
+  diffRows.value = e.rows;
+  inlineParsed.value = e.inline;
+  diffLoad.value = 'idle';
+}
+
+async function loadDiff(): Promise<void> {
+  const f = activeFile.value;
+  if (!f || !props.projectPath || effectiveMode.value === 'file' || degraded.value !== 'none') {
+    diffLoad.value = 'idle';
+    diffRows.value = [];
+    inlineParsed.value = null;
+    return;
+  }
+  const seq = ++diffSeq;
+  const key = cacheKey.value;
+  const hit = diffCache.get(f.relPath);
+  if (hit && hit.key === key) {
+    applyEntry(hit);
+    return;
+  }
+  if (f.loading) {
+    // 首读未回来：先挂加载态，data 到位后 cacheKey 变化会再触发本函数
+    diffLoad.value = 'loading';
+    return;
+  }
+  // 未跟踪：git 不给 diff，正文就是「全新增」
+  if (props.gitStatus?.status === '?') {
+    if (!f.data) {
+      diffLoad.value = 'fail';
+      return;
+    }
+    const entry: DiffCacheEntry = {
+      key,
+      binary: false,
+      rows: buildSideBySideDiff(null, f.data.content),
+      inline: {
+        addedLines: f.data.content.split('\n').map((_, i) => i + 1),
+        delBlocks: [],
+        binary: false,
+      },
+      empty: f.data.content === '',
+    };
+    diffCache.set(f.relPath, entry);
+    applyEntry(entry);
+    return;
+  }
+  diffLoad.value = 'loading';
+  const text = await getFileDiff(props.projectPath, f.relPath);
+  if (seq !== diffSeq) return;
+  if (text === null) {
+    diffLoad.value = 'fail';
+    return;
+  }
+  const unified = parseGitUnifiedDiff(text);
+  const entry: DiffCacheEntry = {
+    key,
+    binary: unified.binary,
+    rows: unified.rows,
+    inline: parseGitInlineDiff(text),
+    empty: !unified.binary && unified.rows.length === 0,
+  };
+  diffCache.set(f.relPath, entry);
+  applyEntry(entry);
+}
+
+watch(
+  [() => props.activeRel, cacheKey, effectiveMode, () => props.gitStatus?.status],
+  () => void loadDiff(),
+  { immediate: true },
+);
+
+/** 大 diff 与文件正文同一策略：先给首屏，其余点开（同一个 INITIAL 思路） */
+const DIFF_INITIAL_ROWS = 400;
+const diffTruncated = ref(true);
+// 换签重新折叠：diff 的展开态跟着文件走，不跨签记忆
+watch(() => props.activeRel, () => { diffTruncated.value = true; });
+const diffRowsVisible = computed(() =>
+  diffTruncated.value ? diffRows.value.slice(0, DIFF_INITIAL_ROWS) : diffRows.value,
+);
+const diffLanguage = computed(() =>
+  detectDiffLanguage(activeFile.value?.name ?? activeFile.value?.relPath ?? null),
+);
+/** 可见行先截断再逐行高亮（大 diff 只上色首屏，与 DiffView 同款降级） */
+const highlightedDiffRows = computed(() =>
+  diffRowsVisible.value.map((row) => ({
+    left: row.left ? { ...row.left, html: highlightDiffLine(row.left.text, diffLanguage.value) } : null,
+    right: row.right ? { ...row.right, html: highlightDiffLine(row.right.text, diffLanguage.value) } : null,
+  })),
+);
+/** 并排显示行：diff 行 + hunk 之间/首尾的「未变更 N 行」省略分隔条 */
+type SideDisplayRow =
+  | { kind: 'row'; row: (typeof highlightedDiffRows.value)[number] }
+  | { kind: 'omit'; count: number };
+const sideRows = computed<SideDisplayRow[]>(() => {
+  const omissions = collectDiffOmissions(
+    diffRows.value,
+    activeFile.value?.data?.totalLines ?? 0,
+  );
+  const rows = highlightedDiffRows.value;
+  if (omissions.length === 0) return rows.map((row) => ({ kind: 'row' as const, row }));
+  const byEnd = new Map<number, number>();
+  let trailing: number | null = null;
+  for (const o of omissions) {
+    if (o.endsAt === null) trailing = o.count;
+    else byEnd.set(o.endsAt, o.count);
+  }
+  const out: SideDisplayRow[] = [];
+  for (const row of rows) {
+    const end = row.right?.line ?? null;
+    if (end !== null && byEnd.has(end)) out.push({ kind: 'omit', count: byEnd.get(end)! });
+    out.push({ kind: 'row', row });
+  }
+  if (trailing !== null) out.push({ kind: 'omit', count: trailing });
+  return out;
+});
+
+function loadMoreDiff(): void {
+  diffTruncated.value = false;
+}
+
+/* ===== 行内高亮（文件正文 + 行级标记，模块 12 P2 第二视图）=====
+ * 原型口径：新增行在**行号栏右缘**挂色条 + 整行淡底（行号列 sticky，色条画左缘
+ * 横向一滚就成「纸外飘着一条绿杠」）；被删的行在工作区文件里根本不存在，
+ * 用一条可点开的红色占位条占位（贴在锚点行之后），展开看旧行。
+ */
+const inlineAdded = computed<Set<number>>(() =>
+  effectiveMode.value === 'inline' && inlineParsed.value
+    ? new Set(inlineParsed.value.addedLines)
+    : new Set<number>(),
+);
+/** 展开态只跟当前文件走，换签重置（与 diff 折叠态同规则） */
+const expandedDelBlocks = ref<Set<number>>(new Set());
+watch(() => props.activeRel, () => { expandedDelBlocks.value = new Set(); });
+function toggleDelBlock(id: number): void {
+  const next = new Set(expandedDelBlocks.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  expandedDelBlocks.value = next;
+}
+
+/** 正文显示行：文件行 + 按锚点插入的删除占位条（仅行内模式；其余形态纯文件行） */
+type DisplayRow = { kind: 'line'; row: Row } | { kind: 'delblock'; block: InlineDelBlock };
+const displayRows = computed<DisplayRow[]>(() => {
+  const base = visibleRows.value;
+  const parsed = effectiveMode.value === 'inline' ? inlineParsed.value : null;
+  if (!parsed) return base.map((row) => ({ kind: 'line' as const, row }));
+  const out: DisplayRow[] = [];
+  for (const b of parsed.delBlocks) {
+    if (b.afterLine === null) out.push({ kind: 'delblock', block: b });
+  }
+  for (const row of base) {
+    out.push({ kind: 'line', row });
+    for (const b of parsed.delBlocks) {
+      if (b.afterLine === row.no) out.push({ kind: 'delblock', block: b });
+    }
+  }
+  return out;
+});
+function rowKey(r: DisplayRow): string | number {
+  return r.kind === 'line' ? r.row.no : `del-${r.block.id}`;
+}
+
+/**
+ * 滚动位置色块（Zed 同款，仅行内模式）：把变更映射到右缘细条上——
+ * 新增行按**连续段**合并成一条绿块（逐行画会在密集改动处糊成一片），
+ * 删除占位条在锚点位置画红块。比例 = 行号 / 全文行数，与滚动无关，
+ * 是一张「整文变更地图」，用户滚动时一眼知道哪里有改动。
+ */
+const minimapMarks = computed<Array<{ top: number; height: number; kind: 'add' | 'del' }>>(() => {
+  const parsed = effectiveMode.value === 'inline' ? inlineParsed.value : null;
+  const total = activeFile.value?.data?.totalLines ?? 0;
+  if (!parsed || total <= 0) return [];
+  const pct = (lines: number): number => Math.max((lines / total) * 100, 0.5);
+  const marks: Array<{ top: number; height: number; kind: 'add' | 'del' }> = [];
+  // 连续新增行合并（已按行号升序——解析时即按 hunk 顺序产出）
+  let runStart = 0;
+  let runLen = 0;
+  for (const no of parsed.addedLines) {
+    if (runLen > 0 && no === runStart + runLen) {
+      runLen += 1;
+      continue;
+    }
+    if (runLen > 0) marks.push({ top: ((runStart - 1) / total) * 100, height: pct(runLen), kind: 'add' });
+    runStart = no;
+    runLen = 1;
+  }
+  if (runLen > 0) marks.push({ top: ((runStart - 1) / total) * 100, height: pct(runLen), kind: 'add' });
+  for (const b of parsed.delBlocks) {
+    const anchor = b.afterLine ?? 0;
+    marks.push({ top: (anchor / total) * 100, height: pct(b.lines.length), kind: 'del' });
+  }
+  return marks;
+});
+
 const fileBadge = computed(() => {
   const s = props.gitStatus;
   if (!s) return null;
-  return { text: s.status, untracked: s.status === '?' };
+  // 走和文件树同一张映射表（?→U、冲突→!）：这里若直接印原始状态字符，
+  // 就会出现「树里绿 U、头部橙 ?」的两副面孔（用户 2026-10-03 报）
+  const ui = gitStatusUi(s.status);
+  return { raw: s.status, cls: ui.cls.toLowerCase(), glyph: ui.glyph, title: ui.title };
 });
 
 function formatBytes(n: number): string {
@@ -438,10 +724,38 @@ function formatBytes(n: number): string {
       <span
         v-if="fileBadge"
         class="cv-badge"
-        :data-git="fileBadge.text"
-        :title="t('code.gitBadge', { s: fileBadge.text })"
-        >{{ fileBadge.text }}</span
+        :class="`is-${fileBadge.cls}`"
+        :data-git="fileBadge.raw"
+        :title="fileBadge.title"
+        >{{ fileBadge.glyph }}</span
       >
+      <!-- 正文形态切换：文件 / 行内 / 并排。对比两档只对有未提交变更的文件可用
+           （没改动给一个全空对比没有意义），没改动时置灰而非隐藏——
+           「它存在但现在不可用」比「忽有忽无」可解释。默认哪档进个性化设置。 -->
+      <div class="cv-modes" role="group" :aria-label="t('code.modeSwitcher')">
+        <button
+          class="cv-mode"
+          :class="{ 'is-on': effectiveMode === 'file' }"
+          type="button"
+          @click="emit('set-mode', 'file')"
+        >{{ t('code.modeFile') }}</button>
+        <button
+          class="cv-mode"
+          :class="{ 'is-on': effectiveMode === 'inline' }"
+          type="button"
+          :disabled="!activeFile || !hasGitChanges"
+          :title="!hasGitChanges ? t('code.diffNoChangesTitle') : undefined"
+          @click="emit('set-mode', 'inline')"
+        >{{ t('code.modeInline') }}</button>
+        <button
+          class="cv-mode"
+          :class="{ 'is-on': effectiveMode === 'side' }"
+          type="button"
+          :disabled="!activeFile || !hasGitChanges"
+          :title="!hasGitChanges ? t('code.diffNoChangesTitle') : undefined"
+          @click="emit('set-mode', 'side')"
+        >{{ t('code.modeDiff') }}</button>
+      </div>
       <button
         class="cv-term"
         type="button"
@@ -509,6 +823,8 @@ function formatBytes(n: number): string {
       <span v-if="tabsOverflow" class="cv-tabs-fade" aria-hidden="true" />
     </div>
 
+    <!-- body 外包一层不滚的壳：滚动位置色块要钉在视口右缘，放进滚动容器里会跟内容一起滚走 -->
+    <div class="cv-body-wrap">
     <div class="cv-body">
       <div v-if="!activeFile" class="cv-state">
         <div class="cv-state-icon">◍</div>
@@ -533,12 +849,84 @@ function formatBytes(n: number): string {
         </p>
       </div>
 
+      <!-- 并排 diff：相对 HEAD 的左右对照（git 对齐，本层只渲染）。
+           没有「没有未提交改动」的空态页：diff 为空说明状态过期，
+           loadDiff 已静默落回文件正文（用户 2026-10-03 定稿）。 -->
+      <div v-else-if="effectiveMode === 'side'" class="cv-diff-wrap">
+        <div v-if="diffLoad === 'loading'" class="cv-state">
+          <div class="cv-state-icon cv-spin">◌</div>
+          <p class="cv-state-title">{{ t('code.loading') }}</p>
+        </div>
+        <div v-else-if="diffLoad === 'binary'" class="cv-state">
+          <div class="cv-state-icon">▦</div>
+          <p class="cv-state-title">{{ t('code.diffBinaryTitle') }}</p>
+          <p class="cv-state-hint">{{ t('code.diffBinaryHint') }}</p>
+        </div>
+        <div v-else-if="diffLoad === 'fail'" class="cv-state">
+          <div class="cv-state-icon">⚠</div>
+          <p class="cv-state-title">{{ t('code.diffFailTitle') }}</p>
+          <p class="cv-state-hint">{{ t('code.diffFailHint') }}</p>
+        </div>
+        <div v-else class="cv-diff" role="table">
+          <template v-for="(r, i) in sideRows" :key="i">
+            <div v-if="r.kind === 'row'" class="cv-diff-row" role="row">
+              <span class="cv-diff-num" role="rowheader">{{ r.row.left?.line ?? '' }}</span>
+              <pre
+                v-if="r.row.left"
+                class="cv-diff-cell"
+                :class="`is-${r.row.left.type}`"
+                role="cell"
+                v-html="r.row.left.html"
+              ></pre>
+              <pre v-else class="cv-diff-cell is-empty" role="cell"></pre>
+              <span class="cv-diff-num" role="rowheader">{{ r.row.right?.line ?? '' }}</span>
+              <pre
+                v-if="r.row.right"
+                class="cv-diff-cell"
+                :class="`is-${r.row.right.type}`"
+                role="cell"
+                v-html="r.row.right.html"
+              ></pre>
+              <pre v-else class="cv-diff-cell is-empty" role="cell"></pre>
+            </div>
+            <!-- hunk 之间/首尾的未变更区域：git 不产出它，显式交代行号为什么跳变 -->
+            <div v-else class="cv-diff-omit" role="row">
+              ⋯ {{ t('code.diffOmitted', { n: r.count }) }} ⋯
+            </div>
+          </template>
+          <button
+            v-if="diffTruncated && diffRows.length > highlightedDiffRows.length"
+            class="cv-more"
+            type="button"
+            @click="loadMoreDiff"
+          >
+            {{ t('tool.diffExpandAll', { n: diffRows.length }) }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 文件正文（file 与 inline 两种形态共用）：inline 在此之上叠行级标记——
+           新增行行号栏右缘色条 + 整行淡底，被删行插红色占位条（可展开看旧行） -->
       <div v-else class="cv-code" :style="{ '--cv-gutter': gutterWidth }">
         <pre class="cv-pre"><code
-          ><span v-for="r in visibleRows" :key="r.no" class="cv-line"
-            ><span class="cv-ln" aria-hidden="true">{{ r.no }}</span
-            ><span class="cv-lc" :class="{ 'is-comment': r.isComment }" v-html="r.html"
-          /></span></code
+          ><template v-for="r in displayRows" :key="rowKey(r)"
+            ><span v-if="r.kind === 'line'" class="cv-line" :class="{ 'is-add': inlineAdded.has(r.row.no) }"
+            ><span class="cv-ln" aria-hidden="true">{{ r.row.no }}</span
+            ><span class="cv-lc" :class="{ 'is-comment': r.row.isComment }" v-html="r.row.html"
+          /></span
+          ><span
+            v-else
+            class="cv-delblock"
+            :class="{ 'is-open': expandedDelBlocks.has(r.block.id) }"
+          ><button class="cv-delblock-bar" type="button" @click="toggleDelBlock(r.block.id)"
+            ><svg class="cv-delblock-tri" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg
+            ><span>{{ t('code.delBlockBar', { n: r.block.lines.length }) }}</span></button
+          ><span v-show="expandedDelBlocks.has(r.block.id)" class="cv-delblock-gone"
+            ><span v-for="l in r.block.lines" :key="l.no" class="cv-delblock-line"
+              ><span class="cv-delblock-text">{{ l.text }}</span></span
+          ></span
+          ></span
+        ></template></code
         ></pre>
         <button v-if="hasMore" class="cv-more" type="button" @click="loadMore">
           {{ t('code.loadMore', { n: rows.length - renderedCount }) }}
@@ -546,9 +934,29 @@ function formatBytes(n: number): string {
       </div>
     </div>
 
+      <!-- 滚动位置色块（Zed 同款，仅行内模式）：新增=绿段、删除占位条=红块 -->
+      <div v-if="effectiveMode === 'inline' && minimapMarks.length" class="cv-minimap" aria-hidden="true">
+        <span
+          v-for="(m, i) in minimapMarks"
+          :key="i"
+          class="cv-minimap-mark"
+          :class="`is-${m.kind}`"
+          :style="{ top: `${m.top}%`, height: `${m.height}%` }"
+        />
+      </div>
+    </div>
+
     <footer class="cv-foot">
       <span class="cv-ro" :title="t('code.roHint')">{{ t('code.readOnly') }}</span>
-      <span v-for="s in statusText" :key="s" class="cv-stat">{{ s }}</span>
+      <!-- 对比两态报逐文件 ±行数与基线（原型同款）；纯文件态报行数/体积/行尾 -->
+      <template v-if="effectiveMode !== 'file' && gitStatus">
+        <span class="cv-stat cv-add">+{{ gitStatus.added }}</span>
+        <span v-if="gitStatus.removed" class="cv-stat cv-del">−{{ gitStatus.removed }}</span>
+        <span class="cv-stat">{{ t('code.diffVsHead') }}</span>
+      </template>
+      <template v-else>
+        <span v-for="s in statusText" :key="s" class="cv-stat">{{ s }}</span>
+      </template>
     </footer>
 
     <!-- 签条右键：左移 / 右移 / 关闭（拖拽的键盘与长距离替代） -->
@@ -748,10 +1156,16 @@ function formatBytes(n: number): string {
   color: var(--muted-foreground);
   background: color-mix(in oklab, var(--muted) 45%, transparent);
 }
-.cv-badge[data-git='U'],
-.cv-badge[data-git='?'] {
-  color: var(--warning);
+/* 字形变体配色与文件树 .ctp-git.is-* 一条不差（同一张 gitStatusUi 表驱动的两个出口，
+   一边绿一边橙就是用户 2026-10-03 报的那种两副面孔）。R/C 重命名/复制保持中性灰。 */
+.cv-badge.is-m {
+  color: color-mix(in oklab, var(--warning) 85%, var(--foreground));
+  background: color-mix(in oklab, var(--warning) 20%, transparent);
 }
+.cv-badge.is-u { color: var(--success); background: color-mix(in oklab, var(--success) 18%, transparent); }
+.cv-badge.is-x { color: var(--destructive); background: color-mix(in oklab, var(--destructive) 20%, transparent); }
+.cv-badge.is-a { color: var(--success); background: color-mix(in oklab, var(--success) 18%, transparent); }
+.cv-badge.is-d { color: var(--destructive); background: color-mix(in oklab, var(--destructive) 18%, transparent); }
 .cv-term {
   flex: none;
   width: 22px;
@@ -786,12 +1200,42 @@ function formatBytes(n: number): string {
   color: var(--brand);
 }
 
+.cv-body-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
 .cv-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
+}
+/* ---- 滚动位置色块（Zed 同款，行内模式）----
+   钉在视口右缘、紧贴原生滚动条（abs 定位锚在 padding 盒，天然贴着滚动条内侧），
+   是一张「整文变更地图」：与滚动无关，比例 = 行号 / 全文行数。 */
+.cv-minimap {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  right: 1px;
+  width: 4px;
+  pointer-events: none;
+}
+.cv-minimap-mark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-height: 2px;
+  border-radius: 1px;
+}
+.cv-minimap-mark.is-add {
+  background: color-mix(in oklab, var(--success) 75%, transparent);
+}
+.cv-minimap-mark.is-del {
+  background: color-mix(in oklab, var(--destructive) 75%, transparent);
 }
 .cv-state {
   margin: auto;
@@ -938,105 +1382,336 @@ function formatBytes(n: number): string {
 .cv-stat {
   white-space: nowrap;
 }
+.cv-add {
+  color: var(--success);
+  font-weight: 600;
+}
+.cv-del {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+/* ---- 正文形态切换（文件 / 并排 diff，原型 cp-modes 同款胶囊）---- */
+.cv-modes {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--muted);
+  border-radius: 999px;
+}
+.cv-mode {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--transition-fast, 120ms), background var(--transition-fast, 120ms);
+}
+.cv-mode:hover:not(:disabled) {
+  color: var(--foreground);
+}
+.cv-mode.is-on {
+  background: var(--card);
+  color: var(--foreground);
+  font-weight: 500;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 6%);
+}
+/* 没改动的文件不给 diff（原型拍板点 B）：置灰而不是点开一个全空对比 */
+.cv-mode:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- 并排 diff（模块 12 P2）----
+   行结构与 DiffView 同款（grid 36px/1fr/36px/1fr）。min-width 兜底：分屏时纸可能
+   只有 500px，不兜底每侧被压到 110px，pre-wrap 会把一行代码折成竖排「字柱」。 */
+.cv-diff-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+.cv-diff {
+  padding: 8px 0 16px;
+  min-width: 680px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+  /* 对话区/文件正文同款：diff 内容可选中复制 */
+  user-select: text;
+}
+.cv-diff-row {
+  display: grid;
+  grid-template-columns: 36px minmax(240px, 1fr) 36px minmax(240px, 1fr);
+}
+.cv-diff-num {
+  padding: 0 8px;
+  font-size: 11px;
+  text-align: right;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+  user-select: none;
+}
+.cv-diff-cell {
+  margin: 0;
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--foreground);
+}
+/* 第 2 个子元素恒为左侧行内容格（num/pre/num/pre 四格固定），中缝画在它右缘 */
+.cv-diff-cell:nth-child(2) {
+  border-right: 1px solid var(--border);
+}
+/* 增删行只染背景不强制字色，语法 token 颜色才能透出来（DiffView 同款透明度） */
+.cv-diff-cell.is-removed {
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+}
+.cv-diff-cell.is-added {
+  background: color-mix(in oklab, var(--success) 10%, transparent);
+}
+.cv-diff-cell.is-empty {
+  background: var(--muted);
+}
+/* hunk 之间/首尾的未变更省略条：横跨整行（网格 4 列占满），muted 弱化 */
+.cv-diff-omit {
+  grid-column: 1 / -1;
+  padding: 2px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--muted-foreground) 7%, transparent);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+/* ---- 行内高亮（inline 形态，原型文件正文同款）---- */
+/* 色条画在行号栏右缘（替换那条 1px 分隔线）：.cv-ln 是 sticky，画左缘横向一滚
+   就成「纸外飘着一条绿杠」——原型注释里点名过的坑 */
+.cv-line.is-add .cv-ln {
+  border-right: 3px solid var(--success);
+  padding-right: 12px;
+}
+/* 增行只染淡底不强制字色，语法 token 颜色才能透出来（与并排格同款透明度） */
+.cv-line.is-add .cv-lc {
+  background: color-mix(in oklab, var(--success) 10%, transparent);
+}
+/* 删除占位条：工作区文件里没有这些行，用一条可点开的红色细条占位（原型同款） */
+.cv-delblock {
+  display: block;
+}
+.cv-delblock-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 20px;
+  padding: 0 12px 0 16px;
+  border: 0;
+  border-top: 1px solid color-mix(in oklab, var(--destructive) 30%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--destructive) 30%, transparent);
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--destructive);
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+.cv-delblock-bar:hover {
+  background: color-mix(in oklab, var(--destructive) 20%, transparent);
+}
+.cv-delblock-tri {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  transition: transform var(--transition-fast, 120ms);
+}
+.cv-delblock.is-open .cv-delblock-tri {
+  transform: rotate(90deg);
+}
+.cv-delblock-gone {
+  display: block;
+  padding: 4px 0;
+  background: color-mix(in oklab, var(--destructive) 8%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--destructive) 30%, transparent);
+}
+.cv-delblock-line {
+  display: block;
+  white-space: pre;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--foreground);
+}
+/* 展开行不带行号（原型同款）：占位条本身挂在锚点行之后，位置已经自明；
+   删除线只画在文本上 */
+.cv-delblock-text {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--destructive) 40%, transparent);
+}
 </style>
 
 <!-- hljs token 主题：与 DiffView 同源（同一套 GitHub palette 微调）。
      非 scoped：v-html 注入的子节点不带 scoped 属性，加不上哈希前缀。 -->
 <style>
 .cv-lc .hljs-comment,
-.cv-lc .hljs-quote {
+.cv-diff-cell .hljs-comment,
+.cv-lc .hljs-quote,
+.cv-diff-cell .hljs-quote {
   /* 不用斜体：中文注释走 Noto Sans CJK 的合成倾斜糊成一团，用户 2026-10-01 点名去掉 */
   color: #6e7781;
 }
 .cv-lc .hljs-keyword,
+.cv-diff-cell .hljs-keyword,
 .cv-lc .hljs-selector-tag,
+.cv-diff-cell .hljs-selector-tag,
 .cv-lc .hljs-doctag,
-.cv-lc .hljs-template-tag {
+.cv-diff-cell .hljs-doctag,
+.cv-lc .hljs-template-tag,
+.cv-diff-cell .hljs-template-tag {
   color: #cf222e;
 }
 .cv-lc .hljs-string,
+.cv-diff-cell .hljs-string,
 .cv-lc .hljs-regexp,
-.cv-lc .hljs-meta .hljs-string {
+.cv-diff-cell .hljs-regexp,
+.cv-lc .hljs-meta .hljs-string,
+.cv-diff-cell .hljs-meta .hljs-string {
   color: #0e7a3d;
 }
 .cv-lc .hljs-number,
-.cv-lc .hljs-literal {
+.cv-diff-cell .hljs-number,
+.cv-lc .hljs-literal,
+.cv-diff-cell .hljs-literal {
   color: #0550ae;
 }
 .cv-lc .hljs-title,
+.cv-diff-cell .hljs-title,
 .cv-lc .hljs-title.function_,
-.cv-lc .hljs-section {
+.cv-diff-cell .hljs-title.function_,
+.cv-lc .hljs-section,
+.cv-diff-cell .hljs-section {
   color: #8250df;
 }
 .cv-lc .hljs-attr,
+.cv-diff-cell .hljs-attr,
 .cv-lc .hljs-attribute,
+.cv-diff-cell .hljs-attribute,
 .cv-lc .hljs-variable,
-.cv-lc .hljs-template-variable {
+.cv-diff-cell .hljs-variable,
+.cv-lc .hljs-template-variable,
+.cv-diff-cell .hljs-template-variable {
   color: #0550ae;
 }
 .cv-lc .hljs-tag,
+.cv-diff-cell .hljs-tag,
 .cv-lc .hljs-name,
+.cv-diff-cell .hljs-name,
 .cv-lc .hljs-selector-id,
-.cv-lc .hljs-selector-class {
+.cv-diff-cell .hljs-selector-id,
+.cv-lc .hljs-selector-class,
+.cv-diff-cell .hljs-selector-class {
   color: #116329;
 }
 .cv-lc .hljs-type,
+.cv-diff-cell .hljs-type,
 .cv-lc .hljs-built_in,
-.cv-lc .hljs-class .hljs-title {
+.cv-diff-cell .hljs-built_in,
+.cv-lc .hljs-class .hljs-title,
+.cv-diff-cell .hljs-class .hljs-title {
   color: #953800;
 }
 .cv-lc .hljs-symbol,
+.cv-diff-cell .hljs-symbol,
 .cv-lc .hljs-bullet,
-.cv-lc .hljs-link {
+.cv-diff-cell .hljs-bullet,
+.cv-lc .hljs-link,
+.cv-diff-cell .hljs-link {
   color: #0550ae;
 }
 
 /* 暗色：GitHub Dark 系（与 DiffView 暗色板同源），
    浅色板在暗底上对比度不足，实测整屏糊成一片 */
 :root[data-theme='dark'] .cv-lc .hljs-comment,
-:root[data-theme='dark'] .cv-lc .hljs-quote {
+:root[data-theme='dark'] .cv-diff-cell .hljs-comment,
+:root[data-theme='dark'] .cv-lc .hljs-quote,
+:root[data-theme='dark'] .cv-diff-cell .hljs-quote {
   color: #8b949e;
 }
 :root[data-theme='dark'] .cv-lc .hljs-keyword,
+:root[data-theme='dark'] .cv-diff-cell .hljs-keyword,
 :root[data-theme='dark'] .cv-lc .hljs-selector-tag,
+:root[data-theme='dark'] .cv-diff-cell .hljs-selector-tag,
 :root[data-theme='dark'] .cv-lc .hljs-doctag,
-:root[data-theme='dark'] .cv-lc .hljs-template-tag {
+:root[data-theme='dark'] .cv-diff-cell .hljs-doctag,
+:root[data-theme='dark'] .cv-lc .hljs-template-tag,
+:root[data-theme='dark'] .cv-diff-cell .hljs-template-tag {
   color: #ff7b72;
 }
 :root[data-theme='dark'] .cv-lc .hljs-string,
+:root[data-theme='dark'] .cv-diff-cell .hljs-string,
 :root[data-theme='dark'] .cv-lc .hljs-regexp,
-:root[data-theme='dark'] .cv-lc .hljs-meta .hljs-string {
+:root[data-theme='dark'] .cv-diff-cell .hljs-regexp,
+:root[data-theme='dark'] .cv-lc .hljs-meta .hljs-string,
+:root[data-theme='dark'] .cv-diff-cell .hljs-meta .hljs-string {
   color: #a5d6ff;
 }
 :root[data-theme='dark'] .cv-lc .hljs-number,
+:root[data-theme='dark'] .cv-diff-cell .hljs-number,
 :root[data-theme='dark'] .cv-lc .hljs-literal,
+:root[data-theme='dark'] .cv-diff-cell .hljs-literal,
 :root[data-theme='dark'] .cv-lc .hljs-attr,
+:root[data-theme='dark'] .cv-diff-cell .hljs-attr,
 :root[data-theme='dark'] .cv-lc .hljs-attribute,
+:root[data-theme='dark'] .cv-diff-cell .hljs-attribute,
 :root[data-theme='dark'] .cv-lc .hljs-variable,
+:root[data-theme='dark'] .cv-diff-cell .hljs-variable,
 :root[data-theme='dark'] .cv-lc .hljs-template-variable,
+:root[data-theme='dark'] .cv-diff-cell .hljs-template-variable,
 :root[data-theme='dark'] .cv-lc .hljs-meta,
-:root[data-theme='dark'] .cv-lc .hljs-operator {
+:root[data-theme='dark'] .cv-diff-cell .hljs-meta,
+:root[data-theme='dark'] .cv-lc .hljs-operator,
+:root[data-theme='dark'] .cv-diff-cell .hljs-operator {
   color: #79c0ff;
 }
 :root[data-theme='dark'] .cv-lc .hljs-title,
+:root[data-theme='dark'] .cv-diff-cell .hljs-title,
 :root[data-theme='dark'] .cv-lc .hljs-title.function_,
-:root[data-theme='dark'] .cv-lc .hljs-section {
+:root[data-theme='dark'] .cv-diff-cell .hljs-title.function_,
+:root[data-theme='dark'] .cv-lc .hljs-section,
+:root[data-theme='dark'] .cv-diff-cell .hljs-section {
   color: #d2a8ff;
 }
 :root[data-theme='dark'] .cv-lc .hljs-tag,
+:root[data-theme='dark'] .cv-diff-cell .hljs-tag,
 :root[data-theme='dark'] .cv-lc .hljs-name,
+:root[data-theme='dark'] .cv-diff-cell .hljs-name,
 :root[data-theme='dark'] .cv-lc .hljs-selector-id,
-:root[data-theme='dark'] .cv-lc .hljs-selector-class {
+:root[data-theme='dark'] .cv-diff-cell .hljs-selector-id,
+:root[data-theme='dark'] .cv-lc .hljs-selector-class,
+:root[data-theme='dark'] .cv-diff-cell .hljs-selector-class {
   color: #7ee787;
 }
 :root[data-theme='dark'] .cv-lc .hljs-type,
+:root[data-theme='dark'] .cv-diff-cell .hljs-type,
 :root[data-theme='dark'] .cv-lc .hljs-class .hljs-title,
-:root[data-theme='dark'] .cv-lc .hljs-built_in {
+:root[data-theme='dark'] .cv-diff-cell .hljs-class .hljs-title,
+:root[data-theme='dark'] .cv-lc .hljs-built_in,
+:root[data-theme='dark'] .cv-diff-cell .hljs-built_in {
   color: #ffa657;
 }
 :root[data-theme='dark'] .cv-lc .hljs-symbol,
+:root[data-theme='dark'] .cv-diff-cell .hljs-symbol,
 :root[data-theme='dark'] .cv-lc .hljs-bullet,
-:root[data-theme='dark'] .cv-lc .hljs-link {
+:root[data-theme='dark'] .cv-diff-cell .hljs-bullet,
+:root[data-theme='dark'] .cv-lc .hljs-link,
+:root[data-theme='dark'] .cv-diff-cell .hljs-link {
   color: #79c0ff;
 }
 </style>

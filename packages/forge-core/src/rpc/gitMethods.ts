@@ -80,6 +80,7 @@ export class GitApi {
       'git/getBranchInfo': (params) => this.getBranchInfo(params),
       'git/switchBranch': (params) => this.switchBranch(params),
       'git/getStatus': (params) => this.getStatus(params),
+      'git/getFileDiff': (params) => this.getFileDiff(params),
       'git/commit': (params) => this.commit(params),
       'git/push': (params) => this.push(params),
     };
@@ -166,6 +167,34 @@ export class GitApi {
       return ok(await this.gitService.getStatus(path));
     } catch (err) {
       console.error('[getStatus] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /**
+   * git/getFileDiff：单文件 unified diff（模块 12 代码查看器「并排 diff」数据源，只读）。
+   * relPath 逃逸（绝对路径 / `..`）由服务层判 1001，这里只做参数存在性校验。
+   */
+  private async getFileDiff(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    const relPath = requireString(params, 'relPath');
+    if (relPath === null) {
+      return fail(1001, '参数错误：relPath 必须为非空字符串');
+    }
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      const result = await this.gitService.getFileDiff(path, relPath);
+      if (result.ok) {
+        return ok(result.data);
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[getFileDiff] internal error', err);
       return fail(5000, 'internal error');
     }
   }

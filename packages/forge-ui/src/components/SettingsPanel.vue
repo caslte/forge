@@ -7,6 +7,7 @@ import type { PiGetInfoResult } from '../bridge';
 import { useToast } from '../composables/useToast';
 import {
   usePreferences,
+  type CodeDiffDefaultMode,
   type CodeViewerLayout,
   type ContentWidth,
   type TerminalShellPref,
@@ -93,6 +94,12 @@ const codeLayoutOptions: { value: CodeViewerLayout; labelKey: MessageKey }[] = [
   { value: 'split', labelKey: 'settings.codeViewer.layoutSplit' },
 ];
 
+/** 模块 12 P2：代码对比默认视图（默认 side 并排，2026-10-03 用户定稿；inline 留给偏好带标记全文的人） */
+const diffViewOptions: { value: CodeDiffDefaultMode; labelKey: MessageKey }[] = [
+  { value: 'side', labelKey: 'settings.codeViewer.diffViewSide' },
+  { value: 'inline', labelKey: 'settings.codeViewer.diffViewInline' },
+];
+
 /**
  * 模块 10 TD-TM-05 方案 B：终端 Shell 选项。首项恒为 auto（跟随系统默认优先级链），
  * 其余来自主进程探测（listTerminalShells 只回已安装档，label=产品名）。探测失败/空
@@ -135,6 +142,7 @@ const toast = useToast();
 const { showDiff, setShowDiff, contentWidth, setContentWidth, terminalShell, setTerminalShell } =
   usePreferences();
 const { codeViewerLayout, setCodeViewerLayout } = usePreferences();
+const { codeDiffDefaultMode, setCodeDiffDefaultMode } = usePreferences();
 
 const canSubmitForm = computed(() => {
   return (
@@ -970,6 +978,28 @@ onUnmounted(() => {
                   : t('settings.codeViewer.layoutSplitDesc')
               "
               @click="setCodeViewerLayout(opt.value)"
+            >{{ t(opt.labelKey) }}</button>
+          </div>
+        </div>
+        <!-- 模块 12 P2：有修改的文件默认进哪种对比（并排/行内），代码纸右上角可临时切 -->
+        <div class="pref-row">
+          <div class="pref-text">
+            <span class="pref-title">{{ t('settings.codeViewer.diffView') }}</span>
+            <span class="pref-desc">{{ t('settings.codeViewer.diffViewDesc') }}</span>
+          </div>
+          <div
+            class="width-options code-layout-options"
+            role="radiogroup"
+            :aria-label="t('settings.codeViewer.diffView')"
+          >
+            <button
+              v-for="opt in diffViewOptions"
+              :key="opt.value"
+              class="code-layout-option"
+              :class="{ active: codeDiffDefaultMode === opt.value }"
+              role="radio"
+              :aria-checked="codeDiffDefaultMode === opt.value"
+              @click="setCodeDiffDefaultMode(opt.value)"
             >{{ t(opt.labelKey) }}</button>
           </div>
         </div>

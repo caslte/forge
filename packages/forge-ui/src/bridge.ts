@@ -71,6 +71,8 @@ export type ForgeMethod =
   | 'git/switchBranch'
   // git 提交/推送（模块 11，docs/prd/11_git_commit_push.md）
   | 'git/getStatus'
+  // 模块 12：单文件 unified diff（代码查看器「并排 diff」数据源，只读）
+  | 'git/getFileDiff'
   | 'git/commit'
   | 'git/push'
   | 'git/generateCommitMessage'

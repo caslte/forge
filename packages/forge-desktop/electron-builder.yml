@@ -15,8 +15,9 @@ files:
   - dist/**/*
   - package.json
 # 发布说明：release.mjs 发布时自动生成（汇总上一 tag..HEAD 的提交，按类型分组），
-# 随 bump commit 进仓库；electron-builder 创建 GitHub Release 时用它做描述，
-# 并写入 latest.yml（应用内更新弹窗可显示）。
+# 随 bump commit 进仓库；electron-builder 把它写进 latest.yml（应用内更新弹窗显示）。
+# 注意：electron-builder 25.x 创建 GitHub Release 时不写 body —— GitHub Release
+# 描述由 workflow 的 release-notes job 在产物上传完后用 gh release edit 补写。
 # 路径可为相对 buildResources 或相对本包目录（electron-builder 依次查这两处）。
 releaseInfo:
   releaseNotesFile: release-notes.md

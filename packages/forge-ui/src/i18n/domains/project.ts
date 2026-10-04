@@ -28,6 +28,12 @@ export const zhProject = {
   'project.confirmSwitchBranch': '确认切换分支',
   'project.dirtySwitchWarning': '工作区有未提交更改，建议先提交或暂存',
   'project.switchAnyway': '仍要切换',
+  'project.timeJustNow': '刚刚',
+  'project.timeMinutes': '{count}分钟',
+  'project.timeHours': '{count}小时',
+  'project.timeDays': '{count}天',
+  'project.timeMonthDay': '{month}月{day}日',
+  'project.timeFull': '{year}/{month}/{day}',
 } as const;
 
 export const enProject: Record<string, string> = {
@@ -60,4 +66,10 @@ export const enProject: Record<string, string> = {
   'project.confirmSwitchBranch': 'Confirm branch switch',
   'project.dirtySwitchWarning': 'The working tree has uncommitted changes. Consider committing or stashing them first.',
   'project.switchAnyway': 'Switch anyway',
+  'project.timeJustNow': 'just now',
+  'project.timeMinutes': '{count}m',
+  'project.timeHours': '{count}h',
+  'project.timeDays': '{count}d',
+  'project.timeMonthDay': '{month}/{day}',
+  'project.timeFull': '{year}/{month}/{day}',
 };

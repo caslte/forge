@@ -124,3 +124,19 @@ jobs:
             packages/forge-desktop/release/*.deb
             packages/forge-desktop/release/*.blockmap
             packages/forge-desktop/release/latest*.yml
+
+  # electron-builder 25.x 创建 GitHub Release 时不带 body（electron-publish 的
+  # createRelease 只发 tag/name/draft/prerelease，releaseNotes 仅进 latest.yml 供
+  # 应用内更新弹窗显示）——Release 描述需要在这里补写，否则 GitHub 显示默认的
+  # tag 名 + commit message。
+  release-notes:
+    name: 写入 Release 描述
+    needs: build # 等全部平台产物上传完，避免与 Release 创建竞态
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') # workflow_dispatch 无 tag，跳过
+    steps:
+      - uses: actions/checkout@v4
+      - name: 用 release-notes.md 补写 Release 描述
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --notes-file packages/forge-desktop/release-notes.md --repo "${{ github.repository }}"

@@ -51,11 +51,41 @@ export const enCode = {
   'code.lines': 'lines',
   'code.shownLines': 'showing {n} lines (truncated)',
   'code.eolMixed': 'mixed EOL',
-  'code.gitBadge': 'Git status: {s}',
   'code.loadMore': 'Show {n} more lines',
 
   'code.layoutDegraded': 'Window too narrow — temporarily using full screen (preference: side by side)',
   'code.widthPct': 'Width {n}',
   'code.splitterHint':
     'Drag the divider to resize, double-click to reset, or use ←/→ for fine adjustment',
+
+  // ===== Git changes view + commit bar (2026-10-03) =====
+  'code.viewFiles': 'Files',
+  'code.viewChanges': 'Changes',
+  'code.groupChanged': 'Uncommitted changes',
+  'code.changesViewModes': 'Changes list layout',
+  'code.changesFlat': 'Flat',
+  'code.changesTree': 'Tree',
+  'code.changesFlatTitle': 'Flat list of all changed files',
+  'code.changesTreeTitle': 'Grouped by folder, expanded by default; click a folder to collapse',
+  'code.gitLoading': 'Reading Git status…',
+  'code.notGitRepo': 'This project is not a Git repository',
+  'code.noChanges': 'No uncommitted changes',
+  'code.noChangesHint': 'The working tree matches HEAD. The list refreshes on its own.',
+  'code.gitChangedCount': '{n} uncommitted change(s)',
+  'code.gitPendingFiles': '{n} file(s) to commit',
+  'code.commitOrPush': 'Commit or push',
+
+  // ===== Side-by-side diff (module 12 P2, 2026-10-03) =====
+  'code.modeSwitcher': 'Content view',
+  'code.modeFile': 'File',
+  'code.modeInline': 'Inline',
+  'code.modeDiff': 'Side-by-side',
+  'code.delBlockBar': '{n} deleted line(s) — click to expand',
+  'code.diffOmitted': '{n} unchanged line(s)',
+  'code.diffNoChangesTitle': 'No uncommitted changes in this file',
+  'code.diffBinaryTitle': 'Binary file: diff not shown',
+  'code.diffBinaryHint': 'The content cannot be compared line by line. Use the context menu to open it in an external tool.',
+  'code.diffFailTitle': 'Failed to load diff',
+  'code.diffFailHint': 'git diff returned nothing. Try again later.',
+  'code.diffVsHead': 'vs HEAD',
 };

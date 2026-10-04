@@ -55,11 +55,41 @@ export const zhCode = {
   'code.lines': '行',
   'code.shownLines': '显示 {n} 行（已截断）',
   'code.eolMixed': '混合行尾',
-  'code.gitBadge': 'Git 状态：{s}',
   'code.loadMore': '再显示 {n} 行',
 
   // ===== 布局 =====
   'code.layoutDegraded': '窗口过窄，已临时改用整屏模式（偏好：左右分割）',
   'code.widthPct': '宽度 {n}',
   'code.splitterHint': '拖动中间的分割线调整宽度，双击复位，←/→ 微调',
+
+  // ===== Git 变更视图 + 提交条（2026-10-03） =====
+  'code.viewFiles': '文件',
+  'code.viewChanges': '变更',
+  'code.groupChanged': '本次变更',
+  'code.changesViewModes': '变更清单形态',
+  'code.changesFlat': '平铺',
+  'code.changesTree': '级联',
+  'code.changesFlatTitle': '平铺清单：全部变更文件一列排开',
+  'code.changesTreeTitle': '按目录分层，默认展开；点目录折叠',
+  'code.gitLoading': '正在读取 Git 状态…',
+  'code.notGitRepo': '此项目不是 Git 仓库',
+  'code.noChanges': '没有未提交的变更',
+  'code.noChangesHint': '工作区与 HEAD 一致。新增、修改或删除文件后会自动刷新。',
+  'code.gitChangedCount': '{n} 个未提交变更',
+  'code.gitPendingFiles': '{n} 个文件待提交',
+  'code.commitOrPush': '提交或推送',
+
+  // ===== 并排 diff（模块 12 P2，2026-10-03） =====
+  'code.modeSwitcher': '正文形态',
+  'code.modeFile': '文件',
+  'code.modeInline': '行内',
+  'code.modeDiff': '并排',
+  'code.delBlockBar': '此处删除了 {n} 行（点击展开）',
+  'code.diffOmitted': '未变更 {n} 行',
+  'code.diffNoChangesTitle': '此文件没有未提交的改动',
+  'code.diffBinaryTitle': '二进制文件不显示对比',
+  'code.diffBinaryHint': '内容无法按行对比，可用右侧菜单在外部工具中查看。',
+  'code.diffFailTitle': '对比加载失败',
+  'code.diffFailHint': 'git diff 没有返回结果，可稍后重试。',
+  'code.diffVsHead': '相对 HEAD',
 };

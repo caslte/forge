@@ -32,12 +32,21 @@ export type TerminalShellPref = 'auto' | 'pwsh' | 'powershell' | 'cmd';
  */
 export type CodeViewerLayout = 'cover' | 'split';
 
+/**
+ * 代码对比默认视图（模块 12 P2，2026-10-03 用户定稿：有修改的文件默认直接进对比，
+ * 具体进哪一种从这里取）：
+ * - side：并排 diff（默认）。增删一眼扫完，「我改了什么」的检视动线最短。
+ * - inline：行内高亮。带标记的全文，适合顺着代码上下文读大改动。
+ */
+export type CodeDiffDefaultMode = 'side' | 'inline';
+
 const SHOW_DIFF_KEY = 'forge:show-diff';
 const CONTENT_WIDTH_KEY = 'forge:content-width';
 const TERM_HEIGHT_KEY = 'forge:terminal-height';
 const TERM_TINT_KEY = 'forge:terminal-tint';
 const TERM_SHELL_KEY = 'forge:terminal-shell';
 const CODE_LAYOUT_KEY = 'forge.codeViewerLayout';
+const CODE_DIFF_MODE_KEY = 'forge.codeDiffDefaultMode';
 const CODE_SPLIT_PCT_KEY = 'forge.codeViewerSplitPct';
 
 /**
@@ -120,6 +129,8 @@ const terminalShell = ref<TerminalShellPref>('auto');
 const codeViewerLayout = ref<CodeViewerLayout>('cover');
 /** 分割布局下代码纸占宽百分比；写入时恒 clamp 到 [保底, 100−保底]（CE-S03） */
 const codeViewerSplitPct = ref(CODE_SPLIT_PCT_DEFAULT);
+/** 有修改的文件默认进哪种对比视图：side=并排（默认）/ inline=行内高亮（2026-10-03 用户定稿默认并排） */
+const codeDiffDefaultMode = ref<CodeDiffDefaultMode>('side');
 /**
  * 视口宽度的**单一数据源**。放模块级而不是各组件私有，是因为「窄窗降级」这条规则
  * 有三个消费方：CodeExplorer 画不画并排、App 判不判要退出代码态、CodeTreePanel
@@ -132,7 +143,9 @@ const codeViewerSplitPct = ref(CODE_SPLIT_PCT_DEFAULT);
  */
 export const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
 
-if (typeof window !== 'undefined') {
+// addEventListener 的存在性一并守卫：node 侧单测/无 DOM 环境只给 window 塞最小 mock
+// （useCodeExplorer 的测试正是这么做的），守不住这里整条 import 链都会炸
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('resize', () => {
     viewportWidth.value = window.innerWidth;
   });
@@ -181,6 +194,8 @@ function load(): void {
     // 布局：仅显式 'split' / 'cover' 生效，其余（含非法值）回退默认 cover
     const layout = localStorage.getItem(CODE_LAYOUT_KEY);
     if (layout === 'split' || layout === 'cover') codeViewerLayout.value = layout;
+    const diffMode = localStorage.getItem(CODE_DIFF_MODE_KEY);
+    if (diffMode === 'side' || diffMode === 'inline') codeDiffDefaultMode.value = diffMode;
     const pct = Number(localStorage.getItem(CODE_SPLIT_PCT_KEY));
     if (Number.isFinite(pct) && pct > 0) {
       codeViewerSplitPct.value = clampCodeSplitPct(
@@ -252,6 +267,16 @@ function saveCodeViewerLayout(v: CodeViewerLayout): void {
   }
 }
 
+/** 保存代码对比默认视图（side/inline）；非法值不落盘 */
+function saveCodeDiffDefaultMode(v: CodeDiffDefaultMode): void {
+  codeDiffDefaultMode.value = v;
+  try {
+    localStorage.setItem(CODE_DIFF_MODE_KEY, v);
+  } catch {
+    // ignore
+  }
+}
+
 function saveCodeViewerSplitPct(v: number): void {
   // 写盘前 clamp：否则拖到极窄后刷新会先以非法值恢复、clamp 一次闪一下
   codeViewerSplitPct.value = clampCodeSplitPct(
@@ -285,5 +310,7 @@ export function usePreferences() {
     setCodeViewerLayout: saveCodeViewerLayout,
     codeViewerSplitPct,
     setCodeViewerSplitPct: saveCodeViewerSplitPct,
+    codeDiffDefaultMode,
+    setCodeDiffDefaultMode: saveCodeDiffDefaultMode,
   };
 }

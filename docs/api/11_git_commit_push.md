@@ -33,7 +33,11 @@
   "stagedEmpty": false,
   "stagedCount": 2,
   "unpushedCount": 5,
-  "hasHead": true
+  "hasHead": true,
+  "files": [
+    { "path": "src/a.ts", "status": "M", "staged": false, "added": 12, "removed": 3 },
+    { "path": "src/b.vue", "status": "?", "staged": false, "added": 46, "removed": 0 }
+  ]
 }
 ```
 
@@ -41,6 +45,7 @@
 |---|---|
 | fileCount | `status --porcelain=v1 --untracked-files=all` 行数（含未跟踪；重命名计 1） |
 | added/removed | `diff HEAD --numstat` 汇总（无 HEAD 退 `--cached`）；二进制行 `-\t-` 不计；未跟踪文件不进 numstat |
+| files[] | **模块 12（2026-10-03 追加）**逐文件状态与行数。`path`/`status`/`staged` 为原有字段；`added`/`removed` 为**本次新增的纯字段**：跟踪文件取 `--numstat` 逐行拆分，未跟踪文件由服务层读文件数行（git 对未跟踪文件不报行数），二进制一律 0。⚠ **口径与上一行的汇总不同**：`files[].added` **含未跟踪文件**，而 `added/removed` **不含**。所以「files 逐项之和 == 汇总」是**错的**，正确关系是「非未跟踪项之和 == 汇总」；界面要「这次一共改了多少行」应自行汇总 `files[]` |
 | stagedEmpty | porcelain X 列全为空格或 `?`（D2 勾选不勾时提交/禁用判据，UI 禁用+服务端拒绝双保险） |
 | stagedCount | porcelain X 列非空格非 `?` 的行数（不勾「包含未暂存」时的待提交文件数，弹窗计数用） |
 | unpushedCount | 未推送提交涉及的文件数，三级判据：有 upstream 比 `upstream...HEAD`；无 upstream 比 `origin/<分支>...HEAD`；分支从未推送则数 `HEAD --not --remotes`（本地有、任何远端分支没有的提交，显式 HEAD 防零远端引用时输出为空）。仅无远端 / detached / 无 HEAD → `null`（UI 不显示） |
@@ -48,7 +53,30 @@
 | branch/detached | 与 getBranchInfo 五态口径一致：detached 时 branch=短 SHA |
 | 非 git 目录 | `isGitRepo:false` 全空值（不报错，与 §10 既有语义一致） |
 
-## 2. git/commit
+## 2. git/getFileDiff
+
+单文件 unified diff（模块 12 代码查看器「并排 diff」的数据源，2026-10-03 追加，只读幂等）。
+实现位置与 getStatus 同在 `gitService.ts` / `rpc/gitMethods.ts`。
+
+**参数**：`{ "path": "D:/work/xxx", "relPath": "src/a.ts" }`（path 须已注册项目；relPath 为相对仓库根的 POSIX 路径）。
+
+成功响应 `data`：
+
+```json
+{ "diff": "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.txt\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n hello\n+world\n" }
+```
+
+| 取值 | 口径 |
+|---|---|
+| 非空文本 | 相对基线的 unified diff。基线与 getStatus 的 numstat 同口径：有 HEAD 比 `diff HEAD`，无 HEAD 空仓库比 `diff --cached`。二进制变更原样返回 git 的 `Binary files … differ` 提示行（解析层识别，不在服务层特判） |
+| `""`（空串） | 跟踪文件相对基线无差异 |
+| `null` | 不可对比：未跟踪文件（git 不给它产出 diff）/ 非 git 目录（与 NOT_A_STATUS 同口径返回空值不报错）。UI 对未跟踪文件用已加载正文合成「全新增」视角 |
+
+空输出的二义性（无差异 vs 未跟踪）由服务层用 `ls-files --error-unmatch` 消解，且只在 diff 为空时才多这一次调用。
+失败：1001（path/relPath 非空校验；relPath 逃逸——绝对路径 / `..` / 空段——由服务层同码拒绝）；1002 项目未注册；
+6001 git diff 失败（`data.stderr` 附 git 原始输出，信封形态与 §11 git/switchBranch 一致）。
+
+## 3. git/commit
 
 **参数**：
 
@@ -68,7 +96,7 @@ hook 失败时 add 的暂存**不回退**（UI 错误区如实提示"变更已�
 成功响应 `data`：`{ "shortHash": "abc1234", "fileCount": 2 }`（fileCount=本次提交涉及文件数，toast 数据源）。
 日志：`[git] commit ok cwd=… hash=… files=… msg=<前 60 字符>`。
 
-## 3. git/push
+## 4. git/push
 
 **参数**：`{ "path": "D:/work/xxx" }`。
 
@@ -79,7 +107,7 @@ hook 失败时 add 的暂存**不回退**（UI 错误区如实提示"变更已�
 
 成功响应 `data`：`{ "branch": "main", "remote": "origin" }`（remote 取 `branch.<b>.remote` 配置，自动 -u 时即 origin）。
 
-## 4. git/generateCommitMessage
+## 5. git/generateCommitMessage
 
 AI 一键生成提交说明（GC-F05）。**参数**：
 
@@ -114,19 +142,20 @@ AI 一键生成提交说明（GC-F05）。**参数**：
 成功响应 `data`：`{ "message": "feat: …" }`。失败统一 6008 + 可读 message；
 HTTP 非 2xx 日志只记状态码与模型名（响应体可能回显请求内容，刻意不记）。
 
-## 5. 错误码汇总（本模块）
+## 6. 错误码汇总（本模块）
 
 | code | 语义 |
 |---|---|
 | 0 | 成功 |
 | 1001 | 参数错误（path/message 空白） |
 | 1002 | 项目未注册 |
+| 6001 | git 命令执行失败（data.stderr；getFileDiff 复用，语义同 §11 api/01） |
 | 6006 | git 提交失败（data.stderr；含暂存空拒绝） |
 | 6007 | git 推送失败（data.stderr；含分离 HEAD 拒绝） |
 | 6008 | AI 生成失败（无变更/未配置模型/不支持协议/网络/非 2xx/空内容） |
 | 5000 | 内部错误 |
 
-## 6. 白名单与 UI 侧约定（forge-ui）
+## 7. 白名单与 UI 侧约定（forge-ui）
 
 - 双白名单已登记：`forge-desktop/src/ipc-contract.ts` ForgeMethod +4；`forge-ui/src/bridge.ts` 同名并集 +4
   （preload 无运行期方法白名单，零改动）。事件零新增（提交/推送不广播，弹窗打开时重查 getStatus）。

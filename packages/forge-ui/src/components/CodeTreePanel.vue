@@ -9,15 +9,22 @@
  * 树的渲染是「已加载层 + 懒加载占位」的混合结构：某层没拉过数据就只渲染一行
  * 展开箭头占位，点开时才 listDir。这样项目根再大也只发一次请求。
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useCodeExplorer, type ProjectCodeState, type TreeRow } from '../composables/useCodeExplorer';
-import { fileBadgeOf } from '../utils/fileBadge';
-import { absoluteFilePath, dirOf } from '../utils/pathSegments';
-import { hasBrowserOpenableExt } from '../utils/browserOpen';
+import { fileBadgeOf } from '../utils/fileBadge.ts';
+import { aggregateGitDirStatus } from '../utils/gitTreeStatus.ts';
+import { buildChangedTree, type ChangedNode } from '../utils/changedTree.ts';
+import { gitStatusUi } from '../utils/gitStatusUi.ts';
+import { absoluteFilePath, dirOf } from '../utils/pathSegments.ts';
+import { hasBrowserOpenableExt } from '../utils/browserOpen.ts';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
-import type { GitStatusFile } from '../types';
-import type { CodeViewerLayout } from '../composables/usePreferences';
+import type { GitStatusFile, GitStatusInfo } from '../types.ts';
+import type { CodeViewerLayout } from '../composables/usePreferences.ts';
+import { openGitCommitDialog } from '../composables/useGitCommitDialog.ts';
 import { useI18n } from '../i18n/index.ts';
+
+/** 路径末段文件名（变更视图的扁平清单用） */
+const nameOf = (p: string): string => p.slice(p.lastIndexOf('/') + 1);
 
 const props = defineProps<{
   /** 当前项目绝对路径（所有寻址都以它为根，组件自己绝不拼绝对路径） */
@@ -41,6 +48,14 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const { getState, loadDir, toggleDir, openFile, search, loadGitStatus } = useCodeExplorer();
 
+/** 左栏第二视图（2026-10-03 模块 12 扩展）：文件 / 变更 双视图互斥。
+ *  栏内切换而非新增一栏——两个视图消费同一份 useCodeExplorer 状态，
+ *  切来切去不丢展开态与已开的签。 */
+const view = ref<'files' | 'changes'>('files');
+
+const rootLoaded = ref(false);
+const searchInput = ref<'' | string>('');
+
 /** 扁平化后的可见行（把 children 树拍平成带 depth 的线性列表） */
 interface FlatRow {
   row: TreeRow;
@@ -49,9 +64,16 @@ interface FlatRow {
   loading: boolean;
 }
 
-const gitFiles = ref<Map<string, GitStatusFile>>(new Map());
-const rootLoaded = ref(false);
-const searchInput = ref<'' | string>('');
+/** 变更视图行：点击打开该文件。默认规则已让有变更的文件直接进 diff，
+ *  这里无需再特判（用户 2026-10-03：修改的文件应该直接跳进 diff）。 */
+function onPickChanged(f: GitStatusFile): void {
+  void openFile(props.projectPath, f.path, f.path.slice(f.path.lastIndexOf('/') + 1));
+}
+
+/**
+ * 状态字母 → 展示字形：表在 utils/gitStatusUi.ts（和查看器头部徽标共用一张，
+ * 各写各的就会出现「树里绿 U、头部橙 ?」——用户 2026-10-03 报）。
+ */
 
 /** 读项目级状态；shallow 内部按项目隔离，切项目自动换一份 */
 const state = computed<ProjectCodeState>(() => getState(props.projectPath));
@@ -59,6 +81,44 @@ const expanded = computed(() => state.value.expanded);
 const children = computed(() => state.value.children);
 const activeRel = computed(() => state.value.activeRel);
 const searchResults = computed(() => state.value.searchResults);
+
+/** 整份 Git 状态：读**共享的项目状态**（composable loadGitStatus 写入），
+ *  与右侧 diff 模式判定同源——组件各拉各的会有「状态在路上」的错帧窗口 */
+const gitInfo = computed<GitStatusInfo | null>(() => state.value.gitInfo);
+const gitFiles = computed<Map<string, GitStatusFile>>(
+  () => new Map((gitInfo.value?.files ?? []).map((f) => [f.path, f])),
+);
+/** 变更视图的清单：即 files[]，保持 git 自身的顺序（已暂存的在前） */
+const changedList = computed<GitStatusFile[]>(() => gitInfo.value?.files ?? []);
+
+/** 变更清单形态（2026-10-03 用户需求）：flat=平铺（默认）/ tree=按目录级联 */
+const changesViewMode = ref<'flat' | 'tree'>('flat');
+/** 级联目录的折叠集合（例外法：默认全展开，新出现的目录也是展开的） */
+const collapsedChangedDirs = ref<Set<string>>(new Set());
+const changedTree = computed<ChangedNode[]>(() => buildChangedTree(changedList.value));
+/** 级联的可见行：树拍平成带 depth 的线性列表（与文件树 flatRows 同一思路） */
+const changedTreeRows = computed<Array<{ node: ChangedNode; depth: number }>>(() => {
+  const out: Array<{ node: ChangedNode; depth: number }> = [];
+  const walk = (nodes: ChangedNode[], depth: number): void => {
+    for (const n of nodes) {
+      out.push({ node: n, depth });
+      if (n.kind === 'dir' && !collapsedChangedDirs.value.has(n.relPath)) {
+        walk(n.children, depth + 1);
+      }
+    }
+  };
+  walk(changedTree.value, 0);
+  return out;
+});
+function toggleChangedDir(relPath: string): void {
+  const next = new Set(collapsedChangedDirs.value);
+  if (next.has(relPath)) {
+    next.delete(relPath);
+  } else {
+    next.add(relPath);
+  }
+  collapsedChangedDirs.value = next;
+}
 
 /**
  * 「最近打开」分组：本次会话已打开过的文件，最新的在前。
@@ -130,31 +190,53 @@ const visibleCount = computed(() =>
   isFiltering.value ? filteredRows.value.length : flatRows.value.length,
 );
 
-/** 目录行的 Git 徽标：任一子文件变更就标（不用递归——大目录会拖慢展开） */
+/**
+ * 目录行的 Git 徽标：任一子文件变更就标。聚合口径（单文件透传自身状态、
+ * 多文件聚合 M、冲突 U 压一切）在 utils/gitTreeStatus.ts，有独立单测；
+ * 名字着色与角标共用 rowStatus 的同一个结果——两处各写各的就会出现
+ * 「名字绿的、角标橙的」（用户 2026-10-03 报的「父级没有颜色标记」即此）。
+ */
 function dirBadge(relPath: string): GitStatusFile['status'] | null {
   if (gitFiles.value.size === 0) return null;
-  const prefix = `${relPath}/`;
-  let seen = false;
-  for (const f of gitFiles.value.values()) {
-    if (!f.path.startsWith(prefix)) continue;
-    if (f.status === 'U') return 'U';
-    if (!seen) {
-      seen = true;
-    } else {
-      return 'M';
-    }
-  }
-  return seen ? 'M' : null;
+  return aggregateGitDirStatus(gitInfo.value?.files ?? [], relPath);
 }
 
-/** 某文件/目录行的完整 Git 状态（供 title 用） */
-function gitOf(relPath: string): GitStatusFile | null {
-  return gitFiles.value.get(relPath) ?? null;
+/** 某行的 Git 状态：目录走聚合，文件查表；无变更 → null（不渲染角标） */
+function rowStatus(row: FlatRow['row']): GitStatusFile['status'] | null {
+  return row.kind === 'dir' ? dirBadge(row.relPath) : (gitFiles.value.get(row.relPath)?.status ?? null);
 }
 
+/** 树行的名字颜色类：文件=自身状态，目录=聚合状态——**父级也要染色**
+ *  （用户 2026-10-03 报：子文件改了、父目录名字不变色，一列目录里扫不出哪条分支有改动） */
+function nameClsOf(row: FlatRow['row']): string {
+  const st = rowStatus(row);
+  return st ? gitStatusUi(st).nameCls : '';
+}
+
+/** 底栏提交条数据：一个变更都没有时降为纯文字（不给点不动的按钮） */
+const gitSummary = computed(() => {
+  const info = gitInfo.value;
+  if (!info || !info.isGitRepo) return null;
+  const add = info.files.reduce((n, f) => n + (f.added ?? 0), 0);
+  const del = info.files.reduce((n, f) => n + (f.removed ?? 0), 0);
+  return { count: info.files.length, add, del, branch: info.branch };
+});
+
+/** 打开提交弹窗（模块 11 现有单例；本期不重做第二套弹窗） */
+function openCommitDialog(): void {
+  openGitCommitDialog({ projectPath: props.projectPath, projectName: props.projectName });
+}
+
+/**
+ * 刷新 Git 状态（写入共享项目状态；左侧角标与右侧 diff 模式判定同时更新）。
+ *
+ * 调用时机（三个，刻意不轮询）：
+ * - 切项目（watch immediate）
+ * - 窗口 focus：用户在外部编辑器改完文件切回来时校正
+ * - `code.fileChanged`：打开的文件被外部改动时顺带刷新（订阅已在 composable 里）
+ */
 async function refreshGit(): Promise<void> {
-  const files = await loadGitStatus(props.projectPath);
-  gitFiles.value = new Map(files.map((f) => [f.path, f]));
+  await loadGitStatus(props.projectPath);
 }
 
 // 切项目：重置根加载标记 + 拉根 + 拉 Git 状态
@@ -322,6 +404,12 @@ function onContextMenuSelect(key: string): void {
 /** 挂载时先扫一次：第一次右键菜单就能出分项，不用等到第二次 */
 onMounted(() => {
   void refreshEditors();
+  // 窗口 focus 校正 git 状态（用户在外部编辑器/终端改完文件切回来时徽标即时刷新；
+  // loadGitStatus 幂等且写共享状态，右栏的 diff 模式判定同步受益）
+  window.addEventListener('focus', refreshGit);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshGit);
 });
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -394,7 +482,20 @@ function onFilterEsc(e: KeyboardEvent): void {
     </header>
 
     <!-- 过滤框 -->
-    <div class="ctp-filter">
+    <!-- ★ 双视图切换：文件 / 变更。变更数角标非 0 时上 warning 色，
+         这是「有没有东西没提交」的第一眼。 -->
+    <div class="ctp-views" role="tablist">
+      <button class="ctp-view" :class="{ 'is-on': view === 'files' }" type="button" role="tab" :aria-selected="view === 'files'" @click="view = 'files'">
+        {{ t('code.viewFiles') }}
+      </button>
+      <button class="ctp-view" :class="{ 'is-on': view === 'changes' }" type="button" role="tab" :aria-selected="view === 'changes'" @click="view = 'changes'">
+        {{ t('code.viewChanges') }}
+        <span v-if="changedList.length > 0" class="ctp-count">{{ changedList.length }}</span>
+      </button>
+    </div>
+
+    <!-- 过滤框：只对「文件」视图有意义（变更视图本身就是文件清单） -->
+    <div v-show="view === 'files'" class="ctp-filter">
       <span class="ctp-filter-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
       </span>
@@ -422,8 +523,112 @@ function onFilterEsc(e: KeyboardEvent): void {
 
     <!-- 树 / 过滤结果 -->
     <div class="ctp-scroll">
+      <!-- ★ 变更视图：git 报的变更文件清单（只读，无勾选槽） -->
+      <template v-if="view === 'changes'">
+        <p v-if="!gitInfo" class="ctp-note">{{ t('code.gitLoading') }}</p>
+        <div v-else-if="!gitInfo.isGitRepo" class="ctp-empty">
+          <p class="ctp-empty-title">{{ t('code.notGitRepo') }}</p>
+        </div>
+        <div v-else-if="changedList.length === 0" class="ctp-empty">
+          <p class="ctp-empty-title">{{ t('code.noChanges') }}</p>
+          <p class="ctp-empty-hint">{{ t('code.noChangesHint') }}</p>
+        </div>
+        <template v-else>
+          <div class="ctp-group">
+            {{ t('code.groupChanged') }}
+            <!-- 清单形态：平铺（默认）/ 级联（按目录分层，2026-10-03 用户需求） -->
+            <span class="ctp-changed-modes" role="group" :aria-label="t('code.changesViewModes')">
+              <button
+                class="ctp-changed-mode"
+                :class="{ 'is-on': changesViewMode === 'flat' }"
+                type="button"
+                :aria-pressed="changesViewMode === 'flat'"
+                :title="t('code.changesFlatTitle')"
+                @click="changesViewMode = 'flat'"
+              >{{ t('code.changesFlat') }}</button>
+              <button
+                class="ctp-changed-mode"
+                :class="{ 'is-on': changesViewMode === 'tree' }"
+                type="button"
+                :aria-pressed="changesViewMode === 'tree'"
+                :title="t('code.changesTreeTitle')"
+                @click="changesViewMode = 'tree'"
+              >{{ t('code.changesTree') }}</button>
+            </span>
+          </div>
+
+          <!-- 平铺：全部变更文件一列排开 -->
+          <template v-if="changesViewMode === 'flat'">
+            <button
+              v-for="f in changedList"
+              :key="f.path"
+              class="ctp-row ctp-changed"
+              :class="{ 'is-active': f.path === activeRel }"
+              type="button"
+              :title="f.path"
+              @click="onPickChanged(f)"
+            >
+              <span class="ctp-badge" :style="{ background: fileBadgeOf(nameOf(f.path)).bg, color: fileBadgeOf(nameOf(f.path)).fg }" aria-hidden="true">{{ fileBadgeOf(nameOf(f.path)).label }}</span>
+              <span :class="['ctp-name', gitStatusUi(f.status).nameCls]">{{ nameOf(f.path) }}</span>
+              <span class="ctp-dir">{{ dirOf(f.path) }}</span>
+              <span class="ctp-git" :class="`is-${gitStatusUi(f.status).cls.toLowerCase()}`" :data-git="f.status" :title="gitStatusUi(f.status).title">{{ gitStatusUi(f.status).glyph }}</span>
+              <span class="ctp-stat">
+                <span class="ctp-add">+{{ f.added ?? 0 }}</span>
+                <span v-if="f.removed" class="ctp-del">−{{ f.removed }}</span>
+              </span>
+            </button>
+          </template>
+
+          <!-- 级联：按目录分层（默认全展开，点目录折叠）；目录行带聚合角标与计数，
+               文件行与平铺行同一套样式、同一条 openFile 路径 -->
+          <template v-else>
+            <template v-for="r in changedTreeRows" :key="`${r.node.kind}:${r.node.relPath}`">
+              <button
+                v-if="r.node.kind === 'dir'"
+                class="ctp-row ctp-changed-dir"
+                :class="{ 'is-collapsed': collapsedChangedDirs.has(r.node.relPath) }"
+                type="button"
+                :style="{ paddingLeft: `${6 + r.depth * 14}px` }"
+                :aria-expanded="!collapsedChangedDirs.has(r.node.relPath)"
+                :title="t('code.gitChangedCount', { n: r.node.count })"
+                @click="toggleChangedDir(r.node.relPath)"
+              >
+                <span class="ctp-caret" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+                </span>
+                <span class="ctp-dir-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 7a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a1 1 0 0 0 .84.45H19a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                  </svg>
+                </span>
+                <span :class="['ctp-name', gitStatusUi(r.node.status).nameCls]">{{ r.node.name }}</span>
+                <span class="ctp-git" :class="`is-${gitStatusUi(r.node.status).cls.toLowerCase()}`" :data-git="r.node.status" :title="gitStatusUi(r.node.status).title">{{ gitStatusUi(r.node.status).glyph }}</span>
+                <span class="ctp-dir-count">{{ r.node.count }}</span>
+              </button>
+              <button
+                v-else
+                class="ctp-row ctp-changed"
+                :class="{ 'is-active': r.node.relPath === activeRel }"
+                type="button"
+                :style="{ paddingLeft: `${6 + r.depth * 14}px` }"
+                :title="r.node.relPath"
+                @click="onPickChanged(r.node.file)"
+              >
+                <span class="ctp-badge" :style="{ background: fileBadgeOf(r.node.name).bg, color: fileBadgeOf(r.node.name).fg }" aria-hidden="true">{{ fileBadgeOf(r.node.name).label }}</span>
+                <span :class="['ctp-name', gitStatusUi(r.node.file.status).nameCls]">{{ r.node.name }}</span>
+                <span class="ctp-git" :class="`is-${gitStatusUi(r.node.file.status).cls.toLowerCase()}`" :data-git="r.node.file.status" :title="gitStatusUi(r.node.file.status).title">{{ gitStatusUi(r.node.file.status).glyph }}</span>
+                <span class="ctp-stat">
+                  <span class="ctp-add">+{{ r.node.file.added ?? 0 }}</span>
+                  <span v-if="r.node.file.removed" class="ctp-del">−{{ r.node.file.removed }}</span>
+                </span>
+              </button>
+            </template>
+          </template>
+        </template>
+      </template>
+
       <!-- 过滤结果 -->
-      <template v-if="isFiltering">
+      <template v-else-if="isFiltering">
         <p v-if="state.searching" class="ctp-note">{{ t('code.filterSearching') }}</p>
         <p v-else-if="filteredRows.length === 0" class="ctp-note">{{ t('code.filterNone') }}</p>
         <p v-if="state.searchLimit" class="ctp-note ctp-note-warn">
@@ -514,22 +719,35 @@ function onFilterEsc(e: KeyboardEvent): void {
             :title="r.row.name.slice(r.row.name.lastIndexOf('.') + 1)"
             aria-hidden="true"
           >{{ fileBadgeOf(r.row.name).label }}</span>
-          <span class="ctp-name">{{ r.row.name }}</span>
-          <span
-            v-if="r.row.kind === 'dir' ? dirBadge(r.row.relPath) : gitOf(r.row.relPath)?.status"
-            class="ctp-git"
-            :data-git="r.row.kind === 'dir' ? dirBadge(r.row.relPath) : gitOf(r.row.relPath)?.status"
-            >{{ r.row.kind === 'dir' ? dirBadge(r.row.relPath) : gitOf(r.row.relPath)?.status }}</span
-          >
+          <span :class="['ctp-name', nameClsOf(r.row)]">{{ r.row.name }}</span>
+          <span v-if="rowStatus(r.row)" class="ctp-git" :class="`is-${gitStatusUi(rowStatus(r.row)!).cls.toLowerCase()}`" :data-git="rowStatus(r.row)" :title="gitStatusUi(rowStatus(r.row)!).title">{{ gitStatusUi(rowStatus(r.row)!).glyph }}</span>
         </div>
       </template>
     </div>
 
-    <!-- 底栏：文件数 / 忽略数 -->
+    <!-- 底栏：文件数 / 忽略数 + 提交条（模块 12 新增） -->
     <footer class="ctp-foot">
       <div class="ctp-stats">
-        <span v-if="isFiltering" class="ctp-stat">{{ t('code.filterCount', { n: filteredRows.length }) }}</span>
-        <span v-else-if="visibleCount > 0" class="ctp-stat">{{ t('code.treeItems', { n: visibleCount }) }}</span>
+        <template v-if="view === 'changes'">
+          <span v-if="gitSummary">{{ t('code.gitChangedCount', { n: gitSummary.count }) }}</span>
+          <span v-if="gitSummary?.branch" class="ctp-branch">{{ gitSummary.branch }}</span>
+        </template>
+        <template v-else>
+          <span v-if="isFiltering" class="ctp-stat">{{ t('code.filterCount', { n: filteredRows.length }) }}</span>
+          <span v-else-if="visibleCount > 0" class="ctp-stat">{{ t('code.treeItems', { n: visibleCount }) }}</span>
+        </template>
+      </div>
+      <!-- 提交条：变更视图常驻。有变更才给按钮，没变更时降为纯文字
+           （给一个点不动的按钮比不给更糟）。点开是模块 11 现有弹窗。 -->
+      <div v-if="view === 'changes' && gitSummary && gitSummary.count > 0" class="ctp-commit">
+        <div class="ctp-commit-info">
+          <span class="ctp-commit-l1">{{ t('code.gitPendingFiles', { n: gitSummary.count }) }}</span>
+          <span class="ctp-commit-l2">
+            <span class="ctp-add">+{{ gitSummary.add }}</span>
+            <span v-if="gitSummary.del" class="ctp-del">−{{ gitSummary.del }}</span>
+          </span>
+        </div>
+        <button class="ctp-commit-btn" type="button" @click="openCommitDialog">{{ t('code.commitOrPush') }}</button>
       </div>
     </footer>
 
@@ -874,10 +1092,159 @@ function onFilterEsc(e: KeyboardEvent): void {
   color: var(--muted-foreground);
   background: color-mix(in oklab, var(--muted) 45%, transparent);
 }
-.ctp-git[data-git='U'],
-.ctp-git[data-git='?'] {
-  color: var(--warning);
+/* 按原始字符（data-git='?'/'U'）上 warning 的旧规则已删：映射后的展示类
+   .is-* 全程在场，那条规则永远被压住，留着只会误导人往原始字符上加色。 */
+
+/* ===== 双视图切换（文件 / 变更）===== */
+.ctp-views {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
 }
+.ctp-view {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.ctp-view:hover { color: var(--foreground); }
+.ctp-view.is-on {
+  background: var(--card);
+  color: var(--foreground);
+  font-weight: 500;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 6%);
+}
+/* 变更数角标：非 0 时上 warning 色——「有没有东西没提交」的第一眼 */
+.ctp-count {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklab, var(--warning) 22%, transparent);
+  color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
+}
+
+/* ===== 变更视图行 =====
+ * 优先级：**文件名 > 目录尾巴**。两个可伸缩元素同排时，flex-shrink 按基准宽
+ * 比例缩，结果长文件名被压到只剩几个字、目录尾巴却纹丝不动（实测 68px vs 120px）。
+ * 做法：文件名 flex:0 0 auto + max-width 62%（不会更小，除非自己太长），
+ * 目录尾巴改成唯一可压缩的那个。统计数字 flex:none 永不压缩。 */
+.ctp-changed .ctp-name { flex: 0 0 auto; max-width: 62%; }
+.ctp-changed .ctp-dir { flex: 0 1 auto; min-width: 0; margin-left: 8px; }
+.ctp-stat { flex: none; font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
+.ctp-add { color: var(--success); }
+.ctp-del { color: var(--destructive); margin-left: 5px; }
+/* 变更视图里行尾角标不再 margin-left:auto（统计数字才是行尾） */
+.ctp-changed .ctp-git { margin-left: 8px; }
+
+/* ===== 变更清单形态切换（平铺/级联）=====
+   迷你分段控件挂在「本次变更」分组行右侧，语汇与「文件/变更」大切换器同款 */
+.ctp-changed-modes {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--muted);
+  border-radius: var(--radius-sm);
+}
+.ctp-changed-mode {
+  border: 0;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.ctp-changed-mode:hover { color: var(--foreground); }
+.ctp-changed-mode.is-on {
+  background: var(--card);
+  color: var(--foreground);
+  font-weight: 500;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 6%);
+}
+
+/* 级联目录行：折叠箭头（默认展开=转 90°）、目录计数 */
+.ctp-changed-dir .ctp-caret svg { transform: rotate(90deg); }
+.ctp-changed-dir.is-collapsed .ctp-caret svg { transform: rotate(0deg); }
+.ctp-changed-dir .ctp-name { flex: 0 1 auto; }
+.ctp-dir-count {
+  flex: none;
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+
+/* 文件名染色：与角标字形同色，否则读不出是哪个状态 */
+.ctp-name.is-mod { color: color-mix(in oklab, var(--warning) 82%, var(--foreground)); }
+.ctp-name.is-add,
+.ctp-name.is-new { color: color-mix(in oklab, var(--success) 88%, var(--foreground)); }
+.ctp-name.is-add { font-weight: 500; }
+.ctp-name.is-del {
+  color: color-mix(in oklab, var(--destructive) 80%, var(--foreground));
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--destructive) 45%, transparent);
+}
+/* 角标字形变体：映射后的展示类（M=改橙 / U=未跟踪绿 / X=冲突红 / A=增绿 / D=删红）。
+   之前漏了 .is-m：M 落到默认灰底——原型 .gbadge.M 是 warning 橙（VSCode 口径），
+   目录角标「子树里有改动」全靠它显眼，灰了就等于没标（用户 2026-10-03 报）。
+   R/C 按原型保持中性灰（重命名/复制不抢注意力），即默认样式，无需规则。 */
+.ctp-git.is-m {
+  color: color-mix(in oklab, var(--warning) 85%, var(--foreground));
+  background: color-mix(in oklab, var(--warning) 20%, transparent);
+}
+.ctp-git.is-u { color: var(--success); background: color-mix(in oklab, var(--success) 18%, transparent); }
+.ctp-git.is-x { color: var(--destructive); background: color-mix(in oklab, var(--destructive) 20%, transparent); }
+.ctp-git.is-a { color: var(--success); background: color-mix(in oklab, var(--success) 18%, transparent); }
+.ctp-git.is-d { color: var(--destructive); background: color-mix(in oklab, var(--destructive) 18%, transparent); }
+
+/* ===== 底栏提交条 ===== */
+.ctp-branch { font-family: var(--font-mono); }
+.ctp-commit {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 8px;
+  border-top: 1px solid var(--border);
+}
+.ctp-commit-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ctp-commit-l1 { font-size: 11.5px; color: var(--foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctp-commit-l2 { font-family: var(--font-mono); font-size: 10px; }
+.ctp-commit-btn {
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.ctp-commit-btn:hover { filter: brightness(1.08); }
 
 .ctp-note {
   margin: 6px 12px;

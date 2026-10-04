@@ -26,7 +26,8 @@
  * 自动更新说明（release-notes.mjs）：
  *   - 发布时自动汇总上一 tag..HEAD 的提交（过滤 bump 等噪音、按类型分组排版），
  *     写入 packages/forge-desktop/release-notes.md 随 bump commit 提交；
- *     electron-builder 经 releaseNotesFile 配置把它作为 GitHub Release 描述。
+ *     electron-builder 把它写进 latest.yml（应用内更新弹窗），GitHub Release 描述
+ *     由 CI 的 release-notes job 用该文件补写（electron-builder 25.x 建 Release 不带 body）。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';

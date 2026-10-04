@@ -42,9 +42,11 @@ const entries = computed(() => buildTimelineEntries(props.messages));
 /** 悬停条目索引：mouseenter 立即置位驱动波浪衰减（与 300ms 浮窗计时无关） */
 const hoverIndex = ref<number | null>(null);
 
-/** 波浪宽度表（按与中心的距离取值，超出表长回退默认）；悬停波包高于选中波包 */
-const HOVER_WAVE = ['22px', '18px', '15px', '13px'] as const;
-const ACTIVE_WAVE = ['18px', '15px', '13px'] as const;
+/** 波浪宽度表（按与中心的距离取值，超出表长回退默认）；悬停波包高于选中波包。
+ *  峰值 22→34px：22px 贴着 --timeline-rail-w:32px 的内容区上限，短条看起来像没画完。
+ *  配套把 token 抬到 46px（内容区 46-3-7=36px），34px 仍留 2px 余量不被 overflow 裁掉。 */
+const HOVER_WAVE = ['34px', '28px', '23px', '19px'] as const;
+const ACTIVE_WAVE = ['28px', '23px', '19px'] as const;
 
 /** 条目序数表：消息索引 → 时间线上的相邻序位（波浪距离按序数算——相邻条目的消息索引
  *  因中间隔着 assistant/tool 并不相邻，直接相减会把波包压缩） */
@@ -65,9 +67,9 @@ function waveDistance(index: number): number | null {
 
 function barWidth(index: number): string {
   const d = waveDistance(index);
-  if (d == null) return '12px';
+  if (d == null) return '14px';
   const table = hoverIndex.value != null ? HOVER_WAVE : ACTIVE_WAVE;
-  return table[d] ?? '12px';
+  return table[d] ?? '14px';
 }
 
 function barColor(index: number): string {
@@ -153,7 +155,7 @@ onUnmounted(() => {
 /* 窄条纵列（约 32px），与消息区同高；无右边框、透明背景——融入消息区，不做视觉切割。
    条目少时整列垂直居中（safe center：溢出时回退顶部并保持可滚动）。
    左 padding 大于右——横条与左侧分界线留出间隙，不贴边；内容宽度预留波峰伸长
-   空间（22px），overflow 裁剪不会切掉伸长段。
+   空间（34px），overflow 裁剪不会切掉伸长段。
    宽度取 token：ConversationView「标准」宽度用它给消息区补对称 padding */
 .history-rail {
   position: relative;
@@ -185,12 +187,12 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-/* 横条本体：默认 12×2 圆角条；宽度/颜色由波浪逻辑内联驱动（barWidth/barColor），
-   width 过渡让指针扫过时波包平滑流动。flex:none——避免被按钮内容宽度（12px）压缩 */
+/* 横条本体：默认 14×2 圆角条；宽度/颜色由波浪逻辑内联驱动（barWidth/barColor），
+   width 过渡让指针扫过时波包平滑流动。flex:none——避免被按钮内容宽度（14px）压缩 */
 .history-rail-bar {
   display: block;
   flex: none;
-  width: 12px;
+  width: 14px;
   height: 2px;
   border-radius: 999px;
   background: color-mix(in oklab, var(--muted-foreground) 42%, transparent);

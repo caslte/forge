@@ -27,6 +27,8 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const execFileAsync = promisify(execFile);
 
@@ -87,6 +89,26 @@ export interface GitStatusFile {
   status: 'M' | 'A' | 'D' | 'U' | 'R' | 'C' | '?';
   /** true=已进暂存区（X 列非空且非 ?） */
   staged: boolean;
+  /**
+   * 本文件的新增行数（模块 12 变更视图的 `+N`）。
+   *
+   * 纯**新增字段**。三个来源：
+   * - 跟踪文件：`git diff --numstat` 逐行拆（原本只汇总后丢弃了拆分）；
+   * - 未跟踪文件：**git 根本不报它的行数**（不在任何 diff 输出里），
+   *   由服务层读文件数行——不数就会在界面上显示 `+0`，与事实矛盾；
+   * - 二进制（跟踪的报 `-`、未跟踪的含 NUL 字节）：一律 0，不瞎猜。
+   *
+   * ⚠ **口径提醒（两个数字的范围不同，别写等价断言）**：
+   * `files[].added` **含未跟踪文件**，而 `GitStatusInfo.added` **不含**
+   * （它就是 `diff HEAD --numstat` 的逐行求和，而 git 有意不把未跟踪
+   * 文件放进 numstat；PRD 11 GC-F01 也是这么定义的）。
+   * 所以「`files[].added` 之和 == `GitStatusInfo.added`」是**错的**，
+   * 正确的关系是：非未跟踪项之和 == `GitStatusInfo.added`。
+   * 界面要「这次一共改了多少行」时，应自行汇总 `files[]`。
+   */
+  added: number;
+  /** 本文件的删除行数；来源与 `added` 同上 */
+  removed: number;
 }
 
 /** 提交弹窗状态数据（模块 11 git/getStatus 响应，docs/prd/11 §GC-F01） */
@@ -117,6 +139,38 @@ export interface GitStatusInfo {
    * 提交弹窗等既有消费方忽略此字段即可，行为不变。
    */
   files: GitStatusFile[];
+}
+
+/**
+ * git/getFileDiff 响应 data（模块 12 代码查看器「并排 diff」的数据源）。
+ */
+export interface GitFileDiffData {
+  /**
+   * 相对基线的 unified diff 文本（基线：有 HEAD 为 HEAD，无 HEAD 为暂存区，
+   * 与 getStatus 的 numstat 同口径——对比的是「全部未提交变更」）。
+   *
+   * 三种取值刻意可区分：
+   * - `''`（空串）= 跟踪文件相对基线无差异；
+   * - `null` = 不可对比：未跟踪文件（git 根本不给它出 diff）/ 非 git 仓库，
+   *   UI 对未跟踪文件用已加载的正文合成「全新增」视角；
+   * - 非空文本 = 可解析的 unified diff（二进制变更时是 git 的
+   *   `Binary files ... differ` 提示行，由解析层识别，不在这里特判）。
+   */
+  diff: string | null;
+}
+
+/** getFileDiff 结果（6001 = git diff 本身失败，附原始 stderr） */
+export type GitFileDiffResult = GitResult<GitFileDiffData>;
+
+/**
+ * relPath 安全校验：只接受仓库内的相对路径。拒绝绝对路径（`/`、盘符）与
+ * `..`/`.`/空段逃逸——虽然 git 的 pathspec 越界匹配不到任何条目，但这条校验
+ * 与 file 只读三方法的 containment 是同一意图，不在边界上赌 git 的行为。
+ */
+function isSafeRelPath(relPath: string): boolean {
+  const p = relPath.replaceAll('\\', '/');
+  if (p === '' || p.startsWith('/') || /^[a-zA-Z]:/.test(p)) return false;
+  return p.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
 }
 
 /** 非仓库时的空值状态数据 */
@@ -162,7 +216,38 @@ function parseStatusLine(line: string): GitStatusFile | null {
     return null;
   };
   const status = pick(x) ?? pick(y);
-  return status === null ? null : { path: p, status, staged };
+  // 行数在 getStatus 里按 numstat 回填（纯函数只管解析 porcelain 状态）
+  return status === null ? null : { path: p, status, staged, added: 0, removed: 0 };
+}
+
+/** 二进制探测只看前 8KB：够抓住 NUL，且不把大文件整个读进内存 */
+const BINARY_PROBE_BYTES = 8000;
+
+/**
+ * 数一个**未跟踪**文本文件的行数（= 它的全部新增行数）。
+ *
+ *  为什么需要自己数：未跟踪文件不在 `git diff HEAD --numstat` 的输出里，
+ *  git 对它不报任何行数，而变更视图要显示 `+N`。
+ *  二进制（含 NUL 字节）返回 0——与 `git diff --numstat` 对二进制的
+ *  「报 `-` 不报数」口径一致，界面不该给一个瞎猜的数字。
+ *  读失败（权限/已被删）也返回 0：这是锦上添花的统计，不该让整次状态查询失败。
+ */
+export function countUntrackedLines(cwd: string, relPath: string): number {
+  try {
+    const abs = path.resolve(cwd, relPath);
+    const buf = fs.readFileSync(abs);
+    if (buf.subarray(0, BINARY_PROBE_BYTES).includes(0)) return 0;
+    // 与 git 的行数口径一致：末尾无换行不算一行
+    if (buf.length === 0) return 0;
+    let lines = 0;
+    for (let i = 0; i < buf.length; i += 1) {
+      if (buf[i] === 10) lines += 1;
+    }
+    if (buf[buf.length - 1] !== 10) lines += 1;
+    return lines;
+  } catch {
+    return 0;
+  }
 }
 
 /** name-only / log --name-only 输出的文件路径计数（去重、去空行） */
@@ -344,6 +429,9 @@ export class GitService {
     );
     let added = 0;
     let removed = 0;
+    // 逐文件行数：路径 → [added, removed]。numstat 第三列是路径（重命名时形如
+    // `old => new` 或 `{a => b}`，取 `=>` 后半——与 porcelain 的做法一致）。
+    const perFile = new Map<string, { added: number; removed: number }>();
     if (num.ok) {
       for (const line of num.stdout.split('\n')) {
         const cols = line.split('\t');
@@ -352,8 +440,29 @@ export class GitService {
         }
         const a = Number.parseInt(cols[0] ?? '', 10);
         const r = Number.parseInt(cols[1] ?? '', 10);
+        // 二进制两侧都是 `-`，parseInt 出 NaN：既不累加也不写 perFile
         if (Number.isFinite(a)) added += a;
         if (Number.isFinite(r)) removed += r;
+        if (!Number.isFinite(a) && !Number.isFinite(r)) continue;
+        const p = (cols[2] ?? '').trim();
+        if (p !== '') {
+          const arrow = p.lastIndexOf('=>');
+          perFile.set((arrow === -1 ? p : p.slice(arrow + 2)).trim(), {
+            added: Number.isFinite(a) ? a : 0,
+            removed: Number.isFinite(r) ? r : 0,
+          });
+        }
+      }
+    }
+    // 逐文件回填。未跟踪文件不在 numstat 里（git 对它不报行数），
+    // 自行读文件数行，否则变更视图上会是一个谎报事实的 +0。
+    for (const f of files) {
+      const hit = perFile.get(f.path);
+      if (hit) {
+        f.added = hit.added;
+        f.removed = hit.removed;
+      } else if (f.status === '?') {
+        f.added = countUntrackedLines(cwd, f.path);
       }
     }
     const cur = await this.run(cwd, ['branch', '--show-current']);
@@ -405,6 +514,40 @@ export class GitService {
       hasHead,
       files,
     };
+  }
+
+  /**
+   * 单文件 diff（模块 12 代码查看器「并排 diff」数据源，只读无副作用）。
+   *
+   * 基线与 getStatus 的 numstat 同口径：有 HEAD 比 `diff HEAD`，无 HEAD 的空仓库
+   * 比 `diff --cached`——对比的都是「全部未提交变更」，与变更视图的 +N −M 一致。
+   *
+   * 空输出的二义性在这里消解：跟踪文件无差异 = `''`，未跟踪文件 = `null`
+   * （git 对未跟踪文件不产出任何 diff）。区分靠 `ls-files --error-unmatch`
+   * 补的一刀，且只在 diff 为空时才多这一次调用——正常路径单进程往返。
+   */
+  async getFileDiff(cwd: string, relPath: string): Promise<GitFileDiffResult> {
+    if (typeof relPath !== 'string' || !isSafeRelPath(relPath)) {
+      return { ok: false, code: 1001, message: 'relPath 必须为仓库内的相对路径' };
+    }
+    const inside = await this.run(cwd, ['rev-parse', '--is-inside-work-tree']);
+    if (!inside.ok) {
+      // 非 git 目录：与 getStatus 的 NOT_A_STATUS 同口径（空值，不报错）
+      return { ok: true, data: { diff: null } };
+    }
+    const head = await this.run(cwd, ['rev-parse', 'HEAD']);
+    const d = await this.run(
+      cwd,
+      head.ok ? ['diff', 'HEAD', '--', relPath] : ['diff', '--cached', '--', relPath],
+    );
+    if (!d.ok) {
+      return { ok: false, code: 6001, message: 'git diff 失败', stderr: d.stderr };
+    }
+    if (d.stdout !== '') {
+      return { ok: true, data: { diff: d.stdout } };
+    }
+    const tracked = await this.run(cwd, ['ls-files', '--error-unmatch', '--', relPath]);
+    return { ok: true, data: { diff: tracked.ok ? '' : null } };
   }
 
   /**

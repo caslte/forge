@@ -21,8 +21,9 @@ import {
   type FileNode,
   type ListDirData,
   type ReadFileData,
-} from '../bridge';
-import type { GitStatusFile } from '../types';
+} from '../bridge.ts';
+import type { GitFileDiffData, GitStatusFile, GitStatusInfo } from '../types.ts';
+import { usePreferences, type CodeDiffDefaultMode } from './usePreferences.ts';
 
 /** 单个已打开文件的查看器状态 */
 export interface OpenFile {
@@ -60,6 +61,22 @@ export interface ProjectCodeState {
   searchResults: string[] | null;
   searchLimit: boolean;
   searching: boolean;
+  /**
+   * 代码纸正文形态（模块 12 P2）：`file`=只读正文，`inline`=行内高亮，
+   * `side`=并排对比。挂在项目级（不挂组件）的理由：左栏「变更视图」点文件要能
+   * 把右侧切到对比——两个组件没有直连通道，共用状态是唯一不打结的路。
+   * **换文件即重置**（applyModeFor）：有变更的文件按**个性化偏好**直接进
+   * side/inline（默认 side），无变更的落文件正文——切换器只在当前文件上生效，
+   * 不做跨文件记忆（用户 2026-10-03 定稿：默认有修改就展示 diff）。
+   */
+  viewerMode: 'file' | 'inline' | 'side';
+  /**
+   * 整份 Git 状态（角标/变更视图/底栏提交条/**右侧 diff 模式判定**共用这一份）。
+   * 挂在项目状态里而不是各组件自己拉：组件各拉各的会有「切了文件、状态还在路上」
+   * 的窗口期，右侧就会先闪一帧旧模式再跳正确的（用户报的「先跳文件再跳 diff /
+   * 未变更文件先弹空态页」即此）。同步可查，模式判定零延迟。
+   */
+  gitInfo: GitStatusInfo | null;
 }
 
 function freshState(): ProjectCodeState {
@@ -73,6 +90,8 @@ function freshState(): ProjectCodeState {
     searchResults: null,
     searchLimit: false,
     searching: false,
+    viewerMode: 'file',
+    gitInfo: null,
   };
 }
 
@@ -165,10 +184,26 @@ function withHistory(history: string[], relPath: string): string[] {
   return [relPath, ...history.filter((p) => p !== relPath)].slice(0, HISTORY_LIMIT);
 }
 
+/**
+ * 切文件时的正文形态默认值（用户 2026-10-03 定稿「默认有修改就展示 diff」）：
+ * 目标文件在变更集里 → 按个性化偏好进 side/inline；不在 → 文件正文。判定读的是
+ * 项目状态里的 gitInfo（同步），所以切换零闪烁——这也是空态页能整个取消的前提。
+ */
+function applyModeFor(
+  gitInfo: GitStatusInfo | null,
+  relPath: string,
+  diffDefault: CodeDiffDefaultMode,
+): 'file' | 'inline' | 'side' {
+  const changed = gitInfo?.files.some((f) => f.path === relPath) ?? false;
+  return changed ? diffDefault : 'file';
+}
+
 /** 代码树与查看器对外的全部动作 */
 export function useCodeExplorer() {
   /** 全部项目状态（组件里用 computed 派生出自己那份） */
   const allStates = computed(() => states.value);
+  /** 有修改的文件默认进哪种对比（个性化偏好，模块级单例 ref） */
+  const { codeDiffDefaultMode } = usePreferences();
 
   /** 取某项目状态（不存在则创建） */
   function getState(projectPath: string): ProjectCodeState {
@@ -218,15 +253,20 @@ export function useCodeExplorer() {
    *
    *  两种路径都要记历史：已打开的走「切激活态」分支也得记，
    *  否则「打开时间最晚的在前」在反复点同一个签时会失真。
+   *
+   *  正文形态按 applyModeFor 重置：有变更的文件直接进 diff（点当前已激活的
+   *  文件除外——那是原地重开，不该把用户手动切到的「文件」视图打掉）。
    */
   async function openFile(projectPath: string, relPath: string, name: string): Promise<void> {
     const s = stateOf(projectPath);
     const history = withHistory(s.history, relPath);
+    const viewerMode =
+      relPath === s.activeRel ? s.viewerMode : applyModeFor(s.gitInfo, relPath, codeDiffDefaultMode.value);
     const existing = s.openFiles.find((f) => f.relPath === relPath);
     if (existing) {
       // 已打开：只切激活态，不重复读盘
       const openFiles = s.openFiles.map((f) => (f.relPath === relPath ? { ...f, error: null } : f));
-      commit(projectPath, { ...s, openFiles, activeRel: relPath, history });
+      commit(projectPath, { ...s, openFiles, activeRel: relPath, history, viewerMode });
       return;
     }
     const file: OpenFile = {
@@ -239,7 +279,7 @@ export function useCodeExplorer() {
     };
     // 新文件置顶：让标签栏保持“刚点的在最前”（历史由上面的 withHistory 负责）
     const openFiles = [file, ...s.openFiles];
-    commit(projectPath, { ...s, openFiles, activeRel: relPath, history });
+    commit(projectPath, { ...s, openFiles, activeRel: relPath, history, viewerMode });
     syncWatchers(projectPath); // 打开集合变了：主进程侧补上这个文件的磁盘监听
     const res = await fileReadFile(projectPath, relPath);
     const cur = stateOf(projectPath);
@@ -271,16 +311,28 @@ export function useCodeExplorer() {
     if (idx === -1) return;
     const openFiles = s.openFiles.filter((f) => f.relPath !== relPath);
     let activeRel = s.activeRel;
+    let viewerMode = s.viewerMode;
     if (activeRel === relPath) {
       activeRel = openFiles[Math.min(idx, openFiles.length - 1)]?.relPath ?? null;
+      // 落到的相邻签按同一套默认规则给正文形态（有变更 → diff）
+      viewerMode =
+        activeRel === null ? 'file' : applyModeFor(s.gitInfo, activeRel, codeDiffDefaultMode.value);
     }
-    commit(projectPath, { ...s, openFiles, activeRel });
+    commit(projectPath, { ...s, openFiles, activeRel, viewerMode });
     syncWatchers(projectPath); // 关掉的文件撤掉磁盘监听
   }
 
-  /** 切换激活标签 */
+  /** 切换激活标签；正文形态按「有变更 → diff」重置（与 openFile 同一口径） */
   function setActive(projectPath: string, relPath: string | null): void {
-    commit(projectPath, { ...stateOf(projectPath), activeRel: relPath });
+    const s = stateOf(projectPath);
+    const viewerMode =
+      relPath === null ? 'file' : applyModeFor(s.gitInfo, relPath, codeDiffDefaultMode.value);
+    commit(projectPath, { ...s, activeRel: relPath, viewerMode });
+  }
+
+  /** 切代码纸正文形态（文件 / 行内 / 并排）；由 CodeViewer 的切换器回写 */
+  function setViewerMode(projectPath: string, mode: 'file' | 'inline' | 'side'): void {
+    commit(projectPath, { ...stateOf(projectPath), viewerMode: mode });
   }
 
   /**
@@ -326,13 +378,37 @@ export function useCodeExplorer() {
     });
   }
 
-  /** 载入/刷新 Git 状态（徽标用）；失败静默——徽标是锦上添花，不该报障 */
-  async function loadGitStatus(projectPath: string): Promise<GitStatusFile[]> {
+  /**
+   * 拉取 Git 状态（角标 + 变更视图 + 底栏提交条 + **右侧 diff 模式判定**共用）。
+   *
+   *  返回整份 `GitStatusInfo` 并**写进项目状态**：左栏和右侧消费同一份，
+   *  切文件时模式判定同步可得（组件各拉各的会有一段「状态在路上」的窗口，
+   *  右侧就会闪错帧）。失败静默（角标是锦上添花，不该报障）→ 状态置 `null`。
+   */
+  async function loadGitStatus(projectPath: string): Promise<GitStatusInfo | null> {
+    let info: GitStatusInfo | null = null;
     try {
-      const st = await call<{ files?: GitStatusFile[] }>('git/getStatus', { cwd: projectPath });
-      return st.files ?? [];
+      info = await call<GitStatusInfo>('git/getStatus', { path: projectPath });
     } catch {
-      return [];
+      info = null;
+    }
+    commit(projectPath, { ...stateOf(projectPath), gitInfo: info });
+    return info;
+  }
+
+  /**
+   * 拉取单文件相对基线的 unified diff（并排 diff 数据源，模块 12 P2）。
+   *
+   * 返回口径与 core `GitFileDiffData.diff` 一致：`''`=无差异、`null`=拉不到
+   * （未跟踪文件不该走到这——调用方先用 gitStatus.status==='?' 分流去合成
+   * 「全新增」视角；走到这里仍为 null 就是真失败）。
+   */
+  async function getFileDiff(projectPath: string, relPath: string): Promise<string | null> {
+    try {
+      const res = await call<GitFileDiffData>('git/getFileDiff', { path: projectPath, relPath });
+      return res.diff ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -344,9 +420,11 @@ export function useCodeExplorer() {
     openFile,
     closeFile,
     setActive,
+    setViewerMode,
     moveFile,
     search,
     loadGitStatus,
+    getFileDiff,
     invalidateProjectState,
   };
 }

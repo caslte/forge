@@ -189,8 +189,9 @@
 
   /* 左缘时间线窄条宽（历史导航条）：ConversationView 在「标准」宽度下用它
      给消息区补一份对称右侧 padding，使居中内容列与输入框严格同轴。
-     32 = 22px 波峰内容 + 左 7px（与侧栏分界线留出间隙）+ 右 3px */
-  --timeline-rail-w: 32px;
+     46 = 34px 波峰内容 + 左 7px（与侧栏分界线留出间隙）+ 右 3px + 2px 余量。
+     抬高窄条会把消息区整体右推，右侧那份 padding 同步跟涨，两者始终同轴。 */
+  --timeline-rail-w: 46px;
 }
 
 /* 暗色主题：抬底 + 压字，双向收敛（原型 dialog-readability-demo.html D 档，v6.1 定稿）。

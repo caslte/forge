@@ -94,13 +94,32 @@ export interface GitStatusInfo {
   files: GitStatusFile[];
 }
 
-/** 单个变更文件的状态（模块 12 代码树行尾徽标） */
+/** 单个变更文件的状态（模块 12 代码树行尾徽标 + 变更视图清单） */
 export interface GitStatusFile {
   /** 相对仓库根的 POSIX 路径 */
   path: string;
   status: 'M' | 'A' | 'D' | 'U' | 'R' | 'C' | '?';
   /** true=已进暂存区 */
   staged: boolean;
+  /**
+   * 本文件的新增/删除行数（变更视图的 `+N −M`）。
+   *
+   * ⚠ 口径提醒：**含未跟踪文件**（未跟踪整文件算新增），而
+   * `GitStatusInfo.added/removed` 不含（git 的 numstat 有意排除未跟踪）。
+   * 界面要「这次一共改了多少行」请自行汇总 `files[]`，不要用那两个汇总字段。
+   */
+  added: number;
+  removed: number;
+}
+
+/** git/getFileDiff 响应 data（模块 12 并排 diff 数据源；与 forge-core GitFileDiffData 同形） */
+export interface GitFileDiffData {
+  /**
+   * 相对基线（有 HEAD 为 HEAD，否则暂存区）的 unified diff 文本。
+   * `''`=无差异；`null`=不可对比（未跟踪文件/非 git 目录）——UI 对未跟踪文件
+   * 用已加载正文合成「全新增」视角；二进制变更时是 git 的提示行，解析层识别。
+   */
+  diff: string | null;
 }
 
 /** git/commit 成功 data（docs/api/11_git_commit_push.md §2） */

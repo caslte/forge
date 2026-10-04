@@ -71,11 +71,16 @@ test('getStatus：files 逐文件状态覆盖 M/A/D/?/U（模块 12 代码树徽
     const st = await svc.getStatus(dir);
     assert.equal(st.isGitRepo, true);
     const byPath = new Map(st.files.map((f) => [f.path, f]));
-    assert.deepEqual(byPath.get('a.txt'), { path: 'a.txt', status: 'D', staged: true });
-    assert.deepEqual(byPath.get('b.txt'), { path: 'b.txt', status: '?', staged: false });
-    assert.deepEqual(byPath.get('sub/c.txt'), { path: 'sub/c.txt', status: 'A', staged: true });
+    // 顺带把逐文件行数也钉住：本文件的 makeRepo 造的 a.txt 是 2 行（'line1\nline2\n'），
+    // 所以删掉它是 -2；sub/c.txt 新增 1 行；b.txt 未跟踪、整文件算新增 1 行。
+    assert.deepEqual(byPath.get('a.txt'), { path: 'a.txt', status: 'D', staged: true, added: 0, removed: 2 });
+    assert.deepEqual(byPath.get('b.txt'), { path: 'b.txt', status: '?', staged: false, added: 1, removed: 0 });
+    assert.deepEqual(byPath.get('sub/c.txt'), { path: 'sub/c.txt', status: 'A', staged: true, added: 1, removed: 0 });
     // files 与 fileCount 同源，不得漂移
     assert.equal(st.files.length, st.fileCount);
+    // files[] 含未跟踪文件，汇总（numstat）不含——两个口径别混
+    assert.equal(st.added, 1, 'GitStatusInfo.added 只算 numstat（不含未跟踪的 b.txt）');
+    assert.equal(st.removed, 2);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

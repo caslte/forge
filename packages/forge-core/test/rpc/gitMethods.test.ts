@@ -19,6 +19,7 @@ import type {
   GitBranchInfo,
   SwitchResult,
   GitStatusInfo,
+  GitFileDiffResult,
   CommitResult,
   PushResult,
   CommitDiffContext,
@@ -35,6 +36,8 @@ class FakeGitService implements GitService {
   commitResult: CommitResult = { ok: true, data: { shortHash: 'abc1234', fileCount: 1 } };
   pushResult: PushResult = { ok: true, data: { branch: 'main', remote: 'origin' } };
   diffContext: CommitDiffContext = { hasChanges: true, fileCount: 1, text: 'Files (1):' };
+  fileDiff: GitFileDiffResult = { ok: true, data: { diff: 'diff --git a/a b/a\n' } };
+  fileDiffCalls: Array<{ cwd: string; relPath: string }> = [];
   infoCalls: string[] = [];
   switchCalls: Array<{ cwd: string; branch: string }> = [];
   statusCalls: string[] = [];
@@ -58,6 +61,11 @@ class FakeGitService implements GitService {
   async getStatus(cwd: string): Promise<GitStatusInfo> {
     this.statusCalls.push(cwd);
     return this.status;
+  }
+
+  async getFileDiff(cwd: string, relPath: string): Promise<GitFileDiffResult> {
+    this.fileDiffCalls.push({ cwd, relPath });
+    return this.fileDiff;
   }
 
   async commit(cwd: string, message: string, includeUnstaged: boolean): Promise<CommitResult> {
@@ -208,6 +216,21 @@ test('git/getStatus：path 缺失 1001；未注册 1002；抛错 5000', async ()
     throw new Error('boom');
   };
   assert.equal((await api.methods['git/getStatus']({ path: 'C:/dev/a' })).code, 5000);
+});
+
+test('git/getFileDiff：成功透传服务层 diff，relPath 原样下传', async () => {
+  const { api, gitService } = makeApi();
+  const r = await api.methods['git/getFileDiff']({ path: 'C:/dev/a', relPath: 'src/a.ts' });
+  assert.equal(r.code, 0);
+  assert.equal(r.data && (r.data as { diff: string | null }).diff, 'diff --git a/a b/a\n');
+  assert.deepEqual(gitService.fileDiffCalls[0], { cwd: 'C:/dev/a', relPath: 'src/a.ts' });
+});
+
+test('git/getFileDiff：path/relPath 缺失 1001；未注册 1002', async () => {
+  const { api } = makeApi();
+  assert.equal((await api.methods['git/getFileDiff']({})).code, 1001);
+  assert.equal((await api.methods['git/getFileDiff']({ path: 'C:/dev/a' })).code, 1001);
+  assert.equal((await api.methods['git/getFileDiff']({ path: ' C:/nope', relPath: 'a.ts' })).code, 1002);
 });
 
 test('git/commit：成功透传 shortHash+fileCount；includeUnstaged 缺省视为 true', async () => {

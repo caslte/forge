@@ -50,6 +50,17 @@ function convWidth(page: Page): Promise<number> {
     .evaluate((el) => el.getBoundingClientRect().width);
 }
 
+/** 按文件名精确定位一行（文件或目录皆可）。与 openTreeFile 同一套定位口径，
+ *  区别是这个不点击、只返回 Locator，供角标断言复用。
+ *  排除 is-recent：最近打开分组里同名项也会出现在 DOM 里。 */
+function rowOf(page: Page, name: string) {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return page
+    .locator('.ctp-scroll .ctp-row:not(.is-recent)')
+    .filter({ has: page.locator('.ctp-name', { hasText: new RegExp(`^${esc}$`) }) })
+    .first();
+}
+
 /** 展开代码树里剩余的未展开目录（mock 树只有 4 层，逐层展开到没有为止）。
  *
  *  用 ElementHandle 锁住具体那个节点：按名字重解析会在 src/file 与 test/file 上
@@ -473,13 +484,16 @@ test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚
 
   // 逐个打开 7 个文件：tab 顺序由此确定
   const names = [
-    'README.md',
-    'package.json',
+    // 有变更的文件放前面（新默认「有修改就展示 diff」，2026-10-03）：
+    // 需要文件正文断言（.cv-lc 字体 / 选中复制等）的用例，激活签必须以
+    // 未变更文件收尾——最后打开的文件决定右侧的视图形态
     'App.vue',
     'bridge.ts',
     'fileService.ts',
-    'fileService.test.ts',
     '12_code_explorer.md',
+    'README.md',
+    'package.json',
+    'fileService.test.ts',
   ];
   for (const n of names) await openTreeFile(page, n);
   await expect(page.locator('.cv')).toBeVisible();
@@ -515,8 +529,11 @@ test('E-CE-13 @P1 @mock-backend：tab 中键关闭、溢出横滚 + 激活签滚
   await expect(page.locator('.cv-tab')).toHaveCount(names.length - 1);
   await expect(page.locator('.cv-tab.active .cv-tab-name')).toHaveText(activeBefore);
   await expect(page.locator('.cv-tab', { hasText: victim })).toHaveCount(0);
-  // 中键不该当切签用：再关一个不相关的签，激活项仍然不变
-  await page.locator('.cv-tab').nth(3).click({ button: 'middle' });
+  // 中键不该当切签用：再关一个**非激活**的签，激活项仍然不变。
+  // 第二个目标不能写死下标 3：签条顺序是「最后打开的在最左」，激活签（fileService.ts，
+  // 从树里点开）正好落在 nth(3)，关它就会落相邻签、激活项必变——用列表另一端的
+  // nth(-2)（App.vue）保证与激活签无关。
+  await page.locator('.cv-tab').nth(-2).click({ button: 'middle' });
   await expect(page.locator('.cv-tab')).toHaveCount(names.length - 2);
   await expect(page.locator('.cv-tab.active .cv-tab-name')).toHaveText(activeBefore);
 });
@@ -530,13 +547,16 @@ test('E-CE-15 @P1 @mock-backend：tab 条悬停时竖向滚轮可横滚；代码
   await expect(page.locator('.ctp-icon')).toHaveAttribute('aria-pressed', 'true');
   await expandAll(page);
   const names = [
-    'README.md',
-    'package.json',
+    // 有变更的文件放前面（新默认「有修改就展示 diff」，2026-10-03）：
+    // 需要文件正文断言（.cv-lc 字体 / 选中复制等）的用例，激活签必须以
+    // 未变更文件收尾——最后打开的文件决定右侧的视图形态
     'App.vue',
     'bridge.ts',
     'fileService.ts',
-    'fileService.test.ts',
     '12_code_explorer.md',
+    'README.md',
+    'package.json',
+    'fileService.test.ts',
   ];
   for (const n of names) await openTreeFile(page, n);
   await expect(page.locator('.cv-tab')).toHaveCount(names.length);
@@ -806,9 +826,14 @@ test('E-CE-20 @P0 @mock-backend：代码树行右键菜单——目录开自己�
     }, k);
 
   // 目录行：复制路径 + 打开此目录，且开的是**它自己**（不是父目录）
-  // 用 .ctp-row.is-dir + 精确文本：mock 树里 src/file、test/file、forge-core/src 等重名，
-  // hasText 子串匹配会命中另一个（之前就因此选中了项目根的 src）
-  const dirRow = page.locator('.ctp-row.is-dir').filter({ hasText: /^docs$/ }).first();
+  // 精确匹配**行名**而不是整行文本：① mock 树里 src/file、test/file、forge-core/src
+  // 等重名，子串匹配会命中另一个（之前就因此选中了项目根的 src）；
+  // ② 目录行尾的 Git 角标也是行文本的一部分（docs 有未跟踪文件 → 文本是 `docs?`），
+  // 对整行做 /^docs$/ 会随角标上线而失配。文件行下面已经用的是 .ctp-name 口径。
+  const dirRow = page
+    .locator('.ctp-scroll .ctp-row.is-dir')
+    .filter({ has: page.locator('.ctp-name', { hasText: /^docs$/ }) })
+    .first();
   await dirRow.click({ button: 'right' });
   await expect(menu.locator('.ctx-menu-item')).toHaveText(['复制路径', '打开此目录']);
   await menu.locator('.ctx-menu-item', { hasText: '复制路径' }).click();
@@ -997,13 +1022,16 @@ test('E-CE-22 @P1 @mock-backend：拖到签条边缘会自动横向滚动（否�
   await expect(page.locator('.ctp-icon')).toHaveAttribute('aria-pressed', 'true');
   await expandAll(page);
   const names = [
-    'README.md',
-    'package.json',
+    // 有变更的文件放前面（新默认「有修改就展示 diff」，2026-10-03）：
+    // 需要文件正文断言（.cv-lc 字体 / 选中复制等）的用例，激活签必须以
+    // 未变更文件收尾——最后打开的文件决定右侧的视图形态
     'App.vue',
     'bridge.ts',
     'fileService.ts',
-    'fileService.test.ts',
     '12_code_explorer.md',
+    'README.md',
+    'package.json',
+    'fileService.test.ts',
   ];
   for (const n of names) await openTreeFile(page, n);
   const strip = page.locator('.cv-tabs');
@@ -1114,3 +1142,507 @@ test('E-CE-25 @P1 @mock-backend：签条等外壳不弹复制浮窗（选区区�
   await page.mouse.up();
   await expect(page.locator('.selection-pop')).not.toHaveClass(/is-visible/);
 });
+
+// ===== CE-S07 Git 状态角标 =====
+
+/** 用 __forgeMock.seed 接管 git/getStatus，让本组用例的变更集由测试自己定。
+ *
+ *  不依赖 mock-bridge 共享种子的理由：那份 seed 列了 mock-bridge.ts，
+ *  但文件树 fixture 里**没有这个文件**（seed 注释自称「与 fileMock 对齐」，
+ *  实际没对齐）。用例若硬编码种子名单，以后 fixture 一动就假红/假绿。
+ *  改为自己 seed：既不碰共享 fixture（会打破 2 处 .ctp-row 计数断言），
+ *  也只挑**树里确实存在**的文件。
+ *  seed 里仍然镜像 core 的 requireString(params,'path')——参数名错了照样被拒。 */
+async function seedGitStatus(
+  page: Page,
+  files: { path: string; status: string; staged?: boolean; added?: number; removed?: number }[],
+): Promise<void> {
+  await page.evaluate((fs) => {
+    window.__forgeMock!.seed('git/getStatus', (params) => {
+      const path = params['path'];
+      if (typeof path !== 'string' || path.trim() === '') {
+        return { code: 1001, message: '参数错误：path 必须为非空字符串', data: null };
+      }
+      return {
+        code: 0,
+        message: 'ok',
+        data: {
+          isGitRepo: true,
+          branch: 'main',
+          detached: false,
+          fileCount: fs.length,
+          // 汇总口径：**不含**未跟踪（与 core `diff HEAD --numstat` 一致）
+          added: fs.filter((f) => f.status !== '?').reduce((n, f) => n + (f.added ?? 0), 0),
+          removed: fs.filter((f) => f.status !== '?').reduce((n, f) => n + (f.removed ?? 0), 0),
+          stagedEmpty: fs.every((f) => !f.staged),
+          stagedCount: fs.filter((f) => f.staged).length,
+          unpushedCount: 0,
+          hasHead: true,
+          files: fs,
+        },
+      };
+    });
+  }, files);
+}
+
+/** 非 git 项目的 seed（与 core 的 NOT_A_STATUS 同形） */
+async function seedNotGit(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('git/getStatus', () => ({
+      code: 0,
+      message: 'ok',
+      data: {
+        isGitRepo: false,
+        branch: null,
+        detached: false,
+        fileCount: 0,
+        added: 0,
+        removed: 0,
+        stagedEmpty: true,
+        stagedCount: 0,
+        unpushedCount: null,
+        hasHead: false,
+        files: [],
+      },
+    }));
+  });
+}
+
+test('Git 角标：改动过的文件行尾出现 M/A/? 徽标', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, [
+    { path: 'packages/forge-ui/src/App.vue', status: 'M' },
+    { path: 'packages/forge-core/src/file/fileService.ts', status: 'A' },
+    { path: 'docs/prd/12_code_explorer.md', status: '?' },
+  ]);
+  await openCode(page);
+  await expandAll(page);
+
+  // 这条断言就是「loadGitStatus 真的把 path 发对了」的回归：
+  // 参数名写错时它静默返回 []，下面三个徽标一个都不会出现，
+  // 且不报任何错——不写这条断言，这个缺陷可以无限期潜伏。
+  await expect(rowOf(page, 'App.vue').locator('.ctp-git')).toHaveAttribute('data-git', 'M');
+  await expect(rowOf(page, 'fileService.ts').locator('.ctp-git')).toHaveAttribute('data-git', 'A');
+  await expect(rowOf(page, '12_code_explorer.md').locator('.ctp-git')).toHaveAttribute('data-git', '?');
+
+  // 未改动的文件不能有徽标（否则就是「见树有徽标」，信息量为零）
+  await expect(rowOf(page, 'README.md').locator('.ctp-git')).toHaveCount(0);
+  await expect(rowOf(page, 'package.json').locator('.ctp-git')).toHaveCount(0);
+});
+
+test('Git 角标：非 git 项目 → 整棵树不出现任何徽标', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedNotGit(page);
+  await openCode(page);
+  await expandAll(page);
+
+  await expect(page.locator('.ctp-git')).toHaveCount(0);
+});
+
+test('Git 角标：目录行沿祖先链聚合出徽标（子树里有改动就标）', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  // 刻意用 docs/prd 这条路径：fixture 里 src 与 file 各有两份
+  // （forge-ui/src、forge-core/src），按名字定位会命中另一个分支。
+  // prd / docs 在整棵树里唯一，断言才落在确定的节点上。
+  await seedGitStatus(page, [{ path: 'docs/prd/12_code_explorer.md', status: 'M' }]);
+  await openCode(page);
+  await expandAll(page);
+
+  // 有改动 → 它自己与各级祖先目录都应聚合出徽标
+  await expect(rowOf(page, 'prd').locator('.ctp-git')).toHaveAttribute('data-git', 'M');
+  await expect(rowOf(page, 'docs').locator('.ctp-git')).toHaveAttribute('data-git', 'M');
+  // 另一条分支无改动 → 不该有
+  await expect(rowOf(page, 'README.md').locator('.ctp-git')).toHaveCount(0);
+});
+
+test('Git 角标：打开改动文件后代码纸面包屑旁显示状态', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, [
+    { path: 'packages/forge-ui/src/App.vue', status: 'M' },
+    { path: 'docs/prd/12_code_explorer.md', status: '?' },
+  ]);
+  await openCode(page);
+  await expandAll(page);
+  await openTreeFile(page, 'App.vue');
+
+  await expect(page.locator('.cv-badge')).toHaveAttribute('data-git', 'M');
+  await expect(page.locator('.cv-badge')).toHaveText('M');
+
+  // 用户 2026-10-03 报的回归：头部徽标要走和文件树同一张映射表，
+  // 未跟踪（porcelain 的 ?）在树里印绿 U，这里若直接印原始字符就分叉了
+  await openTreeFile(page, '12_code_explorer.md');
+  await expect(page.locator('.cv-badge')).toHaveAttribute('data-git', '?');
+  await expect(page.locator('.cv-badge')).toHaveText('U');
+});
+
+test('Git 角标：打开未改动文件 → 面包屑旁不出现徽标', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, [{ path: 'packages/forge-ui/src/App.vue', status: 'M' }]);
+  await openCode(page);
+  await expandAll(page);
+  await openTreeFile(page, 'README.md');
+
+  await expect(page.locator('.cv-badge')).toHaveCount(0);
+});
+
+// ===== CE-S09 Git 变更视图 + 底栏提交条 =====
+
+/** 切到「变更」视图（默认是「文件」） */
+async function toChanges(page: Page): Promise<void> {
+  await page.locator('.ctp-view', { hasText: '变更' }).click();
+  await expect(page.locator('.ctp-views .ctp-view.is-on')).toHaveText(/变更/);
+}
+
+const CHANGES = [
+  { path: 'packages/forge-ui/src/App.vue', status: 'M', added: 12, removed: 3 },
+  { path: 'packages/forge-core/src/file/fileService.ts', status: 'A', staged: true, added: 340, removed: 0 },
+  { path: 'docs/prd/12_code_explorer.md', status: '?', added: 24, removed: 0 },
+];
+
+test('变更视图：清单列出全部变更文件，带状态角标与逐文件 +N −M', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCode(page);
+  await toChanges(page);
+
+  const rows = page.locator('.ctp-changed');
+  await expect(rows).toHaveCount(3);
+  // 状态角标：porcelain 的 ? 映射成 U（未跟踪），不是直接印问号
+  await expect(rows.nth(0).locator('.ctp-git')).toHaveAttribute('data-git', 'M');
+  await expect(rows.nth(0).locator('.ctp-git')).toHaveText('M');
+  await expect(rows.nth(1).locator('.ctp-git')).toHaveText('A');
+  await expect(rows.nth(2).locator('.ctp-git')).toHaveText('U');
+  // 逐文件行数
+  await expect(rows.nth(0).locator('.ctp-add')).toHaveText('+12');
+  await expect(rows.nth(0).locator('.ctp-del')).toHaveText('−3');
+  await expect(rows.nth(1).locator('.ctp-add')).toHaveText('+340');
+  // 文件名完整不截断（目录尾巴必须让位给文件名）
+  const nameEl = rows.nth(0).locator('.ctp-name');
+  expect(await nameEl.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+});
+
+test('变更视图：文件视图与变更视图互斥，且都保留已打开的签', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCodeWithFile(page);
+  await toChanges(page);
+  // 变更视图里不渲染树
+  await expect(page.locator('.ctp-changed')).toHaveCount(3);
+  // 切回文件视图，已开的签还在（两个视图共用同一份 useCodeExplorer 状态）
+  await page.locator('.ctp-view', { hasText: '文件' }).first().click();
+  await expect(page.locator('.cv-tab.active .cv-tab-name')).toHaveText('README.md');
+});
+
+test('变更视图：点清单行 → 打开该文件', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCode(page);
+  await toChanges(page);
+  await page.locator('.ctp-changed').nth(0).click();
+
+  await expect(page.locator('.cv')).toBeVisible();
+  await expect(page.locator('.cv-tab.active .cv-tab-name')).toHaveText('App.vue');
+  await expect(page.locator('.cv-badge')).toHaveAttribute('data-git', 'M');
+});
+
+test('变更视图：没有变更时给明确空态，且不出现提交按钮', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, []);
+  await openCode(page);
+  await toChanges(page);
+
+  await expect(page.locator('.ctp-empty-title')).toHaveText('没有未提交的变更');
+  await expect(page.locator('.ctp-commit-btn')).toHaveCount(0);
+  // 切换器上的变更数角标也不该出现
+  await expect(page.locator('.ctp-count')).toHaveCount(0);
+});
+
+test('变更视图：非 git 项目 → 明确提示，不显示清单', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedNotGit(page);
+  await openCode(page);
+  await toChanges(page);
+
+  await expect(page.locator('.ctp-empty-title')).toHaveText('此项目不是 Git 仓库');
+  await expect(page.locator('.ctp-changed')).toHaveCount(0);
+  await expect(page.locator('.ctp-commit-btn')).toHaveCount(0);
+});
+
+test('变更视图：切换器上的变更数角标反映未提交文件数', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCode(page);
+
+  await expect(page.locator('.ctp-count')).toHaveText('3');
+});
+
+/** 用 __forgeMock.seed 接管 git/getFileDiff（并排 diff 数据源）。
+ *  与 seedGitStatus 同一策略：参数名漂移（path/relPath）在这里被真实拒绝。 */
+async function seedFileDiff(page: Page, diffs: Record<string, string | null>): Promise<void> {
+  await page.evaluate((m) => {
+    window.__forgeMock!.seed('git/getFileDiff', (params) => {
+      const path = params['path'];
+      const relPath = params['relPath'];
+      if (typeof path !== 'string' || path.trim() === '') {
+        return { code: 1001, message: '参数错误：path 必须为非空字符串', data: null };
+      }
+      if (typeof relPath !== 'string' || relPath.trim() === '') {
+        return { code: 1001, message: '参数错误：relPath 必须为非空字符串', data: null };
+      }
+      return { code: 0, message: 'ok', data: { diff: relPath in m ? (m as Record<string, string | null>)[relPath] ?? null : '' } };
+    });
+  }, diffs);
+}
+
+/** App.vue 的演示 diff：1 个 hunk = 上下文×2 + 修改对 + 纯新增×1 + 上下文×1，
+ *  解析后 5 行并排（2 equal、1 removed/added 对、1 纯 added、1 equal）。 */
+const APP_DIFF = [
+  'diff --git a/packages/forge-ui/src/App.vue b/packages/forge-ui/src/App.vue',
+  '--- a/packages/forge-ui/src/App.vue',
+  '+++ b/packages/forge-ui/src/App.vue',
+  '@@ -2,4 +2,5 @@',
+  ' import { ref } from "vue";',
+  '',
+  '-const activeView = ref("sessions");',
+  '+import { useCodeExplorer } from "./composables/useCodeExplorer";',
+  '+const activeView = ref("sessions");',
+  ' </script>',
+].join('\n');
+
+// ===== CE-S09b 并排 diff（模块 12 P2，用户 2026-10-03 报「变更tab右侧没有对比」）=====
+
+test('对比：变更清单点文件 → 右侧直接落到并排 diff（增删底色 + 两侧行号）', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await seedFileDiff(page, { 'packages/forge-ui/src/App.vue': APP_DIFF });
+  await openCode(page);
+  await toChanges(page);
+  await page.locator('.ctp-changed').nth(0).click();
+
+  // 切换器在 diff 态：右侧不再是文件正文，而是并排网格
+  await expect(page.locator('.cv-mode', { hasText: '并排' })).toHaveClass(/is-on/);
+  await expect(page.locator('.cv-diff-row')).toHaveCount(5);
+  // hunk 之间/首尾的未变更区域显式交代（行号跳变不再是哑巴）：
+  // hunk 从新第 2 行起 → 头段 1 行；文件 10+ 行、hunk 止于第 6 行 → 尾段
+  await expect(page.locator('.cv-diff-omit')).toHaveCount(2);
+  await expect(page.locator('.cv-diff-omit').first()).toHaveText(/未变更 1 行/);
+  // 增删格与文本（git 对齐的结果照搬，不重排）
+  await expect(page.locator('.cv-diff-cell.is-removed')).toHaveText('const activeView = ref("sessions");');
+  await expect(page.locator('.cv-diff-cell.is-added').first()).toHaveText(
+    'import { useCodeExplorer } from "./composables/useCodeExplorer";',
+  );
+  // 两侧行号来自 hunk 头：删除行旧号 4 / 新增行新号 4
+  await expect(page.locator('.cv-diff-row').nth(2).locator('.cv-diff-num').first()).toHaveText('4');
+  // 底栏报逐文件 ±行数与基线（不再报文件行数/体积）
+  await expect(page.locator('.cv-foot .cv-add')).toHaveText('+12');
+  await expect(page.locator('.cv-foot .cv-del')).toHaveText('−3');
+  await expect(page.locator('.cv-foot')).toContainText('相对 HEAD');
+});
+
+test('对比：树里打开有变更的文件 → 直接并排 diff（不先闪文件正文），点「文件」可看原文', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await seedFileDiff(page, { 'packages/forge-ui/src/App.vue': APP_DIFF });
+  await openCode(page);
+  await expandAll(page);
+  await openTreeFile(page, 'App.vue');
+
+  // 默认规则「有修改就展示 diff」（用户 2026-10-03 定稿）：树里点开也直接是 diff
+  await expect(page.locator('.cv-mode', { hasText: '并排' })).toHaveClass(/is-on/);
+  await expect(page.locator('.cv-diff-row')).toHaveCount(5);
+  // 「文件」按钮保留：想看原始文件仍可手动切
+  await page.locator('.cv-mode', { hasText: '文件' }).click();
+  await expect(page.locator('.cv-code')).toBeVisible();
+  // 切走再切回来，默认重新生效（文件形态不跨文件记忆）
+  await openTreeFile(page, 'package.json');
+  await expect(page.locator('.cv-code')).toBeVisible();
+  await openTreeFile(page, 'App.vue');
+  await expect(page.locator('.cv-diff-row')).toHaveCount(5);
+});
+
+test('对比：未变更文件直接是文件正文，永不出现「没有未提交改动」空态页', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await seedFileDiff(page, { 'packages/forge-ui/src/App.vue': APP_DIFF });
+  await openCode(page);
+  await expandAll(page);
+  // 先把右侧带进 diff 语境（打开有变更的文件）
+  await openTreeFile(page, 'App.vue');
+  await expect(page.locator('.cv-diff-row')).toHaveCount(5);
+
+  // 切到未变更文件：直接文件正文 + diff 按钮置灰；「没有未提交改动」空态页不该出现
+  await openTreeFile(page, 'package.json');
+  await expect(page.locator('.cv-code')).toBeVisible();
+  await expect(page.locator('.cv-mode', { hasText: '并排' })).toBeDisabled();
+  await expect(page.locator('.cv-mode', { hasText: '行内' })).toBeDisabled();
+  await expect(page.locator('.cv-state-title', { hasText: '此文件没有未提交的改动' })).toHaveCount(0);
+});
+
+test('对比：个性化里把默认视图切到「行内」→ 变更文件直接进行内高亮，删除块可展开', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await seedFileDiff(page, { 'packages/forge-ui/src/App.vue': APP_DIFF });
+  // 设置 → 个性化 → 代码对比默认视图 = 行内（2026-10-03 新增的个性化项）
+  await page.locator('.sidebar-link').click();
+  await expect(page.locator('.settings-panel, .settings-body')).toBeVisible();
+  await page.locator('.settings-tab', { hasText: '个性化' }).click();
+  await page.locator('.code-layout-option', { hasText: '行内' }).click();
+  await page.locator('.settings-back, .settings-close').first().click();
+
+  await openCode(page);
+  await expandAll(page);
+  await openTreeFile(page, 'App.vue');
+
+  // 行内形态：文件正文 + 新增行标记 + 删除占位条（-旧 +新 的替换也算一条占位条）
+  await expect(page.locator('.cv-mode', { hasText: '行内' })).toHaveClass(/is-on/);
+  await expect(page.locator('.cv-line.is-add')).toHaveCount(2);
+  await expect(page.locator('.cv-delblock')).toHaveCount(1);
+  // 右缘滚动位置色块（Zed 同款）：新增连续段 1 条绿 + 删除占位条 1 条红
+  await expect(page.locator('.cv-minimap-mark.is-add')).toHaveCount(1);
+  await expect(page.locator('.cv-minimap-mark.is-del')).toHaveCount(1);
+  // 占位条默认收起，点开看到被删的旧行
+  await expect(page.locator('.cv-delblock-gone')).toBeHidden();
+  await page.locator('.cv-delblock-bar').click();
+  await expect(page.locator('.cv-delblock-gone')).toBeVisible();
+  await expect(page.locator('.cv-delblock-text')).toHaveText('const activeView = ref("sessions");');
+  // 切换器三档都在：可临时切回并排（偏好不被改写）
+  await page.locator('.cv-mode', { hasText: '并排' }).click();
+  await expect(page.locator('.cv-diff-row')).toHaveCount(5);
+  await page.locator('.cv-mode', { hasText: '行内' }).click();
+  await expect(page.locator('.cv-line.is-add')).toHaveCount(2);
+});
+
+test('变更视图：级联模式按目录分层（默认平铺），目录可折叠、点文件打开', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCode(page);
+  await toChanges(page);
+
+  // 默认平铺（2026-10-03 用户定稿）
+  await expect(page.locator('.ctp-changed')).toHaveCount(3);
+  await expect(page.locator('.ctp-changed-dir')).toHaveCount(0);
+
+  // 切级联：目录节点全部默认展开；文件行仍可点开
+  await page.locator('.ctp-changed-mode', { hasText: '级联' }).click();
+  await expect(page.locator('.ctp-changed-dir')).toHaveCount(8);
+  await expect(page.locator('.ctp-changed')).toHaveCount(3);
+  // 目录聚合状态与文件树同口径：docs 子树唯一变更项是 ? → 透传；packages 下两个文件 → M
+  await expect(rowOf(page, 'docs').locator('.ctp-git')).toHaveAttribute('data-git', '?');
+  await expect(rowOf(page, 'packages').locator('.ctp-git')).toHaveAttribute('data-git', 'M');
+  // 折叠 docs：docs 行还在（它是折叠开关），其子目录 prd 一并隐藏
+  await rowOf(page, 'docs').click();
+  await expect(page.locator('.ctp-changed-dir')).toHaveCount(7);
+  await expect(page.locator('.ctp-changed')).toHaveCount(2);
+  // 再展开，点文件行 → 打开（与平铺同一条 openFile 路径）
+  await rowOf(page, 'docs').click();
+  await expect(page.locator('.ctp-changed-dir')).toHaveCount(8);
+  await page.locator('.ctp-changed', { hasText: 'App.vue' }).click();
+  await expect(page.locator('.cv')).toBeVisible();
+  await expect(page.locator('.cv-tab.active .cv-tab-name')).toHaveText('App.vue');
+  // 切回平铺：树行消失，清单回到一列
+  await page.locator('.ctp-changed-mode', { hasText: '平铺' }).click();
+  await expect(page.locator('.ctp-changed')).toHaveCount(3);
+  await expect(page.locator('.ctp-changed-dir')).toHaveCount(0);
+});
+
+test('对比：未跟踪文件 → git 不给 diff，用已加载正文合成「全新增」视角', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCode(page);
+  await toChanges(page);
+  await page.locator('.ctp-changed').nth(2).click(); // docs/prd/12_code_explorer.md（?）
+
+  // 所有行右=added、左=空底（左侧无内容可对照，行号也不该出现）
+  const rows = page.locator('.cv-diff-row');
+  expect(await rows.count()).toBeGreaterThan(0);
+  await expect(page.locator('.cv-diff-cell.is-added')).toHaveCount(await rows.count());
+  await expect(page.locator('.cv-diff-cell.is-removed')).toHaveCount(0);
+  await expect(rows.first().locator('.cv-diff-num').first()).toHaveText('');
+});
+
+test('对比：git/getFileDiff 失败（6001）→ 明确失败态而不是空白纸', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  // composable 把一切非 0 信封归一成 null；这里用 6001 模拟 git diff 真失败
+  await page.evaluate(() => {
+    window.__forgeMock!.seed('git/getFileDiff', () => ({ code: 6001, message: 'git diff 失败', data: null }));
+  });
+  await openCode(page);
+  await toChanges(page);
+  await page.locator('.ctp-changed').nth(0).click();
+
+  await expect(page.locator('.cv-state-title')).toHaveText('对比加载失败');
+});
+
+test('提交条：汇总数 = 逐文件之和（含未跟踪），点开走模块 11 现有弹窗', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, CHANGES);
+  await openCode(page);
+  await toChanges(page);
+
+  // 3 个文件 +12+340+24 = +376，−3。注意这**不等于** GitStatusInfo.added
+  // （那个是 numstat 汇总，不含未跟踪的 24）——底栏要的是「这次一共改了多少」。
+  await expect(page.locator('.ctp-commit-l1')).toHaveText('3 个文件待提交');
+  await expect(page.locator('.ctp-commit-l2 .ctp-add')).toHaveText('+376');
+  await expect(page.locator('.ctp-commit-l2 .ctp-del')).toHaveText('−3');
+
+  await page.locator('.ctp-commit-btn').click();
+  // 类名是 GitCommitDialog.vue 的真类名（.dialog-*），不是原型里的 .dlg-*
+  await expect(page.locator('.dialog-title')).toHaveText('提交或推送');
+  await expect(page.locator('.dlg-counts')).toContainText('待提交 3');
+});
+
+// ===== 目录行聚合状态 + 父级染色（用户 2026-10-03 报「父级节点也要颜色标记」）=====
+
+test('Git 角标：单文件目录透传子文件状态，目录名随状态染色', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, [{ path: 'docs/prd/12_code_explorer.md', status: 'A' }]);
+  await openCode(page);
+  await expandAll(page);
+
+  // 唯一变更项是 A → 目录角标透传 A（旧实现一律 M，「目录里新增了文件」就读不出来了）
+  await expect(rowOf(page, 'prd').locator('.ctp-git')).toHaveAttribute('data-git', 'A');
+  await expect(rowOf(page, 'docs').locator('.ctp-git')).toHaveAttribute('data-git', 'A');
+  // 父级染色：目录名与角标同色（同一张 STATUS_UI 表驱动，否则名字灰、角标彩）
+  await expect(rowOf(page, 'prd').locator('.ctp-name')).toHaveClass(/is-add/);
+  await expect(rowOf(page, 'docs').locator('.ctp-name')).toHaveClass(/is-add/);
+  // 没有改动的分支不染色
+  await expect(rowOf(page, 'README.md').locator('.ctp-name')).not.toHaveClass(/is-/);
+});
+
+test('Git 角标：多文件目录聚合为 M，目录名染 M 色', async ({ page }) => {
+  await attachHealthGuards(page);
+  await waitForMock(page);
+  await seedGitStatus(page, [
+    { path: 'packages/forge-ui/src/App.vue', status: 'M' },
+    { path: 'packages/forge-ui/src/bridge.ts', status: 'M' },
+  ]);
+  await openCode(page);
+  await expandAll(page);
+
+  await expect(rowOf(page, 'forge-ui').locator('.ctp-git')).toHaveAttribute('data-git', 'M');
+  await expect(rowOf(page, 'forge-ui').locator('.ctp-name')).toHaveClass(/is-mod/);
+  // M 徽标必须挂上 is-m（warning 橙）——漏掉这条规则 M 就落默认灰，等于没标
+  await expect(rowOf(page, 'App.vue').locator('.ctp-git')).toHaveClass(/is-m/);
+});
+

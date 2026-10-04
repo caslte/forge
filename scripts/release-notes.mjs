@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * forge 发布说明自动生成器：汇总上一个 tag 与目标版本之间的所有提交，排版成
- * GitHub Release 描述（Markdown），写入 packages/forge-desktop/release-notes.md
- * 供 electron-builder（releaseNotesFile）发布时带上。
+ * Markdown 写入 packages/forge-desktop/release-notes.md：
+ *   - electron-builder 读它填进 latest.yml 的 releaseNotes（应用内更新弹窗显示）；
+ *   - GitHub Release 描述由 CI 的 release-notes job 用该文件补写
+ *     （electron-builder 25.x 创建 Release 时不带 body）。
  *
  * 规则：
  *   - 范围：`git log <上一tag>..<目标>`，排除 merge 提交。
@@ -102,7 +104,8 @@ export function collectCommits(fromTag, toRef = 'HEAD') {
 export function repoUrl() {
   const raw = git(['remote', 'get-url', 'origin']);
   const ssh = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(raw);
-  const https = /^https?:\/\/.+@?([^/]+)\/(.+?)(?:\.git)?$/.exec(raw);
+  // (?:[^@/]+@)? 吃掉可选的凭证段（https://user@host/...）；([^/]+) 在第一个 / 前截住 host
+  const https = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?$/.exec(raw);
   const base = ssh ? `https://${ssh[1]}/${ssh[2]}` : https ? `https://${https[1]}/${https[2]}` : raw.replace(/\.git$/, '');
   return base;
 }

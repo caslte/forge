@@ -2,7 +2,7 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
-import { sortSessionsByActivation, projectTagOf } from '../utils/sessionView';
+import { sortSessionsByActivation, projectTagOf, relativeTimeParts, formatAbsoluteTime } from '../utils/sessionView';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import { useI18n, type MessageKey } from '../i18n/index.ts';
 
@@ -549,15 +549,37 @@ watch(
   { deep: true }
 );
 
+/* ===== 行尾相对活跃时间：默认占位，hover 时让位给删除按钮 =====
+   文案由 relativeTimeParts 给出量级、单位走 i18n；nowTick 每分钟推动一次重算。 */
+const nowTick = ref(Date.now());
+let nowTicker: ReturnType<typeof setInterval> | null = null;
+
+function sessionTimeLabel(session: SessionItem): string {
+  const p = relativeTimeParts(session.lastActiveAt, nowTick.value);
+  if (!p) return '';
+  if (p.key === 'project.timeJustNow') return t('project.timeJustNow');
+  if (p.key === 'project.timeMonthDay') return t('project.timeMonthDay', { month: p.month, day: p.day });
+  if (p.key === 'project.timeFull') return t('project.timeFull', { year: p.year, month: p.month, day: p.day });
+  return t(p.key, { count: p.count });
+}
+
+function sessionTimeTitle(session: SessionItem): string {
+  return formatAbsoluteTime(session.lastActiveAt);
+}
+
 onMounted(() => {
   document.addEventListener('keydown', onDocumentKeydown);
   window.addEventListener('resize', updateTreeFade);
   observeTreeFadeSource();
+  // 行尾相对时间靠 nowTick 驱动重算，否则「3小时」会停在那一小时不动
+  nowTicker = setInterval(() => { nowTick.value = Date.now(); }, 60_000);
 });
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onDocumentKeydown);
   window.removeEventListener('resize', updateTreeFade);
+  if (nowTicker) clearInterval(nowTicker);
+  nowTicker = null;
   fadeObserver?.disconnect();
   fadeObserver = null;
   clearDeleteConfirmTimer();
@@ -642,31 +664,35 @@ onUnmounted(() => {
 
           <span class="tree-session-proj-tag" :title="session.projectPath">{{ taskProjectTag(session) }}</span>
 
-          <div class="tree-node-actions">
-            <button
-              type="button"
-              class="tree-icon-button danger"
-              :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
-              :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
-              :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
-              @click.stop="handleDeleteSessionClick(session)"
-            >
-              <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
-              <svg
-                v-else
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
+          <span class="tree-session-meta">
+            <span v-if="sessionTimeLabel(session)" class="tree-session-time" :title="sessionTimeTitle(session)">{{ sessionTimeLabel(session) }}</span>
+
+            <div class="tree-node-actions">
+              <button
+                type="button"
+                class="tree-icon-button danger"
+                :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
+                :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                @click.stop="handleDeleteSessionClick(session)"
               >
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              </svg>
-            </button>
-          </div>
+                <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
+                <svg
+                  v-else
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            </div>
+          </span>
         </div>
 
         <button
@@ -847,31 +873,35 @@ onUnmounted(() => {
                 <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
               </div>
 
-              <div class="tree-node-actions">
-                <button
-                  type="button"
-                  class="tree-icon-button danger"
-                  :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
-                  :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
-                  :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
-                  @click.stop="handleDeleteSessionClick(session)"
-                >
-                  <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
-                  <svg
-                    v-else
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
+              <span class="tree-session-meta">
+                <span v-if="sessionTimeLabel(session)" class="tree-session-time" :title="sessionTimeTitle(session)">{{ sessionTimeLabel(session) }}</span>
+
+                <div class="tree-node-actions">
+                  <button
+                    type="button"
+                    class="tree-icon-button danger"
+                    :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
+                    :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                    :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                    @click.stop="handleDeleteSessionClick(session)"
                   >
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
-              </div>
+                    <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
+                    <svg
+                      v-else
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
+              </span>
             </div>
 
             <button
@@ -1282,10 +1312,19 @@ onUnmounted(() => {
   padding: 1px 6px;
 }
 
-/* 任务视角行尾项目 tag（SM-S06） */
+/* 会话行的标题区留 4em 下限：侧栏拖窄时，多出来的挤压先由行尾的时间/tag 吸收，
+   标题不会被压成一个字。下限放在 .tree-node-main（参与行级 flex 分配），
+   放在 .tree-session-title 上无效——父级 min-width:0 已经允许它溢出，结果是叠字。 */
+.tree-session > .tree-node-main {
+  min-width: 4em;
+}
+
+/* 任务视角行尾项目 tag（SM-S06）
+   可缩：侧栏拖窄时先让 tag 变短（下方 ellipsis 接手），而不是把标题压没。
+   min-width:0 是关键——没有它，flex 的自动最小尺寸会锁在文字宽度上不让缩。 */
 .tree-session-proj-tag {
-  flex: 0 0 auto;
-  max-width: 88px;
+  flex: 0 1 88px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1295,6 +1334,34 @@ onUnmounted(() => {
   border-radius: 999px;
   padding: 1px 7px;
   background: color-mix(in oklab, var(--muted) 30%, transparent);
+}
+
+/* 行尾槽位：相对活跃时间与删除按钮叠在同一个网格格子里。
+   两层都常驻 DOM，靠 opacity 互斥显示（时间→按钮），所以 hover 时
+   行宽/标题截断位置零抖动；按钮也不靠 v-if 挂载，命中区一直在。 */
+.tree-session-meta {
+  flex: 0 0 auto;
+  display: grid;
+  align-items: center;
+  justify-items: end;
+}
+.tree-session-meta > * {
+  grid-area: 1 / 1;
+}
+
+/* 最近活跃时间：补上侧栏行尾的空白，title 里给绝对时间 */
+.tree-session-time {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted-foreground);
+  opacity: 0.55;
+  white-space: nowrap;
+  /* 数字等宽：分钟跳动时宽度不变，不把右侧内容推来推去 */
+  font-variant-numeric: tabular-nums;
+  transition: opacity var(--transition-fast);
+}
+.tree-session:hover .tree-session-time {
+  opacity: 0;
 }
 
 /* 状态槽位：12×12 的固定尺寸框（比 8px 圆点大，给运行中动画留余量）。

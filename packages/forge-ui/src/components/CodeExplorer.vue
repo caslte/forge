@@ -38,7 +38,7 @@ const props = defineProps<{
 
 const { t } = useI18n();
 const { codeViewerLayout, codeViewerSplitPct, setCodeViewerSplitPct } = usePreferences();
-const { getState, setActive, closeFile, moveFile, loadGitStatus } = useCodeExplorer();
+const { getState, setActive, closeFile, moveFile, loadGitStatus, setViewerMode } = useCodeExplorer();
 
 /** 宿主的像素宽度：拖拽增量与保底换算都要用它 */
 const hostWidth = ref(0);
@@ -47,6 +47,13 @@ const host = ref<HTMLElement | null>(null);
 const state = computed(() => getState(props.projectPath ?? ''));
 const openFiles = computed(() => (props.projectPath ? state.value.openFiles : []));
 const activeRel = computed(() => state.value.activeRel);
+/** 代码纸正文形态（file/diff）：状态在 useCodeExplorer，左栏变更视图与这里共用 */
+const viewerMode = computed(() => state.value.viewerMode);
+
+/** 切换器回写：没有项目时无处落状态，忽略即可 */
+function onSetMode(mode: 'file' | 'inline' | 'side'): void {
+  if (props.projectPath) setViewerMode(props.projectPath, mode);
+}
 
 /**
  * 代码纸真正显示的条件：进了代码态 **且至少打开了一个文件**。
@@ -68,17 +75,24 @@ const isDegraded = computed(() => showEditor.value && codeLayoutDegraded.value);
 
 const splitPct = computed(() => clampCodeSplitPct(codeViewerSplitPct.value, hostWidth.value));
 
-/** 当前文件的 Git 徽标：切文件时做一次本地查表，不重新拉 git */
-const activeGit = ref<GitStatusFile | null>(null);
+/** 当前文件的 Git 状态：直接查**共享项目状态**（同步），切文件零延迟。
+ *  之前是切完文件再异步拉一次 getStatus，右侧会先按旧状态闪一帧错的模式
+ *  （用户报的「先跳文件再跳 diff / 未变更文件先弹空态页」即此），已改。 */
+const activeGit = computed<GitStatusFile | null>(
+  () =>
+    (props.projectPath
+      ? state.value.gitInfo?.files.find((f) => f.path === activeRel.value)
+      : null) ?? null,
+);
 
-async function syncGit(): Promise<void> {
-  if (!props.projectPath) {
-    activeGit.value = null;
-    return;
-  }
-  const files = await loadGitStatus(props.projectPath);
-  activeGit.value = files.find((f) => f.path === activeRel.value) ?? null;
-}
+// 进代码态/切项目时刷新一次 git 状态（写入共享状态；与左栏的刷新同源幂等）
+watch(
+  () => props.projectPath,
+  (p) => {
+    if (p) void loadGitStatus(p);
+  },
+  { immediate: true },
+);
 
 function onResize(): void {
   // 窗口宽度由 usePreferences 的模块级 viewportWidth 自己监听，这里只管宿主宽度
@@ -96,17 +110,10 @@ onMounted(() => {
     });
     ro.observe(host.value);
   }
-  void syncGit();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize);
   ro?.disconnect();
-});
-
-// 切激活文件 → 只做一次本地查表，不重新拉 git（CE-S07：进代码态时读一次并缓存）
-const watchedActive = computed(() => `${props.projectPath ?? ''}::${activeRel.value ?? ''}`);
-watch(watchedActive, () => {
-  void syncGit();
 });
 
 /** 拖拽中：只改 ref 不落盘。一次拖拽上百次变更，没必要每次写 localStorage */
@@ -166,10 +173,13 @@ const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
           <CodeViewer
             :files="openFiles"
             :active-rel="activeRel"
+            :project-path="projectPath"
             :git-status="activeGit"
+            :mode="viewerMode"
             @select="onSelectTab"
             @close="onCloseTab"
             @move="onMoveTab"
+            @set-mode="onSetMode"
           />
           <div v-if="isDegraded" class="cex-note">{{ t('code.layoutDegraded') }}</div>
         </div>
@@ -191,10 +201,13 @@ const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
           <CodeViewer
             :files="openFiles"
             :active-rel="activeRel"
+            :project-path="projectPath"
             :git-status="activeGit"
+            :mode="viewerMode"
             @select="onSelectTab"
             @close="onCloseTab"
             @move="onMoveTab"
+            @set-mode="onSetMode"
           />
           <footer class="cex-foot">
             <span class="cex-pct" :title="t('code.splitterHint')">
