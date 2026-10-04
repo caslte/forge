@@ -18,6 +18,12 @@ export interface UpdaterState {
   schemaVersion: number;
   /** 上次运行时记录的 forge 版本；null = 首次运行 */
   lastRunForgeVersion: string | null;
+  /**
+   * 已展示过「版本更新说明」的 forge 版本；null = 从未展示。
+   * 升级后首启自动弹窗（updater/getReleaseNotes shouldShow）的只弹一次标记，
+   * 弹窗打开即回写当前版本——关掉/崩溃/联动更新失败都不重弹，回看走关于页入口。
+   */
+  lastShownNotesVersion: string | null;
   /** 推荐组件预装是否已完成；失败保持 false，下次启动重试 */
   preinstallDone: boolean;
   /** 预装完成时间（ISO8601，观测用，无业务判断依赖） */
@@ -44,6 +50,7 @@ function defaultUpdaterState(): UpdaterState {
   return {
     schemaVersion: SCHEMA_VERSION,
     lastRunForgeVersion: null,
+    lastShownNotesVersion: null,
     preinstallDone: false,
     preinstallDoneAt: null,
     preinstallListVersion: 0,
@@ -59,6 +66,10 @@ function isValidState(value: unknown): value is UpdaterState {
   return (
     typeof v.schemaVersion === 'number' &&
     (v.lastRunForgeVersion === null || typeof v.lastRunForgeVersion === 'string') &&
+    // 可选字段：引入该字段之前的老状态文件没有它，缺省不算损坏（读取时归 null）
+    (v.lastShownNotesVersion === undefined ||
+      v.lastShownNotesVersion === null ||
+      typeof v.lastShownNotesVersion === 'string') &&
     typeof v.preinstallDone === 'boolean' &&
     (v.preinstallDoneAt === null || typeof v.preinstallDoneAt === 'string') &&
     // 可选字段：v2 之前的老状态文件没有它，缺省不算损坏（读取时归 0）
@@ -82,6 +93,7 @@ export function readUpdaterState(statePath: string): UpdaterState {
     return {
       schemaVersion: parsed.schemaVersion,
       lastRunForgeVersion: parsed.lastRunForgeVersion,
+      lastShownNotesVersion: parsed.lastShownNotesVersion ?? null,
       preinstallDone: parsed.preinstallDone,
       preinstallDoneAt: parsed.preinstallDoneAt,
       preinstallListVersion: parsed.preinstallListVersion ?? 0,

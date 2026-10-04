@@ -112,6 +112,9 @@ export type ForgeMethod =
   | 'updater/checkForUpdates'
   | 'updater/downloadUpdate'
   | 'updater/quitAndInstall'
+  // 版本更新说明（升级后首启弹一次 + 关于页回看，pi/releaseNotes.ts）
+  | 'updater/getReleaseNotes'
+  | 'updater/markNotesShown'
   // ask_user_question（Path 2）：renderer → main 的问卷回填（唯一上行入口，
   // 必须是方法而非事件——main.ts 只经 IPC_INVOKE → invoke(methodTable) 接收）
   | 'askUserQuestion/reply';
@@ -496,6 +499,16 @@ export type UpdaterSnapshot = AppUpdaterSnapshot;
  * 与 getState.data 同构（全局单例状态，无 sessionId）；任意跃迁都发（含下载进度步进）。
  */
 export type UpdaterStateChangedPayload = AppUpdaterSnapshot;
+
+/** updater/getReleaseNotes 响应 data（版本更新说明，pi/releaseNotes.ts） */
+export interface ReleaseNotesPayload {
+  /** 说明对应的 forge 版本（=当前版本） */
+  version: string;
+  /** Markdown 原文；null = 安装包未携带说明（异常/极老安装包） */
+  markdown: string | null;
+  /** 是否应自动弹出（升级首启且本版本未展示过）；关于页回看只看 markdown */
+  shouldShow: boolean;
+}
 
 /**
  * conversation.compacted 事件 payload（P3-A）：一次上下文压缩完成。

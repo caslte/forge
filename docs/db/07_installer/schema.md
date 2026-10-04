@@ -21,6 +21,7 @@
 |--------|------|------|--------|------|
 | schemaVersion | number | 否 | 1 | 结构版本，向后迁移用 |
 | lastRunForgeVersion | string | 是 | null | 上次运行时记录的 forge 版本；null = 首次运行。启动时与当前版本不等 → 触发组件联动更新（AC-IN-012）并回写 |
+| lastShownNotesVersion | string | 是 | null | 已展示过「版本更新说明」的 forge 版本；null = 从未展示。升级后首启自动弹窗（`updater/getReleaseNotes` shouldShow 门控）的只弹一次标记，弹窗打开即回写当前版本；关掉/崩溃/联动更新失败都不重弹，回看走设置「关于」页入口。老文档无此字段，读取归 null、不视为损坏 |
 | preinstallDone | boolean | 否 | false | 推荐组件预装是否已执行完成（AC-IN-006 幂等标志）；失败保持 false，下次启动重试 |
 | preinstallDoneAt | string(ISO8601) | 是 | null | 预装完成时间（观测用，无业务判断依赖） |
 | preinstallListVersion | number | 否 | 0 | 已处理的推荐清单版本（对应 `RECOMMENDED_LIST_VERSION`，包内常量）。v2 之前的老文档无此字段，读取归 0、不视为损坏；清单版本前进 → 老用户升级后重跑一轮补缺（新推荐项升级必达） |
@@ -30,13 +31,14 @@
 - 主键：单例文档，无主键概念
 - 索引：无
 - 关联：无（自包含）
-- seed 数据（首次创建时写入）：`{ "schemaVersion": 1, "lastRunForgeVersion": null, "preinstallDone": false, "preinstallDoneAt": null, "preinstallListVersion": 0, "lastUpdateCheckAt": null, "components": {} }`
+- seed 数据（首次创建时写入）：`{ "schemaVersion": 1, "lastRunForgeVersion": null, "lastShownNotesVersion": null, "preinstallDone": false, "preinstallDoneAt": null, "preinstallListVersion": 0, "lastUpdateCheckAt": null, "components": {} }`
 - 状态：已确认
 
 ### 设计说明
 
-- `lastRunForgeVersion`、`preinstallDone` 与 `preinstallListVersion` 是仅有的三个**业务判断**字段：
+- `lastRunForgeVersion`、`lastShownNotesVersion`、`preinstallDone` 与 `preinstallListVersion` 是仅有的四个**业务判断**字段：
   - 联动更新判定：`lastRunForgeVersion !== 当前版本` → 后台静默组件更新 → 成功后回写当前版本；失败保留旧值下次重试（AC-IN-012/013）。
+  - 更新说明弹窗判定：升级启动（启动链早期同步采集的 `lastRunForgeVersion` 快照非 null 且 ≠ 当前版本）且 `lastShownNotesVersion !== 当前版本` → `updater/getReleaseNotes` shouldShow=true，弹窗打开即回写当前版本；只弹一次，回看走关于页（AC-见 docs/api/07_pi.md）。
   - 预装判定：`preinstallDone === false` 或 `preinstallListVersion < 包内 RECOMMENDED_LIST_VERSION` → 后台静默补缺（只增不删）→ 全部成功置 preinstallDone=true 并追平清单版本；任一失败保持原样下次重试（AC-IN-004/006/007）。清单版本字段缺失（v2 前的老文件）按 0 处理，等价触发一轮补缺——新推荐项对升级用户必达（如 v2 的 pi-memory）。
 - 首次运行（`lastRunForgeVersion === null`）：同时满足预装触发；联动更新首次不触发（无「版本变化」语义），仅回写版本。
 - 刻意不存：更新包下载路径/进度（electron-updater 内存态）、用户跳过的版本（v1 无跳过功能，每次有新版都提示）。

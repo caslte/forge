@@ -33,6 +33,11 @@ extraResources:
   # 这里额外把许可正文放进 resources/licenses/。
   - from: ../forge-ui/src/assets/fonts/OFL.txt
     to: licenses/JetBrainsMono-OFL.txt
+  # 版本更新说明（release.mjs 发布时生成、随 bump commit 入库）：打进 resources/
+  # 供应用内「升级后首启弹窗 / 关于页回看」读取（主进程 updater/getReleaseNotes，
+  # 落点 = process.resourcesPath/release-notes.md）。
+  - from: release-notes.md
+    to: release-notes.md
 win:
   # 不在此声明 arch：交给 CLI 的 --x64 / --arm64。
   # 本地 `npm run dist` 默认当前架构（行为与改动前一致）；CI 按矩阵逐架构构建。

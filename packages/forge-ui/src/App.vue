@@ -21,6 +21,8 @@ import TrustAskDialog from './components/TrustAskDialog.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import GitCommitDialog from './components/GitCommitDialog.vue';
+import WhatsNewDialog from './components/WhatsNewDialog.vue';
+import { useWhatsNew } from './composables/useWhatsNew';
 import TerminalPanel from './components/TerminalPanel.vue';
 import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
@@ -388,6 +390,8 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 const { themeMode, setTheme } = useTheme();
 const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
 const { terminalOpen, setTerminalOpen, codeViewerLayout } = usePreferences();
+// 版本更新说明弹窗（升级后首启自动弹 + 关于页回看；弹窗本体见模板 WhatsNewDialog）
+const { ensureChecked: ensureWhatsNewChecked } = useWhatsNew();
 
 // ===== 内嵌终端（模块 10）入口状态 =====
 // tab 标题的项目显示名：别名优先，回退目录名（与会话归属标签同口径）
@@ -832,6 +836,8 @@ function startPostBootInit(): void {
   void loadSessions();
   void loadProjects();
   void loadModels();
+  // 版本更新说明：core 已就绪，检查并按需自动弹（升级首启 + 未展示过；幂等，失败静默）
+  void ensureWhatsNewChecked();
 }
 
 onMounted(() => {
@@ -1249,6 +1255,9 @@ onUnmounted(() => {
 
     <!-- 提交或推送弹窗（GC-S11）：入口在 InstructionInput 状态行 / BranchBadge 浮窗，经 useGitCommitDialog 单例开合 -->
     <GitCommitDialog />
+
+    <!-- 版本更新说明弹窗（升级后首启自动弹 + 关于页回看）：useWhatsNew 单例开合 -->
+    <WhatsNewDialog />
 
     <ToastNotification
       v-if="toastMessage"

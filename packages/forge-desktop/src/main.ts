@@ -28,7 +28,7 @@ import {
 import { SafeStorageKeychainAdapter } from './pi/keychainAdapter.ts';
 import { ensurePiShellPath } from './pi/shellProbe.ts';
 import { createStartupUpdate, touchLastUpdateCheckAt } from './pi/startupUpdate.ts';
-import { defaultUpdaterStatePath } from './pi/updaterState.ts';
+import { defaultUpdaterStatePath, readUpdaterState } from './pi/updaterState.ts';
 import { scanAttachments, savePasteImage, savePastedText, readImageDataUrl, listProjectFiles } from './attachments.ts';
 import { backgroundFor, isThemeMode, readThemeSync, writeTheme, type ThemeMode } from './theme.ts';
 import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './bootFrame.ts';
@@ -791,6 +791,18 @@ app.whenReady().then(async () => {
   const themeMode = readThemeSync(app.getPath('userData'));
   // QA-G1/G4：updater-state.json（手动更新 components 快照 + lastUpdateCheckAt 持久化路径）
   const updaterStatePath = defaultUpdaterStatePath(app.getPath('userData'));
+  // 版本更新说明（升级后首启弹一次）：「升级启动」判定必须在此同步采集——startupUpdate
+  // 联动阶段会异步把 lastRunForgeVersion 改写为当前版本，等 RPC 时刻再读就分不出
+  // 「升级」与「平运行」。全新安装（lastRunForgeVersion=null）不算升级，不弹。
+  const earlyUpdaterState = readUpdaterState(updaterStatePath);
+  const isUpgradeRun =
+    earlyUpdaterState.lastRunForgeVersion !== null &&
+    earlyUpdaterState.lastRunForgeVersion !== appVersion;
+  // 说明文件位置：打包产物在 resources/（electron-builder extraResources 落点，asar 外）；
+  // dev 回退包目录内仓库文件（release.mjs 生成、随 bump commit 入库）。
+  const releaseNotesPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'release-notes.md')
+    : path.join(app.getAppPath(), 'release-notes.md');
   // pi 数据域根（skills/sessions/models.json/trust.json/settings.json 全部派生于此）：
   // 产品上与终端 pi 的 ~/.pi/agent 隔离，落 forge userData，卸载即随目录清理。
   // 单一注入点——createForgeCore/预热/预装更新共用，内置 CLI 子进程经 PI_CODING_AGENT_DIR 同根。
@@ -878,6 +890,9 @@ app.whenReady().then(async () => {
     appUpdater,
     // QA-G1：手动组件更新成功后刷新 updater-state components 快照（缺省 null=跳过持久化）
     updaterStatePath,
+    // 版本更新说明（升级后首启弹一次 + 关于页回看）：文件路径 + 升级启动快照
+    releaseNotesPath,
+    isUpgradeRun,
     // 更新调试开关（userData/updater-debug.json，实时读取；false=普通用户不可见调试控制台）
     getUpdateDebugEnabled: () => readUpdateDebugEnabled(app.getPath('userData')),
     // 模块 09：skill 删除/覆盖导入的回收站能力（Electron Shell API；失败由 skillService 回退永久删除）

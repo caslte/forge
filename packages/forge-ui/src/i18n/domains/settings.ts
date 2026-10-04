@@ -95,6 +95,11 @@ export const zhSettings = {
   'settings.update.entryReady': '更新已就绪，点击安装',
   'settings.update.entryDownloading': '正在下载更新',
   'settings.update.entryInstalling': '正在安装，即将重启',
+  'settings.update.viewNotes': '查看本次更新说明',
+  'settings.update.whatsNewTitle': '已更新到 {version}',
+  'settings.update.whatsNewSubtitle': '本次更新内容如下',
+  'settings.update.whatsNewStart': '开始使用',
+  'settings.update.whatsNewClose': '关闭',
 } as const;
 
 export const enSettings: Record<string, string> = {
@@ -194,4 +199,9 @@ export const enSettings: Record<string, string> = {
   'settings.update.entryReady': 'Update ready — click to install',
   'settings.update.entryDownloading': 'Downloading update',
   'settings.update.entryInstalling': 'Installing — restarting soon',
+  'settings.update.viewNotes': "What's new in this version",
+  'settings.update.whatsNewTitle': 'Updated to {version}',
+  'settings.update.whatsNewSubtitle': "Here's what's new",
+  'settings.update.whatsNewStart': 'Get started',
+  'settings.update.whatsNewClose': 'Close',
 };

@@ -29,3 +29,5 @@ AGENT.MD
 .sisyphus/
 docs/demos/
 tmp/
+.zcode/plans/
+docs/demo/

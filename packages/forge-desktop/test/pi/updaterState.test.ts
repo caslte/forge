@@ -28,6 +28,7 @@ function defaults(extra: Partial<UpdaterState> = {}): UpdaterState {
   return {
     schemaVersion: 1,
     lastRunForgeVersion: null,
+    lastShownNotesVersion: null,
     preinstallDone: false,
     preinstallDoneAt: null,
     preinstallListVersion: 0,
@@ -91,6 +92,28 @@ test('readUpdaterState：老状态文件缺 preinstallListVersion → 不算损�
   assert.equal(state.preinstallDone, true); // 不被整份重置——缺可选字段只归 0
   assert.equal(state.lastRunForgeVersion, '0.1.11');
   assert.deepEqual(state.components, { 'pi-mcp-adapter': '2.32.1' });
+});
+
+test('readUpdaterState：老状态文件缺 lastShownNotesVersion → 不算损坏，归 null', () => {
+  const statePath = path.join(tmpDir(), 'updater-state.json');
+  // 引入「更新说明已展示」标记之前的真实形态：无 lastShownNotesVersion 字段
+  fs.writeFileSync(
+    statePath,
+    JSON.stringify({
+      schemaVersion: 1,
+      lastRunForgeVersion: '0.2.2',
+      preinstallDone: true,
+      preinstallDoneAt: null,
+      preinstallListVersion: 1,
+      lastUpdateCheckAt: null,
+      components: {},
+    }),
+    'utf8',
+  );
+  const state = readUpdaterState(statePath);
+  assert.equal(state.lastShownNotesVersion, null, '缺可选字段归 null，不整份重置');
+  assert.equal(state.lastRunForgeVersion, '0.2.2');
+  assert.equal(state.preinstallDone, true);
 });
 
 test('updateComponents：增量合并为纯函数（版本写入、null 移除、不改入参）', () => {

@@ -13,6 +13,7 @@ import {
   type TerminalShellPref,
 } from '../composables/usePreferences';
 import { useUpdater } from '../composables/useUpdater';
+import { useWhatsNew } from '../composables/useWhatsNew';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import SkillsSection from './SkillsSection.vue';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
@@ -440,6 +441,11 @@ async function loadPiInfo(): Promise<void> {
   }
 }
 
+// ===== 版本更新说明（升级后首启弹一次 + 关于页回看）：数据在 useWhatsNew 全局单例 =====
+// 进入设置面板顺带补一次首查（App 启动已查过则幂等返回；失败过则此处重试），
+// 说明可用时版本行显示「查看本次更新说明」入口，点击打开与首启同一个弹窗。
+const { available: whatsNewAvailable, ensureChecked: ensureWhatsNewChecked, open: openWhatsNew } = useWhatsNew();
+
 // ===== 应用自更新（07 IN-S03 改造）：状态与动作在 useUpdater 全局单例，本面板为「关于」页镜像消费方 =====
 // 口径：发现新版不再弹 toast（提示由侧栏 UpdateEntry 图标承担）；检查/下载/安装失败静默可重试
 const {
@@ -575,6 +581,8 @@ onMounted(() => {
   void refreshUpState();
   upEnsureSubscribed();
   void loadUpDebugEnabled();
+  // 版本更新说明首查兜底（App 启动已查过则幂等；失败过则此处重试，入口显隐依赖它）
+  void ensureWhatsNewChecked();
   // 滑动选中块初始定位（含字体加载后宽度变化的一次校准）
   void nextTick(moveThumb);
   window.addEventListener('resize', onResize);
@@ -1023,6 +1031,12 @@ onUnmounted(() => {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
               {{ t('settings.update.uptodate') }}
             </span>
+            <!-- 本次更新说明入口（说明可用才显示；点击打开与升级首启同一个弹窗） -->
+            <button
+              v-if="whatsNewAvailable"
+              class="up-btn"
+              @click="openWhatsNew"
+            >{{ t('settings.update.viewNotes') }}</button>
             <button
               class="up-btn"
               :class="{ 'is-cta': upBtnView.action !== 'check' }"

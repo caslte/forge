@@ -68,6 +68,7 @@ import {
   createUpdaterMethods,
   type AppUpdaterPort,
 } from './pi/appUpdater.ts';
+import { createReleaseNotesMethods } from './pi/releaseNotes.ts';
 import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
 import { createCommitMessageMethods } from './git/commitMessageService.ts';
 import { createModelTestMethods } from './model/modelTestService.ts';
@@ -117,6 +118,12 @@ export interface ForgeCoreDeps {
    * 手动更新成功后跳过 components 快照持久化、lastUpdateCheckAt 不回写，仅输出结构化日志
    * （既有单测未注入该路径，行为保持兼容） */
   updaterStatePath?: string;
+  /** 版本更新说明：安装包内 release-notes.md 路径（main.ts 按打包/dev 注入）。缺省 null=
+   * 说明不可用（updater/getReleaseNotes markdown=null，关于页入口隐藏） */
+  releaseNotesPath?: string | null;
+  /** 版本更新说明：本次启动是否「升级启动」（main.ts whenReady 同步采集 lastRunForgeVersion
+   * 快照——startupUpdate 联动阶段会异步回写，RPC 时刻再读有竞态）。缺省 false=不自动弹 */
+  isUpgradeRun?: boolean;
   /** 更新调试开关（main.ts 读 userData/updater-debug.json，enabled=true 时前端显示调试控制台）。
    * 缺省 false=普通用户不可见 */
   getUpdateDebugEnabled?: () => boolean;
@@ -717,6 +724,16 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       }),
   );
 
+  // 版本更新说明（升级后首启弹一次 + 关于页回看）：文件来自安装包 resources/（dev 回退
+  // 仓库内文件），展示状态记 updater-state.json lastShownNotesVersion（pi/releaseNotes.ts）。
+  // isUpgradeRun 由 main.ts 启动链早期同步采集后注入；缺省 false=不自动弹。
+  const releaseNotesMethods: MethodTable = createReleaseNotesMethods({
+    currentVersion: deps.forgeVersion ?? '0.0.0-dev',
+    isUpgradeRun: deps.isUpgradeRun ?? false,
+    notesFilePath: deps.releaseNotesPath ?? null,
+    statePath: deps.updaterStatePath ?? null,
+  });
+
   // wu-06：conversation/sendMessage 看门狗布防——发送期间监视主轮结束信号；
   // prompt 返回（完成/中止/抛错）即信号已到，finally 撤防。prompt 永不返回时
   // 由 interval 检测无活动窗口后强制放行（见 armMainTurnWatchdog）。
@@ -806,6 +823,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...fileApi.methods,
     ...piMethods,
     ...updaterMethods,
+    ...releaseNotesMethods,
     // 更新调试开关（main.ts 读 userData/updater-debug.json；enabled=true 时前端显示调试控制台）
     'app/getUpdateDebug': async () => ({
       code: 0,

@@ -83,6 +83,9 @@ export type ForgeMethod =
   | 'updater/checkForUpdates'
   | 'updater/downloadUpdate'
   | 'updater/quitAndInstall'
+  // 版本更新说明（升级后首启弹一次 + 关于页回看）
+  | 'updater/getReleaseNotes'
+  | 'updater/markNotesShown'
   // ask_user_question（Path 2）：问卷回填（renderer → main 的唯一上行入口）
   | 'askUserQuestion/reply';
 
@@ -358,6 +361,16 @@ export interface UpdaterSnapshot {
 
 /** updater.stateChanged 事件 payload：与 getState.data 同构（全局单例状态，无 sessionId）；任意跃迁都发（含下载进度步进） */
 export type UpdaterStateChangedPayload = UpdaterSnapshot;
+
+/** updater/getReleaseNotes 响应 data（版本更新说明）。与 @forge/desktop ipc-contract 同步 */
+export interface ReleaseNotesPayload {
+  /** 说明对应的 forge 版本（=当前版本） */
+  version: string;
+  /** Markdown 原文；null = 安装包未携带说明（异常/极老安装包） */
+  markdown: string | null;
+  /** 是否应自动弹出（升级首启且本版本未展示过）；关于页回看只看 markdown */
+  shouldShow: boolean;
+}
 
 /** preload 注入的 window.forge 桥 */
 export interface ForgeBridge {
