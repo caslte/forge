@@ -36,15 +36,15 @@ const NOISE_PATTERNS = [
 
 /** 类型 → 分组标题（按此顺序输出）。不在表内且非噪音的提交归 OTHER_GROUP。 */
 const GROUPS = [
-  ['feat', '✨ 新功能'],
-  ['fix', '🐛 问题修复'],
-  ['perf', '⚡ 性能优化'],
-  ['refactor', '♻️ 代码重构'],
-  ['style', '💄 界面样式'],
-  ['docs', '📝 文档'],
-  ['test', '✅ 测试'],
+  ['feat', '新功能'],
+  ['fix', '问题修复'],
+  ['perf', '性能优化'],
+  ['refactor', '代码重构'],
+  ['style', '界面样式'],
+  ['docs', '文档'],
+  ['test', '测试'],
 ];
-const OTHER_GROUP = '🔧 其他变更';
+const OTHER_GROUP = '其他变更';
 // conventional commit 前缀：type(scope)!: subject（scope/! 可选）
 const PREFIX_RE = /^(\w+)(?:\(([^)]*)\))?!?:\s*(.+)$/u;
 
