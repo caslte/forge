@@ -111,9 +111,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
   color: var(--foreground);
 }
 
-/* 正文：renderMarkdown 输出（h3 分组标题 + ul 列表 + 链接） */
+/* 正文：renderMarkdown 输出（h3 分组标题 + ul 列表 + 链接）。
+   overflow-x 恒隐藏：说明文字天然换行，横向滚动条只会带来无意义的角落块 */
 .wn-notes {
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
   font-size: 13px;
   line-height: 1.7;

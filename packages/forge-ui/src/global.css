@@ -173,6 +173,11 @@ textarea:focus {
   background: var(--scrollbar-thumb-hover);
 }
 
+/* 纵横两轴相交的角落块：不显式配色时 Chromium 给默认亮白色，深色主题下非常扎眼 */
+::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
 /* 全局 tooltip（data-tooltip 属性触发）。
    定位逻辑在 src/tooltip.ts（单例元素 + 视口坐标），不能用 ::after + position:fixed：
    滚动容器内静态位置按内容坐标系计算，fixed 不随滚动修正，会向下偏移 scrollTop。 */
