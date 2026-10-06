@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import { call } from '../bridge';
 import type { ProjectItem, ProjectPickerDescriptor, SessionItem } from '../types';
 import ConversationView from './ConversationView.vue';
+import { useI18n } from '../i18n/index.ts';
 
 /**
  * 多窗口画布内单个窗口的会话宿主（think-1788488643459 合并重构）。
@@ -23,22 +24,31 @@ const props = defineProps<{
   models: string[];
 }>();
 
+const { t } = useI18n();
+
 const currentModel = ref<string | null>(null);
 
-/** ConversationView 只消费 project.path；窗口归属项目 = 会话所属项目 */
-const project = computed<ProjectItem>(() => ({
-  path: props.session?.projectPath ?? '',
-  alias: null,
-  lastOpenedAt: '',
-  trust: 'trusted',
-}));
+/**
+ * 归属项目：自由会话（projectPath=null）传 null —— ConversationView 内部
+ * 分支徽标/@ 补全/git 入口全部以 project 可空降级（v0.3 自由对话）。
+ */
+const project = computed<ProjectItem | null>(() => {
+  const p = props.session?.projectPath;
+  if (!p) return null;
+  return { path: p, alias: null, lastOpenedAt: '', trust: 'trusted' };
+});
 
-/** 输入框下方状态行的项目徽标（session 只读态）；显示名=路径末段 */
+/**
+ * 输入框下方状态行的项目徽标（session 只读态）；显示名=路径末段。
+ * 自由会话显示只读「自由对话」标签（归属变更走侧栏，不做窗口内绑定入口）。
+ */
 const projectPicker = computed<ProjectPickerDescriptor | undefined>(() => {
   const p = props.session?.projectPath;
-  if (!p) return undefined;
+  if (!p) {
+    return { mode: 'session', currentPath: null, currentName: t('panels.multiwin.freeTag'), items: [], freeOption: false };
+  }
   const segs = p.replace(/\\/g, '/').split('/');
-  return { mode: 'session', currentPath: p, currentName: segs[segs.length - 1] || p, items: [] };
+  return { mode: 'session', currentPath: p, currentName: segs[segs.length - 1] || p, items: [], freeOption: false };
 });
 
 async function loadModel(): Promise<void> {

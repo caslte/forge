@@ -40,19 +40,30 @@ const { t } = useI18n();
 const props = defineProps<{
   /** 草稿态（新建会话尚未发送首条消息）时为 null；发送首条消息时先创建会话再发送 */
   sessionId: string | null;
-  project: ProjectItem;
+  /**
+   * 归属项目；null/缺省 = 自由对话（不绑定项目，v0.3）。
+   * 自由会话创建时 projectPath 传 null，分支徽标/@ 补全/git 入口全部不渲染。
+   */
+  project?: ProjectItem | null;
   session: SessionItem | null;
   models: string[];
   currentModel: string | null;
   /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
   projectPicker?: ProjectPickerDescriptor;
+  /**
+   * 挂载后自动发送的文本（v0.3 自由对话）：零项目 hero 发送 → 上层切自由草稿态
+   * 重挂本组件 → 文本经草稿仓库回填的同时直发一次，实现「发送即创建会话」。
+   * 仅消费一次，发完由上层清空。
+   */
+  autoSendText?: string | null;
 }>();
 
 const emit = defineEmits<{
   (e: 'model-change', model: string): void;
   /** 草稿态发送首条消息时已创建会话，通知上层绑定当前会话 */
   (e: 'session-created', sessionId: string): void;
-  (e: 'pick-project', path: string): void;
+  /** path=null = 归属切到自由对话（v0.3，透传自 InstructionInput） */
+  (e: 'pick-project', path: string | null): void;
   (e: 'open-project-picker'): void;
   (e: 'remove-project', path: string): void;
 }>();
@@ -349,7 +360,7 @@ async function onSend(text: string): Promise<void> {
   if (props.sessionId === null) {
     try {
       const res = await call<{ session: { sessionId: string } }>('session/createSession', {
-        projectPath: props.project.path,
+        projectPath: props.project?.path ?? null,
       });
       const sid = res.session.sessionId;
       createdSessionId = sid;
@@ -911,6 +922,15 @@ onUnmounted(() => {
   liftResizeObs?.disconnect();
   liftResizeObs = null;
 });
+
+// v0.3 自由对话「发送即创建」：零项目 hero 发送 → 上层切自由草稿态重挂本组件并携带
+// autoSendText → 挂载后直发一次（onSend 内部走草稿建会话全链路）。仅消费一次。
+onMounted(() => {
+  const boot = props.autoSendText;
+  if (typeof boot === 'string' && boot.trim() !== '' && props.sessionId === null) {
+    void onSend(boot);
+  }
+});
 </script>
 
 <template>
@@ -1156,9 +1176,9 @@ onUnmounted(() => {
         :models="models"
         :current-model="currentModel"
         :project-picker="props.projectPicker"
-        :project-path="props.project.path"
+        :project-path="props.project?.path"
         :queue-items="queueItems"
-        :git-project-path="props.projectPicker?.currentPath ?? props.project.path"
+        :git-project-path="props.projectPicker?.currentPath ?? props.project?.path"
         :commit-entry="!isEmpty"
         @send="onSend"
         @cancel="onCancelTurn"

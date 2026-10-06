@@ -8,46 +8,51 @@ const logoWordmarkDark = import.meta.env.BASE_URL + 'logo-wordmark-on-dark.svg';
 const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg';
 
 /**
- * 落地 hero（v3.77）：零项目时的启动首屏，替换旧「选择项目」卡片。
+ * 落地 hero（v3.77 + v0.3）：零项目时的启动首屏。
  *
  * 与会话内空态 hero（ConversationView conv-hero）同一视觉语言：forge 字标 +
  * 居中输入框。此时没有任何项目可归属，输入框项目区由上层传入
- * `{ mode:'draft', currentPath:null, currentName:'打开项目', items:[] }`，
- * 菜单里只有「打开项目…」入口。
+ * `{ mode:'draft', currentPath:null, currentName:'自由对话', items:[], freeOption:true }`，
+ * 菜单提供「自由对话」与「打开项目…」入口。
  *
- * 草稿直通：输入框是 InstructionInput（sessionId 恒空 → 草稿态统一 key），
- * 文本实时落在模块级草稿仓库（utils/composerDrafts）里；发送后回填的文本
- * 同样在仓。项目打开、本组件卸载后，项目视图的草稿输入框挂载即从同一 key
- * 回填，用户无感衔接——不再需要 carry-text 事件接力。
+ * 发送即创建自由会话（v0.3）：文本先 restoreQueuedText 落草稿仓库，再 emit
+ * 'start-free-chat' —— 上层切自由草稿态重挂 ConversationView（同一草稿 key 回填）
+ * 并携带 autoSendText 直发，用户无感衔接。
+ *
+ * 草稿直通：输入框是 InstructionInput（sessionId 恒空 → 草稿态统一 key）；
+ * 打开项目、本组件卸载后，项目视图的草稿输入框挂载即从同一 key 回填。
  */
 const props = defineProps<{
   models: string[];
   currentModel: string | null;
-  /** 零项目时上层固定传 currentPath:null 的 draft 描述（驱动「打开项目…」菜单） */
+  /** 零项目时上层传入 currentPath:null + freeOption 的 draft 描述 */
   projectPicker?: ProjectPickerDescriptor;
 }>();
 
 const emit = defineEmits<{
   (e: 'model-change', model: string): void;
-  (e: 'pick-project', path: string): void;
+  (e: 'pick-project', path: string | null): void;
   (e: 'open-project-picker'): void;
   (e: 'remove-project', path: string): void;
+  /** 发送即创建自由会话（v0.3）：携带输入文本，上层切自由草稿态并直发 */
+  (e: 'start-free-chat', text: string): void;
 }>();
 
 const inputRef = ref<InstanceType<typeof InstructionInput> | null>(null);
 
 function onSend(text: string): void {
   if (props.projectPicker?.currentPath) return; // 落地态恒无项目；有值说明上层误用，丢弃
-  // 视觉回填：目录选择取消时不丢字；选中则组件随即卸载，文本经草稿仓库直通
+  // 文本落草稿仓库：切到自由草稿态后 ConversationView 同 key 回填（autoSendText 直发）；
+  // 用户若在直发前手动改走「打开项目」，文本同样在项目视图草稿输入框里
   inputRef.value?.restoreQueuedText([text]);
-  emit('open-project-picker');
+  emit('start-free-chat', text);
 }
 
 function onModelChange(model: string): void {
   emit('model-change', model);
 }
 
-function onPickProject(path: string): void {
+function onPickProject(path: string | null): void {
   emit('pick-project', path);
 }
 

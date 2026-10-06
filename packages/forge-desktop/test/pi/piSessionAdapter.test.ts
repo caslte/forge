@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { PiSessionAdapter } from '../../src/pi/piSessionAdapter.ts';
-import { resolveForgeSessionFile, resolveProjectSessionDir } from '../../src/pi/piSessionPaths.ts';
+import { resolveForgeSessionFile, resolveFreeWorkspaceDir, resolveProjectSessionDir } from '../../src/pi/piSessionPaths.ts';
 import { encodeCwd, resolveSubagentOutputDir } from '../../src/pi/subagentOutput.ts';
 
 /** 创建独立临时目录（隔离 agentDir，避免触碰真实 ~/.pi/agent） */
@@ -116,6 +116,43 @@ test('deleteSession 幂等：目标不存在时静默成功', async () => {
     await assert.doesNotReject(adapter.deleteSession(SID, PROJECT));
   } finally {
     fs.rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test('deleteSession 自由会话（projectPath=null）按 free-workspace 目录真删，不误伤项目会话（v0.3）', async () => {
+  const agentDir = makeTempDir();
+  try {
+    const adapter = new PiSessionAdapter({ agentDir });
+    const freeCwd = resolveFreeWorkspaceDir(agentDir);
+
+    // 自由会话转录（待删目标）：路径与引擎写入侧（resolveSessionCwd 映射）逐字节一致
+    const freeFile = resolveForgeSessionFile(SID, freeCwd, agentDir);
+    fs.mkdirSync(path.dirname(freeFile), { recursive: true });
+    fs.writeFileSync(freeFile, '{"type":"session"}\n', 'utf8');
+
+    // 同目录兄弟（自由会话）+ 项目会话转录（均必须保留）
+    const siblingFree = resolveForgeSessionFile(SID_OTHER, freeCwd, agentDir);
+    fs.writeFileSync(siblingFree, '{"type":"session"}\n', 'utf8');
+    const projectFile = resolveForgeSessionFile(SID_OTHER, PROJECT, agentDir);
+    fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+    fs.writeFileSync(projectFile, '{"type":"session"}\n', 'utf8');
+
+    // 自由会话的子 agent 输出（encodeCwd(freeCwd) 目录，待删目标）
+    const subagentDir = resolveSubagentOutputDir(freeCwd, SID);
+    fs.mkdirSync(path.join(subagentDir, 'tasks'), { recursive: true });
+    fs.writeFileSync(path.join(subagentDir, 'tasks', 'agent-1.output'), 'log', 'utf8');
+
+    await adapter.deleteSession(SID, null);
+
+    assert.equal(fs.existsSync(freeFile), false, '自由会话转录应被删除');
+    assert.equal(fs.existsSync(subagentDir), false, '自由会话子 agent 输出目录应被删除');
+    assert.equal(fs.existsSync(siblingFree), true, '兄弟自由会话不得误删');
+    assert.equal(fs.existsSync(projectFile), true, '项目会话转录不得误删');
+    // 自由目录下还有其它会话 → free-workspace 的 sessions 目录应保留
+    assert.equal(fs.existsSync(path.dirname(freeFile)), true);
+  } finally {
+    fs.rmSync(agentDir, { recursive: true, force: true });
+    fs.rmSync(path.join(subagentRoot(), encodeCwd(resolveFreeWorkspaceDir(agentDir))), { recursive: true, force: true });
   }
 });
 

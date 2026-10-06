@@ -87,6 +87,8 @@
 | A-SM-006 | AC-SM-011/012/016 | session/attachWindow / releaseWindow | 会话存在 | { sessionId } | 0，同 id 重复拦截 | 窗口绑定表唯一约束 | 重复开窗拒绝/聚焦 |
 | A-SM-007 | AC-SM-015 | session/queryAll | 多项目 | 无 | 返回跨项目全部会话 | 无写入 | 跨项目会话可见 |
 | A-SM-009 | AC-SM-021 | session/markSessionRead | 会话存在 | { sessionId } | 0 + session（含 doneReadAt） | forge-store 写 doneReadAt | session.updated 发射；1001/1002 校验 |
+| A-SM-010 | v0.3 自由对话 | session/createSession | projectPath 缺省/null/空白 | {} / null / { projectPath: null } / { projectPath: "  " } | 0 + session(projectPath=null) | forge-store 写入 projectPath=null | 数字类型 1001；adapter 收 null；服务层与 RPC 层空白语义一致 |
+| A-SM-011 | v0.3 自由对话 | session/updateSessionProject | 会话存在 + 目标合法 | { sessionId, projectPath: key \| null } | 0 + session（归属已变） | forge-store 改 projectPath，转录文件不动 | session.updated 发射；目标未注册 1002；会话不存在 1002；归属未变幂等；desktop 侧 resolveSessionFile 多候选（当前归属→自由目录回落）保证移入项目后历史续接 |
 
 ### e2e
 
@@ -103,3 +105,4 @@
 | E-SM-008 | —（性能回归锁，保障 SM-S05 会话列表可用） | 侧栏会话树（冷启动首屏） | ≥1 项目 + ≥1 会话；openProject 被人为拖慢 | mock 默认项目 D:/work/aiwork/forge + 会话种子 sess-startup | mock-backend | init script 抢在 mock 句柄赋值时注入 seed('project/openProject') 延迟 6s + setSessions → goto('/') → 等 .tree-panel | .tree-project 数 = 1（项目行先到）；.tree-session 数 = 1 且须在 2000ms 内命中 —— 修复前 loadSessions 串在 openProject 之后需等满 6s，本断言必失败（无健康断言：无 console error / pageerror） |
 | E-SM-009 | AC-SM-022（胶囊几何是分段开关可用性的可观测面） | 侧栏顶部「项目/任务」分段开关 | 项目已打开（开关随 formalUiReady 挂载） | 默认 mock 项目 + 1 会话 | mock-backend | goto('/') 断言首贴贴合 → 切任务/切回项目各断言贴合 → 点 .shell-toggle 折叠（等侧栏宽度到 0）再展开（等开关回到原宽）→ 断言贴合 | 胶囊 ::before 的 left/width 与 active 按钮 offsetLeft/offsetWidth 误差 ≤1px —— 修复前展开瞬间开关被压到 min-content（94→70px、按钮 44→32px），测出的 --pill-r 永久偏小，过渡结束后胶囊被拉长成 56px（实测 Received: 12），必失败（无健康断言：无 console error） |
 | E-SM-010 | AC-SM-022 | 侧栏顶部「Projects/Tasks」分段开关（英文界面） | 界面语言英文（navigator.language = en-US） | 默认 mock 项目 + 1 会话；两键不等宽（62/47px） | mock-backend | 英文冷启动 → 断言 Projects active 且胶囊贴合 → 切 Tasks → 断言贴合 | 首帧（未切过视角）胶囊即与 active 按钮贴合（≤1px）—— 修复前首贴静默落空，停在 CSS 50% 兜底几何上，胶囊比按钮窄 7.5px（实测 Received: 7.4844），必失败（无健康断言：无 console error） |
+| E-SM-011 | v0.3 自由对话（无 PRD AC，需求来源：prototypes/no-project-session-demo.html 定稿 + 用户裁定） | 侧栏「自由对话」虚拟分组 + 落地 hero | 零项目（或含项目 + 自由会话） | projectPath=null 的会话种子 / 零项目种子 | mock-backend | FREE-01：零项目 hero 输入→Enter→断言自由会话落「自由对话」分组且 mock 侧 projectPath=null、无绑定入口；FREE-02：右键自由会话→移入项目→分组迁移+toast+mock 归属变更；FREE-03：任务视角自由会话带「自由」徽章、项目会话无；FREE-04：拖自由会话进多窗口画布→窗口标题「自由对话」tag、无分支徽标 | 发送即创建（不再弹目录选择器）；归属变更只走侧栏（无会话内绑定按钮）；自由会话 cwd 由 desktop 映射 free-workspace（unit 层 sessionService null 语义矩阵 + updateSessionProject 双向/幂等/1002 已覆盖，见 A-SM-010/011）（无健康断言：无 console error） |

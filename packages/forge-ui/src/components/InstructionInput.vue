@@ -59,8 +59,8 @@ const emit = defineEmits<{
   /** 「↵立即」：立即发送队列第 index 条（打断语义），上层补 user 气泡并调 RPC */
   (e: 'queue-send-now', index: number): void;
   (e: 'model-change', model: string): void;
-  /** 草稿态选中归属项目（上层切当前项目，草稿保留） */
-  (e: 'pick-project', path: string): void;
+  /** 草稿态选中归属：项目路径；null = 自由对话（不选项目，v0.3） */
+  (e: 'pick-project', path: string | null): void;
   /** 打开项目选择弹窗 */
   (e: 'open-project-picker'): void;
   /** 移除项目（仅删 forge 元数据，不删源文件/会话） */
@@ -142,7 +142,7 @@ function toggleProjMenu(): void {
   projMenuOpen.value = !projMenuOpen.value;
 }
 
-function onPickProject(path: string): void {
+function onPickProject(path: string | null): void {
   projMenuOpen.value = false;
   if (path !== props.projectPicker?.currentPath) emit('pick-project', path);
 }
@@ -1831,6 +1831,22 @@ watch(
       </button>
       <div v-if="projMenuOpen && projectPicker.mode === 'draft'" class="model-menu proj-menu">
         <div class="menu-hint">{{ t('input.project.hint') }}</div>
+        <!-- 自由对话（v0.3）：不选项目的归属选项，置顶；freeOption 由上层按 draft 态给出 -->
+        <button
+          v-if="projectPicker.freeOption === true"
+          type="button"
+          class="proj-item"
+          :class="{ active: projectPicker.currentPath === null }"
+          @click="onPickProject(null)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z" />
+          </svg>
+          <span class="proj-item-main">
+            <span class="proj-item-name">{{ t('project.freeChat') }}</span>
+          </span>
+        </button>
+        <div v-if="projectPicker.items.length > 0" class="proj-menu-sep"></div>
         <button
           v-for="it in projectPicker.items"
           :key="it.path"

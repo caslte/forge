@@ -95,6 +95,14 @@ const currentSessionId = ref<string | null>(null);
  * 待会话列表出现该会话（别名已由首条消息生成）后退出草稿态。
  */
 const draftMode = ref(false);
+/**
+ * 自由对话草稿（v0.3）：草稿归属为「不选项目」。发送首条消息时 ConversationView
+ * 以 projectPath:null 创建会话，落在侧栏「自由对话」虚拟分组。
+ * 仅在 draftMode 下有意义；进入会话态/选择项目归属时复位。
+ */
+const freeDraft = ref(false);
+/** 零项目 hero「发送即创建」：待自动发送的首条文本（挂载 ConversationView 后直发一次） */
+const freeBootText = ref<string | null>(null);
 
 // 视图
 type View = 'sessions' | 'settings';
@@ -343,10 +351,11 @@ function bumpProjectToFront(path: string): void {
   pickOrder.value = [path, ...pickOrder.value.filter((p) => p !== path)];
 }
 
-/** 聚焦层「返回多窗口」行显示会话归属项目（别名优先，SM-S06 多窗口配套） */
+/** 聚焦层「返回多窗口」行显示会话归属项目（别名优先，SM-S06 多窗口配套）；自由会话显示「自由对话」 */
 const winFocusProjectName = computed(() => {
   const s = sessions.value.find((x) => x.sessionId === focusedSessionForWin.value);
   if (!s) return '';
+  if (s.projectPath === null) return t('project.freeChat');
   const p = projects.value.find((x) => x.path === s.projectPath);
   return p?.alias ?? basename(s.projectPath);
 });
@@ -365,24 +374,43 @@ const orderedProjects = computed<ProjectItem[]>(() => {
 });
 
 const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
-  if (projects.value.length === 0) {
-    // 零项目（落地 hero，v3.77）：没有可归属项目，项目区只提供「打开项目…」入口。
-    // currentPath:null 是类型既有的「未选归属」草稿语义；此时会话分支不渲染，
-    // 该描述只被 LandingHero 消费，不影响其他使用点。
-    return { mode: 'draft', currentPath: null, currentName: t('app.openProject'), items: [] };
+  if (projects.value.length === 0 && !activeIsFree.value) {
+    // 零项目落地 hero（v3.77 + v0.3）：归属选项只有「自由对话」，菜单保留「打开项目…」。
+    // 选择自由对话 → onCreateSession(null) 进入自由草稿态（activeIsFree 翻转后走下方分支）。
+    return { mode: 'draft', currentPath: null, currentName: t('project.freeChat'), items: [], freeOption: true };
   }
   const s = currentSession.value;
   const inSession = s !== null && !draftMode.value;
-  const path = inSession ? s.projectPath : (currentProject.value?.path ?? null);
-  if (!path) return null;
+  if (inSession) {
+    if (s.projectPath === null) {
+      // 自由会话（v0.3）：选择器为只读「自由对话」标签。归属不可在此更换——
+      // 变更走侧栏右键/拖拽（session/updateSessionProject），不做会话内绑定入口
+      return { mode: 'session', currentPath: null, currentName: t('project.freeChat'), items: [], freeOption: false };
+    }
+    return {
+      mode: 'session',
+      currentPath: s.projectPath,
+      currentName: projectTagOf(s.projectPath, projects.value),
+      items: orderedProjects.value.map((p) => ({
+        path: p.path,
+        name: projectTagOf(p.path, projects.value),
+      })),
+      freeOption: false,
+    };
+  }
+  // 草稿态：自由归属时 currentPath=null（自由对话选项高亮）；项目归属走原逻辑
+  const freeNow = freeDraft.value;
+  const path = freeNow ? null : (currentProject.value?.path ?? null);
+  if (!freeNow && path === null) return null;
   return {
-    mode: inSession ? 'session' : 'draft',
+    mode: 'draft',
     currentPath: path,
-    currentName: projectTagOf(path, projects.value),
+    currentName: freeNow ? t('project.freeChat') : projectTagOf(path!, projects.value),
     items: orderedProjects.value.map((p) => ({
       path: p.path,
       name: projectTagOf(p.path, projects.value),
     })),
+    freeOption: true,
   };
 });
 
@@ -425,6 +453,45 @@ const currentSession = computed(() =>
 );
 
 /**
+ * 当前激活视图是否属于「自由对话」（v0.3）：选中了自由会话，或处于自由归属的草稿态。
+ * 决定两件事：ConversationView 以 project:null 渲染（无分支徽标/@ 补全）；
+ * 零项目时不再是落地 hero 而是对话视图。
+ *
+ * ⚠ 末尾的 freeDraft 回落是**防闪断关键**：草稿发送后 onSessionCreated 先置
+ * currentSessionId，而会话入列表要等 loadSessions（事件驱动）——这个窗口期里
+ * 若返回 false，showConversation 翻 false 会把对话视图整体卸载（乐观气泡随实例
+ * 丢弃，重挂后 loadHistory 与用户消息落盘竞态 → 用户气泡丢失）。窗口期内必须
+ * 沿用草稿归属，保持视图连续。
+ */
+const activeIsFree = computed<boolean>(() => {
+  if (draftMode.value && currentSessionId.value === null) return freeDraft.value;
+  const s = currentSession.value;
+  if (s !== null) return s.projectPath === null;
+  return freeDraft.value;
+});
+/** ConversationView 的渲染条件：有归属项目，或当前是自由对话 */
+const showConversation = computed<boolean>(() => currentProject.value !== null || activeIsFree.value);
+
+/**
+ * ConversationView 的归属项目：以**当前会话/草稿的实际归属**为准，而不是侧栏选中态
+ * （currentProjectPath 在自由草稿下刻意保留原项目供终端等使用，不能直接透传给对话视图
+ * —— 否则自由草稿发消息会把项目路径带进 session/createSession，落错分组）。
+ * - 自由草稿 / 自由会话 → null（无分支徽标、@ 补全、git 入口，cwd 无来源）；
+ * - 项目会话 → 按会话自身 projectPath 解析（多窗口聚焦层同样按聚焦会话取值）；
+ * - 会话尚未入列表的瞬间（草稿退出过渡）回落 currentProject，避免徽标闪烁。
+ */
+const convProject = computed<ProjectItem | null>(() => {
+  if (draftMode.value && currentSessionId.value === null) {
+    return freeDraft.value ? null : currentProject.value;
+  }
+  const s = currentSession.value;
+  if (s === null) return currentProject.value;
+  const owner = s.projectPath;
+  if (owner === null) return null;
+  return projects.value.find((p) => p.path === owner) ?? currentProject.value;
+});
+
+/**
  * 草稿输入框的跨视图恢复由 InstructionInput 的模块级草稿仓库
  * （utils/composerDrafts）统一承担：落地 hero 与项目视图的输入框同为草稿态
  * key，hero 卸载 → ConversationView 挂载即自动衔接，无需事件接力。
@@ -462,6 +529,8 @@ async function loadProjects(): Promise<void> {
 }
 
 async function selectProject(path: string): Promise<void> {
+  freeDraft.value = false;
+  freeBootText.value = null;
   currentProjectPath.value = path;
   currentSessionId.value = null;
   draftMode.value = false;
@@ -473,9 +542,21 @@ async function selectProject(path: string): Promise<void> {
 /**
  * 输入框选择器切换归属项目（SM-S01 v3.21）：与侧栏切项目不同，
  * 草稿保留（选择器语义就是“给当前未发送的会话换归属”），不关设置页。
+ * path=null = 切到自由对话（v0.3）：草稿保留，项目选中态不动。
  */
-async function onPickProject(path: string): Promise<void> {
+async function onPickProject(path: string | null): Promise<void> {
+  if (path === null) {
+    freeDraft.value = true;
+    // 终端 / 底部状态条跟随视图归属：自由草稿没有 cwd，一并置空（终端禁用、
+    // git 状态条隐藏），避免「选了自由对话却显示原项目分支/终端」的错位
+    currentProjectPath.value = null;
+    currentSessionId.value = null;
+    await loadSessions();
+    return;
+  }
   // 纯选中不改下拉序（v3.45 MRU 粒度）：置顶只由新建项目/创建会话触发
+  freeDraft.value = false;
+  freeBootText.value = null;
   currentProjectPath.value = path;
   currentSessionId.value = null;
   await loadSessions();
@@ -623,19 +704,37 @@ async function onReorderProjects(paths: string[]): Promise<void> {
 /**
  * 新建会话：仅进入草稿输入态，不真正创建 pi session。
  * 发送首条消息时由 ConversationView 创建会话并 emit 'session-created'（见 onSessionCreated）。
- * 归属默认=项目选择器列表第一项（v3.38 用户裁定：顺序不变，默认选第一项）；
- * 项目树行内"新建会话"显式携带项目 path，优先于默认。
+ * 归属：显式 null = 自由对话（不选项目，v0.3）；undefined = 默认项目选择器列表第一项
+ * （v3.38 用户裁定；零项目时默认即自由对话）；项目树行内"新建会话"显式携带项目 path。
  */
-function onCreateSession(sessionProjectPath?: string): void {
-  if (projects.value.length === 0) return;
+function onCreateSession(sessionProjectPath?: string | null): void {
+  // 清掉残留的「发送即创建」文本：它只允许在 hero 直发链路内存活，
+  // 其他任何入口新建会话都不应触发误发
+  freeBootText.value = null;
+  freeDraft.value =
+    sessionProjectPath === null ||
+    (sessionProjectPath === undefined && orderedProjects.value.length === 0);
   // 多窗口画布无独立输入区，新建先退回单会话视图
   if (multiWindow.value) multiWindow.value = false;
-  const target = sessionProjectPath ?? orderedProjects.value[0]?.path ?? null;
+  const target =
+    sessionProjectPath === undefined ? (orderedProjects.value[0]?.path ?? null) : sessionProjectPath;
   if (target !== null && target !== currentProjectPath.value) void selectProject(target);
   currentSessionId.value = null;
   draftMode.value = true;
   // 新会话且输入为空：还原被手动拖高的输入框（等本 tick 会话切换 watch 清完文本再判定）
   nextTick(() => convRef.value?.resetInputHeightIfEmpty());
+}
+
+/**
+ * 零项目 hero「发送即创建」（v0.3）：文本经 InstructionInput 草稿仓库已回填，
+ * 这里切到自由草稿态并携带 autoSendText —— ConversationView 重挂后直发一次，
+ * 走草稿建会话全链路（projectPath:null → 自由会话落侧栏「自由对话」分组）。
+ */
+function onStartFreeChat(text: string): void {
+  if (text.trim() === '') return;
+  onCreateSession(null);
+  // 在 onCreateSession 之后置位：其入口处的清残留不会吞掉本次直发文本
+  freeBootText.value = text;
 }
 
 /**
@@ -645,24 +744,54 @@ function onCreateSession(sessionProjectPath?: string): void {
  */
 function onSessionCreated(sessionId: string): void {
   currentSessionId.value = sessionId;
-  // 会话归属落定 → 归属项目置顶（v3.45 MRU 粒度，草稿归属即 currentProjectPath）
+  freeBootText.value = null;
+  // 会话归属落定 → 归属项目置顶（v3.45 MRU 粒度，草稿归属即 currentProjectPath）；
+  // 自由会话无归属项目，不置顶
   const p = currentProjectPath.value;
-  if (p !== null) bumpProjectToFront(p);
+  if (!freeDraft.value && p !== null) bumpProjectToFront(p);
 }
 
 async function onSelectSession(id: string): Promise<void> {
   currentSessionId.value = id;
   draftMode.value = false;
+  freeDraft.value = false;
+  freeBootText.value = null;
   // 会话归属项目要跟手：终端等「以当前项目为 cwd」的入口读的是 currentProjectPath，
-  // 只从项目树点入才会更新——从会话树点入时必须按会话的 projectPath 对齐
+  // 只从项目树点入才会更新——从会话树点入时必须按会话的 projectPath 对齐；
+  // 自由会话归属为 null → currentProjectPath 置空（终端禁用、代码树收起，cwd 无来源）
   const owner = sessions.value.find((s) => s.sessionId === id)?.projectPath ?? null;
-  if (owner !== null && owner !== currentProjectPath.value) currentProjectPath.value = owner;
+  if (owner !== currentProjectPath.value) currentProjectPath.value = owner;
   // 设置在设置页时，点击会话应关闭设置并回到会话视图
   if (activeView.value === 'settings') activeView.value = 'sessions';
   try {
     await call('session/attachSessionWindow', { sessionId: id });
   } catch {
     // 重复 attach 忽略
+  }
+}
+
+/**
+ * 变更会话归属（v0.3 自由对话管理）：侧栏右键/拖拽触发，targetProjectPath=null =
+ * 移出到自由对话。成功后刷新列表；当前会话被移动时项目选中态跟手（终端/代码树跟随）。
+ */async function onMoveSession(sessionId: string, targetProjectPath: string | null): Promise<void> {
+  try {
+    await call('session/updateSessionProject', { sessionId, projectPath: targetProjectPath });
+    await loadSessions();
+    const moved = sessions.value.find((x) => x.sessionId === sessionId);
+    if (moved !== undefined) {
+      showToast(
+        targetProjectPath === null
+          ? t('project.movedToFree')
+          : t('project.movedToProject', { name: projectTagOf(targetProjectPath, projects.value) }),
+        'success',
+      );
+      if (currentSessionId.value === sessionId) {
+        const owner = moved.projectPath ?? null;
+        if (owner !== currentProjectPath.value) currentProjectPath.value = owner;
+      }
+    }
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -754,6 +883,14 @@ function toggleMultiWindow(): void {
 function onMultiWindowFocus(sessionId: string): void {
   currentSessionId.value = sessionId;
   focusedSessionForWin.value = sessionId;
+  // 归属对齐（与 onSelectSession 同口径）：终端/底部状态条跟随聚焦会话的项目；
+  // 聚焦自由会话 → null（终端禁用）。freeDraft 已在 onSelectSession 同款语义外
+  // 单独处理：聚焦层是会话态，不涉及草稿。
+  draftMode.value = false;
+  freeDraft.value = false;
+  freeBootText.value = null;
+  const owner = sessions.value.find((s) => s.sessionId === sessionId)?.projectPath ?? null;
+  if (owner !== currentProjectPath.value) currentProjectPath.value = owner;
 }
 
 /** 从窗口单会话聚焦层返回多窗口画布 */
@@ -1041,6 +1178,7 @@ onUnmounted(() => {
             @select-session="onSelectSession"
             @delete-session="onDeleteSession"
             @rename-session="onRenameSession"
+            @move-session="onMoveSession"
             @fold-state="allCollapsed = $event"
           />
           </div>
@@ -1096,7 +1234,6 @@ onUnmounted(() => {
           <button
             class="app-toolbar-btn"
             :data-tooltip="t('app.newSessionTooltip')"
-            :disabled="projects.length === 0"
             @click="onCreateSession()"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1168,9 +1305,10 @@ onUnmounted(() => {
               @focus-session="onMultiWindowFocus"
               @opened-change="onOpenedChange"
             />
-            <!-- 窗口单会话聚焦层：不卸载画布，可返回多窗口 -->
+            <!-- 窗口单会话聚焦层：不卸载画布，可返回多窗口。
+                 自由会话同样可聚焦（project 传 null，v0.3） -->
             <div
-              v-if="focusedSessionForWin && currentProject && currentSession"
+              v-if="focusedSessionForWin && currentSession && (currentProject || currentSession.projectPath === null)"
               class="win-focus-overlay"
             >
               <div class="win-focus-bar">
@@ -1187,7 +1325,7 @@ onUnmounted(() => {
               </div>
               <ConversationView
                 :session-id="currentSessionId!"
-                :project="currentProject"
+                :project="convProject"
                 :session="currentSession"
                 :models="models"
                 :current-model="currentSessionModel"
@@ -1199,15 +1337,17 @@ onUnmounted(() => {
               />
             </div>
           </div>
-          <div v-else-if="currentProject" class="session-stage">
+          <!-- 会话视图：有归属项目，或当前是自由对话（project=null，v0.3） -->
+          <div v-else-if="showConversation" class="session-stage">
             <ConversationView
               ref="convRef"
               :session-id="currentSessionId"
-              :project="currentProject"
+              :project="convProject"
               :session="currentSession"
               :models="models"
               :current-model="currentSessionModel"
               :project-picker="projectPicker ?? undefined"
+              :auto-send-text="freeBootText"
               @model-change="onModelChange"
               @session-created="onSessionCreated"
               @pick-project="onPickProject"
@@ -1215,7 +1355,8 @@ onUnmounted(() => {
               @remove-project="onRemoveProject"
             />
           </div>
-          <!-- 零项目落地 hero（v3.77）：水印 + 居中输入框，项目区仅「打开项目…」入口 -->
+          <!-- 零项目落地 hero（v3.77 + v0.3）：水印 + 居中输入框。发送即创建自由会话
+               （不再强制先打开项目）；「打开项目…」入口保留在归属选择器菜单里 -->
           <LandingHero
             v-else
             :models="models"
@@ -1225,6 +1366,7 @@ onUnmounted(() => {
             @pick-project="onPickProject"
             @open-project-picker="openFolderPicker"
             @remove-project="onRemoveProject"
+            @start-free-chat="onStartFreeChat"
           />
         </template>
 

@@ -13,6 +13,7 @@
  * 三处逐字节一致（错一个字符 → 文件永远删不掉），故收敛到本模块。
  */
 import path from 'node:path';
+import fs from 'node:fs';
 
 /** forge 会话 ID 合法字符集（createSession 产出 UUID，含 `-`） */
 const FORGE_SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -26,6 +27,39 @@ export function resolvePiAgentDir(agentDir?: string): string {
     agentDir ??
     path.join(process.env.USERPROFILE ?? process.env.HOME ?? process.cwd(), '.pi', 'agent')
   );
+}
+
+/**
+ * 自由会话工作目录：`<userData>/free-workspace`（agentDir = <userData>/agent 的同级目录）。
+ *
+ * 自由会话（SessionRecord.projectPath = null）没有项目 cwd，pi 引擎又不接受空 cwd
+ * （createPiAgentSessionFactory 落到 process.cwd() 兜底 —— Electron 主进程目录，
+ * 转录会散落且不可预测）。固定映射到本目录后：转录目录名
+ * `{agentDir}/sessions/{encodeURIComponent(freeWorkspace)}` 恒定，历史恢复 / 删除 /
+ * 子 agent 输出全部有解。目录惰性创建（ensureFreeWorkspaceDir），不注册进项目表 ——
+ * 它是引擎 cwd 的替身，不是用户可见的项目。
+ */
+export function resolveFreeWorkspaceDir(agentDir?: string): string {
+  return path.join(path.dirname(resolvePiAgentDir(agentDir)), 'free-workspace');
+}
+
+/** 确保自由工作目录存在（幂等；发送/删除前调用，pi 在其中落转录与临时文件） */
+export function ensureFreeWorkspaceDir(agentDir?: string): string {
+  const dir = resolveFreeWorkspaceDir(agentDir);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * 会话归属 → pi 引擎 cwd 的单点映射。
+ * @param projectPath 会话归属（store 记录原值；null/空白 = 自由会话）
+ * @returns 项目目录原值；自由会话返回 free-workspace 专用目录
+ */
+export function resolveSessionCwd(projectPath: string | null | undefined, agentDir?: string): string {
+  if (typeof projectPath === 'string' && projectPath.trim() !== '') {
+    return projectPath;
+  }
+  return resolveFreeWorkspaceDir(agentDir);
 }
 
 /**

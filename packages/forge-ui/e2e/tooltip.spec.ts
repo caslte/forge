@@ -102,7 +102,7 @@ async function bootWithOverflowTree(page: Page): Promise<void> {
   await rename.press('Enter');
 
   // 12 个项目组渲染后，选中首个项目加载其会话（点击行右侧空白，避开标题的折叠热区）
-  await expect(page.locator('.tree-node-title')).toHaveCount(PROJ_PATHS.length);
+  await expect(page.locator('.tree-node-title:not(.free-title)')).toHaveCount(PROJ_PATHS.length);
   const row = page.locator('.tree-project').first();
   const rowBox = (await row.boundingBox())!;
   await row.click({ position: { x: rowBox.width - 110, y: rowBox.height / 2 } });

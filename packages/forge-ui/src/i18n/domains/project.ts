@@ -34,6 +34,15 @@ export const zhProject = {
   'project.timeDays': '{count}天',
   'project.timeMonthDay': '{month}月{day}日',
   'project.timeFull': '{year}/{month}/{day}',
+  // 自由对话（v0.3）：不绑定项目的会话
+  'project.freeChat': '自由对话',
+  'project.freeBadge': '自由',
+  'project.freeGroupTooltip': '自由对话——不绑定项目的会话。把项目会话拖到这里 = 移出项目',
+  'project.renameSession': '重命名会话',
+  'project.moveToProject': '移入「{name}」',
+  'project.moveToFree': '移出到自由对话',
+  'project.movedToProject': '已移入「{name}」，代码树与终端已启用',
+  'project.movedToFree': '已移出到自由对话',
 } as const;
 
 export const enProject: Record<string, string> = {
@@ -72,4 +81,13 @@ export const enProject: Record<string, string> = {
   'project.timeDays': '{count}d',
   'project.timeMonthDay': '{month}/{day}',
   'project.timeFull': '{year}/{month}/{day}',
+  // Free chats (v0.3): sessions not bound to a project
+  'project.freeChat': 'Free chat',
+  'project.freeBadge': 'Free',
+  'project.freeGroupTooltip': 'Free chats — sessions without a project. Drop a project session here to unbind it',
+  'project.renameSession': 'Rename session',
+  'project.moveToProject': 'Move to "{name}"',
+  'project.moveToFree': 'Move out to Free chats',
+  'project.movedToProject': 'Moved to "{name}" — code tree and terminal enabled',
+  'project.movedToFree': 'Moved out to Free chats',
 };

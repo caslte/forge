@@ -45,7 +45,9 @@ import {
 } from './pi/piConversationAdapter.ts';
 import { PiSessionAdapter } from './pi/piSessionAdapter.ts';
 import {
+  ensureFreeWorkspaceDir,
   resolvePiAgentDir,
+  resolveSessionCwd,
   tryResolveForgeSessionFile,
 } from './pi/piSessionPaths.ts';
 import { createPiAgentSessionFactory } from './pi/createPiAgentSessionFactory.ts';
@@ -184,16 +186,17 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
   const sessionService = new SessionService(
     store,
     {
-      createSession: (projectPath: string) => piSessionAdapter.createSession(projectPath),
+      createSession: (projectPath: string | null) => piSessionAdapter.createSession(projectPath),
       stopSession: (sessionId: string) => piSessionAdapter.stopSession(sessionId),
-      deleteSession: async (sessionId: string, projectPath: string) => {
+      deleteSession: async (sessionId: string, projectPath: string | null) => {
         // wu-06：先清理子 agent 会话内存态与门控（时间坌需在 adapter removeSession 前清理，
         // // 避免迟到事件订阅退订前该 gate 被释放仍创建新状态）
         disarmMainTurnWatchdog(sessionId); // 会话删除同步撤防主轮看门狗
         subagentServiceRef?.disposeSession(sessionId);
         await conversationAdapter.removeSession(sessionId);
         // 真删磁盘残留（pi 转录 JSONL + 子 agent 输出目录）。projectPath 由服务层
-        // 从 store 记录取出后透传 —— 仅凭 sessionId 推不出路径。
+        // 从 store 记录取出后透传（null = 自由会话，adapter 映射 free-workspace）——
+        // 仅凭 sessionId 推不出路径。
         // 此处抛错会让 SessionService 保留会话记录（不吞异常），故"删除成功"即磁盘已清。
         await piSessionAdapter.deleteSession(sessionId, projectPath);
       },
@@ -220,16 +223,26 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     });
   // P2-D 重启恢复：由 forge sessionId 推导 pi 会话文件
   // （agentDir/sessions/<encodeURIComponent(cwd)>/forge-<id>.jsonl，见 piSessionPaths）
+  // 多候选解析：自由会话（projectPath=null）只有 free-workspace 一个候选；
+  // 项目会话先按当前归属找，找不到回落 free-workspace —— 覆盖「自由会话移入项目后
+  // 继续对话」：转录文件留在创建时的目录，归属变更只改元数据不迁移文件。
   const resolveSessionFile = (sessionId: string): string | undefined => {
     const session = store.getSession(sessionId);
     if (session === undefined) return undefined;
-    const file = tryResolveForgeSessionFile(sessionId, session.projectPath, agentDir);
-    if (file === null) return undefined; // 历史脏数据：ID 推不出路径，视为无磁盘历史
-    try {
-      return fs.existsSync(file) ? file : undefined;
-    } catch {
-      return undefined;
+    const cwds =
+      session.projectPath === null
+        ? [resolveSessionCwd(null, agentDir)]
+        : [session.projectPath, resolveSessionCwd(null, agentDir)];
+    for (const cwd of cwds) {
+      const file = tryResolveForgeSessionFile(sessionId, cwd, agentDir);
+      if (file === null) continue; // 历史脏数据：ID 推不出路径，视为无磁盘历史
+      try {
+        if (fs.existsSync(file)) return file;
+      } catch {
+        return undefined;
+      }
     }
+    return undefined;
   };
   // 实时读取全局默认思考级别（MP-QA-G01 修复）：不保存启动快照，每次发送前
   // 经 store.getSetting('thinkingLevel') 实时读取，避免运行中 setSessionThinkingLevel
@@ -391,9 +404,19 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       const sessionLevel = session?.thinkingLevel;
       const thinkingLevel =
         typeof sessionLevel === 'string' && sessionLevel !== '' ? sessionLevel : readDefaultThinkingLevel();
+      // 自由会话（projectPath=null）没有项目 cwd，pi 又不接受空 cwd（落到
+      // process.cwd() 兜底 = Electron 主进程目录，转录散落不可预测）——统一映射到
+      // userData/free-workspace 专用目录并确保存在（转录目录名因此恒定，可恢复可删除）
+      let cwd: string | undefined;
+      if (session) {
+        cwd = resolveSessionCwd(session.projectPath, agentDir);
+        if (session.projectPath === null) {
+          ensureFreeWorkspaceDir(agentDir);
+        }
+      }
       return {
         sessionId,
-        cwd: session?.projectPath,
+        cwd,
         model: modelResult.ok ? modelResult.data.model ?? undefined : undefined,
         thinkingLevel,
       };
@@ -650,7 +673,11 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
         typeof maxBytesRaw === 'number' && Number.isFinite(maxBytesRaw) && maxBytesRaw > 0
           ? Math.min(Math.floor(maxBytesRaw), SUBAGENT_OUTPUT_TAIL_BYTES)
           : SUBAGENT_OUTPUT_TAIL_BYTES;
-      const file = resolveSubagentOutputFile(session.projectPath, sessionId, agentId);
+      const file = resolveSubagentOutputFile(
+        resolveSessionCwd(session.projectPath, agentDir),
+        sessionId,
+        agentId,
+      );
       const tail = readTail(file, maxBytes);
       return { code: 0, message: 'success', data: tail };
     },

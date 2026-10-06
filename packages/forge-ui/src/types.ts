@@ -51,7 +51,12 @@ export type SessionStatus = 'idle' | 'streaming' | 'error' | 'done';
 
 export interface SessionItem {
   sessionId: string;
-  projectPath: string;
+  /**
+   * 所属项目绝对路径；null = 自由会话（不绑定项目）。
+   * 自由会话在侧栏「自由对话」虚拟分组展示，代码树/终端不可用（cwd 无来源）；
+   * 归属可经 session/updateSessionProject 在 null ↔ 项目间双向变更。
+   */
+  projectPath: string | null;
   alias: string | null;
   status: SessionStatus;
   lastActiveAt: string;
@@ -138,12 +143,14 @@ export interface PushData {
 export interface ProjectPickerDescriptor {
   /** draft=新建会话可选归属；session=会话中只读信息（归属不可换） */
   mode: 'draft' | 'session';
-  /** 当前项目路径：草稿=目标项目；会话=归属项目 */
+  /** 当前项目路径：草稿=目标项目；会话=归属项目；null = 自由对话（不选项目） */
   currentPath: string | null;
-  /** 显示名（别名优先，回退路径末段） */
+  /** 显示名（别名优先，回退路径末段）；自由对话为「自由对话」文案 */
   currentName: string;
   /** 已打开项目列表（按后端序） */
   items: Array<{ path: string; name: string }>;
+  /** draft 态是否提供「自由对话（不选项目）」选项（v0.3 自由对话）；会话态恒 false */
+  freeOption?: boolean;
 }
 
 export interface ConversationMessage {

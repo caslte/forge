@@ -1,5 +1,22 @@
 # 变更日志
 
+## v6.14 (功能：无项目「自由对话」会话——不选项目直接开聊)
+
+> 来源：2026-10-06 需求讨论 + 交互原型定稿（prototypes/no-project-session-demo.html）。用户裁定：启动时不绑定项目即为自由对话，**不做会话内绑定入口**，归属变更只走侧栏；多窗口场景零特判。
+
+- **数据模型**：`SessionRecord.projectPath: string | null`（forge-store，null = 自由会话；不 bump schemaVersion，旧数据全 string 天然兼容）。`sessionService.createSession` 放宽：null/undefined/空白路径跳过项目校验直接建自由会话；新增 `updateSessionProject`（归属双向移动，只改元数据 + `session.updated` 事件），RPC 层 `session/createSession` 同步接受 null/空白，注册 `session/updateSessionProject`。ipc-contract 补齐缺失的 `session/markSessionRead` 声明。
+- **引擎 cwd 语义（关键裁决）**：自由会话没有项目 cwd，pi 不接受空 cwd（会落到 process.cwd() = Electron 主进程目录，转录散落不可恢复）。统一映射到 `<userData>/free-workspace` 专用目录（`piSessionPaths.resolveSessionCwd/ensureFreeWorkspaceDir` 单点映射），转录目录名因此恒定——历史恢复、磁盘删除、子 agent 输出全部有解。`resolveSessionFile` 改**多候选解析**（当前归属 → 自由目录回落），覆盖「自由会话移入项目后继续对话」：转录留在创建时目录，归属变更不迁移文件。
+- **UI 入口三处**：① 顶栏「新会话」去掉零项目 disabled（零项目时默认归属即自由对话，有项目仍默认第一项——v3.38 裁定不变）；② 输入框归属选择器菜单置顶「自由对话（不选项目）」选项（draft 态 `freeOption`）；③ 自由分组头的「+」（分组可见时，hover 显形）。零项目落地 hero：发送即创建自由会话（`start-free-chat` + `autoSendText` 直发一次，「发送即创建」无两段确认），「打开项目…」入口保留在菜单底部。侧栏 footer 不设自由对话入口（用户裁定，保持 footer 只有设置）。
+- **侧栏「自由对话」虚拟分组**（ProjectTree）：项目视角置顶、点划分隔线、折叠、VISIBLE_LIMIT+「更多」；**仅在确有自由会话时渲染**（空分组不占位，保持界面干净），标题与项目行同色阶、无图标无计数。**不是真项目**：无 path、不可删除、不参与 MRU/重排，自由分组头刻意不复用 `.tree-project` class（树语义与 E2E 选择器都不污染）。任务视角自由会话带「自由」徽章。
+- **管理（只走侧栏）**：会话行新增右键菜单（重命名 / 自由会话「移入项目…」列全部项目 / 项目会话「移出到自由对话」/ 删除两阶段确认）；跨分组拖拽——会话拖到项目行 = 移入、拖到自由分组头 = 解绑（与项目重排拖拽共用行节点、dragstart 来源区分互不干扰）。移动成功 toast 反馈，当前会话被移动时 currentProjectPath 跟手（终端/代码树随归属启用或降级）。
+- **自由会话内降级**（按用户裁定「安静的边界」，无任何绑定入口）：无分支徽标、无 @ 补全、无 git 提交入口、代码树收起（ConversationView `project` prop 放宽可空）、终端新建 tab 禁用（现有 null 降级）；归属选择器为只读「自由对话」标签。
+- **多窗口零特判**：拖自由会话进画布走同一 `text/forge-session` 通道；窗口标题归属 tag——项目会话显示项目名，自由会话显示青瓷绿「自由对话」（`mw-proj-free`）；`MultiWindowConversation` 假 ProjectItem 合成改为可空直传。
+- **测试**：core `test/session/sessionService.test.ts`（自由会话创建/列表过滤/updateSessionProject 双向+幂等+1002）、`test/rpc/sessionHandler.test.ts`（createSession null 语义矩阵 + updateSessionProject 事件发射）；ui typecheck 0 错、单测 438/438；e2e 新增 `freeSession.spec.ts` 5 例（hero 直发落分组 / 右键移入 / 任务视角徽章 / 画布拖入带 tag / **FREE-05 回归：项目视图草稿切自由归属发送不得落回原项目**）；landingHero.spec 3 例按新语义重写；session-007 选择器更新、tooltip/codeExplorer/projectMenu 的宽泛选择器补过滤（自由对话元素入树后 `.tree-project`/`.sidebar-link`/`.tree-node-title` 计数口径收紧）。
+- **实测 bug 修复（归属泄漏）**：草稿态切「自由对话」后 ConversationView 仍拿到 `currentProject`（侧栏选中态），发送时把项目路径带进 `session/createSession`，会话落错分组。修法：新增 `convProject` computed，对话视图归属一律按**当前会话/草稿的实际归属**解析（自由草稿/自由会话 → null；项目会话按会话自身 projectPath，多窗口聚焦层同样按聚焦会话取值）；自由草稿期间 `currentProjectPath` 同步置空（终端/底部 git 状态条跟随，不再显示原项目分支）；多窗口聚焦会话时归属对齐（与 onSelectSession 同口径）。
+- **实测 bug 修复（自由会话丢用户气泡）**：草稿发送后 `onSessionCreated` 先置 currentSessionId，而会话入列表要等事件驱动的 loadSessions——这个窗口期里 `activeIsFree` 的草稿分支（要求 currentSessionId===null）失效、会话又尚未入列表，`showConversation` 翻 false 把对话视图**整体卸载重挂**：乐观 user 气泡随组件实例丢弃，重挂后 loadHistory 与用户消息落盘存在竞态（读早了拿到空转录），表现为「自由会话没有用户气泡、只剩工具行/回复」。修法：`activeIsFree` 在「会话已创建但未入列表」的窗口期沿用草稿归属（freeDraft 回落），视图全程连续不重挂；FREE-005 补用户气泡上屏断言。
+- **验证**：e2e 受影响 spec 全绿；全量 e2e 失败集与改动前基线逐条一致（branchBadge/mw-restore/subagent/todoPanel/contentWidth/updater/session-001/repro 共 15 条均为存量失败，与本次无关）。
+- **不做的**：① 会话内不做「绑定项目」按钮（用户裁定，归属变更只走侧栏右键/拖拽）；② 不迁移转录文件（移入项目后历史经多候选解析尽力续接，续不上降级为历史不可见、不报错）；③ 不放宽 pty/fileService 的项目 containment（自由会话开终端仍 1002，cwd 无来源是硬约束）；④ 转录目录名沿用 encodeURIComponent(cwd) 约定不改（与 pi 逐字节一致是删除正确性的前提）。
+
 ## v6.13 (增强：代码树右键「复制路径」+ 代码区右上角改终端开关)
 
 > 来源：2026-10-02 用户反馈（截图）——①右键菜单加一个复制路径；②代码区右上角的「关闭当前文件」与签条 × 功能重复，换成终端图标，随手唤醒终端。

@@ -30,7 +30,7 @@ import path from 'node:path';
 
 import type { PiSessionAdapter as ForgePiSessionAdapter } from '@forge/core';
 
-import { resolveProjectSessionDir, tryResolveForgeSessionFile } from './piSessionPaths.ts';
+import { resolveProjectSessionDir, resolveSessionCwd, tryResolveForgeSessionFile } from './piSessionPaths.ts';
 import { resolveSubagentOutputDir } from './subagentOutput.ts';
 
 /** Windows 句柄释放延迟的默认重试策略（约 150ms 内 3 次） */
@@ -69,8 +69,10 @@ export class PiSessionAdapter implements ForgePiSessionAdapter {
    * 分配 forge 会话 ID。pi 侧会话文件**不在此处创建** —— 首条消息经
    * createPiAgentSessionFactory 启动会话时才落盘（未发消息的会话本就没有文件，
    * 删除时按"目标不存在即已删除"处理）。
+   * @param _projectPath 会话归属；null = 自由会话（cwd 由 resolveSendOptions 映射到
+   *   free-workspace，此处无需区分 —— ID 分配与归属无关）
    */
-  createSession(_projectPath: string): Promise<string> {
+  createSession(_projectPath: string | null): Promise<string> {
     return Promise.resolve(randomUUID());
   }
 
@@ -86,11 +88,13 @@ export class PiSessionAdapter implements ForgePiSessionAdapter {
   /**
    * 硬删会话的全部磁盘残留（不可逆）。
    * @param sessionId forge 会话 ID
-   * @param projectPath 所属项目工作目录（推导 pi 转录路径与子 agent 输出目录）
+   * @param projectPath 所属项目工作目录（null = 自由会话，按 free-workspace 专用
+   *   目录推导 pi 转录路径与子 agent 输出目录）
    * @throws 目标存在但删除失败（句柄占用/权限）时抛错，由调用方保留 store 记录
    */
-  async deleteSession(sessionId: string, projectPath: string): Promise<void> {
-    const sessionFile = tryResolveForgeSessionFile(sessionId, projectPath, this.agentDir);
+  async deleteSession(sessionId: string, projectPath: string | null): Promise<void> {
+    const cwd = resolveSessionCwd(projectPath, this.agentDir);
+    const sessionFile = tryResolveForgeSessionFile(sessionId, cwd, this.agentDir);
     if (sessionFile === null) {
       // 历史脏数据：ID 含非法字符推不出路径。不阻断删除，但留下可追溯的告警
       console.warn(
@@ -99,11 +103,11 @@ export class PiSessionAdapter implements ForgePiSessionAdapter {
       return;
     }
     await this.removePath(sessionFile);
-    const subagentDir = resolveSubagentOutputDir(projectPath, sessionId);
+    const subagentDir = resolveSubagentOutputDir(cwd, sessionId);
     await this.removePath(subagentDir);
     // 父目录已空则顺带移除（sessions/<encoded cwd> / <encodeCwd>）；非空（还有别的
     // 会话或 pi CLI 会话）时 rmdir 会失败，属预期，忽略
-    await this.pruneDirIfEmpty(resolveProjectSessionDir(projectPath, this.agentDir));
+    await this.pruneDirIfEmpty(resolveProjectSessionDir(cwd, this.agentDir));
     await this.pruneDirIfEmpty(path.dirname(subagentDir));
   }
 

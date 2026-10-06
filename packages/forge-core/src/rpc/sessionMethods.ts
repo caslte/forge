@@ -81,6 +81,7 @@ export class SessionApi {
       'session/querySessionList': (params) => this.querySessionList(params),
       'session/deleteSession': (params) => this.deleteSession(params),
       'session/updateSessionAlias': (params) => this.updateSessionAlias(params),
+      'session/updateSessionProject': (params) => this.updateSessionProject(params),
       'session/markSessionRead': (params) => this.markSessionRead(params),
       'session/getSessionStatus': (params) => this.getSessionStatus(params),
       'session/attachSessionWindow': (params) => this.attachSessionWindow(params),
@@ -110,13 +111,23 @@ export class SessionApi {
     }
   }
 
-  /** session/createSession：创建会话（SM-S01） */
+  /**
+   * session/createSession：创建会话（SM-S01）。
+   * projectPath 缺省/null/空白 = 自由会话（与服务层语义一致）；非空字符串 =
+   * 归属项目；其他类型（如数字）返回 1001。
+   */
   private createSession(params: unknown): Promise<RpcResult> {
-    const projectPath = requireString(params, 'projectPath');
-    if (projectPath === null) {
-      return Promise.resolve(fail(1001, '参数错误：projectPath 必须为非空字符串'));
+    if (!isRecord(params) || !('projectPath' in params) || params.projectPath === null) {
+      return this.call('createSession', () => this.service.createSession(null));
     }
-    return this.call('createSession', () => this.service.createSession(projectPath));
+    const raw = params.projectPath;
+    if (typeof raw !== 'string') {
+      return Promise.resolve(fail(1001, '参数错误：projectPath 必须为非空字符串或 null'));
+    }
+    if (raw.trim() === '') {
+      return this.call('createSession', () => this.service.createSession(null));
+    }
+    return this.call('createSession', () => this.service.createSession(raw));
   }
 
   /** session/querySessionList：查询会话列表（SM-S05 跨项目会话池） */
@@ -152,6 +163,42 @@ export class SessionApi {
       return fail(1001, '参数错误：alias 必须为非空字符串');
     }
     const result = await this.call('updateSessionAlias', () => this.service.updateSessionAlias(sessionId, alias));
+    if (result.code === 0 && result.data !== null) {
+      this.events.emit('session.updated', { session: (result.data as { session: unknown }).session });
+    }
+    return result;
+  }
+
+  /**
+   * session/updateSessionProject：变更会话归属（自由对话管理）。
+   * projectPath 为字符串 = 移入该项目；缺省/null = 移出到自由对话。
+   * 成功后发射 session.updated 同步各窗口会话树。
+   */
+  private async updateSessionProject(params: unknown): Promise<RpcResult> {
+    const sessionId = requireString(params, 'sessionId');
+    if (sessionId === null) {
+      return fail(1001, '参数错误：sessionId 必须为非空字符串');
+    }
+    if (!isRecord(params) || !('projectPath' in params) || params.projectPath === null) {
+      return this.callAndEmitUpdate('updateSessionProject', () =>
+        this.service.updateSessionProject(sessionId, null),
+      );
+    }
+    const projectPath = requireString(params, 'projectPath');
+    if (projectPath === null) {
+      return fail(1001, '参数错误：projectPath 必须为非空字符串或 null');
+    }
+    return this.callAndEmitUpdate('updateSessionProject', () =>
+      this.service.updateSessionProject(sessionId, projectPath),
+    );
+  }
+
+  /** 执行服务调用并在成功时发射 session.updated（updateSessionProject 专用） */
+  private async callAndEmitUpdate(
+    method: string,
+    fn: () => SessionResult<{ session: unknown }> | Promise<SessionResult<{ session: unknown }>>,
+  ): Promise<RpcResult> {
+    const result = await this.call(method, fn);
     if (result.code === 0 && result.data !== null) {
       this.events.emit('session.updated', { session: (result.data as { session: unknown }).session });
     }

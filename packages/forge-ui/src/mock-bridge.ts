@@ -19,7 +19,8 @@ declare global {
 
 interface MockSessionSeed {
   sessionId: string;
-  projectPath: string;
+  /** null = 自由会话（不绑定项目，落侧栏「自由对话」分组） */
+  projectPath: string | null;
   alias: string | null;
   status: string;
   lastActiveAt: string;
@@ -682,19 +683,36 @@ const bridge: ForgeBridge = {
           },
         };
       case 'session/createSession': {
-        // E2E：动态新建会话（测试可直接建多会话做并行/删除场景）
+        // E2E：动态新建会话（测试可直接建多会话做并行/删除场景）。
+        // projectPath 缺省/null = 自由会话（与真实 forge-core createSession 语义一致，
+        // 不再兜底第一项目 —— 归属由前端 draft 显式决定）
         const sessionId = 'sess-' + Math.random().toString(36).slice(2, 10);
-        const projectPath =
-          (params as { projectPath?: string }).projectPath ?? DB.projects[0]?.path ?? 'D:/work/aiwork/forge';
+        const raw = (params as { projectPath?: string | null }).projectPath;
+        const projectPath = typeof raw === 'string' && raw.trim() !== '' ? raw : null;
         DB.sessions.push({
           sessionId,
-          projectPath: projectPath as string,
+          projectPath,
           alias: null,
           status: 'idle',
           lastActiveAt: new Date().toISOString(),
           doneReadAt: null,
         });
         return { code: 0, message: 'ok', data: { session: { sessionId } } };
+      }
+      case 'session/updateSessionProject': {
+        // 变更会话归属（自由对话管理，与真实 forge-core updateSessionProject 一致）：
+        // projectPath 非空字符串 = 移入项目；null/缺省 = 移出到自由对话
+        const sid = (params as { sessionId?: string }).sessionId ?? '';
+        const sess = DB.sessions.find((s) => s.sessionId === sid);
+        if (!sess) return { code: 1002, message: '会话不存在: ' + sid, data: null };
+        const raw = (params as { projectPath?: string | null }).projectPath;
+        const target = typeof raw === 'string' && raw.trim() !== '' ? raw : null;
+        if (target !== null && !DB.projects.some((p) => p.path === target)) {
+          return { code: 1002, message: '项目不存在: ' + target, data: null };
+        }
+        sess.projectPath = target;
+        emit('session.updated', { session: sess });
+        return { code: 0, message: 'ok', data: { session: sess } };
       }
       case 'session/markSessionRead': {
         // 绿点已读落盘（与真实 forge-core SessionService.markSessionRead 一致）

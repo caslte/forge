@@ -395,7 +395,7 @@ test('E-CE-10 @P1 @mock-backend：布局偏好与分割宽度刷新后仍在', a
 test('E-CE-11 @P1 @mock-backend：设置页切代码查看器布局，回工作台立即生效且落盘', async ({ page }) => {
   const health = attachHealthGuards(page);
   await page.setViewportSize({ width: 1500, height: 900 });
-  await page.locator('.sidebar-link').click();
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
   await expect(page.locator('.settings-panel, .settings-body')).toBeVisible();
   await page.locator('.settings-tab', { hasText: '个性化' }).click();
 
@@ -417,8 +417,8 @@ test('E-CE-11 @P1 @mock-backend：设置页切代码查看器布局，回工作�
 
   // 落盘：刷新后仍是 split
   await page.reload();
-  await expect(page.locator('.sidebar-link')).toBeVisible();
-  await page.locator('.sidebar-link').click();
+  await expect(page.locator('.sidebar-link', { hasText: '设置' })).toBeVisible();
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
   await page.locator('.settings-tab', { hasText: '个性化' }).click();
   await expect(page.locator('.code-layout-option', { hasText: '左右分割' })).toHaveAttribute(
     'aria-checked',
@@ -435,7 +435,7 @@ test('E-CE-11 @P1 @mock-backend：设置页切代码查看器布局，回工作�
   expect(Math.abs(w / host - 0.46)).toBeLessThan(0.03);
 
   // 反向再切回 cover：代码纸盖上去，沟消失
-  await page.locator('.sidebar-link').click();
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
   await page.locator('.settings-tab', { hasText: '个性化' }).click();
   await page.locator('.code-layout-option', { hasText: '整屏覆盖' }).click();
   await page.locator('.settings-back, .settings-close').first().click();
@@ -1498,7 +1498,7 @@ test('对比：个性化里把默认视图切到「行内」→ 变更文件直�
   await seedGitStatus(page, CHANGES);
   await seedFileDiff(page, { 'packages/forge-ui/src/App.vue': APP_DIFF });
   // 设置 → 个性化 → 代码对比默认视图 = 行内（2026-10-03 新增的个性化项）
-  await page.locator('.sidebar-link').click();
+  await page.locator('.sidebar-link', { hasText: '设置' }).click();
   await expect(page.locator('.settings-panel, .settings-body')).toBeVisible();
   await page.locator('.settings-tab', { hasText: '个性化' }).click();
   await page.locator('.code-layout-option', { hasText: '行内' }).click();

@@ -26,12 +26,14 @@ const emit = defineEmits<{
   (e: 'remove-project', path: string): void;
   (e: 'clear-sessions', path: string): void;
   (e: 'rename-project', path: string, alias: string): void;
-  (e: 'create-session', projectPath?: string): void;
+  (e: 'create-session', projectPath?: string | null): void;
   (e: 'select-session', id: string): void;
   (e: 'delete-session', id: string): void;
   (e: 'rename-session', id: string, alias: string): void;
   (e: 'reorder-project', paths: string[]): void;
   (e: 'fold-state', allCollapsed: boolean): void;
+  /** v0.3 变更会话归属：projectPath=null = 移出到自由对话 */
+  (e: 'move-session', sessionId: string, projectPath: string | null): void;
   /** 模块 12：点项目行尾的 <> 进入内置代码浏览器（左栏整栏切成代码树） */
   (e: 'open-code', path: string): void;
 }>();
@@ -119,6 +121,27 @@ function sessionsOf(path: string): SessionItem[] {
   );
 }
 
+// ===== 自由对话虚拟分组（v0.3）：projectPath === null 的会话，置顶展示 =====
+// 不是真项目：无 path、不可删除、不参与 MRU/重排，仅是归属 null 的会话的展示分组。
+const freeSessions = computed<SessionItem[]>(() =>
+  sortSessionsByActivation(
+    props.sessions.filter((s) => s.projectPath === null),
+    activatedOrder.value,
+  ),
+);
+const freeExpanded = ref(true);
+const freeListExpanded = ref(false);
+const visibleFreeSessions = computed<SessionItem[]>(() =>
+  freeListExpanded.value ? freeSessions.value : freeSessions.value.slice(0, VISIBLE_SESSION_LIMIT),
+);
+const hiddenFreeCount = computed(() =>
+  Math.max(0, freeSessions.value.length - VISIBLE_SESSION_LIMIT),
+);
+
+function toggleFreeExpand(): void {
+  freeExpanded.value = !freeExpanded.value;
+}
+
 // ===== 任务视角（SM-S06）：平摊全部会话，排序规则与项目视角一致 =====
 const isTaskView = computed(() => props.view === 'task');
 const allSessionsSorted = computed(() =>
@@ -136,7 +159,8 @@ const hiddenTaskCount = computed(() =>
 );
 
 function taskProjectTag(s: SessionItem): string {
-  return projectTagOf(s.projectPath, props.projects);
+  // 自由会话在模板里走「自由」徽章分支（v-else 才进本函数），这里兜空串保类型
+  return projectTagOf(s.projectPath ?? '', props.projects);
 }
 
 // ===== 收起全部/展开全部（仅项目视角；两态判定 nextFoldAllAction 见 sessionView） =====
@@ -433,13 +457,151 @@ function isOnCanvas(session: SessionItem): boolean {
 /** 会话拖拽到多窗口画布：在 dataTransfer 记录 sessionId（需阻止冒泡，避免触发项目重排） */
 function onSessionDragStart(e: DragEvent, s: SessionItem): void {
   e.stopPropagation();
+  draggedSessionId.value = s.sessionId;
   if (e.dataTransfer) {
     e.dataTransfer.setData('text/forge-session', s.sessionId);
     e.dataTransfer.effectAllowed = 'copy';
   }
 }
 
+function onSessionDragEnd(): void {
+  draggedSessionId.value = null;
+  sessionDropOverPath.value = null;
+}
+
+// ===== 跨分组拖拽（v0.3 会话归属移动）：会话拖到项目行 = 移入项目；拖到自由分组头 = 移出项目 =====
+const draggedSessionId = ref<string | null>(null);
+/** 当前悬停的落点分组：'__free__' 或项目 path */
+const sessionDropOverPath = ref<string | null>(null);
+
+function onGroupDragOver(ev: DragEvent, target: string): void {
+  if (!draggedSessionId.value) return;
+  const s = props.sessions.find((x) => x.sessionId === draggedSessionId.value);
+  if (!s) return;
+  const targetPath = target === '__free__' ? null : target;
+  if (s.projectPath === targetPath) return; // 已在目标分组，不响应
+  ev.preventDefault();
+  ev.stopPropagation(); // 不冒泡到项目重排 dragover
+  sessionDropOverPath.value = target;
+}
+
+function onGroupDragLeave(target: string): void {
+  if (sessionDropOverPath.value === target) sessionDropOverPath.value = null;
+}
+
+function onGroupDrop(ev: DragEvent, target: string): void {
+  if (!draggedSessionId.value) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const id = draggedSessionId.value;
+  const s = props.sessions.find((x) => x.sessionId === id);
+  const targetPath = target === '__free__' ? null : target;
+  resetSessionDrop();
+  if (!s || s.projectPath === targetPath) return;
+  emit('move-session', id, targetPath);
+}
+
+function resetSessionDrop(): void {
+  draggedSessionId.value = null;
+  sessionDropOverPath.value = null;
+}
+
+// ===== 会话右键菜单（v0.3）：重命名 / 移入项目…（自由会话）/ 移出到自由对话 / 删除 =====
+const sessionMenuId = ref<string | null>(null);
+const sessionMenuX = ref(0);
+const sessionMenuY = ref(0);
+/** 删除两阶段确认（菜单内，同项目删除模式） */
+const sessionDeleteConfirm = ref(false);
+let sessionDeleteConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+
+const ICON_SPARKLE = 'M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z';
+
+function openSessionMenu(s: SessionItem, ev: MouseEvent): void {
+  sessionMenuId.value = s.sessionId;
+  const w = 200;
+  const h = 190;
+  sessionMenuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
+  sessionMenuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
+  sessionDeleteConfirm.value = false;
+  clearSessionDeleteTimer();
+}
+
+function closeSessionMenu(): void {
+  sessionMenuId.value = null;
+  sessionDeleteConfirm.value = false;
+  clearSessionDeleteTimer();
+}
+
+function clearSessionDeleteTimer(): void {
+  if (sessionDeleteConfirmTimer) {
+    clearTimeout(sessionDeleteConfirmTimer);
+    sessionDeleteConfirmTimer = null;
+  }
+}
+
+const sessionMenuItems = computed<ContextMenuItem[]>(() => {
+  const id = sessionMenuId.value;
+  if (!id) return [];
+  const s = props.sessions.find((x) => x.sessionId === id);
+  if (!s) return [];
+  const items: ContextMenuItem[] = [
+    { key: 'rename', label: t('project.renameSession'), icon: ICON_RENAME },
+  ];
+  if (s.projectPath === null) {
+    // 自由会话：移入任一已注册项目（menu 无子菜单，直接列目标）
+    for (const p of props.projects) {
+      items.push({
+        key: `move:${p.path}`,
+        label: t('project.moveToProject', { name: projectDisplayName(p) }),
+        icon: ICON_OPEN_DIR,
+      });
+    }
+  } else {
+    items.push({ key: 'move:__free__', label: t('project.moveToFree'), icon: ICON_SPARKLE });
+  }
+  items.push({
+    key: 'delete',
+    label: sessionDeleteConfirm.value ? t('project.confirmDelete') : t('project.deleteSession'),
+    icon: ICON_TRASH,
+    danger: true,
+    confirming: sessionDeleteConfirm.value,
+    keepOpen: true,
+  });
+  return items;
+});
+
+function onSessionMenuSelect(key: string): void {
+  const id = sessionMenuId.value;
+  if (!id) return;
+  if (key === 'rename') {
+    closeSessionMenu();
+    const s = props.sessions.find((x) => x.sessionId === id);
+    if (s) startRenameSession(s);
+    return;
+  }
+  if (key.startsWith('move:')) {
+    const target = key.slice('move:'.length);
+    closeSessionMenu();
+    emit('move-session', id, target === '__free__' ? null : target);
+    return;
+  }
+  if (key === 'delete') {
+    if (sessionDeleteConfirm.value) {
+      closeSessionMenu();
+      emit('delete-session', id);
+      return;
+    }
+    clearSessionDeleteTimer();
+    sessionDeleteConfirm.value = true;
+    sessionDeleteConfirmTimer = setTimeout(() => {
+      sessionDeleteConfirm.value = false;
+    }, 3000);
+  }
+}
+
 function onProjectDragOver(ev: DragEvent, p: ProjectItem): void {
+  // 会话拖拽经过项目行 = 移入项目（v0.3），与项目重排共用行节点但互不干扰
+  if (draggedSessionId.value) return onGroupDragOver(ev, p.path);
   if (!draggedPath.value || draggedPath.value === p.path) return;
   ev.preventDefault();
   const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
@@ -448,6 +610,10 @@ function onProjectDragOver(ev: DragEvent, p: ProjectItem): void {
 }
 
 function onProjectDragLeave(p: ProjectItem): void {
+  if (sessionDropOverPath.value === p.path) {
+    sessionDropOverPath.value = null;
+    return;
+  }
   if (dragOverPath.value === p.path) {
     dragOverPath.value = null;
     dragOverPos.value = null;
@@ -456,6 +622,7 @@ function onProjectDragLeave(p: ProjectItem): void {
 
 /** 目标节点上放下：把拖拽项目移动到目标前/后，发射新顺序（全量） */
 function onProjectDrop(ev: DragEvent, p: ProjectItem): void {
+  if (draggedSessionId.value) return onGroupDrop(ev, p.path);
   ev.preventDefault();
   const from = draggedPath.value;
   const to = p.path;
@@ -585,6 +752,7 @@ onUnmounted(() => {
   clearDeleteConfirmTimer();
   clearProjectDeleteTimer();
   clearClearSessionsTimer();
+  clearSessionDeleteTimer();
 });
 </script>
 
@@ -611,6 +779,8 @@ onUnmounted(() => {
           :draggable="!isOnCanvas(session)"
           @click="selectSession(session.sessionId)"
           @dragstart="onSessionDragStart($event, session)"
+          @dragend="onSessionDragEnd"
+          @contextmenu.prevent="openSessionMenu(session, $event)"
         >
           <span
             class="tree-session-status-dot"
@@ -662,7 +832,8 @@ onUnmounted(() => {
             <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
           </div>
 
-          <span class="tree-session-proj-tag" :title="session.projectPath">{{ taskProjectTag(session) }}</span>
+          <span v-if="session.projectPath === null" class="tree-session-free-tag">{{ t('project.freeBadge') }}</span>
+          <span v-else class="tree-session-proj-tag" :title="session.projectPath">{{ taskProjectTag(session) }}</span>
 
           <span class="tree-session-meta">
             <span v-if="sessionTimeLabel(session)" class="tree-session-time" :title="sessionTimeTitle(session)">{{ sessionTimeLabel(session) }}</span>
@@ -706,8 +877,160 @@ onUnmounted(() => {
       </div>
     </template>
 
-    <!-- 项目视角（现状）：按项目分组 -->
+    <!-- 项目视角（现状）：自由对话虚拟分组（v0.3）置顶 + 按项目分组 -->
     <template v-else>
+      <!-- 自由对话：归属 null 的会话。非真项目——无 path、不可删除、不参与重排；
+           分组头是拖拽落点（项目会话拖到这里 = 移出项目） -->
+      <!-- 自由对话：归属 null 的会话。非真项目——无 path、不可删除、不参与重排；
+           分组头是拖拽落点（项目会话拖到这里 = 移出项目）。
+           仅在确有自由会话时渲染（保持界面干净，空分组不占位） -->
+      <div v-if="freeSessions.length > 0" class="tree-section free-section">
+        <div class="tree-node free-node">
+          <div
+            class="free-head"
+            :class="{ 'session-drop-target': sessionDropOverPath === '__free__' }"
+            :title="t('project.freeGroupTooltip')"
+            @click="toggleFreeExpand"
+            @dragover="onGroupDragOver($event, '__free__')"
+            @dragleave="onGroupDragLeave('__free__')"
+            @drop="onGroupDrop($event, '__free__')"
+          >
+            <button
+              type="button"
+              class="tree-arrow"
+              :aria-label="freeExpanded ? t('project.collapseProject') : t('project.expandProject')"
+              @click.stop="toggleFreeExpand"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path v-if="freeExpanded" d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+                <path v-else d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
+            <div class="tree-node-main">
+              <div class="tree-node-title free-title" @click.stop="toggleFreeExpand">{{ t('project.freeChat') }}</div>
+            </div>
+            <div class="tree-node-actions">
+              <button
+                type="button"
+                class="tree-icon-button"
+                :aria-label="t('project.newSession')"
+                :data-tooltip="t('project.newSession')"
+                @click.stop="emit('create-session', null)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="tree-session-group" :class="{ 'is-collapsed': !freeExpanded }">
+            <div class="tree-session-list">
+              <div
+                v-for="session in visibleFreeSessions"
+                :key="session.sessionId"
+                class="tree-session"
+                :class="{
+                  active: currentSessionId === session.sessionId,
+                  'on-canvas': isOnCanvas(session),
+                  'non-draggable': isOnCanvas(session),
+                }"
+                :draggable="!isOnCanvas(session)"
+                @click="selectSession(session.sessionId)"
+                @dragstart="onSessionDragStart($event, session)"
+                @dragend="onSessionDragEnd"
+                @contextmenu.prevent="openSessionMenu(session, $event)"
+              >
+                <span
+                  class="tree-session-status-dot"
+                  :class="[`tone-${sessionTone(session)}`, { 'is-blank': !shouldShowDot(session) }]"
+                  :title="shouldShowDot(session) ? statusTitle(session) : ''"
+                  aria-hidden="true"
+                >
+                  <span class="dot-matrix"><i v-for="n in 8" :key="n" /></span>
+                  <svg
+                    v-if="session.status === 'done'"
+                    class="dot-check"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="3"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  <span v-if="session.status === 'error'" class="dot-bang">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                      <line x1="12" y1="8" x2="12" y2="13" />
+                      <line x1="12" y1="16.5" x2="12" y2="17.5" />
+                    </svg>
+                  </span>
+                </span>
+                <div class="tree-node-main">
+                  <input
+                    v-if="renamingSessionId === session.sessionId"
+                    :ref="focusAndSelect"
+                    v-model="renameSessionValue"
+                    class="tree-rename-input"
+                    type="text"
+                    :placeholder="t('project.sessionAlias')"
+                    @click.stop
+                    @dblclick.stop
+                    @keydown.enter.prevent="commitRenameSession()"
+                    @keydown.esc.prevent="cancelRenameSession()"
+                    @blur="commitRenameSession()"
+                  />
+                  <div
+                    v-else
+                    class="tree-session-title"
+                    :title="sessionDisplayName(session)"
+                    @dblclick.stop="startRenameSession(session)"
+                  >{{ sessionDisplayName(session) }}</div>
+                  <span v-if="isOnCanvas(session)" class="session-oncanvas-tag">{{ t('project.openedOnCanvas') }}</span>
+                </div>
+                <span class="tree-session-meta">
+                  <span v-if="sessionTimeLabel(session)" class="tree-session-time" :title="sessionTimeTitle(session)">{{ sessionTimeLabel(session) }}</span>
+                  <div class="tree-node-actions">
+                    <button
+                      type="button"
+                      class="tree-icon-button danger"
+                      :class="{ 'confirm-mode': deleteConfirmId === session.sessionId }"
+                      :aria-label="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                      :data-tooltip="deleteConfirmId === session.sessionId ? t('project.confirmDelete') : t('project.deleteSession')"
+                      @click.stop="handleDeleteSessionClick(session)"
+                    >
+                      <span v-if="deleteConfirmId === session.sessionId" class="confirm-text">{{ t('common.confirm') }}</span>
+                      <svg
+                        v-else
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      </svg>
+                    </button>
+                  </div>
+                </span>
+              </div>
+              <button
+                v-if="hiddenFreeCount > 0"
+                type="button"
+                class="tree-session-toggle"
+                @click.stop="freeListExpanded = !freeListExpanded"
+              >
+                {{ freeListExpanded ? t('project.collapseDisplay') : t('project.expandDisplay', { count: hiddenFreeCount }) }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noProjects') }}</div>
 
     <div v-else class="tree-section" @dragover="onSectionDragOver" @drop="onSectionDrop">
@@ -719,6 +1042,7 @@ onUnmounted(() => {
           'drag-over-before': dragOverPath === project.path && dragOverPos === 'before',
           'drag-over-after': dragOverPath === project.path && dragOverPos === 'after',
           dragging: draggedPath === project.path,
+          'session-drop-target': sessionDropOverPath === project.path,
         }"
         draggable="true"
         @dragstart="onProjectDragStart(project)"
@@ -822,6 +1146,8 @@ onUnmounted(() => {
               :draggable="!isOnCanvas(session)"
               @click="selectSession(session.sessionId)"
               @dragstart="onSessionDragStart($event, session)"
+              @dragend="onSessionDragEnd"
+              @contextmenu.prevent="openSessionMenu(session, $event)"
             >
               <span
                 class="tree-session-status-dot"
@@ -929,6 +1255,16 @@ onUnmounted(() => {
       :items="projectMenuItems"
       @select="onMenuSelect"
       @close="closeMenu"
+    />
+
+    <!-- 会话操作菜单（v0.3）：重命名 / 移入项目… / 移出到自由对话 / 删除（两阶段） -->
+    <ContextMenu
+      v-if="sessionMenuId"
+      :x="sessionMenuX"
+      :y="sessionMenuY"
+      :items="sessionMenuItems"
+      @select="onSessionMenuSelect"
+      @close="closeSessionMenu"
     />
   </div>
 </template>
@@ -1334,6 +1670,67 @@ onUnmounted(() => {
   border-radius: 999px;
   padding: 1px 7px;
   background: color-mix(in oklab, var(--muted) 30%, transparent);
+}
+
+/* ===== 自由对话虚拟分组（v0.3） ===== */
+/* 自由分组头：行内布局与 .tree-project 同参（样式镜像，但**不复用**该 class ——
+   树语义上它不是项目，`.tree-project` 选择器的计数/操作样式不得命中它） */
+.free-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px;
+  padding: 4px 12px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  color: color-mix(in oklab, var(--foreground) 80%, var(--muted-foreground));
+  transition: background var(--transition-fast);
+  min-width: 0;
+}
+.free-head:hover {
+  background: var(--muted);
+}
+.free-head .tree-node-actions {
+  gap: 2px;
+}
+/* 自由分组头的「+」与项目行内新建同款：hover 显形，点击新建自由草稿（归属 null 直达） */
+.free-head:hover .tree-node-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.free-head .tree-icon-button {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+}
+.free-head .tree-icon-button svg {
+  width: 11px;
+  height: 11px;
+}
+.free-section {
+  margin-bottom: 6px;
+}
+/* 分组标题：不单独着色（与项目行同色阶） */
+.free-title {
+  color: inherit;
+}
+/* 任务视角「自由」徽章：青瓷绿胶囊，与项目 tag 同占位 */
+.tree-session-free-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--brand-accent);
+  background: color-mix(in oklab, var(--brand-accent) 13%, transparent);
+  border: 1px solid color-mix(in oklab, var(--brand-accent) 30%, transparent);
+}
+/* 跨分组拖拽落点：点划线描边 + 淡染（仅会话拖拽时出现，与项目重排的横条指示互斥） */
+.session-drop-target {
+  outline: 1.5px dashed var(--brand-accent);
+  outline-offset: -1.5px;
+  background: color-mix(in oklab, var(--brand-accent) 10%, transparent);
+  border-radius: var(--radius-sm, 6px);
 }
 
 /* 行尾槽位：相对活跃时间与删除按钮叠在同一个网格格子里。

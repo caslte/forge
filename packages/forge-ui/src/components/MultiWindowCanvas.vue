@@ -175,6 +175,7 @@ function displayName(s: SessionItem): string {
 }
 
 function projectNameOf(s: SessionItem): string {
+  if (s.projectPath === null) return t('panels.multiwin.freeTag');
   const parts = s.projectPath.replace(/\\/g, '/').split('/');
   return parts[parts.length - 1] || s.projectPath;
 }
@@ -496,7 +497,12 @@ defineExpose({ arrangeAuto, clearAll });
         <div class="mw-bar" @mousedown.stop="onBarMouseDown($event, w)">
           <div class="mw-title">
             <b>{{ sessionOf(w.sessionId) ? displayName(sessionOf(w.sessionId)!) : t('panels.multiwin.sessionFallback') }}</b>
-            <span v-if="sessionOf(w.sessionId)" class="mw-proj">{{ projectNameOf(sessionOf(w.sessionId)!) }}</span>
+            <!-- 归属 tag（v0.3）：项目会话=项目名，自由会话=「自由对话」 -->
+            <span
+              v-if="sessionOf(w.sessionId)"
+              class="mw-proj"
+              :class="{ 'mw-proj-free': sessionOf(w.sessionId)!.projectPath === null }"
+            >{{ projectNameOf(sessionOf(w.sessionId)!) }}</span>
           </div>
           <button
             class="mw-icon-btn"
@@ -630,6 +636,12 @@ defineExpose({ arrangeAuto, clearAll });
   border: 1px solid var(--border);
   border-radius: 999px;
   background: color-mix(in oklab, var(--muted) 30%, transparent);
+}
+/* 自由会话的归属 tag：青瓷绿（与侧栏「自由」徽章/自由分组同源语义色） */
+.mw-proj-free {
+  color: var(--brand-accent);
+  background: color-mix(in oklab, var(--brand-accent) 13%, transparent);
+  border-color: color-mix(in oklab, var(--brand-accent) 30%, transparent);
 }
 .mw-icon-btn {
   width: 20px;

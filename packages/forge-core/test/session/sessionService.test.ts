@@ -26,15 +26,15 @@ class MockPiAdapter implements PiSessionAdapter {
   createCalls: string[] = [];
   stopCalls: string[] = [];
   deleteCalls: string[] = [];
-  /** deleteSession 收到的项目路径（服务层必须从 store 记录透传，真删磁盘需要） */
-  deleteProjectPaths: string[] = [];
+  /** deleteSession 收到的项目路径（服务层必须从 store 记录透传，真删磁盘需要；null = 自由会话） */
+  deleteProjectPaths: Array<string | null> = [];
   /** 置为非 null 时 stopSession 抛出该错误（模拟 pi 停止失败） */
   stopError: Error | null = null;
   /** 置为非 null 时 deleteSession 抛出该错误（模拟磁盘文件删除失败） */
   deleteError: Error | null = null;
   private counter = 0;
 
-  async createSession(projectPath: string): Promise<string> {
+  async createSession(projectPath: string | null): Promise<string> {
     this.createCalls.push(projectPath);
     this.counter += 1;
     return `sess-${this.counter}`;
@@ -47,7 +47,7 @@ class MockPiAdapter implements PiSessionAdapter {
     }
   }
 
-  async deleteSession(sessionId: string, projectPath: string): Promise<void> {
+  async deleteSession(sessionId: string, projectPath: string | null): Promise<void> {
     this.deleteCalls.push(sessionId);
     this.deleteProjectPaths.push(projectPath);
     if (this.deleteError !== null) {
@@ -138,16 +138,149 @@ test('createSession：项目未注册返回 1002，adapter 不被调用', async 
   }
 });
 
-test('createSession：空项目路径返回 1001', async () => {
+test('createSession：null/空白路径创建自由会话（projectPath=null，跳过项目校验）', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store, adapter } = makeService(tmp);
+    // null：显式不绑定项目
+    const free = await service.createSession(null);
+    assert.ok(free.ok);
+    if (free.ok) {
+      assert.equal(free.data.session.projectPath, null);
+    }
+    // undefined / 空白字符串：同样视为自由会话（前端 draft 兜底、旧调用方传空不炸）
+    const freeUndef = await service.createSession(undefined);
+    const freeBlank = await service.createSession('   ');
+    assert.ok(freeUndef.ok && freeBlank.ok);
+    if (freeUndef.ok && freeBlank.ok) {
+      assert.equal(freeUndef.data.session.projectPath, null);
+      assert.equal(freeBlank.data.session.projectPath, null);
+    }
+    // adapter 收到 null（desktop 侧映射自由 cwd），store 落库 3 条
+    assert.deepEqual(adapter.createCalls, [null, null, null]);
+    assert.equal(store.listSessions().length, 3);
+    // 自由会话出现在无过滤全量列表；按项目过滤时不可见
+    const all = service.querySessionList();
+    assert.ok(all.ok);
+    if (all.ok) {
+      assert.equal(all.data.sessions.length, 3);
+    }
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const onlyProj = service.querySessionList(key);
+    assert.ok(onlyProj.ok);
+    if (onlyProj.ok) {
+      assert.equal(onlyProj.data.sessions.length, 0);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('createSession：projectPath 为非字符串类型返回 1001', async () => {
   const tmp = makeTempDir();
   try {
     const { service, adapter } = makeService(tmp);
-    const result = await service.createSession('   ');
+    // @ts-expect-error 故意传错型验证运行时校验
+    const result = await service.createSession(123);
     assert.ok(!result.ok);
     if (!result.ok) {
       assert.equal(result.code, 1001);
     }
     assert.equal(adapter.createCalls.length, 0);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('updateSessionProject：自由会话移入项目 / 项目会话移出到自由（归属双向变更）', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store, adapter } = makeService(tmp);
+    const dirA = makeProjectDir(tmp, 'proj-a');
+    const dirB = makeProjectDir(tmp, 'proj-b');
+    const keyA = registerProject(store, dirA);
+    const keyB = registerProject(store, dirB);
+
+    // 自由 → 项目A
+    const freeId = await createSessionUnder(service, '   ');
+    const toA = service.updateSessionProject(freeId, keyA);
+    assert.ok(toA.ok);
+    if (toA.ok) {
+      assert.equal(toA.data.session.projectPath, keyA);
+    }
+    assert.equal(store.getSession(freeId)?.projectPath, keyA);
+    // 移动只改元数据：adapter 无任何新调用
+    assert.equal(adapter.createCalls.length, 1);
+
+    // 项目A → 项目B
+    const toB = service.updateSessionProject(freeId, keyB);
+    assert.ok(toB.ok);
+    if (toB.ok) {
+      assert.equal(toB.data.session.projectPath, keyB);
+    }
+
+    // 项目B → 自由（null）
+    const toFree = service.updateSessionProject(freeId, null);
+    assert.ok(toFree.ok);
+    if (toFree.ok) {
+      assert.equal(toFree.data.session.projectPath, null);
+    }
+    assert.equal(store.getSession(freeId)?.projectPath, null);
+
+    // 幂等：已是自由再移自由、已在项目再移同项目，原样返回成功
+    const againFree = service.updateSessionProject(freeId, null);
+    assert.ok(againFree.ok);
+    const againB = service.updateSessionProject(freeId, keyB);
+    assert.ok(againB.ok);
+    if (againB.ok) {
+      assert.equal(againB.data.session.projectPath, keyB);
+    }
+
+    // 过滤视图同步：项目B 下可见 1 条，自由分组 0 条
+    const onlyB = service.querySessionList(keyB);
+    assert.ok(onlyB.ok);
+    if (onlyB.ok) {
+      assert.equal(onlyB.data.sessions.length, 1);
+    }
+    assert.equal(
+      store.listSessions().filter((s) => s.projectPath === null).length,
+      0,
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('updateSessionProject：目标项目未注册返回 1002；会话不存在返回 1002；非法类型返回 1001', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { service, store } = makeService(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const id = await createSessionUnder(service, key);
+
+    const unknownDir = makeProjectDir(tmp, 'unknown-proj');
+    const toUnknown = service.updateSessionProject(id, unknownDir);
+    assert.ok(!toUnknown.ok);
+    if (!toUnknown.ok) {
+      assert.equal(toUnknown.code, 1002);
+    }
+    // 失败不改归属
+    assert.equal(store.getSession(id)?.projectPath, key);
+
+    const ghost = service.updateSessionProject('sess-ghost', key);
+    assert.ok(!ghost.ok);
+    if (!ghost.ok) {
+      assert.equal(ghost.code, 1002);
+    }
+
+    // @ts-expect-error 故意传错型验证运行时校验
+    const badType = service.updateSessionProject(id, 123);
+    assert.ok(!badType.ok);
+    if (!badType.ok) {
+      assert.equal(badType.code, 1001);
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

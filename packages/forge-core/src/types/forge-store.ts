@@ -29,7 +29,11 @@ export interface ProjectRecord {
 /**
  * 会话元数据（对应 schema.md session 表，只存元信息不存消息内容）。
  * @param sessionId pi session ID（对应 pi session 目录名），主键
- * @param projectPath 所属项目绝对路径
+ * @param projectPath 所属项目绝对路径；null = 自由会话（不绑定项目，创建时未选择
+ *   项目的对话）。自由会话的 pi 引擎 cwd 由桌面壳映射到 userData 下专用目录
+ *   free-workspace（转录/子 agent 输出目录因此固定可预测）。归属可经
+ *   session/updateSessionProject 在 null ↔ 项目间双向变更（只改元数据，
+ *   历史转录文件留在创建时的目录，读取侧多候选解析）。
  * @param alias 会话别名（默认取首条用户消息摘要，可编辑），可为 null
  * @param lastActiveAt 最近活动时间（ISO8601），会话列表排序用：创建时写一次，
  *   之后每轮会话开始（状态转 running）由 SessionService.setSessionStatus touch，
@@ -43,7 +47,7 @@ export interface ProjectRecord {
  */
 export interface SessionRecord {
   sessionId: string;
-  projectPath: string;
+  projectPath: string | null;
   alias: string | null;
   lastActiveAt: string;
   createdAt: string;

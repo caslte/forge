@@ -28,14 +28,14 @@ import type { RpcResult } from '../../src/rpc/projectMethods.ts';
 
 /** 可注入的 pi 会话适配器 mock：记录调用、可配置 create 抛错 */
 class MockPiAdapter implements PiSessionAdapter {
-  createCalls: string[] = [];
+  createCalls: Array<string | null> = [];
   stopCalls: string[] = [];
   deleteCalls: string[] = [];
   /** 置为非 null 时 createSession 抛出该错误（模拟 pi 创建失败 → 5000） */
   createError: Error | null = null;
   private counter = 0;
 
-  async createSession(projectPath: string): Promise<string> {
+  async createSession(projectPath: string | null): Promise<string> {
     this.createCalls.push(projectPath);
     if (this.createError !== null) {
       throw this.createError;
@@ -102,6 +102,18 @@ async function createSessionUnder(api: SessionApi, key: string): Promise<string>
   return '';
 }
 
+/** 经 RPC 创建自由会话（不绑定项目），返回 sessionId（断言成功） */
+async function createFreeSession(api: SessionApi): Promise<string> {
+  const result = await api.methods['session/createSession']({ projectPath: null });
+  assert.equal(result.code, 0);
+  assert.ok(result.data !== null);
+  if (result.data !== null) {
+    const data = result.data as { session: { sessionId: string } };
+    return data.session.sessionId;
+  }
+  return '';
+}
+
 test('A-SM-001：createSession 返回 0，store 落库，adapter 调用正确', async () => {
   const tmp = makeTempDir();
   try {
@@ -137,19 +149,75 @@ test('createSession：项目未注册返回 1002，adapter 不被调用', async 
   }
 });
 
-test('参数校验：projectPath/sessionId/alias 缺失或空白返回 1001', async () => {
+test('参数校验：projectPath 非字符串返回 1001；缺省/null/空白 = 自由会话；sessionId/alias 缺失返回 1001', async () => {
   const tmp = makeTempDir();
   try {
-    const { api } = makeApi(tmp);
-    assert.equal((await api.methods['session/createSession']({})).code, 1001);
+    const { api, store } = makeApi(tmp);
+    // projectPath 数字类型：1001（null 与缺省合法，不在此列）
     assert.equal((await api.methods['session/createSession']({ projectPath: 123 })).code, 1001);
-    assert.equal((await api.methods['session/createSession']({ projectPath: '   ' })).code, 1001);
-    assert.equal((await api.methods['session/createSession'](null)).code, 1001);
+    // 缺省 params / params 为 null / projectPath: null / 空白字符串：都创建自由会话
+    for (const params of [{}, null, { projectPath: null }, { projectPath: '   ' }]) {
+      const r = await api.methods['session/createSession'](params);
+      assert.equal(r.code, 0);
+    }
+    const sessions = store.listSessions();
+    assert.equal(sessions.length, 4);
+    assert.ok(sessions.every((s) => s.projectPath === null));
+    // 其余方法的必填参数校验不变
     assert.equal((await api.methods['session/deleteSession']({})).code, 1001);
     assert.equal((await api.methods['session/getSessionStatus']({})).code, 1001);
     assert.equal((await api.methods['session/attachSessionWindow']({})).code, 1001);
     assert.equal((await api.methods['session/detachSessionWindow']({})).code, 1001);
     assert.equal((await api.methods['session/updateSessionAlias']({ sessionId: '/x' })).code, 1001);
+    assert.equal((await api.methods['session/updateSessionProject']({})).code, 1001);
+    assert.equal(
+      (await api.methods['session/updateSessionProject']({ sessionId: 'x', projectPath: 123 })).code,
+      1001,
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('updateSessionProject：移入项目/移出到自由成功且发射 session.updated；目标未注册 1002', async () => {
+  const tmp = makeTempDir();
+  try {
+    const { api, store, events } = makeApi(tmp);
+    const dir = makeProjectDir(tmp, 'proj-a');
+    const key = registerProject(store, dir);
+    const freeId = await createFreeSession(api);
+
+    // 自由 → 项目：session.updated 携带更新后的记录
+    const updatedEvents: Array<{ session: { sessionId: string; projectPath: string | null } }> = [];
+    events.on('session.updated', (payload: { session: { sessionId: string; projectPath: string | null } }) => {
+      updatedEvents.push(payload);
+    });
+    const toProject = await api.methods['session/updateSessionProject']({
+      sessionId: freeId,
+      projectPath: key,
+    });
+    assert.equal(toProject.code, 0);
+    assert.equal(store.getSession(freeId)?.projectPath, key);
+    assert.equal(updatedEvents.length, 1);
+    assert.equal(updatedEvents[0]!.session.projectPath, key);
+
+    // 项目 → 自由（projectPath 显式 null 与缺省等价）
+    const toFree = await api.methods['session/updateSessionProject']({
+      sessionId: freeId,
+      projectPath: null,
+    });
+    assert.equal(toFree.code, 0);
+    assert.equal(store.getSession(freeId)?.projectPath, null);
+    assert.equal(updatedEvents.length, 2);
+
+    // 目标项目未注册：1002，归属不变、无事件
+    const unknownDir = makeProjectDir(tmp, 'unknown-proj');
+    const bad = await api.methods['session/updateSessionProject']({
+      sessionId: freeId,
+      projectPath: unknownDir,
+    });
+    assert.equal(bad.code, 1002);
+    assert.equal(updatedEvents.length, 2);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

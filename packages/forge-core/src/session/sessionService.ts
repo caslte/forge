@@ -41,17 +41,19 @@ export type SessionStatus = 'idle' | 'running' | 'done' | 'error';
 /**
  * pi 会话适配器（可注入 mock）。
  * 隔离 pi 会话生命周期操作，服务层不直接 import pi。
- * @param createSession 在项目目录下创建 pi session，返回 sessionId
+ * @param createSession 创建 pi session，返回 sessionId。projectPath 为 null 表示
+ *   自由会话（未绑定项目），适配器据此把引擎 cwd 映射到专用工作目录。
  * @param stopSession 停止会话执行（删除运行中会话前必须先停止）
  * @param deleteSession 删除 pi session（硬删，不可逆）。projectPath 为会话所属项目
- *   工作目录 —— 适配器据此推导 pi 转录文件与子 agent 输出目录的磁盘路径（带项目路径
- *   才能真删文件；仅凭 sessionId 无法定位）。删除失败（文件被占用等）时适配器抛错，
- *   服务层不吞异常 → 会话记录保留，保证「删除成功」等价于「磁盘已清」。
+ *   工作目录（null = 自由会话，适配器按专用目录推导）—— 适配器据此推导 pi 转录
+ *   文件与子 agent 输出目录的磁盘路径（才能真删文件；仅凭 sessionId 无法定位）。
+ *   删除失败（文件被占用等）时适配器抛错，服务层不吞异常 → 会话记录保留，保证
+ *   「删除成功」等价于「磁盘已清」。
  */
 export interface PiSessionAdapter {
-  createSession(projectPath: string): Promise<string>;
+  createSession(projectPath: string | null): Promise<string>;
   stopSession(sessionId: string): Promise<void>;
-  deleteSession(sessionId: string, projectPath: string): Promise<void>;
+  deleteSession(sessionId: string, projectPath: string | null): Promise<void>;
 }
 
 /**
@@ -106,12 +108,32 @@ export class SessionService {
   /**
    * 创建会话（SM-S01）：校验项目已注册 → adapter 建 pi session → 写 forge 元数据。
    * 会话信任继承所属项目（不额外存储信任字段）。
-   * @param projectPath 所属项目路径
-   * @returns 成功返回会话记录；项目未注册返回 1002；空路径返回 1001
+   * @param projectPath 所属项目路径；null/undefined/空白 = 自由会话（不绑定项目，
+   *   跳过项目注册校验，见 forge-store.ts SessionRecord.projectPath 说明）
+   * @returns 成功返回会话记录；项目未注册返回 1002；projectPath 为非字符串类型
+   *   （如数字）返回 1001
    */
-  async createSession(projectPath: string): Promise<SessionResult<{ session: SessionRecord }>> {
-    if (typeof projectPath !== 'string' || projectPath.trim() === '') {
-      return { ok: false, code: 1001, message: '项目路径不能为空' };
+  async createSession(
+    projectPath: string | null | undefined,
+  ): Promise<SessionResult<{ session: SessionRecord }>> {
+    if (projectPath !== null && projectPath !== undefined && typeof projectPath !== 'string') {
+      return { ok: false, code: 1001, message: '项目路径必须为字符串或 null' };
+    }
+    if (projectPath === null || projectPath === undefined || projectPath.trim() === '') {
+      const sessionId = await this.adapter.createSession(null);
+      const now = new Date().toISOString();
+      const session: SessionRecord = {
+        sessionId,
+        projectPath: null,
+        alias: null,
+        lastActiveAt: now,
+        createdAt: now,
+        modelOverride: null,
+        thinkingLevel: null,
+        doneReadAt: null,
+      };
+      this.store.saveSession(session);
+      return { ok: true, data: { session } };
     }
     const key = this.resolveProjectKey(projectPath);
     if (this.store.getProject(key) === null) {
@@ -204,6 +226,49 @@ export class SessionService {
       return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
     }
     const updated: SessionRecord = { ...session, alias: alias.trim() };
+    this.store.saveSession(updated);
+    return { ok: true, data: { session: updated } };
+  }
+
+  /**
+   * 变更会话归属（自由对话管理）：只改 forge 元数据，不迁移 pi 转录文件。
+   * 历史转录文件留在创建时的 cwd 目录（自由会话 = free-workspace 专用目录），
+   * 读取侧（desktop resolveSessionFile）按「当前归属 → 自由目录」多候选解析。
+   * @param sessionId 会话 ID
+   * @param projectPath 目标项目路径；null = 移出项目（变为自由会话）
+   * @returns 成功返回更新后的会话；会话不存在返回 1002；目标项目未注册返回 1002；
+   *   归属未变化时幂等返回成功
+   */
+  updateSessionProject(
+    sessionId: string,
+    projectPath: string | null,
+  ): SessionResult<{ session: SessionRecord }> {
+    if (projectPath !== null && typeof projectPath !== 'string') {
+      return { ok: false, code: 1001, message: '项目路径必须为字符串或 null' };
+    }
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '会话 ID 不能为空' };
+    }
+    const session = this.store.getSession(sessionId);
+    if (session === undefined) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (projectPath === null) {
+      if (session.projectPath === null) {
+        return { ok: true, data: { session } };
+      }
+      const updated: SessionRecord = { ...session, projectPath: null };
+      this.store.saveSession(updated);
+      return { ok: true, data: { session: updated } };
+    }
+    const key = this.resolveProjectKey(projectPath);
+    if (this.store.getProject(key) === null) {
+      return { ok: false, code: 1002, message: `项目不存在: ${key}` };
+    }
+    if (session.projectPath === key) {
+      return { ok: true, data: { session } };
+    }
+    const updated: SessionRecord = { ...session, projectPath: key };
     this.store.saveSession(updated);
     return { ok: true, data: { session: updated } };
   }

@@ -36,6 +36,7 @@ export const zhPanels = {
   'panels.multiwin.canvasHint': '把左侧会话拖到画布开窗，多个会话可并排观察。',
   'panels.multiwin.openInSingle': '在单视图打开',
   'panels.multiwin.closeWindow': '关闭窗口',
+  'panels.multiwin.freeTag': '自由对话',
 } as const;
 
 export const enPanels: Record<string, string> = {
@@ -76,4 +77,5 @@ export const enPanels: Record<string, string> = {
   'panels.multiwin.canvasHint': 'Drag sessions from the left onto the canvas to open windows; multiple sessions can be observed side by side.',
   'panels.multiwin.openInSingle': 'Open in single view',
   'panels.multiwin.closeWindow': 'Close window',
+  'panels.multiwin.freeTag': 'Free chat',
 };

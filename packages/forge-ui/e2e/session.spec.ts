@@ -276,9 +276,11 @@ test('SESSION-E2E-007 @P0 @mock-backend E-SM-007 回归：新建项目置顶并�
   await expect(page.locator('.compose-input')).toHaveValue('留给新项目的草稿');
   // 项目树：新项目出现且为选中态（active）
   await expect(page.locator('.tree-project.active')).toContainText('aiwork');
-  // 下拉排序：新项目置顶第一
+  // 下拉排序：新项目置顶项目项第一（菜单首项是「自由对话」选项，v0.3 起恒置顶）
   await page.locator('.proj-pill').click();
-  await expect(page.locator('.proj-menu .proj-item-name').first()).toHaveText('aiwork');
+  const projNames = page.locator('.proj-menu .proj-item-name');
+  await expect(projNames.first()).toHaveText('自由对话');
+  await expect(projNames.nth(1)).toHaveText('aiwork');
   health.assertHealthy();
 });
 
