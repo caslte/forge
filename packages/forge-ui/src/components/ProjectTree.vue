@@ -24,7 +24,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select-project', path: string): void;
   (e: 'remove-project', path: string): void;
-  (e: 'clear-sessions', path: string): void;
+  /** path=null = 清理全部自由会话（v0.3 自由分组「更多操作」） */
+  (e: 'clear-sessions', path: string | null): void;
   (e: 'rename-project', path: string, alias: string): void;
   (e: 'create-session', projectPath?: string | null): void;
   (e: 'select-session', id: string): void;
@@ -285,6 +286,22 @@ function openProjectMenu(p: ProjectItem, ev: MouseEvent): void {
   clearSessionsConfirmPath.value = null;
 }
 
+/** 自由对话虚拟分组在项目菜单体系里的占位 key（非真项目，不参与 open-dir/rename/delete） */
+const FREE_MENU_KEY = '__free__';
+
+/** 自由分组「⋯ 更多操作」：与项目菜单共用一套浮层与两阶段确认状态 */
+function openFreeMenu(ev: MouseEvent): void {
+  menuOpenPath.value = FREE_MENU_KEY;
+  const w = 184;
+  const h = 60;
+  menuX.value = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8));
+  menuY.value = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8));
+  clearProjectDeleteTimer();
+  projectDeleteConfirmPath.value = null;
+  clearClearSessionsTimer();
+  clearSessionsConfirmPath.value = null;
+}
+
 function closeMenu(): void {
   menuOpenPath.value = null;
   clearProjectDeleteTimer();
@@ -367,7 +384,7 @@ function onMenuOpenDir(): void {
   if (path) void window.forge.shell.openPath(path);
 }
 
-// 清理所有会话两阶段：首次点击菜单项变红“确认清理”，3 秒内再次点击才 emit
+// 清理所有会话两阶段：首次点击菜单项变红"确认清理"，3 秒内再次点击才 emit
 function onMenuClearSessions(): void {
   const path = menuOpenPath.value;
   if (!path) return;
@@ -375,7 +392,8 @@ function onMenuClearSessions(): void {
     clearClearSessionsTimer();
     clearSessionsConfirmPath.value = null;
     closeMenu();
-    emit('clear-sessions', path);
+    // '__free__' = 清理全部自由会话（App 侧逐个 session/deleteSession）
+    emit('clear-sessions', path === FREE_MENU_KEY ? null : path);
     return;
   }
   clearClearSessionsTimer();
@@ -412,6 +430,20 @@ const ICON_SESSIONS =
 const projectMenuItems = computed<ContextMenuItem[]>(() => {
   const path = menuOpenPath.value;
   if (!path) return [];
+  // 自由对话分组：仅「清理所有会话」（无目录可开、不可重命名/删除）
+  if (path === FREE_MENU_KEY) {
+    const clearingFree = clearSessionsConfirmPath.value === FREE_MENU_KEY;
+    return [
+      {
+        key: 'clear-sessions',
+        label: clearingFree ? t('project.confirmClear') : t('project.clearSessions'),
+        icon: ICON_SESSIONS,
+        danger: true,
+        confirming: clearingFree,
+        keepOpen: true,
+      },
+    ];
+  }
   const clearing = clearSessionsConfirmPath.value === path;
   const deleting = projectDeleteConfirmPath.value === path;
   return [
@@ -920,6 +952,20 @@ onUnmounted(() => {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <line x1="12" y1="5" x2="12" y2="19" />
                   <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="tree-icon-button project-more-trigger"
+                :class="{ active: menuOpenPath === FREE_MENU_KEY }"
+                :aria-label="t('project.moreActions')"
+                :data-tooltip="t('project.moreActions')"
+                @click.stop="openFreeMenu($event)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="5" cy="12" r="1" />
+                  <circle cx="12" cy="12" r="1" />
+                  <circle cx="19" cy="12" r="1" />
                 </svg>
               </button>
             </div>

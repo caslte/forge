@@ -176,12 +176,84 @@ test('FREE-E2E-006 @P2 @mock-backend 自由分组头「+」→ 新建自由对�
 
   await expect(page.locator('.free-head')).toBeVisible();
   await page.locator('.free-head').hover();
-  await page.locator('.free-head .tree-icon-button').click();
+  await page.locator('.free-head .tree-icon-button[aria-label="新建会话"]').click();
 
   // 进入草稿态且归属即「自由对话」（不走选择器）
   await expect(page.locator('.compose-box')).toBeVisible();
   await expect(page.locator('.proj-pill')).toContainText('自由对话');
 
+  health.assertHealthy();
+});
+
+// ===== FREE-07 分组头「⋯ 更多操作」：两阶段确认清理全部自由会话 =====
+test('FREE-E2E-007 @P1 @mock-backend 自由分组「清理所有会话」两阶段确认后生效', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await boot(page, [
+    mkSession({ projectPath: null, alias: '自由会话一' }),
+    mkSession({ projectPath: null, alias: '自由会话二' }),
+    mkSession({ alias: '项目会话三' }),
+  ]);
+  await expect(page.locator('.free-section .tree-session')).toHaveCount(2);
+
+  // hover 分组头 → ⋯ → 菜单仅「清理所有会话」一项
+  await page.locator('.free-head').hover();
+  await page.locator('.free-head .project-more-trigger').click();
+  const menu = page.locator('.ctx-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.ctx-menu-item')).toHaveCount(1);
+
+  // 两阶段确认：首点变「确认清理」，再点才真清
+  await menu.locator('.ctx-menu-item', { hasText: '清理所有会话' }).click();
+  await expect(menu.locator('.ctx-menu-item', { hasText: '确认清理' })).toBeVisible();
+  await menu.locator('.ctx-menu-item', { hasText: '确认清理' }).click();
+
+  // 自由分组整体隐藏（空分组不占位），项目会话不受影响
+  await expect(page.locator('.free-section')).toHaveCount(0);
+  await expect(page.locator('.tree-node:not(.free-node) .tree-session')).toHaveCount(1);
+  await expect(page.locator('.toast')).toContainText('已清理');
+
+  // mock 侧自由会话已删光
+  const sessions = await listMockSessions(page);
+  expect(sessions.filter((s) => s.projectPath === null ?? false)).toHaveLength(0);
+  expect(sessions).toHaveLength(1);
+
+  await assertNoResidualStreaming(page);
+  health.assertHealthy();
+});
+
+// ===== FREE-08 回归：清掉最后一个自由会话后落点回收（项目选择器不能消失） =====
+test('FREE-E2E-008 @P0 @mock-backend 清空自由会话（当前正选中）→ 落回项目视图且归属选择器在', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await boot(page, [
+    mkSession({ projectPath: null, alias: '自由会话唯一' }),
+    mkSession({ alias: '项目会话保留' }),
+  ]);
+
+  // 先点进自由会话：currentProjectPath 被置空（自由会话无归属），输入框 chip = 自由对话
+  await page.locator('.free-section .tree-session').first().click();
+  await expect(page.locator('.proj-pill')).toContainText('自由对话');
+  await expect(page.locator('.landing-hero')).toHaveCount(0);
+
+  // 分组头 ⋯ → 两阶段确认清理全部自由会话
+  await page.locator('.free-head').hover();
+  await page.locator('.free-head .project-more-trigger').click();
+  const menu = page.locator('.ctx-menu');
+  await expect(menu).toBeVisible();
+  await menu.locator('.ctx-menu-item', { hasText: '清理所有会话' }).click();
+  await menu.locator('.ctx-menu-item', { hasText: '确认清理' }).click();
+  await expect(page.locator('.free-section')).toHaveCount(0);
+
+  // 回归点：不得停在「hero + 无归属 chip」的三空态——落回最近项目会话视图，
+  // 输入框下的项目选择器仍在（显示 forge）
+  await expect(page.locator('.landing-hero')).toHaveCount(0);
+  await expect(page.locator('.compose-box')).toBeVisible();
+  await expect(page.locator('.proj-pill')).toBeVisible();
+  await expect(page.locator('.proj-pill')).toContainText('forge');
+
+  // 侧栏项目会话仍在、自由分组已消失
+  await expect(page.locator('.tree-node:not(.free-node) .tree-session')).toHaveCount(1);
+
+  await assertNoResidualStreaming(page);
   health.assertHealthy();
 });
 

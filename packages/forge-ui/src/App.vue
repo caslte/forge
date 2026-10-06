@@ -675,8 +675,32 @@ async function onRenameProject(path: string, alias: string): Promise<void> {
   }
 }
 
-/** 清理项目下所有会话（保留项目）；当前会话被清时退出选中态（session.removed 订阅兜底） */
-async function onClearProjectSessions(path: string): Promise<void> {
+/**
+ * 清理项目下所有会话（保留项目）；当前会话被清时退出选中态（session.removed 订阅兜底）。
+ * path=null = 清理全部自由会话（v0.3 自由分组「更多操作」）：逐个 session/deleteSession
+ * （core 对 running 会话先 stop 再硬删转录，见 SessionService.deleteSession）。
+ */
+async function onClearProjectSessions(path: string | null): Promise<void> {
+  if (path === null) {
+    const freeIds = sessions.value.filter((s) => s.projectPath === null).map((s) => s.sessionId);
+    if (freeIds.length === 0) {
+      showToast(t('app.projectSessionsAlreadyEmpty'), 'success');
+      return;
+    }
+    try {
+      for (const id of freeIds) {
+        await call('session/deleteSession', { sessionId: id });
+      }
+      await loadSessions();
+      await recoverFromFreeSessionGone();
+      showToast(t('app.projectSessionsCleared', { count: freeIds.length }), 'success');
+    } catch (e) {
+      await loadSessions();
+      await recoverFromFreeSessionGone();
+      showError(e instanceof Error ? e.message : String(e));
+    }
+    return;
+  }
   try {
     const res = await call<{ removedSessions: number }>('project/clearSessions', { path });
     await loadSessions();
@@ -795,12 +819,34 @@ async function onSelectSession(id: string): Promise<void> {
   }
 }
 
+/**
+ * 自由会话消失后的落点回收（v0.3 反馈：清掉最后一个自由会话后输入框下的项目选择器没了）。
+ *
+ * 悬空态成因：自由会话无归属项目，currentProjectPath 一直是 null；删除/清理只把
+ * currentSessionId 置空，于是落到「无项目 + 非自由草稿 + 无会话」的三空态——
+ * showConversation 为 false 渲染落地 hero，而 projectPicker 的草稿分支里
+ * path===null 直接 return null，hero 上的归属 chip 就整个消失了，用户只能回侧栏
+ * 点项目才能恢复。
+ *
+ * 回收口径与 loadProjects 首拉一致：有项目时选中最近使用项目（orderedProjects
+ * MRU 序首位）回到常规会话视图；零项目或仍有归属/自由草稿/在会话中则原样不动。
+ */
+async function recoverFromFreeSessionGone(): Promise<void> {
+  if (currentSessionId.value !== null) return;
+  if (currentProjectPath.value !== null) return;
+  if (freeDraft.value) return;
+  const fallback = orderedProjects.value[0];
+  if (fallback === undefined) return;
+  await openProject(fallback.path);
+}
+
 async function onDeleteSession(id: string): Promise<void> {
   try {
     await call('session/deleteSession', { sessionId: id });
     dropDraft(id);
     if (currentSessionId.value === id) currentSessionId.value = null;
     await loadSessions();
+    await recoverFromFreeSessionGone();
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -986,7 +1032,11 @@ onMounted(() => {
     const p = payload as { sessionId: string };
     dropDraft(p.sessionId);
     if (p.sessionId === currentSessionId.value) currentSessionId.value = null;
-    void loadSessions();
+    void (async () => {
+      await loadSessions();
+      // 当前选中的是被删的自由会话时会落到三空态（hero 无归属 chip），这里回收落点
+      await recoverFromFreeSessionGone();
+    })();
   });
   // 会话别名更新（手动重命名或首条消息自动命名）：刷新列表保持 UI 同步
   unsubSessionUpdated = subscribe('session.updated', () => {
