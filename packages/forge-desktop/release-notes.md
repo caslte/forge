@@ -1,13 +1,14 @@
 <!-- 本文件由 scripts/release-notes.mjs 自动生成，发布时随 bump commit 更新，请勿手改 -->
 
 ### 新功能
-- 添加 Git 单文件 diff 能力及变更视图功能
-- 重试提示在恢复正常输出时自动消失
+- 支持两阶段确认清理全部自由会话（forge-ui）
+- 支持无项目「自由对话」会话及归属双向变更（session）
+- 升级后首启自动弹出版本更新说明并支持关于页回看（updater）
 
 ### 问题修复
-- 去掉分屏沟竖线，终端展开时两处开关底色一致（code-explorer）
+- 修复滚动条角落块在深色主题下的亮白配色（forge-ui）
 
 ### 其他变更
-- 删除临时的截图脚本文件
+- 移除发布说明分组标题中的表情符号（release-notes）
 
-**完整变更**：https://github.com/caslte/forge/compare/v0.2.1...v0.2.2
+**完整变更**：https://github.com/caslte/forge/compare/v0.2.2...v0.2.3
