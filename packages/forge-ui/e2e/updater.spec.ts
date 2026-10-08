@@ -85,7 +85,8 @@ test('E-IN-001 @P0 发现新版：侧栏图标入口 + 关于页镜像，无 toa
   await expect(page.locator('.up-entry .up-txt')).toBeHidden();
 
   // 重开设置：全局状态镜像保持，且无任何重复提示
-  await page.locator('.settings-close').click();
+  // 关闭控件是 .settings-back（历史用例里的 .settings-close 早就不存在了，此处曾静默失配）
+  await page.locator('.settings-back').click();
   await page.locator('.sidebar-link', { hasText: '设置' }).click();
   await page.locator('.settings-tab', { hasText: '关于' }).click();
   await expect(page.locator('.version-row .version-next')).toHaveText('v0.2.0');

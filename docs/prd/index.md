@@ -17,6 +17,7 @@
 | 09 | Skill 管理 | prd/09_skill_management.md | 开发中 | 设置页 Skills 分区：列表（全局+项目级）、导入本地文件夹、模板新建、删除（回收站优先）；四方法 skill/* RPC；代码与单测/mock 链路已完成，真机（Electron 实应用 + Windows 回收站 AC-09-10）待验收 |
 | 10 | 内嵌终端 | prd/10_embedded_terminal.md | PRD 已确认（待开工） | 底部面板多 tab 交互终端（xterm.js+node-pty）；新 tab cwd 自动跟随当前会话项目，tab 手动管理；工具栏图标+Ctrl+\` 入口；**前置风险：node-pty 原生模块 spike（TD-TM-01）**；demo 2026-09-23 验收通过 |
 | 11 | Git 提交与推送 | prd/11_git_commit_push.md | PRD 已确认（待开工） | 提交或推送弹窗（全量语义，无"仅本会话"）：状态行+分支浮窗双入口、包含未暂存变更勾选、AI 生成=一次 chat/completions 调用复用 provider、push stderr 弹窗内回显；git/getStatus·commit·push·generateCommitMessage 四 RPC；demo 2026-09-23 验收通过 |
+| 13 | 快捷键 | prd/13_keyboard_shortcuts.md | PRD 已确认（待开工） | 设置页第 5 个 Tab：只读快捷键清单 4 组 16 行（布局 B、排 Skills 之后）；主修饰键抽象（Mac ⌘/其他 Ctrl，顺带修 ``⌘+` `` 在 Mac 失效）；新增 3 个全局键 `Ctrl+,` 设置 toggle、`Ctrl+B` 侧栏、`Ctrl+Shift+N` 新建会话；**本期不做改键**，零新增接口；demo 2026-10-08 定稿 |
 
 ## 状态说明
 

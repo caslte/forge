@@ -4,6 +4,7 @@ import { call, subscribe, getBootState } from './bridge';
 import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
 import { projectTagOf } from './utils/sessionView';
 import { dropDraft } from './utils/composerDrafts';
+import { formatCaps, hitsPrimary } from './utils/platformKey';
 import { useTheme } from './composables/useTheme';
 import { usePreferences, codeLayoutDegraded } from './composables/usePreferences';
 import { useCodeExplorer } from './composables/useCodeExplorer';
@@ -430,16 +431,43 @@ const terminalProjectName = computed(() => {
 });
 
 /**
- * Ctrl+` 全局开合（TM-S01，与 VSCode 一致：输入框聚焦时同样生效）。
- * 只拦 ctrl+反引号这一组合（不吞普通反引号输入，Ctrl 组合本就不产出字符），
- * 故无需聚焦豁免逻辑；key 与 code 双判覆盖键盘布局差异。
+ * 全局快捷键统一分派（模块 13，docs/prd/13_keyboard_shortcuts.md §3.2）：
+ * 终端开合（TM-S01 原 Ctrl+`，现补 Mac 的 ⌘ 通道）、设置页 toggle、侧栏折叠、新建会话。
+ * 主修饰键按平台判定（Mac ⌘ / 其他 Ctrl），见 utils/platformKey.ts。
+ *
+ * 无需聚焦豁免：四个组合在 textarea 里都不产出字符（沿用原 Ctrl+` 的论证，
+ * key 与 code 双判覆盖键盘布局差异）。
+ *
+ * 设置页作用域例外：侧栏在设置视图不可见、新建会话会在后台切走草稿态而屏幕不动，
+ * 两者在设置页按「按了没反应」处理，只保留终端与设置 toggle。
  */
-function onTerminalHotkey(ev: KeyboardEvent): void {
-  if (!ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
-  if (ev.key !== '`' && ev.code !== 'Backquote') return;
-  ev.preventDefault();
-  setTerminalOpen(!terminalOpen.value);
+function onGlobalHotkey(ev: KeyboardEvent): void {
+  if (hitsPrimary(ev, { key: '`', code: 'Backquote' })) {
+    ev.preventDefault();
+    setTerminalOpen(!terminalOpen.value);
+    return;
+  }
+  if (hitsPrimary(ev, { key: ',' })) {
+    ev.preventDefault();
+    if (activeView.value === 'settings') closeSettings();
+    else openSettings();
+    return;
+  }
+  if (activeView.value === 'settings') return;
+  if (hitsPrimary(ev, { key: 'b' })) {
+    ev.preventDefault();
+    sidebarCollapsed.value = !sidebarCollapsed.value;
+    return;
+  }
+  if (hitsPrimary(ev, { key: 'n', shift: true })) {
+    ev.preventDefault();
+    // 与顶栏「新会话」按钮同参：不传 path，走默认项目选择器第一项（零项目即自由对话）
+    onCreateSession();
+  }
 }
+
+/** 终端开合键的展示文本：平台化（⌘` / Ctrl+`），供 tooltip 插值，不再写死在 i18n 文案里 */
+const TERMINAL_HOTKEY = formatCaps(['P', '`']);
 
 // 模型列表与会话模型（ConversationView 消费）
 const models = ref<string[]>([]);
@@ -1081,8 +1109,9 @@ onMounted(() => {
     })
     .catch(() => startPostBootInit());
 
-  // 终端快捷键（TM-S01）：window 级 keydown，捕获阶段即可——Ctrl+` 在任何焦点下生效
-  window.addEventListener('keydown', onTerminalHotkey);
+  // 全局快捷键（模块 13）+ 代码态 Esc 逐级退出：window 级 keydown，捕获阶段即可——
+  // 组合键在任何焦点下生效
+  window.addEventListener('keydown', onGlobalHotkey);
   window.addEventListener('keydown', onCodeEscape);
 });
 
@@ -1095,7 +1124,7 @@ onUnmounted(() => {
   unsubNotifyFocus?.();
   viewSegRo?.disconnect();
   viewSegRo = null;
-  window.removeEventListener('keydown', onTerminalHotkey);
+  window.removeEventListener('keydown', onGlobalHotkey);
   window.removeEventListener('keydown', onCodeEscape);
   if (errorTimer !== null) clearTimeout(errorTimer);
 });
@@ -1325,7 +1354,7 @@ onUnmounted(() => {
           <button
             class="app-toolbar-btn term-toggle"
             :class="{ 'is-active': terminalOpen }"
-            :data-tooltip="t('terminal.toggle')"
+            :data-tooltip="t('terminal.toggle', { hotkey: TERMINAL_HOTKEY })"
             @click="setTerminalOpen(!terminalOpen)"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

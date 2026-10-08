@@ -36,7 +36,11 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import type { OpenFile } from '../composables/useCodeExplorer';
 import type { GitStatusFile } from '../types';
 import { usePreferences } from '../composables/usePreferences';
+import { formatCaps } from '../utils/platformKey';
 import { useI18n } from '../i18n/index.ts';
+
+/** 终端开合键的展示文本（模块 13）：平台化 ⌘` / Ctrl+`，不写死在 i18n 文案里 */
+const TERMINAL_HOTKEY = formatCaps(['P', '`']);
 
 const { t } = useI18n();
 const { setTerminalOpen, terminalOpen } = usePreferences();
@@ -759,8 +763,8 @@ function formatBytes(n: number): string {
       <button
         class="cv-term"
         type="button"
-        :title="t('terminal.toggle')"
-        :aria-label="t('terminal.toggle')"
+        :title="t('terminal.toggle', { hotkey: TERMINAL_HOTKEY })"
+        :aria-label="t('terminal.toggle', { hotkey: TERMINAL_HOTKEY })"
         :aria-pressed="terminalOpen"
         @click="setTerminalOpen(!terminalOpen)"
       >

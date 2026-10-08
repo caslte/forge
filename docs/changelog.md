@@ -1,5 +1,28 @@
 # 变更日志
 
+## v6.17 (功能：设置页「快捷键」Tab + 四个全局键位，主修饰键跨平台收口)
+
+> 来源：2026-10-08 用户要求「配置里面加一个快捷键的tab，扫描一下本项目已存在的快捷键，罗列进去」，并先同步值得配置的键。三轮拍板定档：**只读清单**（本期不改键）、**主修饰键抽象**（Mac 显 `⌘` 判 `metaKey`，其他平台显 `Ctrl` 判 `ctrlKey`）、接入**四个全局动作**。用户口径「先落文档再动代码」→ PRD 13 先行，确认后才落地。
+
+- **改动前的现状**：全应用只有 1 个组合键 `Ctrl+\``（开合终端），其余全是组件内上下文单键（`Enter`/`Esc`/`↑↓`）散在 11 个文件里；没有任何地方告诉用户「连按两次 `Esc` 能打断流式」「`Esc` 是逐级退出」。新建会话/打开设置/折叠侧栏只有鼠标入口。
+- **顺手修掉的既有缺陷**：终端复制键判 `ctrlKey || metaKey`（`TerminalPanel.vue`），终端开合键只判 `ctrlKey` —— Mac 上 ``⌘` `` 按了没反应。本期新增渲染层第一处平台判定 `packages/forge-ui/src/utils/platformKey.ts` 并接好这一条。**平台事实来源用 `window.forge.platform`**（preload 注入的 `process.platform`，`App.vue`/`TitleBar.vue` 早已在用；`preload.ts` 明确说明 contextIsolation 下 `navigator.platform` 不可靠），只在纯浏览器/e2e（桥报 `'browser'`）才回落 navigator，避免造第二个事实来源。
+- **四个全局键**（`App.vue` 里原 `onTerminalHotkey` 换成单个 `onGlobalHotkey`，内部按修饰键+key 分派；`onCodeEscape` 保持独立，它管逐级退出语义）：``Ctrl+` `` 开合终端、`Ctrl+,` 打开/关闭设置（toggle 双向）、`Ctrl+B` 折叠/展开侧栏（与标题栏 `.shell-toggle` 同一状态，不分叉）、`Ctrl+Shift+N` 新建会话（与顶栏「新会话」按钮**完全同参**）。`Ctrl+N` 刻意不占用（留给将来多窗口）。
+- **两处关键取舍**：① **草稿保护砍掉** —— 原本想给新建会话键加「输入框有未发送内容时不生效」，核查后确认草稿按会话 key 实时落仓（`utils/composerDrafts.ts`）、切走不丢切回自动回填，且既有三个新建入口都不判草稿；加了保护反而让快捷键成为全应用唯一一个会拦的入口，「时灵时不灵」。② **设置页作用域例外**（本期唯一例外）—— 设置视图里只响应终端键与设置键，侧栏键与新建会话键不响应：设置页没有可见侧栏，`Ctrl+B` 是去折一个看不见的东西。
+- **清单口径**（终态 12 行 3 组：全局 3 / 输入与发送 5 / 打断与关闭 4）：布局 B 分组收进单卡 + 行间 1px 分割线；Tab 排在 **Skills 之后、关于之前**；`@` 与 `/` 以**触发符**呈现（无边框等宽 chip `.sc-sym`，与带边框键帽 `.sc-kbd` 视觉区分）。删掉「翻阅历史输入」「建议导航方向键」「滚出消息流」三行——它们是输入框里的普通按键，占快捷键条目只会稀释真正的全局键。
+- **首版给用户看后按反馈收的口径**：「终端的去掉」→ **「终端内」整组（复制终端选区 / 粘贴到终端）移出清单**，连带删掉 `shortcuts.group.terminal`、`copySelection.*`、`paste.*` 六个键与只为此组存在的 `ScRow.none` 字段/`.sc-none` 样式。附带暴露的一个真 bug：`capLabels` 的令牌表里 `'C'` 就是 Control，**字母 C 没法用令牌表达**，首版把「复制终端选区」渲染成了 `Ctrl + Ctrl`（用户截图正是这条）。该组本就只是终端内部行为、不是应用级快捷键，删组同时把这条误导性渲染一起带走；令牌冲突这颗雷记在 PRD 13 §3.3 末条，将来做改键注册表时必须先解决。
+- **第二轮反馈（同一日，用户看图再收）**：「设置这个也去掉」「开发者工具去掉」「本版新增去掉吧」→ 清单再删 2 行（打开/关闭设置、打开开发者工具）并**整类摘除「本版新增」徽标**（`ScRow.badge` 字段、`.sc-badge` 样式、`shortcuts.badge.new` 中英文案全删），清单由 14 行收到 12 行。**注意 `Ctrl+,` 的接线没动**：设置键仍是 toggle、设置页作用域例外仍按它成立（SC-E2E-002 / SC-E2E-006 继续覆盖），只是不再出现在清单里。
+- **同轮修掉的卡片双线（用户问「外层边框还是内层边框多了线」）**：答案是**两者都多了一条**。基类 `.pref-row` 自带 `border + border-radius + background`（服务「个性化」Tab 的一卡一行形态），`.sc-card` 又画一圈外框 → 卡片左右沿叠成 2px，行间分割线再与行自身的 `border-top` 叠一层。修法是在 `.sc-card .pref-row` 里显式 `border:none; border-radius:0; background:transparent`，外框只由卡片画、分割线只由 `.pref-row + .pref-row` 画。原型 `prototypes/settings-shortcuts-demo.html` 按布局作用域写样式（`.win[data-layout="B"] .pref-row`）所以没这个 bug，落到组件的全局 `.pref-row` 才暴露；e2e 已逐行数 `computed border-*` 钉住（12 行里 3 个组首行四边皆 0，其余 9 行只有 `1px` 上沿）。
+- **键位不再写死在文案里**：`terminal.toggle` 由「终端 (Ctrl+\`)」改成 `终端 ({hotkey})`，`App.vue` 与 `CodeViewer.vue` 的 tooltip/aria-label 一律用 `formatCaps()` 按平台注入（Mac 下记法连写成 ``⌘` ``，`capsSeparator()` 对 `⌘` 开头返回空串，其余平台用 `+`）。
+- **i18n**：新增第 14 个域文件 `i18n/domains/shortcuts.ts`（`zhShortcuts`/`enShortcuts`，键前缀 `shortcuts.`），**字典里不写任何按键字面量**，只写文案；`settings.tab.shortcuts` 补 zh/en 两处；`zh-CN.ts`/`en.ts` 合并新域。
+- **本期不做**：① 改键/录制框/冲突检测（要把三处硬编码判断改成读集中注册表，会动到已验收的「`Esc` 逐级退出」与「连按两次打断流式」；也只导出判定/展示函数，不预建 keymap 注册表——注册表是为改键准备的，届时搬这 4 个键进去，判定逻辑不返工）；② Electron `Menu`/`accelerator`/`globalShortcut`（会改变无边框窗口与默认菜单行为）；③ 终端粘贴 `Ctrl+Shift+V`；④ 全局搜索/主题切换/上下一会话的键位（功能尚不存在或非高频，加了是键位噪音）。
+- **测试**：单测新增 `test/platformKey.test.ts` 11 例（Mac/非 Mac 交叉不命中、`⌘+Ctrl` 混按排除、`Alt` 一律排除、裸键不命中=输入框打字不受影响、`Shift` 作为要求项、`key` 大小写不敏感、`key`/`code` 或关系兜底、展示记法与 `P`/`C` 令牌区分）；forge-ui 单测 449/449、全仓 typecheck 0 错。e2e 新增 `e2e/shortcuts.spec.ts` 7 例：四键各按一次的状态翻转、`Ctrl+N` 不生效、`⌘` 通道在非 Mac 不响应、`Ctrl+Alt+B` 不劫持、设置页作用域两键不响应、快捷键 Tab 3 组 12 行 + 徽标/占位行计数为 0 + 逐行 computed 边框宽度核对外框不重画 + 中英各一遍逐行量 rect（标题右沿与键帽区左沿 ≥12px、键帽不溢出卡片）+ thumb 落位贴齐当前 Tab。邻域 `settings`/`tooltip`/`terminalTopEdge`/`updater` 21 例全绿。
+- **实测到的一处滑动块事实（用例写法）**：Tab 选中块走的是「水滴」时序（左右两条边错峰启停，途中宽度会**过 0**），点完立刻 `boundingBox()` 量到 0 不是缺陷。`SC-E2E-007` 因此改成轮询等落定后比对 thumb 与 `.settings-tab.active` 的 `left`/`width` 差 ≤1px——五个 Tab 全部逐位贴合（含新插的快捷键位）。
+- **顺手修掉的存量红**：`e2e/updater.spec.ts:88` 点的 `.settings-close` 在 HEAD 上就已不存在（关闭控件实为 `.settings-back`，同仓 `codeExplorer.spec.ts` 用的是并集选择器），E-IN-001 长期挂在超时上；换成真实选择器后 updater 6 例全绿。与本模块无关，属用例侧失配。
+- **顺手修掉的侧栏回归**（用户追问「之前左侧任务树是好的，什么改动造成变形」查出来的）：`ProjectTree.vue` 任务视角行尾的项目药丸在 bce8c2a（2026-10-04「添加 Git 单文件 diff 能力及变更视图功能」，提交主题与侧栏无关）里从 `flex: 0 0 auto; max-width: 88px` 被改成 `flex: 0 1 88px` —— **`flex-basis` 是"宽度"不是"上限"**，于是 4 个字符的项目名也把药丸边框画满 88px（用户看到的「空一段」就是药丸内部右侧那 48px），而标题是 `flex: 1 1 0%`（basis 0 → 不参与收缩分配），被预留的宽度全从标题身上扣。同一提交还在行尾加了永不收缩的相对时间槽（`.tree-session-meta`，26px）。实测默认 292px 侧栏：标题 110px 且被截断 → 恢复内容宽后 158~167px，药丸 88px → 31~40px；最窄 220px：标题 56px（约 4 个字）→ 86~95px。修法就是把契约改回内容宽并保留封顶与收缩口：`flex: 0 1 auto; max-width: 88px; min-width: 0`（长项目名仍在 88px 处省略号，窄栏仍可继续缩）。
+- **排查该回归时撞到的存量红（未动）**：`e2e/session.spec.ts:37` SESSION-E2E-001 期望新建会话排在树尾，实际排在「已有会话」之后 —— 把上面这条 CSS 逐字节还原到 HEAD 后**同样失败**，与本改动无关（两条会话的 `lastActiveAt` 同为"刚刚"，排序疑似平手时不稳定），本次没碰。
+- **文档**：新增 `docs/prd/13_keyboard_shortcuts.md`（范围与不做清单 / 四个键位表 / 清单口径 / 9 文件改动清单 / 验收），`docs/prd/index.md` 与 `docs/overview.md` 登记模块 13；原型 `prototypes/settings-shortcuts-demo.html`（布局 A/B × 中英 × Win/mac 记法 × Tab 位置 × 明暗可切）。
+- **待真机验收**：Mac 上 ``⌘` `` 开合终端是本期修复的既有缺陷，本机 Windows 只能证伪 `Ctrl` 通道，需要真机点一次。
+
 ## v6.16 (增强：选区复制浮窗补右键触发，落在光标处)
 
 > 来源：2026-10-08 用户在代码纸里 `Ctrl+A` 全选后反馈「希望能增加一个右键，也是弹出复制」。浮窗形态（变体 B tooltip 反色）早已定稿，本次只加一个触发入口，用户拍板落点=**跟随光标**、直接落代码不出 demo。
@@ -12,6 +35,17 @@
 - **测试**：新增 `E-CE-29`（代码纸：`Ctrl+A` 全选 → 右键 → 浮窗落在光标处且完整在视口内、复制的仍是整段选区；复制完选区清空后再右键必须不弹）与 `E-SC-004`（对话区：拖选后在选区内右键，浮窗从选区上方搬到光标处）。两条都做过 RED 探针——把右键落点换回 `place(选区矩形)`、或把 `mouseup` 的主键判断去掉，用例即红。e2e codeExplorer.spec.ts + selectionCopy.spec.ts 53 例全绿（2 跳过为存量）、forge-ui typecheck 0 错。
 - **写用例时量到的一处存量事实（未改）**：面包屑条 `.cv-crumbs` 会盖住代码纸最上面几行的 hit-test——按 `getBoundingClientRect` 挑「视口内第一条代码」再点，命中的其实是面包屑。E-CE-29 的取点因此改用 `document.elementFromPoint` 复核落点真的落在 `.cv-pre` 上。这层遮挡本身是独立问题，本次没动。
 - **不做的**：① 不做「`Ctrl+A` 之后自动弹浮窗」（只在用户主动右键时才出现，避免每次全选都被一个按钮挡字）；② 不加「复制为 Markdown / 全选」等菜单项（右键只承载已经定稿的那一个动作，不铺成真菜单）；③ 不给终端、画布、应用外壳开这个口（触发区域仍是清单，不是页面里任何文本）。
+
+## v6.15 (修复：代码纸盖住对话时，「回到底部」提示条浮在代码正文上)
+
+> 来源：2026-10 用户实测截图——在对话里上滚进回看态，再切到内置代码浏览器读文件，纸正中间浮着对话的「回到底部」提示条。
+
+- **根因（层叠上下文缺失，不是 z 值写小了）**：回看提示条 `.review-backdown` 是 `position:absolute; z-index:30`，定位上下文是 `.conv-main-row`；后者只有 `position:relative`，而 **z-index:auto 的定位元素不构成层叠上下文**，于是提示条的 z-30 与代码纸 `.cex-cover`（cover 布局 `absolute inset:0; z-20` 整张盖住对话区）在同一祖先上下文里直接比大小 → 30 > 20 → 提示条压在文件正文中间。cover 布局的立身之本就是「对话纸保持挂载、宽度零变化、流式不丢」（PRD 12 §3.3），所以纸一直在，只是对话区的浮层能「越狱」出去。
+- **修法**：`packages/forge-ui/src/components/ConversationView.vue` 的 `.conv-main-row` 加 `isolation: isolate`，把行内一切悬浮物关进本行自己的层叠上下文（提示条在行内相对次序不变）。**收敛点刻意选在行、不是 `.cex-conv`**：代码态终端抽屉（`.content.code-mode .term`，z-30）是该行的**兄弟**、必须继续浮在纸面上，上提到列会把终端一起关进去、纸又盖回终端（v6.13「点了按钮看不见终端」刚修过的那条）；既有 `E-CE-26` 的 hit-test 断言（终端中心点必须命中终端自身）在本改动后仍绿，等于反向钉住了这个取舍。
+- **测试（TDD，RED→GREEN）**：`packages/forge-ui/e2e/codeExplorer.spec.ts` 新增 `E-CE-28`——种 8 轮长会话 → 鼠标上滚进回看态（提示条出现；先做「对话态下中心点 hit-test 命中提示条本体」的对照组）→ 打开 README.md 进 cover 布局 → 断言提示条仍在 DOM 且**中心点 hit-test 落在 `.cex-cover` 内**（遮挡只能这样证伪，Playwright 的 `toBeVisible` 不看遮盖）→ 关掉最后一个签后提示条回到对话上、可点、点了滚到底并消失。修复前红（`inPill:true / inCover:false`），修复后绿。
+- **验证**：forge-ui typecheck 0 错、单测 438/438；e2e `codeExplorer`+`terminalTopEdge`+`changedFiles` 58 过 2 跳过；`conversationHistoryLocate`/`selectionCopy`/`codeCopy`/`todoPanel`/`contentWidth`/`subagent`/`askUserQuestion` 32 过 6 红——6 红与改动前**基线逐条一致**（`git stash` 只回退本文件复跑同一批，失败集完全相同：`contentWidth` 1 + `subagent` 4 + `todoPanel TSC-E2E-009b` 1，均为存量失败）。另 `E-CV-009` 单独跑时偶发一次「mock delta 未渲染」的时序 flake，连跑 2 次均过；断言对象是事件文本渲染，与层叠无关。
+- **文档**：PRD 12 §3.3 布局 A 补「盖住的是纸、不是纸上的洞」不变量（含为何不能上提到 `.cex-conv`）、§6 验收补覆盖完整性一条；`docs/test/03_conversation/{e2e.md,coverage-matrix.md}` 的 E-CV-009 / AC-CV-016 挂 E-CE-28 回归引用。
+- **不做的**：① 不下调提示条 z 值（改小只是把「压在纸上」换成「被别的浮层压住」，同层里下一个 z 高的照样越狱）；② 不在 cover 态把提示条 `display:none`（回看态是真实状态、关掉纸还要用，藏掉等于让状态无出口）；③ 不给 `.cex-conv` 加 `isolation`（会连带压掉终端抽屉）；④ 不动 split 布局（那里纸是流内兄弟元素，无覆盖关系）。
 
 ## v6.14 (功能：无项目「自由对话」会话——不选项目直接开聊)
 

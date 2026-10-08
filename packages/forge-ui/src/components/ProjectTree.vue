@@ -1702,10 +1702,12 @@ onUnmounted(() => {
 }
 
 /* 任务视角行尾项目 tag（SM-S06）
-   可缩：侧栏拖窄时先让 tag 变短（下方 ellipsis 接手），而不是把标题压没。
+   宽度按内容走、88px 只是封顶（flex-basis 写成定值会变成"永远占 88px"，短名右侧空一段，
+   且标题是 flex:1 1 0%、不参与收缩分配，被偷的宽度全从标题身上扣）。
    min-width:0 是关键——没有它，flex 的自动最小尺寸会锁在文字宽度上不让缩。 */
 .tree-session-proj-tag {
-  flex: 0 1 88px;
+  flex: 0 1 auto;
+  max-width: 88px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

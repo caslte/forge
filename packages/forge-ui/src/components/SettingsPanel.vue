@@ -15,6 +15,7 @@ import {
 import { useUpdater } from '../composables/useUpdater';
 import { useWhatsNew } from '../composables/useWhatsNew';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
+import { capLabels, capsSeparator } from '../utils/platformKey';
 import SkillsSection from './SkillsSection.vue';
 import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
 
@@ -384,12 +385,12 @@ function selectTheme(mode: ThemeMode): void {
 
 // ===== 版本更新（07，「关于」Tab）：明面为 forge 产品更新；内部为内置引擎的共享扩展更新 =====
 // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照
-const activeTab = ref<'general' | 'personal' | 'skills' | 'about'>('general');
+const activeTab = ref<'general' | 'personal' | 'skills' | 'shortcuts' | 'about'>('general');
 const tabsEl = ref<HTMLElement | null>(null);
 const thumbEl = ref<HTMLElement | null>(null);
-const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, skills: null as HTMLElement | null, about: null as HTMLElement | null };
+const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, skills: null as HTMLElement | null, shortcuts: null as HTMLElement | null, about: null as HTMLElement | null };
 
-function setTabRef(name: 'general' | 'personal' | 'skills' | 'about', el: unknown): void {
+function setTabRef(name: 'general' | 'personal' | 'skills' | 'shortcuts' | 'about', el: unknown): void {
   tabBtns[name] = (el as HTMLElement) ?? null;
 }
 
@@ -429,6 +430,68 @@ watch(activeTab, () => { void nextTick(moveThumb); });
 watch(activeLocale, () => { void nextTick(moveThumb); });
 
 function onResize(): void { moveThumb(); }
+
+/**
+ * 「快捷键」Tab 的清单数据（模块 13，docs/prd/13_keyboard_shortcuts.md §3.3）。
+ * 纯静态、零 IPC、零持久化——本期只如实罗列，不做改键。
+ *
+ * 键位以令牌声明（P=主修饰键、C=Control、S=Shift），渲染时按平台展开：
+ * Mac 显示 ⌘ 并连写（⌘⇧N），其他平台显示 Ctrl 并用加号（Ctrl+Shift+N）。
+ * 文案里不写死键位，避免重蹈 terminal.toggle 在 Mac 显示错的覆辙。
+ */
+interface ScKeySet {
+  labels: string[];
+  sep: string;
+}
+interface ScRow {
+  title: MessageKey;
+  desc?: MessageKey;
+  /** 触发符（@ /）：不是键位组合，渲染成无边框等宽字符 */
+  sym?: string;
+  /** 键帽组：组内按 sep 连接，组间是「或」关系（/ 分隔） */
+  sets?: ScKeySet[];
+  /** 连按次数（打断流式 = Esc ×2） */
+  times?: number;
+}
+
+/**
+ * 一组键帽。joined=false 用于「同组并列的候选键」（↑↓←→、Home/End），不加连接符。
+ * 键名字面量按展示需要写大小写（'B' 而非 'b'），匹配逻辑在 App.vue 的 hitsPrimary。
+ */
+function ks(caps: string[], joined = true): ScKeySet {
+  const labels = capLabels(caps);
+  return { labels, sep: joined ? capsSeparator(labels) : '' };
+}
+
+const SC_GROUPS: { title: MessageKey; rows: ScRow[] }[] = [
+  {
+    title: 'shortcuts.group.global',
+    rows: [
+      { title: 'shortcuts.item.term.title', desc: 'shortcuts.item.term.desc', sets: [ks(['P', '`'])] },
+      { title: 'shortcuts.item.sidebar.title', desc: 'shortcuts.item.sidebar.desc', sets: [ks(['P', 'B'])] },
+      { title: 'shortcuts.item.newSession.title', desc: 'shortcuts.item.newSession.desc', sets: [ks(['P', 'S', 'N'])] },
+    ],
+  },
+  {
+    title: 'shortcuts.group.input',
+    rows: [
+      { title: 'shortcuts.item.send.title', sets: [ks(['Enter'])] },
+      { title: 'shortcuts.item.newline.title', sets: [ks(['S', 'Enter'])] },
+      { title: 'shortcuts.item.atFile.title', desc: 'shortcuts.item.atFile.desc', sym: '@' },
+      { title: 'shortcuts.item.slash.title', desc: 'shortcuts.item.slash.desc', sym: '/' },
+      { title: 'shortcuts.item.thinking.title', desc: 'shortcuts.item.thinking.desc', sets: [ks(['↑', '↓', '←', '→'], false), ks(['Home', 'End'], false)] },
+    ],
+  },
+  {
+    title: 'shortcuts.group.dismiss',
+    rows: [
+      { title: 'shortcuts.item.stopStream.title', desc: 'shortcuts.item.stopStream.desc', sets: [ks(['Esc'])], times: 2 },
+      { title: 'shortcuts.item.dismissLayer.title', desc: 'shortcuts.item.dismissLayer.desc', sets: [ks(['Esc'])] },
+      { title: 'shortcuts.item.exitCode.title', desc: 'shortcuts.item.exitCode.desc', sets: [ks(['Esc'])] },
+      { title: 'shortcuts.item.dismissSelection.title', desc: 'shortcuts.item.dismissSelection.desc', sets: [ks(['Esc'])] },
+    ],
+  },
+];
 
 const forgeVersion = ref<string | null>(null);
 
@@ -639,6 +702,12 @@ onUnmounted(() => {
         :ref="(el) => setTabRef('skills', el)"
         @click="activeTab = 'skills'"
       >{{ t('settings.tab.skills') }}</button>
+      <button
+        class="settings-tab"
+        :class="{ active: activeTab === 'shortcuts' }"
+        :ref="(el) => setTabRef('shortcuts', el)"
+        @click="activeTab = 'shortcuts'"
+      >{{ t('settings.tab.shortcuts') }}</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'about' }"
@@ -1088,6 +1157,35 @@ onUnmounted(() => {
     <!-- Skills Tab（模块 09）：独立 Tab 页，进入即挂载刷新 -->
     <div class="settings-body" v-if="activeTab === 'skills'">
       <SkillsSection />
+    </div>
+
+    <!-- 快捷键（模块 13）：只读清单，布局 B（分组单卡 + 行间分割线） -->
+    <div class="shortcuts-body" v-if="activeTab === 'shortcuts'">
+      <p class="shortcuts-hint">{{ t('shortcuts.hint') }}</p>
+      <section v-for="group in SC_GROUPS" :key="group.title" class="sc-group">
+        <h2 class="section-title">{{ t(group.title) }}</h2>
+        <div class="sc-card">
+          <div v-for="row in group.rows" :key="row.title" class="pref-row">
+            <div class="pref-text">
+              <span class="pref-title">{{ t(row.title) }}</span>
+              <span v-if="row.desc" class="pref-desc">{{ t(row.desc) }}</span>
+            </div>
+            <div class="sc-keys">
+              <span v-if="row.sym" class="sc-sym">{{ row.sym }}</span>
+              <template v-else>
+                <template v-for="(set, si) in row.sets" :key="si">
+                  <span v-if="si > 0" class="sc-alt">/</span>
+                  <template v-for="(label, li) in set.labels" :key="li">
+                    <span v-if="li > 0 && set.sep" class="sc-plus">{{ set.sep }}</span>
+                    <span class="sc-kbd">{{ label }}</span>
+                  </template>
+                </template>
+                <span v-if="row.times" class="sc-times">&times;{{ row.times }}</span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -2363,4 +2461,121 @@ button.small {
   padding: 4px 12px;
   font-size: 12px;
 }
+
+/* ===== 模块 13：快捷键 Tab（只读清单，布局 B = 分组单卡 + 行间分割线） ===== */
+
+.shortcuts-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcuts-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 2px;
+  padding-left: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+
+.shortcuts-hint::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brand-accent);
+}
+
+.sc-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* 分组收进单卡：与「个性化」Tab 的一卡一行不同，滚动距离更短（PRD 13 §3.3） */
+.sc-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  overflow: hidden;
+}
+
+/* 基类 .pref-row 自带边框+圆角+底色（一卡一行用），进了分组卡就得脱掉，否则与卡片外框叠成双线 */
+.sc-card .pref-row {
+  padding: 11px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.sc-card .pref-row + .pref-row {
+  border-top: 1px solid var(--border);
+}
+
+.sc-keys {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sc-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--muted);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.sc-plus,
+.sc-alt {
+  padding: 0 1px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.sc-alt {
+  padding: 0 5px;
+}
+
+.sc-times {
+  margin-left: 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+/* 触发符（@ /）：不是键位组合，用无边框等宽字符与键帽区分 */
+.sc-sym {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--muted);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
 </style>

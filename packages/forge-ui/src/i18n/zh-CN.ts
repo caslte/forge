@@ -15,6 +15,7 @@ import { zhPanels } from './domains/panels.ts';
 import { zhSkills } from './domains/skills.ts';
 import { zhGit } from './domains/git.ts';
 import { zhTerminal } from './domains/terminal.ts';
+import { zhShortcuts } from './domains/shortcuts.ts';
 import { zhCode } from './domains/code.ts';
 
 export const zhCN = {
@@ -30,6 +31,7 @@ export const zhCN = {
   ...zhSkills,
   ...zhGit,
   ...zhTerminal,
+  ...zhShortcuts,
   ...zhCode,
 } as const;
 

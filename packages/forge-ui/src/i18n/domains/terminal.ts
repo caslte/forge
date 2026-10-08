@@ -4,7 +4,7 @@
  * 注意字宽敏感控件（tab/按钮）中英双查（模块 08 经验，PRD §3.5 i18n）。
  */
 export const zhTerminal = {
-  'terminal.toggle': '终端 (Ctrl+`)',
+  'terminal.toggle': '终端 ({hotkey})',
   'terminal.add': '新建终端（自动使用当前项目目录）',
   'terminal.addNoProject': '先打开一个项目',
   'terminal.empty': '（无终端 — 点 ＋ 新建）',
@@ -20,7 +20,7 @@ export const zhTerminal = {
 } as const;
 
 export const enTerminal: Record<string, string> = {
-  'terminal.toggle': 'Terminal (Ctrl+`)',
+  'terminal.toggle': 'Terminal ({hotkey})',
   'terminal.add': 'New terminal (uses current project directory)',
   'terminal.addNoProject': 'Open a project first',
   'terminal.empty': '(No terminal — click + to create one)',

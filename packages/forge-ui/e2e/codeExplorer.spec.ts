@@ -3,7 +3,8 @@
  *
  * 覆盖：<> 入口与左栏整栏互斥、目录懒加载与排序、文件只读查看与降级态、
  * 文件名过滤、多标签、A 整屏「对话宽度零变化」硬指标、B 分割 4px 沟与 320px 保底、
- * 双击复位、←/→ 步进、窄窗临时降级、Esc 逐级退出、偏好持久化、设置页。
+ * 双击复位、←/→ 步进、窄窗临时降级、Esc 逐级退出、偏好持久化、设置页、
+ * 纸盖对话时对话内悬浮物（回看提示条）不得浮到代码上（E-CE-28）。
  *
  * 进入语义（demo 定稿）：点 `<>` 只切左栏，**打开第一个文件才出代码纸**；
  * 布局类断言在 openCode 之后都必须先点一个文件。
@@ -12,7 +13,7 @@
  * 需求是「A 不许改变对话宽度」，只有像素能证伪。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock } from './helpers/index';
+import { attachHealthGuards, seedHistory, seedSessions, waitForMock } from './helpers/index';
 
 /** 打开代码浏览器并等根目录加载完。
  *  必须先 hover 项目行：<> 与 +/⋯ 一样是 hover 显形，父容器在非 hover 态是
@@ -1735,5 +1736,91 @@ test('Git 角标：多文件目录聚合为 M，目录名染 M 色', async ({ pa
   await expect(rowOf(page, 'forge-ui').locator('.ctp-name')).toHaveClass(/is-mod/);
   // M 徽标必须挂上 is-m（warning 橙）——漏掉这条规则 M 就落默认灰，等于没标
   await expect(rowOf(page, 'App.vue').locator('.ctp-git')).toHaveClass(/is-m/);
+});
+
+/** 中心点 hit-test：命中哪个栈（提示条本体 / 代码纸 / 都不是）。
+ *  遮挡关系只能靠这个证伪——Playwright 的 toBeVisible 只看盒子不看遮盖，
+ *  「浮条压在代码上」在它眼里仍然是 visible。 */
+async function hitStack(
+  page: Page,
+  el: ReturnType<Page['locator']>,
+): Promise<{ inPill: boolean; inCover: boolean }> {
+  const box = await el.boundingBox();
+  if (!box) return { inPill: false, inCover: false };
+  return page.evaluate(
+    ([x, y]) => {
+      const hit = document.elementFromPoint(x as number, y as number);
+      return {
+        inPill: !!hit?.closest('[data-testid="review-backdown"]'),
+        inCover: !!hit?.closest('.cex-cover'),
+      };
+    },
+    [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)],
+  );
+}
+
+test('E-CE-28 @P1 @mock-backend：代码纸盖住对话时，回看提示条不得浮在代码上（关纸后恢复）', async ({ page }) => {
+  const health = attachHealthGuards(page);
+
+  // 会长会话：消息流足够高，才能靠上滚进入回看态（提示条的出场条件）
+  const sid = 'sess-ce27-' + Math.random().toString(36).slice(2, 10);
+  const history: Array<Record<string, unknown>> = [];
+  for (let i = 1; i <= 8; i += 1) {
+    const t = Date.now() - 200000 + i * 1000;
+    history.push({ role: 'user', content: `第${i}轮提问`, ts: new Date(t).toISOString() });
+    history.push({
+      role: 'assistant',
+      content: `第${i}轮回复。\n${'用于撑高消息流的回复正文，确保长会话可上滚进入回看态。'.repeat(6)}`,
+      ts: new Date(t + 200).toISOString(),
+    });
+  }
+  await seedSessions(page, [
+    {
+      sessionId: sid,
+      projectPath: 'D:/work/aiwork/forge',
+      alias: '代码纸遮罩会话',
+      status: 'idle',
+      lastActiveAt: new Date().toISOString(),
+    },
+  ]);
+  await seedHistory(page, sid, history);
+  await page.reload();
+  await page.locator('.tree-session', { hasText: '代码纸遮罩会话' }).click();
+  await expect(page.locator('.msg-assistant').last()).toBeVisible({ timeout: 8_000 });
+
+  // 上滚进回看：wheel 落在消息流上（followGate 只认新鲜的输入意图）
+  const pill = page.locator('[data-testid="review-backdown"]');
+  await expect(pill).toHaveCount(0);
+  const scroller = await page.locator('.conv-messages').boundingBox();
+  await page.mouse.move(scroller!.x + scroller!.width / 2, scroller!.y + scroller!.height / 2);
+  for (let i = 0; i < 4; i += 1) {
+    await page.mouse.wheel(0, -600);
+    await page.waitForTimeout(120);
+  }
+  await expect(pill).toBeVisible();
+
+  // 对话态下提示条就在最上层（对照组：先证明这个点位本来就该点到它）
+  expect((await hitStack(page, pill)).inPill).toBe(true);
+
+  // 打开代码纸（默认 cover 布局：absolute inset:0 z-20 整张盖住对话区）
+  await openCodeWithFile(page);
+  await expect(page.locator('.cex-cover .cv')).toBeVisible();
+  // 提示条仍在（回看态不因切代码纸丢失），但已被代码纸盖住
+  await expect(pill).toHaveCount(1);
+  expect(await hitStack(page, pill), '提示条浮在代码纸上').toEqual({ inPill: false, inCover: true });
+
+  // 收掉代码纸 → 提示条回到对话上，可点、点了滚到底并消失（功能未被修复顺带打断）
+  await page.locator('.cv-tab', { hasText: 'README.md' }).locator('.cv-tab-x').click({ force: true });
+  await expect(page.locator('.cv')).toHaveCount(0);
+  await expect(pill).toBeVisible();
+  expect((await hitStack(page, pill)).inPill).toBe(true);
+  await pill.click();
+  await expect(pill).toBeHidden();
+  await expect
+    .poll(() =>
+      page.locator('.conv-messages').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight),
+    )
+    .toBeLessThanOrEqual(2);
+  health.assertHealthy();
 });
 

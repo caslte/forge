@@ -1253,6 +1253,16 @@ onMounted(() => {
    relative 作为"回到底部"提示条的定位上下文 */
 .conv-main-row {
   position: relative;
+  /* isolation:isolate —— 本行自成一个层叠上下文，把行内悬浮物关在里面。
+     起因（用户实测）：回看模式的「回到底部」提示条是 absolute;z-30，而本行只是
+     position:relative + z-index:auto，**不构成层叠上下文**，于是提示条的 z-30 越过
+     对话列与内置代码纸（.cex-cover，cover 布局 absolute inset:0;z-20 整张盖住对话区）
+     直接比大小：30 > 20 → 提示条浮在被读的文件正文中间（截图即「回到代码上还有代码」）。
+     收敛点选在这里而不是 .cex-conv：代码态终端抽屉 `.content.code-mode .term`
+     （z-30）是本行的**兄弟**、必须继续压住代码纸，若把隔离上提到 .cex-conv
+     会把终端一起关进去、纸又盖回终端（v6.13 刚修过的「点了按钮看不见终端」）。
+     提示条等行内悬浮物在行内互压的次序不受影响（同一上下文内仍按 z 值排）。 */
+  isolation: isolate;
   flex: 1;
   min-height: 0;
   display: flex;
