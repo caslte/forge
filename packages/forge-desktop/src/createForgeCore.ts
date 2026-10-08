@@ -58,7 +58,7 @@ import {
   readTail,
   resolveSubagentOutputFile,
 } from './pi/subagentOutput.ts';
-import { getPiSupportedThinkingLevels, resolvePiModel } from './pi/piModelResolver.ts';
+import { getPiSupportedThinkingLevels, probePiModel, resolvePiModel } from './pi/piModelResolver.ts';
 import { EnvVarKeychainAdapter } from './pi/keychainAdapter.ts';
 import { PiTrustStoreAdapter } from './pi/piTrustStoreAdapter.ts';
 import {
@@ -377,6 +377,45 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
         getPiSupportedThinkingLevels(model, piModelsPath),
     },
   });
+  // 悬空模型 ID 自愈（回归：改完模型后发消息报「模型未配置或不可用: MiniMax M3.1-Flash-Preview」，
+  // 且该会话此后每条消息都报同一个错）。
+  //
+  // 根因链：设置里手打错的 ID（或改名/删掉的旧 ID）被原样存进 settings.defaultModel
+  // 与会话 modelOverride，而真正的解析发生在 pi 会话工厂创建时——即每条消息都重新
+  // 失败一次，会话树上却没有任何入口能看出坏在哪，用户在 UI 上的唯一出路是进去重选模型。
+  //
+  // 自愈只在有确凿证据时动手（probePiModel 返回 'not-found'）：
+  //   1) 会话生效模型已不存在 → 改用全局默认（用户在设置里修好后，旧会话立刻跟着好）；
+  //   2) 顺带清掉该会话的悬空覆盖，让它回到「跟全局走」，而不是永远卡在坏值上；
+  //   3) 探测本身失败（models.json 读不到 / runtime 建不起来）时一律不动——「探不到」
+  //      不等于「模型没了」，此时若当坏值处理就是误伤用户好端端的设置；
+  //   4) 全局默认同样不存在时不擅自清空它（破坏性且非用户所求），而是放行原值，
+  //      由工厂抛出原本那条信息量足够的错误。
+  const resolveEffectiveModel = async (
+    sessionId: string,
+    model: string | undefined,
+  ): Promise<string | undefined> => {
+    if (model === undefined || model === '') return undefined;
+    if ((await probePiModel(model, piModelsPath)) !== 'not-found') return model;
+
+    const fallback = store.getSetting('defaultModel');
+    const fallbackModel = typeof fallback === 'string' && fallback.trim() !== '' ? fallback.trim() : undefined;
+    if (
+      fallbackModel === undefined ||
+      fallbackModel === model ||
+      (await probePiModel(fallbackModel, piModelsPath)) !== 'ok'
+    ) {
+      return model; // 无可退：保持原值，让工厂按原路径报「模型未配置或不可用: <id>」
+    }
+    console.warn(
+      `[createForgeCore] model ${model} no longer exists (session=${sessionId}), falling back to ${fallbackModel}`,
+    );
+    if (store.getSession(sessionId)?.modelOverride !== null) {
+      await modelService.setSessionModel(sessionId, null);
+    }
+    return fallbackModel;
+  };
+
   const conversationService = new ConversationService(conversationAdapter, {
     // CV-S08：会话模式上报未到 / 草稿态模式直查的轻量资源 port（skills+模板，不加载扩展）
     slashCommandResources: createSlashCommandResources(agentDir),
@@ -417,7 +456,10 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       return {
         sessionId,
         cwd,
-        model: modelResult.ok ? modelResult.data.model ?? undefined : undefined,
+        model: await resolveEffectiveModel(
+          sessionId,
+          modelResult.ok ? modelResult.data.model ?? undefined : undefined,
+        ),
         thinkingLevel,
       };
     },

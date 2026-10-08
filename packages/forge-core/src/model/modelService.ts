@@ -267,6 +267,23 @@ function normalizeBaseUrl(baseUrl: string | null | undefined): string | null {
 }
 
 /** 提取异常消息（5000 错误联合用） */
+/**
+ * 模型 ID 形态校验（回归：设置里把 `MiniMax-M3.1-Flash-Preview` 手打成
+ * `MiniMax M3.1-Flash-Preview`，空格版被原样写进 models.json，随即成为
+ * 全局默认与会话覆盖，而 pi 侧解析不到它——错误直到发送时才炸成
+ * 「模型未配置或不可用」，且该会话此后每条消息都失败，只能手动重选模型才能恢复）。
+ *
+ * 模型 ID 是三层共用的查找键（models.json providers[].models[].id、
+ * pi ModelRuntime.getModel(providerId, id)、store 会话 modelOverride），
+ * 含空白字符时必错且错得无声。这里在唯一的写入口（saveProvider）挡住。
+ */
+export function validateModelId(model: string): string | null {
+  if (model === '') return '模型 ID 不能为空';
+  if (/\s/.test(model)) return '模型 ID 不能包含空格或换行';
+  if (/^[\p{C}]/u.test(model)) return '模型 ID 不能以控制字符开头';
+  return null;
+}
+
 function toMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -342,6 +359,19 @@ export class ModelService {
     }
     if (!Array.isArray(input.models) || input.models.length === 0) {
       return { ok: false, code: 1001, message: 'models 至少需要一个模型' };
+    }
+    // 模型 ID 形态校验：含空格/空串/控制字符的 ID 一律拒写（见 validateModelId 注释的回归）。
+    // 在此拦住是唯一的根治点——写进去之后它会静默污染全局默认与会话覆盖，
+    // 而真正的解析失败要等到用户发消息才暴露，且会话从此每条消息都失败。
+    for (const rawModel of input.models) {
+      const modelId = typeof rawModel === 'string' ? rawModel.trim() : '';
+      const invalid = validateModelId(modelId);
+      if (invalid !== null) {
+        return { ok: false, code: 1001, message: `${invalid}: ${JSON.stringify(rawModel)}` };
+      }
+    }
+    if (new Set(input.models.map((m) => m.trim())).size !== input.models.length) {
+      return { ok: false, code: 1001, message: 'models 不能重复' };
     }
     if (!isValidBaseUrl(input.baseUrl)) {
       return { ok: false, code: 1001, message: 'baseUrl 格式无效' };
@@ -533,6 +563,10 @@ export class ModelService {
     }
     const target = model === null ? null : model.trim();
     if (target !== null) {
+      const invalid = validateModelId(target);
+      if (invalid !== null) {
+        return { ok: false, code: 1001, message: invalid };
+      }
       let models: string[];
       try {
         models = await this.deps.modelsFile.readModelNames();
@@ -576,9 +610,14 @@ export class ModelService {
 
   /**
    * 设置会话级模型覆盖（MP-S02）：仅写该会话 modelOverride，不影响其他会话与全局。
+   *
+   * 只做形态校验（见 validateModelId），**不**拿可用模型列表做包含性校验：
+   * 会话模型可能合法存在于 pi 运行时（注入的 models.json）而不在本服务注入的
+   * modelsFile 列表里——把列表当权威就等于凭空引入第二份真相，热切换这类场景会被
+   * 误判成 1004。ID 是否真的还在（例如被改名/删除）由发送前的探测自愈处理。
    * @param sessionId 会话 ID
    * @param model 模型 ID；null 表示清除覆盖回到全局默认
-   * @returns 成功返回 null；会话不存在返回 1002
+   * @returns 成功返回 null；会话不存在返回 1002；ID 形态非法返回 1001
    */
   async setSessionModel(sessionId: string, model: string | null): Promise<ModelResult<null>> {
     if (typeof sessionId !== 'string' || sessionId.trim() === '') {
@@ -592,7 +631,14 @@ export class ModelService {
     if (session === undefined) {
       return { ok: false, code: 1002, message: `会话不存在: ${sid}` };
     }
-    this.deps.store.saveSession({ ...session, modelOverride: model === null ? null : model.trim() });
+    const target = model === null ? null : model.trim();
+    if (target !== null) {
+      const invalid = validateModelId(target);
+      if (invalid !== null) {
+        return { ok: false, code: 1001, message: invalid };
+      }
+    }
+    this.deps.store.saveSession({ ...session, modelOverride: target });
     return { ok: true, data: null };
   }
 

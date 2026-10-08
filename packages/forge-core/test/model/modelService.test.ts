@@ -299,6 +299,59 @@ test('setSessionModel：设置/清除覆盖，仅影响该会话', async () => {
   assert.equal(store.sessions.get('sess-1')?.modelOverride, null);
 });
 
+// ===== 回归：悬空模型 ID 不得被写入（改完模型后发消息报「模型未配置或不可用」）=====
+//
+// 现场：用户把 `MiniMax-M3.1-Flash-Preview` 手打成 `MiniMax M3.1-Flash-Preview`（空格版），
+// saveProvider 只做 trim 就落盘 → 它成了全局默认与会话覆盖，而真正的解析发生在发消息时，
+// 于是该会话此后每条消息都失败，只能进会话重选模型才能恢复。
+// 守护点 1（唯一写入口 saveProvider）与守护点 2（会话覆盖写入）都要挡住。
+
+test('saveProvider：模型 ID 含空格返回 1001，不写入（回归）', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(
+    validInput({ models: ['MiniMax-M3.1-Flash-Preview', 'MiniMax M3.1-Flash-Preview'] }),
+  );
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1001);
+    assert.match(result.message, /空格/);
+  }
+  assert.equal(modelsFile.providers.length, 0);
+  assert.equal(modelsFile.writeSnapshots.length, 0);
+});
+
+test('saveProvider：模型 ID 重复返回 1001，不写入', async () => {
+  const { service, modelsFile } = makeService();
+  const result = await service.saveProvider(validInput({ models: ['gpt-4o', 'gpt-4o'] }));
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1001);
+  }
+  assert.equal(modelsFile.providers.length, 0);
+});
+
+test('setSessionModel：不在 modelsFile 列表里的 ID 仍可写入（会话模型以 pi 运行时为准）', async () => {
+  // 热切换场景：模型可能只存在于注入的 pi models.json，而不在本服务的 modelsFile 列表里。
+  // 把 modelsFile 列表当权威会凭空引入第二份真相，把合法切换误判成 1004。
+  const { service, store, modelsFile } = makeService();
+  modelsFile.modelNames = [];
+  store.sessions.set('sess-1', makeSession('sess-1', null));
+  const result = await service.setSessionModel('sess-1', 'forge-only-model');
+  assert.ok(result.ok);
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'forge-only-model');
+});
+
+test('setSessionModel：模型 ID 含空格返回 1001，不写入覆盖', async () => {
+  const { service, store } = makeService();
+  store.sessions.set('sess-1', makeSession('sess-1', null));
+  const result = await service.setSessionModel('sess-1', 'MiniMax M3.1-Flash-Preview');
+  assert.ok(!result.ok);
+  if (!result.ok) {
+    assert.equal(result.code, 1001);
+  }
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, null);
+});
+
 test('queryProviderList：引用形式 apiKey（$VAR/!cmd）且 keychain 支持读取时返回明文（编辑回显用）', async () => {
   const { service, modelsFile, keychain } = makeService();
   modelsFile.providers = [

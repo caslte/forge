@@ -19,7 +19,7 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { ModelThinkingLevel } from '@earendil-works/pi-ai';
 
-import { defaultPiModelsPath } from './piModelsFileAdapter.ts';
+import { defaultPiModelsPath, stripJsonComments } from './piModelsFileAdapter.ts';
 
 /** pi 模型对象（由 SDK getModel 返回类型推导，避免依赖未导出的 Model 类型） */
 export type PiModel = Exclude<ReturnType<ModelRuntime['getModel']>, undefined>;
@@ -49,6 +49,12 @@ async function getRuntime(modelsPath: string): Promise<ModelRuntime> {
     refreshOnCreate: false,
   });
   runtimeCache.set(modelsPath, created);
+  // 拒绝的 create 不入缓存：Promise 被缓存住后，即使下一次 models.json 已被修好，
+  // 本进程内也永远拿到同一个 rejection（只有 provider 增删改才会清缓存），
+  // 表现为「配置明明对了，模型却一直报未配置」——必须失败即摘除。
+  created.catch(() => {
+    if (runtimeCache.get(modelsPath) === created) runtimeCache.delete(modelsPath);
+  });
   return created;
 }
 
@@ -56,6 +62,11 @@ async function getRuntime(modelsPath: string): Promise<ModelRuntime> {
  * 读取 models.json 中用户显式配置的 provider id 集合（仅取 providers 键名，
  * 不解析模型——id 集合用于查找排序，不关心其余字段）。
  * 文件缺失/损坏时返回空集合（视为无用户配置，走内置 catalog 查找）。
+ *
+ * 必须经 stripJsonComments 与 pi / forge 写入口保持同一解析口径：models.json 是
+ * JSONC，允许 `//` 注释。裸 JSON.parse 遇注释会整份失败 → configured 集合变空 →
+ * 「用户 provider 优先」那一轮被跳过 → 同名模型解析到无凭据的内置 catalog
+ * （正是文件头注释记的 MiniMax-M3 撞名回归）。
  */
 function getConfiguredProviderIds(modelsPath: string): Set<string> {
   const cached = configuredProviderCache.get(modelsPath);
@@ -64,7 +75,7 @@ function getConfiguredProviderIds(modelsPath: string): Set<string> {
   }
   const ids = new Set<string>();
   try {
-    const raw = fs.readFileSync(modelsPath, 'utf8');
+    const raw = stripJsonComments(fs.readFileSync(modelsPath, 'utf8'));
     const parsed = JSON.parse(raw) as {
       providers?: Record<string, unknown>;
     };
@@ -78,6 +89,19 @@ function getConfiguredProviderIds(modelsPath: string): Set<string> {
   }
   configuredProviderCache.set(modelsPath, ids);
   return ids;
+}
+
+/** 模型不存在（解析跑完了，确实没这个模型）——与「运行时加载失败」严格区分。 */
+export class PiModelNotFoundError extends Error {
+  readonly model: string;
+  constructor(model: string) {
+    // 错误文案带「怎么办」：这个字符串会原样冒到对话顶部的错误横幅（分类器只管
+    // provider/网络层错误，模型解析失败走无分类的单行原文通道）。只说「未配置」
+    // 时用户无从判断是自己选错了、还是设置里刚把它改名/删掉了。
+    super(`模型未配置或不可用: ${model}（该模型可能已被改名或删除，请在输入框下方重新选择模型）`);
+    this.name = 'PiModelNotFoundError';
+    this.model = model;
+  }
 }
 
 /**
@@ -111,7 +135,31 @@ export async function resolvePiModel(
       return found;
     }
   }
-  throw new Error(`模型未配置或不可用: ${model}`);
+  throw new PiModelNotFoundError(model);
+}
+
+/**
+ * 探测模型可解析性，且区分「确实没有这个模型」与「探测本身失败了」。
+ *
+ * 发送前的自愈必须做这个区分：models.json 临时读不到 / ModelRuntime 创建失败时，
+ * 「探不到」不等于「模型没了」，此时若当坏值处理就会把用户好端端的模型设置清掉。
+ * 拿不准时一律当 unknown，由调用方保持原状。
+ *
+ * @param model forge 模型 ID
+ * @param modelsPath pi models.json 路径
+ * @returns 'ok' 可解析；'not-found' 解析完成但无此模型；'unknown' 探测失败
+ */
+export async function probePiModel(
+  model: string,
+  modelsPath: string = defaultPiModelsPath(),
+): Promise<'ok' | 'not-found' | 'unknown'> {
+  try {
+    await resolvePiModel(model, modelsPath);
+    return 'ok';
+  } catch (err) {
+    if (err instanceof PiModelNotFoundError) return 'not-found';
+    return 'unknown';
+  }
 }
 
 /**

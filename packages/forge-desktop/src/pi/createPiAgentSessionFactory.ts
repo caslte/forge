@@ -167,21 +167,23 @@ export function createPiAgentSessionFactory(
       request.sessionId ?? crypto.randomUUID().replace(/-/g, ''),
     );
 
+    // 模型字符串解析为 pi Model（失败则抛稳定错误）。
+    // 必须排在任何磁盘写入之前：模型解析是这条链路上最便宜的早失败点，而
+    // SessionManager.create + 手写 header 都会落盘。旧实现先写 header 再解析模型，
+    // 于是「模型未配置或不可用」之后 agent 目录里多出一个只有 header 的
+    // forge-<id>.jsonl（约 154 字节）——pi 不认它是一个真会话，下次打开该会话
+    // 会报「会话历史文件已损坏」，把一个可自愈的模型错误变成看起来像数据损坏的死结。
+    let resolvedModel: CreateAgentSessionOptions['model'] | undefined;
+    if (typeof request.model === 'string') {
+      resolvedModel = await resolvePiModel(request.model, options.modelsPath);
+    } else if (request.model !== undefined) {
+      resolvedModel = request.model as CreateAgentSessionOptions['model'];
+    }
+
     const sessionFile = path.join(sessionDir, `${piSessionId}.jsonl`);
     const manager = fs.existsSync(sessionFile)
       ? SessionManager.open(sessionFile, sessionDir)
       : SessionManager.create(cwd, sessionDir);
-    if (!fs.existsSync(sessionFile)) {
-      const header = {
-        type: 'session',
-        version: 3,
-        id: piSessionId,
-        timestamp: new Date().toISOString(),
-        cwd,
-      };
-      fs.writeFileSync(sessionFile, `${JSON.stringify(header)}\n`, 'utf8');
-      manager.setSessionFile(sessionFile);
-    }
     if (!fs.existsSync(sessionFile)) {
       const header = {
         type: 'session',
@@ -200,10 +202,8 @@ export function createPiAgentSessionFactory(
       cwd,
       sessionManager: manager,
     };
-    if (typeof request.model === 'string') {
-      createOptions.model = await resolvePiModel(request.model, options.modelsPath);
-    } else if (request.model !== undefined) {
-      createOptions.model = request.model as CreateAgentSessionOptions['model'];
+    if (resolvedModel !== undefined) {
+      createOptions.model = resolvedModel;
     }
     // MP-S05：创建会话时应用生效思考级别（pi 内部按模型能力 clamp 就近收敛）
     if (typeof request.thinkingLevel === 'string' && request.thinkingLevel !== '') {
