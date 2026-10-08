@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call } from '../bridge';
-import type { ProjectItem, SessionItem, ProjectPickerDescriptor } from '../types';
+import type { ProjectItem, SessionItem, ProjectPickerDescriptor, ModelOption } from '../types';
 import InstructionInput from './InstructionInput.vue';
 import SuggestionChips from './SuggestionChips.vue';
 import TodoPanel from './TodoPanel.vue';
@@ -46,8 +46,10 @@ const props = defineProps<{
    */
   project?: ProjectItem | null;
   session: SessionItem | null;
-  models: string[];
-  currentModel: string | null;
+  /** 模型可选项（别名锚点 + 派生模型 ID） */
+  modelOptions: ModelOption[];
+  /** 当前会话生效模型的别名锚点；null 表示未配置 */
+  currentProviderId: string | null;
   /** 项目选择器描述（SM-S01 v3.21）：上层组装，透传给输入框；不传则不渲染 */
   projectPicker?: ProjectPickerDescriptor;
   /**
@@ -59,7 +61,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'model-change', model: string): void;
+  (e: 'model-change', providerId: string): void;
   /** 草稿态发送首条消息时已创建会话，通知上层绑定当前会话 */
   (e: 'session-created', sessionId: string): void;
   /** path=null = 归属切到自由对话（v0.3，透传自 InstructionInput） */
@@ -364,9 +366,9 @@ async function onSend(text: string): Promise<void> {
       });
       const sid = res.session.sessionId;
       createdSessionId = sid;
-      // 创建会话前捕获当前展示模型（全局默认或草稿态已切换），随后写入会话覆盖，
+      // 创建会话前捕获当前展示的配置锚点（全局默认或草稿态已切换），随后写入会话覆盖，
       // 保证首条消息按用户所见模型发送（写覆盖失败不阻塞，回退全局默认）
-      const draftModel = props.currentModel;
+      const draftProviderId = props.currentProviderId;
       // 草稿态思考级别（继承全局默认的回显或用户已选）：先于 session-created 写入会话覆盖，
       // 保证首条消息按输入框所示级别发送，且避免与输入框对 sid 的级别查询竞态
       // （写覆盖失败不阻塞，回退全局默认）
@@ -379,8 +381,11 @@ async function onSend(text: string): Promise<void> {
         );
       }
       emit('session-created', sid);
-      if (draftModel) {
-        await call('model/setSessionModel', { sessionId: sid, model: draftModel }).catch((e) => {
+      if (draftProviderId) {
+        await call('model/setSessionModel', {
+          sessionId: sid,
+          providerId: draftProviderId,
+        }).catch((e) => {
           console.warn('[draft] 写入会话模型覆盖失败，回退全局默认', e);
         });
       }
@@ -402,16 +407,17 @@ function resetInputHeightIfEmpty(): void {
 
 defineExpose({ resetInputHeightIfEmpty });
 
-function onModelChange(model: string): void {
-  emit('model-change', model);
-  showSwitchBanner(model);
+function onModelChange(providerId: string): void {
+  emit('model-change', providerId);
+  showSwitchBanner(providerId);
 }
 
 /** 在对话流底部临时显示"已切换模型"横幅，方便多窗口分辨是哪个窗口切换 */
 const switchBanner = ref<string | null>(null);
 let switchBannerTimer: ReturnType<typeof setTimeout> | null = null;
-function showSwitchBanner(model: string): void {
-  switchBanner.value = t('chat.modelSwitched', { model });
+/** 横幅展示别名锚点（与输入框同款标签），i18n 文案的 {model} 占位沿用 */
+function showSwitchBanner(providerId: string): void {
+  switchBanner.value = t('chat.modelSwitched', { model: providerId });
   // 横幅渲染在对话流底部，立即滚动到底部，避免需要手动下拉才能看到
   autoScrollToBottom();
   if (switchBannerTimer) clearTimeout(switchBannerTimer);
@@ -1173,8 +1179,8 @@ onMounted(() => {
         ref="inputRef"
         :session-id="props.sessionId ?? undefined"
         :session-status="sessionStatus"
-        :models="models"
-        :current-model="currentModel"
+        :model-options="modelOptions"
+        :current-provider-id="currentProviderId"
         :project-picker="props.projectPicker"
         :project-path="props.project?.path"
         :queue-items="queueItems"

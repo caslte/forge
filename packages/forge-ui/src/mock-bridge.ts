@@ -1426,9 +1426,21 @@ const bridge: ForgeBridge = {
         return { code: 0, message: 'ok', data: { files, limitReached: files.length >= FILE_SEARCH_MAX_NODES } };
       }
       case 'model/queryModels':
-        return { code: 0, message: 'ok', data: { models: modelList, defaultModel: modelList[0] } };
+        // 一条配置 = 一个可选项；mock 没有 provider 别名，别名与模型 ID 同名
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            options: modelList.map((m) => ({ providerId: m, model: m })),
+            defaultProviderId: modelList[0],
+          },
+        };
       case 'model/getSessionModel':
-        return { code: 0, message: 'ok', data: { model: modelList[0], effective: modelList[0] } };
+        return {
+          code: 0,
+          message: 'ok',
+          data: { model: modelList[0], providerId: modelList[0], effective: 'global' },
+        };
       case 'pi/getInfo':
         // 设置页「关于」Tab（组件明细不回传 UI；测试可 seed 覆盖）
         return { code: 0, message: 'ok', data: { forgeVersion: '0.1.0' } };

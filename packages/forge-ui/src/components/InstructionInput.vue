@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
-import type { SessionStatus, ThinkingLevel, ModelThinkingLevels, SessionThinkingLevel, ProjectPickerDescriptor } from '../types';
+import type {
+  SessionStatus,
+  ThinkingLevel,
+  ModelThinkingLevels,
+  SessionThinkingLevel,
+  ProjectPickerDescriptor,
+  ModelOption,
+} from '../types';
 import { call, subscribe, type PendingAttachment, type ConversationCompactResult, type SlashCommand, type GetSlashCommandsResult } from '../bridge';
 import {
   detectSlashContext,
@@ -35,10 +42,10 @@ import BranchBadge from './BranchBadge.vue';
 const props = defineProps<{
   /** 当前会话状态，streaming 时切换为停止按钮并禁用输入 */
   sessionStatus: SessionStatus;
-  /** 可选模型列表（来自 model/queryModels） */
-  models: string[];
-  /** 当前会话模型（来自 model/getSessionModel），null 表示用默认 */
-  currentModel: string | null;
+  /** 可选模型列表（来自 model/queryModels）：一条 provider 配置 = 一项 */
+  modelOptions: ModelOption[];
+  /** 当前会话生效模型的别名锚点（来自 model/getSessionModel），null 表示未配置 */
+  currentProviderId: string | null;
   /** 会话 ID（P3-A：读取上下文用量 / 手动压缩） */
   sessionId?: string;
   /** 当前会话待发送队列（CV-S09，FIFO 序）；不传则不渲染徽标 */
@@ -58,7 +65,7 @@ const emit = defineEmits<{
   (e: 'cancel'): void;
   /** 「↵立即」：立即发送队列第 index 条（打断语义），上层补 user 气泡并调 RPC */
   (e: 'queue-send-now', index: number): void;
-  (e: 'model-change', model: string): void;
+  (e: 'model-change', providerId: string): void;
   /** 草稿态选中归属：项目路径；null = 自由对话（不选项目，v0.3） */
   (e: 'pick-project', path: string | null): void;
   /** 打开项目选择弹窗 */
@@ -1084,17 +1091,25 @@ function onCancel(): void {
   emit('cancel');
 }
 
-function onModelChange(model: string): void {
-  emit('model-change', model);
+/**
+ * 生效配置的模型 ID（派生值）：思考等级查询要的是模型 ID 而非别名锚点。
+ * 设置里改了配置内的模型 ID 后，上层重查会送回新解析值，锚点不变（自动跟随）。
+ */
+const currentModelId = computed(
+  () => props.modelOptions.find((o) => o.providerId === props.currentProviderId)?.model ?? null,
+);
+
+function onModelChange(providerId: string): void {
+  emit('model-change', providerId);
 }
 
 function toggleModelMenu(): void {
   modelMenuOpen.value = !modelMenuOpen.value;
 }
 
-function selectModel(m: string): void {
+function selectModel(providerId: string): void {
   modelMenuOpen.value = false;
-  if (m !== props.currentModel) onModelChange(m);
+  if (providerId !== props.currentProviderId) onModelChange(providerId);
 }
 
 // ===== MP-S05：加载并切换思考级别 =====
@@ -1104,20 +1119,21 @@ function selectModel(m: string): void {
  * - model/getSessionThinkingLevel 得当前生效级别（失败仅降级回显，不隐藏切换器）
  * 草稿态（新会话未创建，sessionId 缺省）同样渲染切换器：级别列表只依赖模型
  * （草稿用全局默认模型）；级别回显传空参查全局默认（新会话继承全局，TD-MP-05）。
- * 仅当 currentModel 不存在时回退空态。
+ * 仅当生效模型解析不到时回退空态。
  * 金色扫光动画仅在用户主动选择切到 max 时触发（见 selectLevel）；
  * 加载/重载（包括切换会话、切换模型）落出 max 不触发，避免每次进会话都闪一次。
  */
 async function loadThinkingState(): Promise<void> {
   const gen = ++tlGen;
-  if (!props.currentModel) {
+  const modelId = currentModelId.value;
+  if (!modelId) {
     availableLevels.value = [];
     currentLevel.value = null;
     return;
   }
   try {
     const res = await call<ModelThinkingLevels>('model/getModelThinkingLevels', {
-      model: props.currentModel,
+      model: modelId,
     });
     if (gen !== tlGen) return;
     availableLevels.value = res.levels ?? [];
@@ -1474,9 +1490,10 @@ watch(
   },
 );
 
-// 会话 / 当前模型变化时重新加载思考级别状态（MP-S05）
+// 会话 / 生效模型 ID 变化时重新加载思考级别状态（MP-S05）。
+// 盯派生的模型 ID 而非锚点：设置里只改配置内的模型 ID 时锚点不变，但级别列表必须重查。
 watch(
-  () => [props.currentModel, props.sessionId] as const,
+  () => [currentModelId.value, props.sessionId] as const,
   () => {
     levelMenuOpen.value = false;
     void loadThinkingState();
@@ -1641,26 +1658,27 @@ watch(
           <span>{{ t('input.attach.label') }}</span>
         </button>
 
-        <!-- 模型：点击字样弹浮窗切换 -->
+        <!-- 模型：点击字样弹浮窗切换。触发器与选项只显示别名——这一行很窄，
+             「别名 · 模型 ID」会把触发器撑到 190px 以上（原型实测），别名足以指认配置 -->
         <div class="model-wrap">
           <button
             class="meta-link"
             type="button"
             @click.stop="toggleModelMenu"
           >
-            <span>{{ currentModel ?? t('input.model.select') }}</span>
+            <span>{{ currentProviderId ?? t('input.model.select') }}</span>
           </button>
           <div v-if="modelMenuOpen" class="model-menu">
             <div class="menu-hint">{{ t('input.model.hint') }}</div>
             <button
-              v-for="m in models"
-              :key="m"
+              v-for="o in modelOptions"
+              :key="o.providerId"
               class="menu-item"
-              :class="{ active: m === currentModel }"
+              :class="{ active: o.providerId === currentProviderId }"
               type="button"
-              @click="selectModel(m)"
+              @click="selectModel(o.providerId)"
             >
-              {{ m }}
+              {{ o.providerId }}
             </button>
           </div>
         </div>

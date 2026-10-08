@@ -22,7 +22,7 @@ import type { GitStatusFile, GitStatusInfo } from '../types.ts';
 import type { CodeViewerLayout } from '../composables/usePreferences.ts';
 import { openGitCommitDialog } from '../composables/useGitCommitDialog.ts';
 import { createGitHistoryLoader } from '../composables/useGitHistory.ts';
-import { avatarOf, filterCommits, groupCommitsByDay, relativeTimeOf } from '../utils/gitHistory.ts';
+import { avatarOf, filterCommits, groupCommitsByDay, relativeTimeSpec, type LabelSpec } from '../utils/gitHistory.ts';
 import { useI18n } from '../i18n/index.ts';
 
 /** 路径末段文件名（变更视图的扁平清单用） */
@@ -73,6 +73,16 @@ let histTimer: ReturnType<typeof setInterval> | null = null;
 const histCommits = computed(() => (histTick.value, histLoader.commits()));
 const histVisible = computed(() => filterCommits(histCommits.value, histFilter.value));
 const histGroups = computed(() => groupCommitsByDay(histVisible.value, histNow.value));
+
+/* 时间文案走 t()：utils/gitHistory 只给 i18n key + 参数，成串会写死一种语言
+ *（切 en 时「今天 / 3 小时前」整片不变，违反 AC-CE-031）。 */
+function histDayLabel(spec: LabelSpec): string {
+  return t(spec.key, spec.params);
+}
+function histRelativeLabel(authoredAt: number): string {
+  const spec = relativeTimeSpec(authoredAt, histNow.value);
+  return t(spec.key, spec.params);
+}
 
 /** 响应式绞链：loader 内部是普通闭包变量（为了能在 node:test 里直接驱动），
  *  computed 追踪不到它。每做完一次操作手动 bump，否则「加载更多」点了列表不变。 */
@@ -653,7 +663,7 @@ function onFilterEsc(e: KeyboardEvent): void {
         </div>
         <template v-else>
           <template v-for="g in histGroups" :key="g.label">
-            <div class="ctp-day">{{ g.label }}</div>
+            <div class="ctp-day">{{ histDayLabel(g.label) }}</div>
             <button
               v-for="c in g.commits"
               :key="c.sha"
@@ -672,7 +682,7 @@ function onFilterEsc(e: KeyboardEvent): void {
                 <span class="ctp-cmt-meta">
                   <span class="ctp-cmt-author">{{ c.authorName }}</span>
                   <span aria-hidden="true">·</span>
-                  <span>{{ relativeTimeOf(c.authoredAt, histNow) }}</span>
+                  <span>{{ histRelativeLabel(c.authoredAt) }}</span>
                   <span aria-hidden="true">·</span>
                   <span class="ctp-cmt-sha">{{ c.shortSha }}</span>
                   <span v-if="c.isMerge" class="ctp-cmt-merge">{{ t('code.historyMergeTag') }}</span>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import type { SessionItem } from '../types';
+import type { SessionItem, ModelOption } from '../types';
 import MultiWindowConversation from './MultiWindowConversation.vue';
 import { useI18n } from '../i18n/index.ts';
 import {
@@ -29,8 +29,8 @@ import {
 const props = defineProps<{
   /** 全部项目会话（会话池数据源） */
   sessions: SessionItem[];
-  /** 可选模型列表（透传给窗口内对话输入，与单视图一致） */
-  models: string[];
+  /** 模型可选项（透传给窗口内对话输入，与单视图一致） */
+  modelOptions: ModelOption[];
 }>();
 
 const emit = defineEmits<{
@@ -525,7 +525,7 @@ defineExpose({ arrangeAuto, clearAll });
           <MultiWindowConversation
             :session-id="w.sessionId"
             :session="sessionOf(w.sessionId) ?? null"
-            :models="models"
+            :model-options="modelOptions"
           />
         </div>
       </div>

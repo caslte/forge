@@ -56,7 +56,7 @@
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| id | string | 否 | 已有 provider 更新时必填 |
+| id | string | 否 | 已有 provider 更新时必填（= 当前别名锚点）。缺省时由 `name` 生成 slug；落盘后读回的 `id` 恒等于 `name`（pi 按 name 作 key）。改 `name` 即改锚点，服务端会把引用旧别名的全局默认与会话覆盖一并改写（见下） |
 | name | string | 是 | Provider 名称 |
 | type | string | 是 | 类型 |
 | baseUrl | string | 否 | 基础 URL |
@@ -67,7 +67,14 @@
 | reasoning | boolean | 否 | 首模型是否启用思考（MP-S07）：传 `true` 写该模型记录 `reasoning: true`；传 `false` 写 `reasoning: false`；缺省保留原值 |
 | thinkingLevels | ThinkingLevel[] \| null | 否 | 首模型思考等级白名单（MP-S07）：数组内每项 ∈ off/minimal/low/medium/high/xhigh/max（重复项去重），保存后写该模型记录 `thinkingLevelMap`——选中项值为级别名、未选项为 `null`（全量 7 项显式写出，如 `["high","max"]` → `{off:null,minimal:null,low:null,medium:null,high:"high",xhigh:null,max:"max"}`）；传 `null` 移除 `thinkingLevelMap` 字段；缺省保留原值。搭配 `reasoning: true` 使用；`off` 不参与配置（值为 null 时对话框不出现「关闭思考」挡位） |
 
-响应：`data: null`（成功后承诺事件见 §6）。
+响应：`data: null`（成功后承诺事件见 §7）。
+
+**别名锚点（模型选择的存储口径）**：pi `models.json` 的 provider 段以 `name` 为 key，读回时 `id === name === provider key`，这个值同时是「主会话模型 / 会话模型覆盖」在 forge-store 里存的**别名锚点**（见 §4/§5/§6）。因此本方法有两种截然不同的落盘后果：
+
+- **只改 `models`（模型 ID）**：不动任何锚点存储——`settings.defaultModel` 与所有 `session.modelOverride` 存的都是别名，读取时按别名取该配置首模型派生，改完即全站自动跟随（主会话徽标、下拉选中态、思考级别入参都不断链）。
+- **改 `name`（别名）**：等于换锚点，服务端在写库成功后**静默传播**——把 `settings.defaultModel` 与所有 `modelOverride === 旧别名` 的会话覆盖改写为新别名。不弹提示、不报条数。
+
+模型 ID 在配置间**允许重复**（不做跨配置去重校验）：归属由锚点决定，不靠模型 ID 反查，重复不会让「主会话」认不出配置。
 
 **落盘附加行为**：写回时若 `baseUrl` 为火山方舟地址（域名含 `volces.com`，如 `https://ark.cn-beijing.volces.com/api/coding/v3`），自动为**没有 `compat`** 的模型记录补充默认兼容块：
 
@@ -90,7 +97,7 @@
 
 请求参数：`id`。
 
-响应：`data: null`。若为全局默认模型所属 provider，删除后全局默认模型自动置空。
+响应：`data: null`。若全局默认（主会话）锚点指向该配置（含存量的裸模型 ID 形态），删除后全局默认自动置空。会话覆盖**不**在此清理：残留的悬空别名由 `model/getSessionModel` 读取时降级到全局默认，并在发送前探测自愈时清除（不让会话卡在坏值上）。
 
 ---
 
@@ -98,15 +105,25 @@
 
 `model/queryModels`
 
-**用途**：返回可用模型列表（全局已注册模型，MP-S02）。
+**用途**：返回可选项（**一条 provider 配置 = 一个可选项**）与全局默认所属配置（MP-S02）。选项以配置别名标识，模型 ID 为该配置首模型的派生值。
 
 请求参数：无。
 
 响应：
 
 ```json
-{ "models": ["gpt-4o", "claude-sonnet-4"], "defaultModel": "claude-sonnet-4" }
+{
+  "options": [
+    { "providerId": "mx", "model": "MiniMax-M3.1-Flash-Preview" },
+    { "providerId": "Grok 4.5", "model": "grok-4.5" }
+  ],
+  "defaultProviderId": "mx"
+}
 ```
+
+- `providerId`：配置别名（= models.json 的 provider key，可含空格），前端据此标记选中项、并作为 §5/§6 写入参数原样回传。
+- `model`：该配置的首模型 ID（派生值）。models 为空的配置**不进选项**（无法派生）。
+- `defaultProviderId`：全局默认（主会话）所属配置别名；未配置或悬空为 `null`。存量裸模型 ID 形态在此**读时自愈**：解析到归属配置后把 `settings.defaultModel` 回写为该配置别名。
 
 ---
 
@@ -114,13 +131,17 @@
 
 ### model/setDefault
 
+**用途**：把某个已保存配置设为全局默认（主会话）。写入的是**别名锚点**，不是模型 ID——此后改该配置的模型 ID，主会话自动跟着换模型。
+
 请求参数：
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| model | string | 是 | 模型 ID |
+| providerId | string \| null | 是 | 配置别名（= provider id）；`null` 清除全局默认 |
 
-响应：`data: null`。
+校验：`providerId` 非字符串 / 空白 → 1001；配置未保存 → 1004（`模型配置未保存: <别名>`）；配置存在但 models 为空 → 1004（`模型配置 <别名> 没有可用模型`）。**不做模型 ID 形态校验**（别名可含空格，形态校验会误杀合法别名）。
+
+响应：`data: null`；成功后发射 `model.providersChanged`（清除默认同样发射）。
 
 ---
 
@@ -128,28 +149,34 @@
 
 ### `model/getSessionModel`
 
-**用途**：查看会话当前生效模型（优先会话覆盖，其次全局默认）。
+**用途**：查看会话当前生效模型（优先会话覆盖，其次全局默认）。存储是别名，返回派生出的模型 ID。
 
 请求参数：`sessionId`。
 
 响应：
 
 ```json
-{ "model": "gpt-4o", "effective": "session" }
+{ "model": "MiniMax-M3.1-Flash-Preview", "providerId": "mx", "effective": "session" }
 ```
 
-`effective`: `session` / `global`。
+- `model`：生效模型 ID（派生值，pi 消费）；无任何可用配置时为 `null`。
+- `providerId`：该模型所属配置别名（UI 标记下拉选中项）；悬空时为 `null`。
+- `effective`: `session` / `global`。
+
+覆盖值为存量裸模型 ID 时，解析到归属配置后**回写为别名**（读一次即自愈）；覆盖悬空（配置被删/改名）时不报错，降级返回全局默认（`effective: "global"`）。
 
 ### `model/setSessionModel`
 
-**用途**：设置会话级模型覆盖（MP-S02），不影响其他会话。
+**用途**：设置会话级模型覆盖（MP-S02），不影响其他会话。写入的是**配置别名**。
 
 请求参数：
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | sessionId | string | 是 | 会话 ID |
-| model | string | 是 | 模型 ID（null 表示清除覆盖回到全局默认） |
+| providerId | string \| null | 是 | 配置别名（`null` 表示清除覆盖回到全局默认） |
+
+只校验非空（别名可含空格），**不**拿配置列表做包含性校验——列表不是权威第二真相，别名是否还在由读取侧降级 + 发送前探测自愈处理。未知会话 → 1002。
 
 响应：`data: null`。
 
@@ -165,6 +192,8 @@
 { "providers": [ ... ] }
 ```
 
+前端订阅该事件后应重跑 `model/queryModels` + `model/getSessionModel`：改了某配置的模型 ID 时，派生值（下拉标签、设置页 `别名 · 模型 ID`、思考级别入参模型）随之一新，而选中的别名锚点不变。
+
 ---
 
 ## 8. 模型思考级别
@@ -177,7 +206,7 @@
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| model | string | 是 | 模型 ID（会话当前生效模型的 ID） |
+| model | string | 是 | 模型 ID（= `getSessionModel` 返回的派生 `model`，不是别名锚点）。设置页改了某配置的模型 ID 后，前端按新派生值重查本接口 |
 
 响应：
 
@@ -254,8 +283,8 @@
 
 | code | 说明 |
 |------|------|
-| 1001 | 参数错误（baseUrl 非法 / apiKey 为空 / level 非法思考级别；testProvider 地址非 http(s) 亦此码） |
+| 1001 | 参数错误（baseUrl 非法 / apiKey 为空 / 别名锚点 `providerId` 为空或非字符串 / level 非法思考级别；testProvider 地址非 http(s) 亦此码） |
 | 1002 | provider / 会话不存在 |
-| 1004 | provider 未配置 / 模型未配置（getModelThinkingLevels 的模型不可用） |
+| 1004 | 模型配置未保存 / 配置无可用模型（setDefault 的 `providerId`）；模型未配置（getModelThinkingLevels 的模型不可用） |
 | 1006 | 模型连通性测试失败（网络/超时/鉴权/模型不可用；message 不含密钥） |
 | 5000 | 内部错误（models.json 写失败 / 思考级别解析异常） |

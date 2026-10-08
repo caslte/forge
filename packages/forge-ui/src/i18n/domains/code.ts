@@ -119,4 +119,16 @@ export const zhCode = {
   'code.pickCommitTitle': '选择左侧的一条提交',
   'code.pickCommitHint': '点开提交即可查看谁写的、改了哪些文件。',
   'code.historyExpandBody': '展开完整提交说明',
+  // 日期分隔条 + 相对时间：分档在 utils/gitHistory.ts，这里只管措辞。
+  // 与 utils/gitHistory.ts 的 ZH_LABELS 必须逐字一致（那边是纯逻辑层不能 import vue）。
+  'code.historyDayToday': '今天',
+  'code.historyDayYesterday': '昨天',
+  'code.historyDayMonthDay': '{month} 月 {day} 日',
+  'code.historyDayFull': '{year} 年 {month} 月 {day} 日',
+  'code.historyTimeJustNow': '刚刚',
+  'code.historyTimeMinutes': '{count} 分钟前',
+  'code.historyTimeHours': '{count} 小时前',
+  'code.historyTimeDays': '{count} 天前',
+  'code.historyTimeMonthDay': '{month} 月 {day} 日',
+  'code.historyTimeFull': '{year}/{month}/{day}',
 };

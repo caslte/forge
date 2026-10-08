@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import type { ProjectPickerDescriptor } from '../types';
+import type { ProjectPickerDescriptor, ModelOption } from '../types';
 import InstructionInput from './InstructionInput.vue';
 
 // v3.85.2：字标与 splash/BootWelcome/conv-hero 同一 URL、同一档尺寸（320px）
@@ -23,14 +23,16 @@ const logoWordmarkLight = import.meta.env.BASE_URL + 'logo-wordmark-on-light.svg
  * 打开项目、本组件卸载后，项目视图的草稿输入框挂载即从同一 key 回填。
  */
 const props = defineProps<{
-  models: string[];
-  currentModel: string | null;
+  /** 模型可选项（别名锚点 + 派生模型 ID） */
+  modelOptions: ModelOption[];
+  /** 当前展示的别名锚点（草稿态回显全局默认） */
+  currentProviderId: string | null;
   /** 零项目时上层传入 currentPath:null + freeOption 的 draft 描述 */
   projectPicker?: ProjectPickerDescriptor;
 }>();
 
 const emit = defineEmits<{
-  (e: 'model-change', model: string): void;
+  (e: 'model-change', providerId: string): void;
   (e: 'pick-project', path: string | null): void;
   (e: 'open-project-picker'): void;
   (e: 'remove-project', path: string): void;
@@ -48,8 +50,8 @@ function onSend(text: string): void {
   emit('start-free-chat', text);
 }
 
-function onModelChange(model: string): void {
-  emit('model-change', model);
+function onModelChange(providerId: string): void {
+  emit('model-change', providerId);
 }
 
 function onPickProject(path: string | null): void {
@@ -73,8 +75,8 @@ onMounted(() => {
       <InstructionInput
         ref="inputRef"
         session-status="idle"
-        :models="models"
-        :current-model="currentModel"
+        :model-options="modelOptions"
+        :current-provider-id="currentProviderId"
         :project-picker="projectPicker"
         @send="onSend"
         @model-change="onModelChange"

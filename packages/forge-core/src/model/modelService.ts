@@ -21,11 +21,18 @@
  * 3. 幂等（MP-S01）：saveProvider 以 id 为键 upsert —— 同 id 重复保存覆盖更新；
  *    id 缺省时由 name 生成 slug 作为 id；未提供新 apiKey 时保留内存中已存的引用。
  * 4. 删除联动（docs/api/05_model.md §3）：deleteProvider 删除 provider 后，若全局
- *    默认模型属于该 provider（defaultModel 命中其 models），将 defaultModel 置空。
+ *    默认锚点指向该 provider（或存量裸模型 ID 属于其 models），将默认置空。
  * 5. 会话模型（TD-MP-02）：getSessionModel 优先会话覆盖（effective=session），否则
  *    全局默认（effective=global）；setSessionModel 仅写该会话 modelOverride，不影响
  *    其他会话与全局默认。
- * 6. 所有方法返回判别联合 `{ ok: true, data } | { ok: false, code, message }`，
+ * 6. **锚点语义**：settings.defaultModel 与 session.modelOverride 存的是 provider 别名
+ *    （provider id = pi models.json 里该 provider 的 key，如 "mx"），不是模型 ID。
+ *    模型 ID 是锚点解析出的派生值（该 provider 的首模型）。这样在设置里把某个配置的
+ *    模型 ID 换掉（MiniMax-M3 → M3.1）时，主会话与所有引用该配置的会话自动跟随，
+ *    不会留下一个指向不存在模型的悬空值。读侧兼容存量裸模型 ID（见 resolveAnchor），
+ *    解析到归属后就地回写成别名，读一次即自愈；只有**改别名**需要传播（见
+ *    propagateAnchor）。
+ * 7. 所有方法返回判别联合 `{ ok: true, data } | { ok: false, code, message }`，
  *    调用方无需 try/catch 即可映射错误码。
  */
 
@@ -100,16 +107,55 @@ export interface ProviderFileRecord extends ProviderConfig {
   thinkingLevels?: ThinkingLevel[] | null;
 }
 
+/**
+ * 模型可选项（queryModels 响应项）：一个 provider 配置 = 一个可选项。
+ * @param providerId 别名锚点（= provider id = pi models.json 的 provider key），选中时写回存储的值
+ * @param model 该配置当前解析出的模型 ID（派生值，喂给 pi 与思考等级查询）
+ */
+export interface ModelOption {
+  providerId: string;
+  model: string;
+}
+
 /** 模型注册表（docs/api/05_model.md §4 响应） */
 export interface ModelRegistry {
-  models: string[];
-  defaultModel: string | null;
+  options: ModelOption[];
+  /** 全局默认（主会话）模型的别名锚点；未配置或解析不到为 null */
+  defaultProviderId: string | null;
 }
 
 /** 会话模型信息（docs/api/05_model.md §6 响应） */
 export interface SessionModelInfo {
+  /** 生效模型 ID（锚点解析出的派生值，pi 运行时消费的就是它） */
   model: string | null;
+  /** 生效模型的别名锚点；与 model 同源，UI 按它标记选中项 */
+  providerId: string | null;
   effective: 'session' | 'global';
+}
+
+/**
+ * 锚点解析结果（见 ModelService.resolveAnchor）。
+ * @param providerId 别名锚点
+ * @param model 该配置解析出的生效模型 ID
+ * @param legacyValue 存储值是否为存量裸模型 ID（调用方据此回写为别名，完成读时自愈）
+ */
+interface AnchorResolution {
+  providerId: string;
+  model: string;
+  legacyValue: boolean;
+}
+
+/**
+ * 配置的派生模型 ID：取该 provider 的首模型（与设置卡片「主会话模型」徽标同一口径）。
+ * @param provider provider 配置
+ * @returns 首模型；未配置模型返回 null（该配置不可作为锚点生效）
+ */
+function firstModel(provider: ProviderConfig): string | null {
+  const model = provider.models[0];
+  if (typeof model !== 'string' || model.trim() === '') {
+    return null;
+  }
+  return model.trim();
 }
 
 /** saveProvider 请求参数（docs/api/05_model.md §2） */
@@ -179,6 +225,8 @@ const KEY_REF_PREFIX = /^[!$]/;
 export interface ModelStorePort {
   getSetting(key: StoreKey): unknown;
   setSetting(key: StoreKey, value: unknown): void;
+  /** 全部会话记录（改别名时传播锚点用，见 propagateAnchor） */
+  listSessions(): SessionRecord[];
   getSession(sessionId: string): SessionRecord | undefined;
   saveSession(record: SessionRecord): void;
 }
@@ -273,9 +321,9 @@ function normalizeBaseUrl(baseUrl: string | null | undefined): string | null {
  * 全局默认与会话覆盖，而 pi 侧解析不到它——错误直到发送时才炸成
  * 「模型未配置或不可用」，且该会话此后每条消息都失败，只能手动重选模型才能恢复）。
  *
- * 模型 ID 是三层共用的查找键（models.json providers[].models[].id、
- * pi ModelRuntime.getModel(providerId, id)、store 会话 modelOverride），
- * 含空白字符时必错且错得无声。这里在唯一的写入口（saveProvider）挡住。
+ * 模型 ID 是两层共用的查找键（models.json 模型记录的 id、pi
+ * ModelRuntime.getModel(providerId, id)），含空白字符时必错且错得无声。
+ * 这里在唯一的写入口（saveProvider）挡住。
  */
 export function validateModelId(model: string): string | null {
   if (model === '') return '模型 ID 不能为空';
@@ -479,12 +527,17 @@ export class ModelService {
     try {
       const providers = await this.deps.modelsFile.readProviders();
       const idx = providers.findIndex((p) => p.id === id);
+      // 改名前记录：pi models.json 的 provider key 按 name 落盘，改别名等于换锚点
+      const existing = idx === -1 ? undefined : providers[idx];
       if (idx === -1) {
         providers.push(record);
       } else {
         providers[idx] = record;
       }
       await this.deps.modelsFile.writeProviders(providers);
+      if (existing !== undefined && existing.id !== name) {
+        this.propagateAnchor(existing.id, name);
+      }
     } catch (err) {
       return { ok: false, code: 5000, message: `写入 models.json 失败: ${toMessage(err)}` };
     }
@@ -500,7 +553,7 @@ export class ModelService {
   }
 
   /**
-   * 删除 provider（MP-S01）：移除配置；若全局默认模型属于该 provider 则重置为 null。
+   * 删除 provider（MP-S01）：移除配置；全局默认（主会话）锚点指向该 provider 时重置为 null。
    * @param id provider ID
    * @returns 成功返回 null；provider 不存在返回 1002；adapter 异常返回 5000
    */
@@ -516,8 +569,12 @@ export class ModelService {
         return { ok: false, code: 1002, message: `provider 不存在: ${providerId}` };
       }
       await this.deps.modelsFile.writeProviders(providers.filter((p) => p.id !== providerId));
+      // 存量数据可能仍存裸模型 ID，两种形态一并认（别名命中 或 该 provider 的模型命中）
       const defaultModel = this.deps.store.getSetting('defaultModel');
-      if (typeof defaultModel === 'string' && target.models.includes(defaultModel)) {
+      if (
+        typeof defaultModel === 'string' &&
+        (defaultModel.trim() === providerId || target.models.includes(defaultModel.trim()))
+      ) {
         this.deps.store.setSetting('defaultModel', null);
       }
       // P3-D：删除 provider 记审计（不含密钥）
@@ -535,46 +592,123 @@ export class ModelService {
   }
 
   /**
-   * 查询模型列表（MP-S02）：可用模型来自 models.json 适配器，默认模型来自 store。
-   * @returns 成功返回 { models, defaultModel }；adapter 异常返回 5000
+   * 解析锚点存储值 -> 生效配置（设计决策 6）。
+   *
+   * 两种形态一并认：
+   * - 新形态（别名锚点）：raw 等于某 provider 的 id，模型取该配置首模型；
+   * - 存量形态（裸模型 ID）：raw 命中某 provider 的 models，解析出归属 provider，
+   *   并由调用方回写为别名（legacyValue=true），读一次即自愈。
+   *
+   * 都解析不到返回 null（悬空值：配置被删或存量模型 ID 已被改名），由调用方降级。
+   * @param raw 存储的原始值（settings.defaultModel 或 session.modelOverride）
+   * @param providers 当前 provider 列表
+   * @returns 解析结果；悬空返回 null
+   */
+  private resolveAnchor(raw: string, providers: ProviderConfig[]): AnchorResolution | null {
+    const byId = providers.find((p) => p.id === raw);
+    if (byId !== undefined) {
+      const model = firstModel(byId);
+      return model === null ? null : { providerId: byId.id, model, legacyValue: false };
+    }
+    const byModel = providers.find((p) => p.models.includes(raw));
+    if (byModel !== undefined) {
+      const model = firstModel(byModel);
+      // 存量裸 ID 本身就是该配置的某个模型；首模型为空时按存储值原样生效
+      return { providerId: byModel.id, model: model ?? raw, legacyValue: true };
+    }
+    return null;
+  }
+
+  /**
+   * 解析全局默认锚点，并把存量裸模型 ID 形态就地回写为别名（读时自愈）。
+   * @param providers 当前 provider 列表
+   * @returns 解析结果；未配置或悬空返回 null
+   */
+  private resolveDefaultAnchor(providers: ProviderConfig[]): AnchorResolution | null {
+    const stored = this.deps.store.getSetting('defaultModel');
+    if (typeof stored !== 'string' || stored.trim() === '') {
+      return null;
+    }
+    const resolved = this.resolveAnchor(stored.trim(), providers);
+    if (resolved === null) {
+      return null;
+    }
+    if (resolved.legacyValue) {
+      this.deps.store.setSetting('defaultModel', resolved.providerId);
+    }
+    return resolved;
+  }
+
+  /**
+   * 传播别名锚点改名（设计决策 6：改模型 ID 无需传播，改别名才需要）。
+   * 全局默认与所有引用旧别名的会话覆盖一并改写为新别名，用户无感（静默，不提示条数）。
+   * @param from 旧别名（= 旧 provider id）
+   * @param to 新别名（= saveProvider 的 name，pi models.json 的 provider key）
+   */
+  private propagateAnchor(from: string, to: string): void {
+    if (from === to) {
+      return;
+    }
+    const stored = this.deps.store.getSetting('defaultModel');
+    if (typeof stored === 'string' && stored.trim() === from) {
+      this.deps.store.setSetting('defaultModel', to);
+    }
+    for (const session of this.deps.store.listSessions()) {
+      if (session.modelOverride === from) {
+        this.deps.store.saveSession({ ...session, modelOverride: to });
+      }
+    }
+  }
+
+  /**
+   * 查询模型可选项与全局默认（MP-S02）：一个 provider 配置 = 一个可选项。
+   * 可选项来自注入的 models.json 适配器（读 providers，不再用 readModelNames 的扁平
+   * 模型名列表——扁平列表丢了归属信息，正是「改了模型 ID 就不认识配置」的根因）。
+   * @returns 成功返回 { options, defaultProviderId }；adapter 异常返回 5000
    */
   async queryModels(): Promise<ModelResult<ModelRegistry>> {
-    let models: string[];
+    let providers: ProviderConfig[];
     try {
-      models = await this.deps.modelsFile.readModelNames();
+      providers = await this.deps.modelsFile.readProviders();
     } catch (err) {
       return { ok: false, code: 5000, message: `读取模型列表失败: ${toMessage(err)}` };
     }
-    const defaultModel = this.deps.store.getSetting('defaultModel');
+    const options = providers
+      .map((p) => ({ providerId: p.id, model: firstModel(p) }))
+      .filter((o): o is ModelOption => o.model !== null);
     return {
       ok: true,
-      data: { models, defaultModel: typeof defaultModel === 'string' ? defaultModel : null },
+      data: { options, defaultProviderId: this.resolveDefaultAnchor(providers)?.providerId ?? null },
     };
   }
 
   /**
-   * 设置全局默认模型（MP-S02）：持久化到 store settings.defaultModel。
-   * @param model 模型 ID；null 表示清除默认
-   * @returns 成功返回 null；模型不在可用列表返回 1004；adapter 异常返回 5000
+   * 设置全局默认（主会话）模型（MP-S02）：持久化别名锚点到 store settings.defaultModel。
+   *
+   * 参数是 provider 别名而非模型 ID：改某个配置的模型 ID 后，主会话仍指向该配置并
+   * 自动跟着换模型。别名可含空格（pi provider key 原样），因此不做 validateModelId
+   * 形态校验，只校验该配置存在。
+   * @param providerId 别名锚点；null 表示清除默认
+   * @returns 成功返回 null；空值返回 1001；配置不存在/无可用模型返回 1004；adapter 异常返回 5000
    */
-  async setDefault(model: string | null): Promise<ModelResult<null>> {
-    if (model !== null && (typeof model !== 'string' || model.trim() === '')) {
-      return { ok: false, code: 1001, message: '模型 ID 不能为空' };
+  async setDefault(providerId: string | null): Promise<ModelResult<null>> {
+    if (providerId !== null && (typeof providerId !== 'string' || providerId.trim() === '')) {
+      return { ok: false, code: 1001, message: '模型配置别名不能为空' };
     }
-    const target = model === null ? null : model.trim();
+    const target = providerId === null ? null : providerId.trim();
     if (target !== null) {
-      const invalid = validateModelId(target);
-      if (invalid !== null) {
-        return { ok: false, code: 1001, message: invalid };
-      }
-      let models: string[];
+      let providers: ProviderConfig[];
       try {
-        models = await this.deps.modelsFile.readModelNames();
+        providers = await this.deps.modelsFile.readProviders();
       } catch (err) {
-        return { ok: false, code: 5000, message: `读取模型列表失败: ${toMessage(err)}` };
+        return { ok: false, code: 5000, message: `读取 provider 配置失败: ${toMessage(err)}` };
       }
-      if (!models.includes(target)) {
-        return { ok: false, code: 1004, message: `模型未配置: ${target}` };
+      const provider = providers.find((p) => p.id === target);
+      if (provider === undefined) {
+        return { ok: false, code: 1004, message: `模型配置未保存: ${target}` };
+      }
+      if (firstModel(provider) === null) {
+        return { ok: false, code: 1004, message: `模型配置 ${target} 没有可用模型` };
       }
     }
     this.deps.store.setSetting('defaultModel', target);
@@ -588,57 +722,108 @@ export class ModelService {
   }
 
   /**
+   * 解析全局默认（主会话）锚点：别名 + 派生模型 ID。
+   *
+   * 供宿主侧（forge-desktop）消费的两处：发送前的悬空自愈回落、生成提交说明时的
+   * provider 解析（按别名取配置，避免多配置共用同一模型 ID 时认不出是哪一个）。
+   * 读取 models.json 失败时返回 null（调用方按「未配置」降级，不抛错）。
+   * @returns { providerId, model }；未配置或解析不到返回 null
+   */
+  async resolveDefault(): Promise<{ providerId: string; model: string } | null> {
+    try {
+      const providers = await this.deps.modelsFile.readProviders();
+      const resolved = this.resolveDefaultAnchor(providers);
+      return resolved === null ? null : { providerId: resolved.providerId, model: resolved.model };
+    } catch (err) {
+      console.error('[resolveDefault] 读取 provider 配置失败', err);
+      return null;
+    }
+  }
+
+  /**
    * 查询会话当前生效模型（MP-S02）：优先会话覆盖，其次全局默认。
+   *
+   * 存储值是别名锚点，返回值是解析出的派生模型 ID（pi 消费它）+ 别名（UI 标记选中项）。
+   * 覆盖值悬空（配置被删或存量 ID 已改名）时降级到全局默认，不报错——发送前的探测
+   * 自愈负责清理。
    * @param sessionId 会话 ID
-   * @returns 成功返回 { model, effective }；会话不存在返回 1002
+   * @returns 成功返回 { model, providerId, effective }；会话不存在返回 1002
    */
   async getSessionModel(sessionId: string): Promise<ModelResult<SessionModelInfo>> {
     if (typeof sessionId !== 'string' || sessionId.trim() === '') {
       return { ok: false, code: 1001, message: '会话 ID 不能为空' };
     }
-    const session = this.deps.store.getSession(sessionId.trim());
+    const sid = sessionId.trim();
+    const session = this.deps.store.getSession(sid);
     if (session === undefined) {
       return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
     }
-    const defaultModel = this.deps.store.getSetting('defaultModel');
-    const globalModel = typeof defaultModel === 'string' ? defaultModel : null;
-    if (session.modelOverride !== null) {
-      return { ok: true, data: { model: session.modelOverride, effective: 'session' } };
+    let providers: ProviderConfig[];
+    try {
+      providers = await this.deps.modelsFile.readProviders();
+    } catch (err) {
+      return { ok: false, code: 5000, message: `读取 provider 配置失败: ${toMessage(err)}` };
     }
-    return { ok: true, data: { model: globalModel, effective: 'global' } };
+    const override = session.modelOverride;
+    if (typeof override === 'string' && override.trim() !== '') {
+      const resolved = this.resolveAnchor(override.trim(), providers);
+      if (resolved !== null) {
+        if (resolved.legacyValue) {
+          // 存量裸模型 ID -> 别名回写，下一次读即走新形态
+          this.deps.store.saveSession({ ...session, modelOverride: resolved.providerId });
+        }
+        return {
+          ok: true,
+          data: {
+            model: resolved.model,
+            providerId: resolved.providerId,
+            effective: 'session',
+          },
+        };
+      }
+    }
+    const global = this.resolveDefaultAnchor(providers);
+    return {
+      ok: true,
+      data: {
+        model: global?.model ?? null,
+        providerId: global?.providerId ?? null,
+        effective: 'global',
+      },
+    };
   }
 
   /**
-   * 设置会话级模型覆盖（MP-S02）：仅写该会话 modelOverride，不影响其他会话与全局。
+   * 设置会话级模型覆盖（MP-S02）：仅写该会话 modelOverride，不影响其他会话与全局默认。
    *
-   * 只做形态校验（见 validateModelId），**不**拿可用模型列表做包含性校验：
-   * 会话模型可能合法存在于 pi 运行时（注入的 models.json）而不在本服务注入的
-   * modelsFile 列表里——把列表当权威就等于凭空引入第二份真相，热切换这类场景会被
-   * 误判成 1004。ID 是否真的还在（例如被改名/删除）由发送前的探测自愈处理。
+   * 写的是 provider 别名锚点（设计决策 6），因此：
+   * - 不做 validateModelId 形态校验——别名就是 pi models.json 的 provider key，可以含空格；
+   * - **不**拿配置列表做包含性校验：会话模型可能合法存在于 pi 运行时而不在本服务注入的
+   *   modelsFile 列表里，把列表当权威等于凭空引入第二份真相，热切换会被误判成 1004。
+   *   别名是否还在由读取侧解析降级 + 发送前探测自愈处理。
    * @param sessionId 会话 ID
-   * @param model 模型 ID；null 表示清除覆盖回到全局默认
-   * @returns 成功返回 null；会话不存在返回 1002；ID 形态非法返回 1001
+   * @param providerId 别名锚点；null 表示清除覆盖回到全局默认
+   * @returns 成功返回 null；会话不存在返回 1002；别名空返回 1001
    */
-  async setSessionModel(sessionId: string, model: string | null): Promise<ModelResult<null>> {
+  async setSessionModel(
+    sessionId: string,
+    providerId: string | null,
+  ): Promise<ModelResult<null>> {
     if (typeof sessionId !== 'string' || sessionId.trim() === '') {
       return { ok: false, code: 1001, message: '会话 ID 不能为空' };
     }
-    if (model !== null && (typeof model !== 'string' || model.trim() === '')) {
-      return { ok: false, code: 1001, message: '模型 ID 不能为空' };
+    if (providerId !== null && (typeof providerId !== 'string' || providerId.trim() === '')) {
+      return { ok: false, code: 1001, message: '模型配置别名不能为空' };
     }
     const sid = sessionId.trim();
     const session = this.deps.store.getSession(sid);
     if (session === undefined) {
       return { ok: false, code: 1002, message: `会话不存在: ${sid}` };
     }
-    const target = model === null ? null : model.trim();
-    if (target !== null) {
-      const invalid = validateModelId(target);
-      if (invalid !== null) {
-        return { ok: false, code: 1001, message: invalid };
-      }
-    }
-    this.deps.store.saveSession({ ...session, modelOverride: target });
+    this.deps.store.saveSession({
+      ...session,
+      modelOverride: providerId === null ? null : providerId.trim(),
+    });
     return { ok: true, data: null };
   }
 

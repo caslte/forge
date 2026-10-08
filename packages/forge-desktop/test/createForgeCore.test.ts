@@ -286,8 +286,13 @@ test('sendMessage 将会话生效模型传入 pi runtime options', async () => {
     const providers = await invoke(core.methodTable, 'model/queryProviderList', {});
     assert.equal((providers.data as { providers: unknown[] }).providers.length, 1);
     const models = await invoke(core.methodTable, 'model/queryModels', {});
-    assert.deepEqual((models.data as { models: string[] }).models, ['test-model']);
-    await invoke(core.methodTable, 'model/setDefault', { model: 'test-model' });
+    // 锚点语义：一个配置 = 一个可选项，providerId 为别名（= models.json 的 provider key），
+    // model 为该配置首模型（派生值）
+    assert.deepEqual(
+      (models.data as { options: Array<{ providerId: string; model: string }> }).options,
+      [{ providerId: 'Test Provider', model: 'test-model' }],
+    );
+    await invoke(core.methodTable, 'model/setDefault', { providerId: 'Test Provider' });
 
     await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: 'hello' });
 
@@ -1537,9 +1542,18 @@ test('已有会话热切换模型经注入的 modelsPath 解析（不回退 ~/.p
     assert.equal(first.code, 0, `首轮发送应成功，message: ${first.message}`);
 
     // 会话内切到「仅在注入 modelsPath 配置」的模型 → 适配器 applyModelChange 必须解析成功
+    // 锚点语义：setSessionModel 传 provider 别名（= models.json 的 provider key），模型 ID 派生
+    const seeded = await invoke(core.methodTable, 'model/saveProvider', {
+      name: 'forge-test-provider',
+      type: 'openai-completions',
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: 'sk-test',
+      models: ['forge-only-model'],
+    });
+    assert.equal(seeded.code, 0, `配置应保存成功，message: ${seeded.message}`);
     const setModel = await invoke(core.methodTable, 'model/setSessionModel', {
       sessionId,
-      model: 'forge-only-model',
+      providerId: 'forge-test-provider',
     });
     assert.equal(setModel.code, 0, `setSessionModel 应成功，message: ${setModel.message}`);
     const switched = await invoke(core.methodTable, 'conversation/sendMessage', { sessionId, content: '换模型' });

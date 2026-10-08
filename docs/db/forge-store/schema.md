@@ -58,7 +58,7 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 | alias | string | 是 | null | 会话别名（默认取首条用户消息摘要，可编辑） |
 | lastActiveAt | string(ISO8601) | 否 | 创建时 | 最近活动时间（会话列表排序）：创建时写一次，之后每轮会话开始（状态转 running）由 `SessionService.setSessionStatus` touch 并落盘，故「最近活动在前」重启后仍成立 |
 | createdAt | string(ISO8601) | 否 | - | 创建时间 |
-| modelOverride | string | 是 | null | 会话级模型覆盖（模块 05；空则用全局默认） |
+| modelOverride | string | 是 | null | 会话级模型覆盖，存**模型配置别名锚点**（模块 05 PRD05 MP-S02；空则用全局默认）。存的是 pi models.json 的 provider key，不是模型 ID |
 | thinkingLevel | string | 是 | null | 会话级思考级别覆盖（模块 05 MP-S05；枚举同 pi：off/minimal/low/medium/high/xhigh/max；空则用全局默认） |
 | doneReadAt | string(ISO8601) | 是 | null | 最近一次查看完成结果时间（会话树绿点已读落盘，跨窗口/重启一致；新一轮完成时由服务层清回 null；旧数据无此字段视为未读） |
 
@@ -90,14 +90,16 @@ forge 侧会话视图层元数据，**只存元信息，不存消息内容**（�
 
 - 主键：`key`
 - seed 数据（首次创建时写入）：
-  - `key='defaultModel'`，`value=null`（全局默认模型，未配置为 null）
+  - `key='defaultModel'`，`value=null`（全局默认（主会话）模型配置别名，未配置为 null；含义见下方「模型值类型」）
   - `key='thinkingLevel'`，`value='off'`（全局默认思考级别，新会话继承；**默认关闭**——thinking 内容默认不产生/不展示，用户可显式调高）
   - `key='schemaVersion'`，`value=1`
 - 状态：已确认
 
 ### 设计说明
 
-- 当前键集合：`defaultModel`（全局默认模型）、`thinkingLevel`（全局默认思考级别，PRD05 MP-S05）；后续可扩展 `windowLayout`（多窗口布局持久化，如需重启恢复布局）、`theme` 等。
+- 当前键集合：`defaultModel`（全局默认（主会话）模型配置别名）、`thinkingLevel`（全局默认思考级别，PRD05 MP-S05）；后续可扩展 `windowLayout`（多窗口布局持久化，如需重启恢复布局）、`theme` 等。
+- **模型值类型（PRD05 MP-S02 别名锚点）**：`settings.defaultModel` 与 `session.modelOverride` 存的都是**模型配置别名锚点**（= provider id = pi models.json 的 provider key，可含空格），不是模型 ID。模型 ID 是读取时按别名取该配置首模型派生的值，故改配置里的模型 ID 零传播、所有引用自动跟随；只有改别名（重命名配置）才需传播，由 `ModelService.saveProvider` 写库成功后同步改写全局默认与引用旧别名的会话覆盖（静默，不弹提示）。
+- **旧数据自愈**：升级前存的是裸模型 ID 的值，首次读取解析到所属配置后即回写为别名（读一次即迁完，无独立迁移脚本）；解析不到（配置已删/已改名）时读取侧降级到全局默认，发送前探测自愈清掉该会话的悬空覆盖。
 - 全局默认模型语义：会话无 `modelOverride` 时才用全局默认，不影响已配置覆盖的会话。
 - 全局默认思考级别语义：会话无 `thinkingLevel` 覆盖时继承；输入框切换思考级别时同步更新本键，已存在会话各自保持 `session.thinkingLevel` 不受影响。**默认值为 `off`**（forge 启动即默认关闭思考内容产生/展示），旧数据缺失该键时按 `'off'` 兜底处理。
 

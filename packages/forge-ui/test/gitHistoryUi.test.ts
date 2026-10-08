@@ -6,10 +6,24 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { avatarOf, filterCommits, groupCommitsByDay, dayLabel, relativeTimeOf, absoluteTimeOf } from '../src/utils/gitHistory.ts';
+import {
+  avatarOf,
+  filterCommits,
+  groupCommitsByDay,
+  dayLabel,
+  dayLabelSpec,
+  relativeTimeOf,
+  relativeTimeSpec,
+  absoluteTimeOf,
+} from '../src/utils/gitHistory.ts';
+// 直接引合并字典（不经 i18n/index.ts）：后者 import vue，纯逻辑单测不该拖进 Vue 运行时。
+// i18n.test.ts 已覆盖「合并字典 key 集合一致」，这里只查新增时间 key 两侧都在。
+import { zhCN } from '../src/i18n/zh-CN.ts';
+import { en } from '../src/i18n/en.ts';
 
 // 契约口径：epoch **秒**
 const NOW = Math.floor(new Date('2026-10-08T14:00:00+08:00').getTime() / 1000);
+const NOW_YEAR = new Date(NOW * 1000).getFullYear();
 
 /* ==================== U-CE-03 头像派生 ==================== */
 
@@ -99,6 +113,35 @@ test('dayLabel：今天 / 昨天 / 具体日期', () => {
   assert.equal(dayLabel(NOW - 3 * 86400, NOW), '10 月 5 日');
 });
 
+test('dayLabelSpec：返回 i18n key 而非成串（AC-CE-031 不得硬编码语言）', () => {
+  assert.deepEqual(dayLabelSpec(NOW, NOW), { key: 'code.historyDayToday' });
+  assert.deepEqual(dayLabelSpec(NOW - 86400, NOW), { key: 'code.historyDayYesterday' });
+  assert.deepEqual(dayLabelSpec(NOW - 3 * 86400, NOW), {
+    key: 'code.historyDayMonthDay',
+    params: { year: NOW_YEAR, month: 10, day: 5 },
+  });
+});
+
+test('dayLabelSpec：跨年补年份 key', () => {
+  const dec31 = Math.floor(new Date(NOW_YEAR - 1, 11, 31, 12, 0, 0).getTime() / 1000);
+  const spec = dayLabelSpec(dec31, NOW);
+  assert.equal(spec.key, 'code.historyDayFull');
+  assert.equal(spec.params?.year, NOW_YEAR - 1);
+});
+
+test('相对时间 spec 与字典一致：key 在中英词典里都存在（防新增 key 漏落字典）', () => {
+  // 组件用 t(spec.key) 渲染；key 不在字典里会回退成键名，界面直接露 key
+  const zh = zhCN as Record<string, string>;
+  const enDict = en as Record<string, string>;
+  const stamps = [0, 59, 60, 3600, 86_400, 45 * 86_400];
+  for (const ago of stamps) {
+    for (const spec of [dayLabelSpec(NOW - ago, NOW), relativeTimeSpec(NOW - ago, NOW)]) {
+      assert.ok(zh[spec.key], `zh-CN 缺 key：${spec.key}`);
+      assert.ok(en[spec.key], `en 缺 key：${spec.key}`);
+    }
+  }
+});
+
 test('groupCommitsByDay：按天聚合并保持时间倒序', () => {
   const list = [
     { shortSha: 'a', authoredAt: NOW - 1000 },
@@ -107,17 +150,17 @@ test('groupCommitsByDay：按天聚合并保持时间倒序', () => {
   ];
   const groups = groupCommitsByDay(list, NOW);
   assert.equal(groups.length, 2, '跨两天应分两组');
-  assert.equal(groups[0].label, '今天');
-  assert.deepEqual(groups[0].commits.map((c: { shortSha: string }) => c.shortSha), ['a', 'b']);
-  assert.equal(groups[1].label, '昨天');
-  assert.equal(groups[1].commits.length, 1);
+  assert.equal(groups[0]!.label.key, 'code.historyDayToday');
+  assert.deepEqual(groups[0]!.commits.map((c: { shortSha: string }) => c.shortSha), ['a', 'b']);
+  assert.deepEqual(groups[1]!.label, { key: 'code.historyDayYesterday' });
+  assert.equal(groups[1]!.commits.length, 1);
 });
 
 test('groupCommitsByDay：未来时间戳不产生负数天分组', () => {
   // 后端时钟超前时 authoredAt 可能大于 now，不能归到「明天」这类不存在的标签
   const groups = groupCommitsByDay([{ shortSha: 'a', authoredAt: NOW + 10_000 }], NOW);
   assert.equal(groups.length, 1);
-  assert.equal(groups[0].label, '今天');
+  assert.equal(groups[0]!.label.key, 'code.historyDayToday');
 });
 
 test('groupCommitsByDay：空列表返回空数组', () => {
@@ -136,9 +179,17 @@ test('时间戳入参是 epoch **秒**不是毫秒（曾整片显示成 1970 年
   assert.ok(absoluteTimeOf(sec).startsWith('2026/'), `实际：${absoluteTimeOf(sec)}`);
 });
 
+test('时间戳单位回归同样落在 spec 出口上（秒口径，不是毫秒）', () => {
+  const sec = 1791438623;
+  assert.deepEqual(dayLabelSpec(sec, sec + 3600), { key: 'code.historyDayToday' });
+  assert.deepEqual(relativeTimeSpec(sec, sec + 3600), { key: 'code.historyTimeHours', params: { count: 1 } });
+  assert.deepEqual(relativeTimeSpec(sec, sec + 60), { key: 'code.historyTimeMinutes', params: { count: 1 } });
+  assert.deepEqual(relativeTimeSpec(sec, sec + 2 * 86400), { key: 'code.historyTimeDays', params: { count: 2 } });
+});
+
 test('分组在秒口径下也正确（毫秒口径会全落进同一天）', () => {
   const sec = 1791438623;
   const groups = groupCommitsByDay([{ shortSha: 'a', authoredAt: sec }], sec + 3600);
   assert.equal(groups.length, 1);
-  assert.equal(groups[0].label, '今天');
+  assert.equal(groups[0]!.label.key, 'code.historyDayToday');
 });

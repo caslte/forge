@@ -5,9 +5,10 @@
  * - A-MP-001：saveProvider → code 0，models.json 写库，providersChanged 发射
  * - A-MP-002：apiKey 引用不明文泄漏（响应与事件载荷均剥离）
  * - A-MP-003：saveProvider 非法输入 → 1001，无写库
- * - A-MP-005：setDefault → 全局默认生效
- * - A-MP-006：setSessionModel → 仅会话覆盖
- * 以及本 WU 契约：queryProviderList / queryModels / deleteProvider / getSessionModel
+ * - A-MP-005：setDefault（参数为别名锚点 providerId）→ 全局默认生效
+ * - A-MP-006：setSessionModel（参数为别名锚点 providerId）→ 仅会话覆盖
+ * 以及本 WU 契约：queryProviderList / queryModels（{ options, defaultProviderId }）/
+ * deleteProvider / getSessionModel（{ model, providerId, effective }）
  * 信封映射、1002 / 1004 / 5000 错误码、异常隔离 5000 安全消息、信封恒为
  * { code, message, data }。
  *
@@ -22,6 +23,7 @@ import { ModelApi } from '../../src/rpc/modelMethods.ts';
 import type { RpcResult } from '../../src/rpc/projectMethods.ts';
 import type {
   KeychainAdapter,
+  ModelRegistry,
   ModelResult,
   ModelStorePort,
   ModelsFileAdapter,
@@ -53,8 +55,13 @@ class MockModelsFileAdapter implements ModelsFileAdapter {
     if (this.writeError !== null) {
       throw this.writeError;
     }
-    this.writeSnapshots.push(providers.map((p) => ({ ...p })));
-    this.providers = providers.map((p) => ({ ...p }));
+    // 与 pi models.json 同构：provider key 按 name 落盘，读回时 id === name
+    const byName = new Map<string, ProviderFileRecord>();
+    for (const p of providers) {
+      byName.set(p.name, { ...p, id: p.name });
+    }
+    this.providers = [...byName.values()].map((p) => ({ ...p }));
+    this.writeSnapshots.push(this.providers.map((p) => ({ ...p })));
   }
 
   async readModelNames(): Promise<string[]> {
@@ -99,6 +106,10 @@ class MockModelStore implements ModelStorePort {
 
   saveSession(record: SessionRecord): void {
     this.sessions.set(record.sessionId, { ...record });
+  }
+
+  listSessions(): SessionRecord[] {
+    return [...this.sessions.values()].map((s) => ({ ...s }));
   }
 }
 
@@ -153,15 +164,32 @@ function makeApi(): {
   return { api, modelsFile, keychain, store, thinkLevels, events };
 }
 
-/** 合法保存参数（可覆盖） */
+/** 合法保存参数（可覆盖）。name 用字面 'openai'：pi 侧 id === name，别名锚点据此断言 */
 function validInput(overrides: Partial<SaveProviderInput> = {}): SaveProviderInput {
   return {
-    name: 'OpenAI',
+    name: 'openai',
     type: 'openai',
     baseUrl: 'https://api.openai.com/v1',
     models: ['gpt-4o', 'gpt-4o-mini'],
     apiKey: 'sk-secret-123',
     ...overrides,
+  };
+}
+
+/** 构造已落盘的 provider 配置记录（id === name，同 pi） */
+function providerRecord(
+  id: string,
+  models: string[],
+  extra: Partial<ProviderFileRecord> = {},
+): ProviderFileRecord {
+  return {
+    id,
+    name: id,
+    type: 'openai',
+    baseUrl: null,
+    models,
+    lastError: null,
+    ...extra,
   };
 }
 
@@ -298,60 +326,103 @@ test('deleteProvider：成功 → code 0 data null + providersChanged；未知 i
   assert.equal((await api.methods['model/deleteProvider']({})).code, 1001);
 });
 
-test('queryModels：返回 { models, defaultModel }（A-MP-005 前置）', async () => {
+test('queryModels：返回 { options, defaultProviderId }，一个配置一项（A-MP-005 前置）', async () => {
   const { api, modelsFile, store } = makeApi();
-  modelsFile.modelNames = ['gpt-4o', 'claude-sonnet-4'];
-  store.setSetting('defaultModel', 'claude-sonnet-4');
+  modelsFile.providers = [
+    providerRecord('openai', ['gpt-4o', 'gpt-4o-mini']),
+    providerRecord('anthropic', ['claude-sonnet-4']),
+    providerRecord('empty', []), // 无可用模型：不进可选项
+  ];
+  store.setSetting('defaultModel', 'anthropic');
   const result = await api.methods['model/queryModels']({});
   assert.equal(result.code, 0);
   assert.ok(result.data !== null);
   if (result.data !== null) {
-    const data = result.data as { models: string[]; defaultModel: string | null };
-    assert.deepEqual(data.models, ['gpt-4o', 'claude-sonnet-4']);
-    assert.equal(data.defaultModel, 'claude-sonnet-4');
+    const data = result.data as ModelRegistry;
+    assert.deepEqual(data.options, [
+      { providerId: 'openai', model: 'gpt-4o' },
+      { providerId: 'anthropic', model: 'claude-sonnet-4' },
+    ]);
+    assert.equal(data.defaultProviderId, 'anthropic');
   }
 });
 
-test('setDefault：合法模型 → code 0 data null 并持久化 + 发射 providersChanged；未知模型 → 1004（A-MP-005）', async () => {
-  const { api, modelsFile, store, events } = makeApi();
-  modelsFile.modelNames = ['gpt-4o'];
-  const changed: unknown[] = [];
-  events.on('model.providersChanged', (payload) => changed.push(payload));
-  const ok = await api.methods['model/setDefault']({ model: 'gpt-4o' });
-  assert.equal(ok.code, 0);
-  assert.equal(ok.data, null);
-  assert.equal(store.getSetting('defaultModel'), 'gpt-4o');
-  // 成功后发射 providersChanged（同步草稿态全局默认展示）；清除默认同样发射
-  assert.equal(changed.length, 1);
-  await api.methods['model/setDefault']({ model: null });
-  assert.equal(changed.length, 2);
-  // 失败（未知模型）不发射
-  const unknown = await api.methods['model/setDefault']({ model: 'nope' });
-  assert.equal(unknown.code, 1004);
-  assert.equal(changed.length, 2);
-  // 参数校验：model 缺失/空白/非字符串/null 之外的值 → 1001
-  assert.equal((await api.methods['model/setDefault']({})).code, 1001);
-  assert.equal((await api.methods['model/setDefault']({ model: '  ' })).code, 1001);
+test('queryModels：存量裸模型 ID 默认值读时自愈为别名（设计决策 6）', async () => {
+  const { api, modelsFile, store } = makeApi();
+  modelsFile.providers = [providerRecord('openai', ['gpt-4o'])];
+  store.setSetting('defaultModel', 'gpt-4o');
+  const result = await api.methods['model/queryModels']({});
+  assert.equal(result.code, 0);
+  assert.equal((result.data as ModelRegistry).defaultProviderId, 'openai');
+  assert.equal(store.getSetting('defaultModel'), 'openai', '读一次即把裸模型 ID 回写为别名');
 });
 
-test('getSessionModel：会话覆盖优先，无覆盖用全局默认；未知会话 → 1002', async () => {
-  const { api, store } = makeApi();
-  store.sessions.set('sess-1', makeSession('sess-1', 'gpt-4o'));
+test('setDefault：合法别名 → code 0 data null 并持久化 + 发射 providersChanged；未知配置 / 空配置 → 1004（A-MP-005）', async () => {
+  const { api, modelsFile, store, events } = makeApi();
+  modelsFile.providers = [providerRecord('openai', ['gpt-4o']), providerRecord('empty', [])];
+  const changed: unknown[] = [];
+  events.on('model.providersChanged', (payload) => changed.push(payload));
+  const ok = await api.methods['model/setDefault']({ providerId: 'openai' });
+  assert.equal(ok.code, 0);
+  assert.equal(ok.data, null);
+  assert.equal(store.getSetting('defaultModel'), 'openai');
+  // 成功后发射 providersChanged（同步草稿态全局默认展示）；清除默认同样发射
+  assert.equal(changed.length, 1);
+  await api.methods['model/setDefault']({ providerId: null });
+  assert.equal(changed.length, 2);
+  // 失败（配置未保存 / 无可用模型）不发射
+  const unknown = await api.methods['model/setDefault']({ providerId: 'nope' });
+  assert.equal(unknown.code, 1004);
+  const noModel = await api.methods['model/setDefault']({ providerId: 'empty' });
+  assert.equal(noModel.code, 1004);
+  assert.equal(changed.length, 2);
+  // 参数校验：providerId 缺失/空白/非字符串 → 1001
+  assert.equal((await api.methods['model/setDefault']({})).code, 1001);
+  assert.equal((await api.methods['model/setDefault']({ providerId: '  ' })).code, 1001);
+  assert.equal((await api.methods['model/setDefault']({ providerId: 1 })).code, 1001);
+});
+
+test('setDefault + saveProvider 改模型 ID：主会话锚点不动、派生模型自动跟随（回归本次 bug）', async () => {
+  const { api, modelsFile, store } = makeApi();
+  modelsFile.providers = [providerRecord('mx', ['MiniMax-M3'])];
+  assert.equal((await api.methods['model/setDefault']({ providerId: 'mx' })).code, 0);
+  // 用户把模型 ID 改成 MiniMax-M3.1-Flash-Preview（别名不变）
+  const saved = await api.methods['model/saveProvider'](
+    validInput({ name: 'mx', models: ['MiniMax-M3.1-Flash-Preview'] }),
+  );
+  assert.equal(saved.code, 0);
+  assert.equal(store.getSetting('defaultModel'), 'mx', '锚点仍是别名');
+  const models = await api.methods['model/queryModels']({});
+  assert.deepEqual((models.data as ModelRegistry).options, [
+    { providerId: 'mx', model: 'MiniMax-M3.1-Flash-Preview' },
+  ]);
+  assert.equal((models.data as ModelRegistry).defaultProviderId, 'mx');
+});
+
+test('getSessionModel：会话覆盖优先，无覆盖用全局默认；返回派生模型 + 别名；未知会话 → 1002', async () => {
+  const { api, modelsFile, store } = makeApi();
+  modelsFile.providers = [
+    providerRecord('openai', ['gpt-4o']),
+    providerRecord('anthropic', ['claude-sonnet-4']),
+  ];
+  store.sessions.set('sess-1', makeSession('sess-1', 'openai'));
   store.sessions.set('sess-2', makeSession('sess-2', null));
-  store.setSetting('defaultModel', 'claude-sonnet-4');
+  store.setSetting('defaultModel', 'anthropic');
   const overridden = await api.methods['model/getSessionModel']({ sessionId: 'sess-1' });
   assert.equal(overridden.code, 0);
   assert.ok(overridden.data !== null);
   if (overridden.data !== null) {
-    const info = overridden.data as { model: string | null; effective: 'session' | 'global' };
+    const info = overridden.data as { model: string | null; providerId: string | null; effective: 'session' | 'global' };
     assert.equal(info.model, 'gpt-4o');
+    assert.equal(info.providerId, 'openai');
     assert.equal(info.effective, 'session');
   }
   const global = await api.methods['model/getSessionModel']({ sessionId: 'sess-2' });
   assert.ok(global.data !== null);
   if (global.data !== null) {
-    const info = global.data as { model: string | null; effective: 'session' | 'global' };
+    const info = global.data as { model: string | null; providerId: string | null; effective: 'session' | 'global' };
     assert.equal(info.model, 'claude-sonnet-4');
+    assert.equal(info.providerId, 'anthropic');
     assert.equal(info.effective, 'global');
   }
   const unknown = await api.methods['model/getSessionModel']({ sessionId: 'nope' });
@@ -359,20 +430,46 @@ test('getSessionModel：会话覆盖优先，无覆盖用全局默认；未知�
   assert.equal((await api.methods['model/getSessionModel']({})).code, 1001);
 });
 
+test('getSessionModel：存量裸模型 ID 覆盖回写别名；悬空覆盖降级全局默认', async () => {
+  const { api, modelsFile, store } = makeApi();
+  modelsFile.providers = [
+    providerRecord('openai', ['gpt-4o']),
+    providerRecord('anthropic', ['claude-sonnet-4']),
+  ];
+  store.sessions.set('sess-legacy', makeSession('sess-legacy', 'gpt-4o'));
+  store.sessions.set('sess-dangling', makeSession('sess-dangling', 'deleted-provider'));
+  store.setSetting('defaultModel', 'anthropic');
+  const legacy = await api.methods['model/getSessionModel']({ sessionId: 'sess-legacy' });
+  assert.equal(legacy.code, 0);
+  const legacyInfo = legacy.data as { model: string | null; providerId: string | null; effective: string };
+  assert.equal(legacyInfo.model, 'gpt-4o');
+  assert.equal(legacyInfo.providerId, 'openai');
+  assert.equal(legacyInfo.effective, 'session');
+  assert.equal(store.sessions.get('sess-legacy')?.modelOverride, 'openai', '裸模型 ID 已回写为别名');
+  const dangling = await api.methods['model/getSessionModel']({ sessionId: 'sess-dangling' });
+  const danglingInfo = dangling.data as { model: string | null; providerId: string | null; effective: string };
+  assert.equal(danglingInfo.effective, 'global');
+  assert.equal(danglingInfo.providerId, 'anthropic');
+});
+
 test('setSessionModel：设置覆盖仅影响该会话；未知会话 → 1002（A-MP-006）', async () => {
   const { api, store } = makeApi();
   store.sessions.set('sess-1', makeSession('sess-1', null));
   store.sessions.set('sess-2', makeSession('sess-2', null));
-  const ok = await api.methods['model/setSessionModel']({ sessionId: 'sess-1', model: 'gpt-4o' });
+  const ok = await api.methods['model/setSessionModel']({ sessionId: 'sess-1', providerId: 'openai' });
   assert.equal(ok.code, 0);
   assert.equal(ok.data, null);
-  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'gpt-4o');
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'openai');
   assert.equal(store.sessions.get('sess-2')?.modelOverride, null);
-  const unknown = await api.methods['model/setSessionModel']({ sessionId: 'nope', model: 'gpt-4o' });
+  // 清除覆盖：写 null
+  const cleared = await api.methods['model/setSessionModel']({ sessionId: 'sess-1', providerId: null });
+  assert.equal(cleared.code, 0);
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, null);
+  const unknown = await api.methods['model/setSessionModel']({ sessionId: 'nope', providerId: 'openai' });
   assert.equal(unknown.code, 1002);
-  // 参数校验：sessionId 缺失 / model 非法 → 1001
+  // 参数校验：sessionId 缺失 / providerId 非法 → 1001
   assert.equal((await api.methods['model/setSessionModel']({})).code, 1001);
-  assert.equal((await api.methods['model/setSessionModel']({ sessionId: 'sess-1', model: '  ' })).code, 1001);
+  assert.equal((await api.methods['model/setSessionModel']({ sessionId: 'sess-1', providerId: '  ' })).code, 1001);
 });
 
 test('adapter/service 抛错 → code 5000 安全消息（不泄漏异常细节）', async () => {
@@ -387,7 +484,7 @@ test('adapter/service 抛错 → code 5000 安全消息（不泄漏异常细节�
     keychain: new MockKeychainAdapter(),
     store: new MockModelStore(),
   });
-  throwingService.queryModels = async (): Promise<ModelResult<{ models: string[]; defaultModel: string | null }>> => {
+  throwingService.queryModels = async (): Promise<ModelResult<ModelRegistry>> => {
     throw new Error('boom');
   };
   const api2 = new ModelApi(throwingService, new EventEmitter());

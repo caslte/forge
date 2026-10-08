@@ -71,16 +71,23 @@ async function applySeeds(
       window.__forgeMock!.seed('model/queryModels', () => ({
         code: 0,
         message: 'ok',
-        data: { models: [mReason, mPlain], defaultModel: mReason },
-      }));
-      window.__forgeMock!.seed('model/getSessionModel', (p) => ({
-        code: 0,
-        message: 'ok',
+        // mock 里别名锚点与模型 ID 同名（真机上锚点是 provider 别名，模型 ID 是其派生值）
         data: {
-          model: (plainIds as string[]).includes(String(p.sessionId)) ? mPlain : mReason,
-          effective: 'session',
+          options: [
+            { providerId: mReason, model: mReason },
+            { providerId: mPlain, model: mPlain },
+          ],
+          defaultProviderId: mReason,
         },
       }));
+      window.__forgeMock!.seed('model/getSessionModel', (p) => {
+        const model = (plainIds as string[]).includes(String(p.sessionId)) ? mPlain : mReason;
+        return {
+          code: 0,
+          message: 'ok',
+          data: { model, providerId: model, effective: 'session' },
+        };
+      });
       window.__forgeMock!.seed('model/getModelThinkingLevels', (p) => ({
         code: 0,
         message: 'ok',

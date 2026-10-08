@@ -10,8 +10,10 @@
  * 1. 信封格式：成功 `{ code: 0, message: "success", data }`；失败 `{ code, message,
  *    data: null }`。错误码与 docs/api/05_model.md §8 一致：1001 参数错误 / 1002
  *    provider / 会话不存在 / 1004 provider 未配置 / 5000 内部错误。
- * 2. 参数校验：每个 handler 先校验 params（name/type/models/sessionId/id/model 等），
- *    非法输入直接返回 1001，不进入服务层。
+ * 2. 参数校验：每个 handler 先校验 params（name/type/models/sessionId/id/providerId 等），
+ *    非法输入直接返回 1001，不进入服务层。model/setDefault 与 model/setSessionModel 的
+ *    模型参数是 **provider 别名锚点**（providerId），不是模型 ID（见 modelService 设计决策 6）；
+ *    别名可含空格，因此这两个 handler 只做非空校验。
  * 3. 密钥安全（TD-MP-01，硬约束）：queryProviderList 与 providersChanged 事件载荷
  *    中的 provider 一律经 toSafeProvider 映射为文档公开形状（docs/api/05_model.md
  *    §1），剥离 apiKey 安全引用，绝不明文/引用泄漏。
@@ -272,17 +274,17 @@ export class ModelApi {
     return this.call('queryModels', () => this.service.queryModels());
   }
 
-  /** model/setDefault：设置全局默认模型（MP-S02），未知模型由服务层返回 1004；成功后发射 providersChanged（同步草稿态全局默认展示） */
+  /** model/setDefault：设置全局默认（主会话）模型（MP-S02），参数为别名锚点 providerId；未保存的配置由服务层返回 1004；成功后发射 providersChanged（同步草稿态全局默认展示） */
   private async setDefault(params: unknown): Promise<RpcResult> {
     if (!isRecord(params)) {
-      return fail(1001, '参数错误：model 必须为字符串或 null');
+      return fail(1001, '参数错误：providerId 必须为字符串或 null');
     }
-    const model = params.model;
-    if (model !== null && (typeof model !== 'string' || model.trim() === '')) {
-      return fail(1001, '参数错误：model 必须为字符串或 null');
+    const providerId = params.providerId;
+    if (providerId !== null && (typeof providerId !== 'string' || providerId.trim() === '')) {
+      return fail(1001, '参数错误：providerId 必须为字符串或 null');
     }
     const result = await this.call('setDefault', () =>
-      this.service.setDefault(model === null ? null : model.trim()),
+      this.service.setDefault(providerId === null ? null : providerId.trim()),
     );
     if (result.code === 0) {
       await this.emitProvidersChanged();
@@ -299,21 +301,21 @@ export class ModelApi {
     return this.call('getSessionModel', () => this.service.getSessionModel(sessionId));
   }
 
-  /** model/setSessionModel：设置会话级模型覆盖（MP-S02），未知会话由服务层返回 1002 */
+  /** model/setSessionModel：设置会话级模型覆盖（MP-S02），参数为别名锚点 providerId；未知会话由服务层返回 1002 */
   private setSessionModel(params: unknown): Promise<RpcResult> {
     const sessionId = requireString(params, 'sessionId');
     if (sessionId === null) {
       return Promise.resolve(fail(1001, '参数错误：sessionId 必须为非空字符串'));
     }
     if (!isRecord(params)) {
-      return Promise.resolve(fail(1001, '参数错误：model 必须为字符串或 null'));
+      return Promise.resolve(fail(1001, '参数错误：providerId 必须为字符串或 null'));
     }
-    const model = params.model;
-    if (model !== null && (typeof model !== 'string' || model.trim() === '')) {
-      return Promise.resolve(fail(1001, '参数错误：model 必须为字符串或 null'));
+    const providerId = params.providerId;
+    if (providerId !== null && (typeof providerId !== 'string' || providerId.trim() === '')) {
+      return Promise.resolve(fail(1001, '参数错误：providerId 必须为字符串或 null'));
     }
     return this.call('setSessionModel', () =>
-      this.service.setSessionModel(sessionId, model === null ? null : model.trim()),
+      this.service.setSessionModel(sessionId, providerId === null ? null : providerId.trim()),
     );
   }
 

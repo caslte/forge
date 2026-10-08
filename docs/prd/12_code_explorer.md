@@ -19,10 +19,9 @@
 | 2026-10-04 | `bce8c2a` | `git/getFileDiff` 单文件 diff 能力落地，配 226 行 core 单测 |
 | 2026-10-08 | `v6.15` | 修复布局 A 下「回到底部」提示条浮在代码正文上（层叠上下文缺失） |
 | 2026-10-08 | `v6.16` | 代码纸选区复制浮窗补右键触发 |
+| 2026-10-08 | CE-S11 实现 + i18n 收尾 | §3.7 提交历史视图落地；相对时间/日期分隔条改为 i18n key 输出（原先硬编码中文，切 en 不翻译），档位边界统一复用 `relativeTimeParts()`；补齐 `docs/test/12_code_explorer/` |
 
-测试资产：`packages/forge-ui/test/` 下 `changedTree` / `codeViewerLayout` / `gitDiffRows` / `gitStatusUi` / `gitTreeStatus` / `codeExplorerGitStatus` 等纯逻辑单测；`e2e/codeExplorer.spec.ts` + `e2e/codeCopy.spec.ts` 组件交互 e2e；`packages/forge-core/test/git/gitService.test.ts` 用真 git CLI 集成测。
-
-> **测试文档缺口**：`docs/test/` 下尚无 `12_code_explorer/` 目录（`index.md` 登记止于 07）。上表所列测试资产目前只存在于代码库，未落到静态测试设计文档 —— 与项目「文档与代码同步」的规范有缺口，待补。
+测试资产：`packages/forge-ui/test/` 下 `changedTree` / `codeViewerLayout` / `gitDiffRows` / `gitStatusUi` / `gitTreeStatus` / `codeExplorerGitStatus` / `gitHistoryUi` / `gitHistoryLoader` 等纯逻辑单测；`e2e/codeExplorer.spec.ts` + `e2e/codeCopy.spec.ts` + `e2e/gitHistory.spec.ts` 组件交互 e2e；`packages/forge-core/test/git/gitService.test.ts` 用真 git CLI 集成测，`test/git/gitHistory.test.ts` 专测 CE-S11 的 git 边界（unborn HEAD / merge / root / rename / 二进制 / quotepath）。静态测试设计见 `docs/test/12_code_explorer/`（coverage-matrix / unit / api / e2e 四份）。
 
 ---
 
@@ -207,10 +206,10 @@ main.content#contentConv │ ▌ │ main.content.content-code
 > 归属说明：不新开模块。§3.6 的「变更视图」已确立「左栏加 git 相关视图归本模块」的先例；历史提交详情本质是**只读的、按时间组织的 diff 查看器**，落在 §2「范围」内。仅承接模块 11 的 `gitService` 底座（与 §3.5/§3.6 同源），不新增 git 写入语义。
 
 - **入口**：左栏 `view` 从二值扩三值（`'files' | 'changes' | 'history'`）。侧栏宽度/折叠/拖拽手柄/项目状态**零改动**。
-- **提交人放第一优先级**（用户明确诉求）：列表行第二段为 `头像 · 姓名 · 相对时间 · 短SHA`。头像 = email 哈希 → 稳定色相 + 首字母，纯本地派生、**零网络请求**；同一作者视觉成串。相对时间复用 `relativeTimeParts()`，i18n key 现成。
+- **提交人放第一优先级**（用户明确诉求）：列表行第二段为 `头像 · 姓名 · 相对时间 · 短SHA`。头像 = email 哈希 → 稳定色相 + 首字母，纯本地派生、**零网络请求**；同一作者视觉成串。相对时间复用 `relativeTimeParts()` 的分档口径（`<1min` 刚刚 / `<1h` N 分钟 / `<24h` N 小时 / `<30d` N 天 / 更远退化为日期），措辞走 `code.historyTime*` 字典 —— 历史视图保留「前 / ago」的语感，故与 `project.time*` 分开落键，但**档位边界只有一套**。
   - **首字母取姓氏（首字）**：原型实测取中文名末字会让「王工」「李工」双双渲染成「工」，两人在列表里完全一样，恰好毁掉按作者成串的设计意图。
 - **点开落在右栏**：提交详情含逐文件 diff，左栏 292px 放不下并排对比。头部给全量信息（姓名 + email + 绝对时间 + 可复制 SHA + 「合并/首次提交」标记），下面按文件分组可折叠，diff 复用 `parseGitUnifiedDiff` 与现有并排渲染。
-- **日期分隔条**：Zed 无此设计，但 forge 提交密度高（当天多条），无分隔条列表会读成一条平铺灰带。
+- **日期分隔条**：Zed 无此设计，但 forge 提交密度高（当天多条），无分隔条列表会读成一条平铺灰带。分档（今天/昨天/具体日期，跨年补年份）在 `utils/gitHistory.ts`，措辞走 `code.historyDay*` 字典；分组键取 spec 的 key+参数而非本地化字符串，保证跨语言下同一天仍归同组。
 - **空态**：非 Git 项目 / 空仓库（unborn HEAD）各给明确文案，不报错不空白；两者下筛选框一并收起。
 
 #### 3.7.1 关键架构决策：两级取数（唯一必须在开工前定死的决策）
@@ -333,11 +332,11 @@ main.content#contentConv │ ▌ │ main.content.content-code
 | AC-CE-030 | 浅/深双主题对比度与纸层级关系（`--elev-codepaper` > `--elev-sheet`）成立 | §6 | E-CE-28 |
 | AC-CE-031 | i18n `zh-CN`/`en` 全量覆盖，无硬编码文案 | §6 | E-CE-29 |
 | **CE-S11 提交历史视图** | | | |
-| AC-CE-032 | 左栏 `view` 扩为三值，历史视图可切换；侧栏宽度/折叠/拖拽手柄/项目状态零改动 | §3.7 | E-CE-30 |
+| AC-CE-032 | 左栏三视图 + 历史视图可切换；侧栏宽度/折叠/拖拽手柄/项目状态零改动 | §3.7 | E-CE-30 |
 | AC-CE-033 | 列表行展示 `说明 + 头像 + 姓名 + 相对时间 + 短SHA`；头像首字母取**姓氏（首字）**，email 哈希派生色相，零网络请求 | §3.7 | E-CE-31 |
 | AC-CE-034 | 筛选框按说明/作者过滤已加载列表；无匹配时给空态 | §3.7 | E-CE-32 |
 | AC-CE-035 | 日期分隔条（今天/昨天/M月D日）分组 | §3.7 | E-CE-30 |
-| AC-CE-036 | 点开提交落在右栏：头部全量 meta（姓名+email+绝对时间+可复制 SHA+合并/首次标记），逐文件分组可折叠 | §3.7 | E-CE-33 |
+| AC-CE-036 | 点开提交落在右栏：头部全量 meta（姓名+email+绝对时间+可复制 SHA+合并/首次标记），逐文件分组可折叠 | §3.7 | E-CE-33, E-CE-36 |
 | AC-CE-037 | **两级取数**：详情只回 meta+numstat（不返 patch），单文件 patch 展开时才取 | §3.7.1 | A-CE-02, E-CE-34 |
 | AC-CE-038 | merge commit 出 patch（`git diff <sha>^1 <sha>` 口径，`git show` 默认 0 行不可用） | §3.7.2 | A-CE-03 |
 | AC-CE-039 | root commit 正常出 patch（无 `<sha>^1`，按 `parents.length` 分派） | §3.7.2 | A-CE-04 |
@@ -345,7 +344,7 @@ main.content#contentConv │ ▌ │ main.content.content-code
 | AC-CE-041 | 非 Git 项目给明确空态；两种空态下筛选框一并收起 | §3.7 | E-CE-35 |
 | AC-CE-042 | rename 以 `--numstat -z` NUL 分隔正确还原 old/new；二进制 `-` 标记给专门空态 | §3.7.2 | A-CE-06 |
 | AC-CE-043 | 中文路径不经八进制转义（`run()` 统一 `-c core.quotepath=false`） | §3.7.2 | A-CE-07 |
-| AC-CE-044 | `git/getCommitLog` 分页：首屏 100 条，深翻页不退化（实测 `--skip 150` ≈98ms） | §3.7.3 | A-CE-08 |
+| AC-CE-044 | `git/getCommitLog` 分页：首屏 100 条，深翻页不退化（实测 `--skip 150` ≈98ms） | §3.7.3 | A-CE-08, E-CE-37 |
 
 ### 6.2 原验收清单（2026-10-01 定稿原文，保留备查）
 
@@ -395,7 +394,7 @@ AC-CE-010（文件树懒加载）对应 §3.4 首条与 §6 文件树条目。�
 |---|---|---|---|
 | **冲突** | §3.7.3 接口表 | PRD 内含 RPC 方法名/入参/出参（`git/getCommitLog` 等）—— 按 PRD 边界，这些属 API 文档职责，不应写进 PRD | 已同步写入 `docs/api/11_git_commit_push.md`（**§6/§7/§8**）。**PRD 保留此表作为设计摘要**，正式签以 API 文档为准；两者不一致时以 API 为准 |
 | **警告** | §3.7.2 | 「已实测的 git 边界」表含具体命令与字节数（`git show` 输出 0 行 patch、1.6MB/5951 bytes）—— 属经验证据而非业务规则 | 保留。这些是**设计依据**（为何两级取数），删掉会让 3.7.1 变成无根据的拍板；不构成契约 |
-| **警告** | `docs/test/` | 本模块无测试设计文档（索引止于 07） | 已按 `gen-doc-all` 补 `docs/test/12_code_explorer/coverage-matrix.md` |
+| ~~警告~~ | `docs/test/` | ~~本模块无测试设计文档（索引止于 07）~~ | **已闭环**（2026-10-08）：按 `gen-doc-all` 补齐 `docs/test/12_code_explorer/` 四份（coverage-matrix / unit / api / e2e），CE-S11 的 13 条 AC 全部登记 |
 | 缺口 | §7 | 4 条历史待确认（右键菜单已实现故 1 实际已解；跨设备同步/AI 过滤/上下分割仍未决） | 与本模块 CE-S11 无关，不阻塞 |
 
 ### 8.3 性能指标（已量化，无「快速」类表述）

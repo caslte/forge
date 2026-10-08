@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { call, subscribe, getBootState } from './bridge';
-import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor } from './types';
+import type { ProjectItem, SessionItem, ThemeMode, ProjectPickerDescriptor, ModelOption } from './types';
 import { projectTagOf } from './utils/sessionView';
 import { dropDraft } from './utils/composerDrafts';
 import { formatCaps, hitsPrimary } from './utils/platformKey';
@@ -472,9 +472,9 @@ function onGlobalHotkey(ev: KeyboardEvent): void {
 /** 终端开合键的展示文本：平台化（⌘` / Ctrl+`），供 tooltip 插值，不再写死在 i18n 文案里 */
 const TERMINAL_HOTKEY = formatCaps(['P', '`']);
 
-// 模型列表与会话模型（ConversationView 消费）
-const models = ref<string[]>([]);
-const currentSessionModel = ref<string | null>(null);
+/** 模型可选项与会话生效模型别名锚点（ConversationView 消费；锚点口径见 docs/api/05_model.md §4/§6） */
+const modelOptions = ref<ModelOption[]>([]);
+const currentSessionProviderId = ref<string | null>(null);
 
 const currentProject = computed(() =>
   projects.value.find((p) => p.path === currentProjectPath.value) ?? null,
@@ -892,45 +892,49 @@ async function onRenameSession(id: string, alias: string): Promise<void> {
   }
 }
 
-/** 全局默认模型（草稿态预览/未配置会话级覆盖时展示） */
-const defaultModel = ref<string | null>(null);
+/** 全局默认（主会话）模型的别名锚点（草稿态预览/未配置会话级覆盖时展示） */
+const defaultProviderId = ref<string | null>(null);
 
-// 加载可用模型列表（SettingsPanel 操作 provider 后由 providersChanged 事件刷新）
+// 加载模型可选项（SettingsPanel 操作 provider 后由 providersChanged 事件刷新）
 async function loadModels(): Promise<void> {
   try {
-    const res = await call<{ models: string[]; defaultModel: string | null }>('model/queryModels');
-    models.value = res.models;
-    defaultModel.value = res.defaultModel;
-    // 无会话（含草稿输入态）时用全局默认模型做展示
-    if (currentSessionId.value === null) currentSessionModel.value = res.defaultModel;
+    const res = await call<{ options: ModelOption[]; defaultProviderId: string | null }>(
+      'model/queryModels',
+    );
+    modelOptions.value = res.options;
+    defaultProviderId.value = res.defaultProviderId;
+    // 无会话（含草稿输入态）时用全局默认锚点做展示
+    if (currentSessionId.value === null) currentSessionProviderId.value = res.defaultProviderId;
   } catch {
-    models.value = [];
+    modelOptions.value = [];
   }
 }
 
-// 加载当前会话生效模型（优先会话覆盖，其次全局默认）
+// 加载当前会话生效模型的别名锚点（优先会话覆盖，其次全局默认）
 async function loadSessionModel(sid: string): Promise<void> {
   try {
-    const res = await call<{ model: string | null; effective: string }>('model/getSessionModel', {
-      sessionId: sid,
-    });
-    currentSessionModel.value = res.model;
+    const res = await call<{
+      model: string | null;
+      providerId: string | null;
+      effective: string;
+    }>('model/getSessionModel', { sessionId: sid });
+    currentSessionProviderId.value = res.providerId;
   } catch {
-    currentSessionModel.value = null;
+    currentSessionProviderId.value = null;
   }
 }
 
-// 会话级模型切换（写 modelOverride，不影响全局默认）
-async function onModelChange(model: string): Promise<void> {
-  currentSessionModel.value = model;
-  // 草稿态（会话尚未创建）：仅本地回显预览；所选模型在创建会话时由
+// 会话级模型切换（写该会话的别名锚点覆盖，不影响全局默认）
+async function onModelChange(providerId: string): Promise<void> {
+  currentSessionProviderId.value = providerId;
+  // 草稿态（会话尚未创建）：仅本地回显预览；所选配置在创建会话时由
   // ConversationView 写入会话覆盖（见其草稿发送分支），发送即生效
   if (currentSessionId.value === null) {
-    // 不弹 toast：模型选择器本身已回显所选模型，右下角提示此处无增量信息
+    // 不弹 toast：模型选择器本身已回显所选配置，右下角提示此处无增量信息
     return;
   }
   try {
-    await call('model/setSessionModel', { sessionId: currentSessionId.value, model });
+    await call('model/setSessionModel', { sessionId: currentSessionId.value, providerId });
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   }
@@ -1007,10 +1011,10 @@ let unsubProjectRemoved: (() => void) | null = null;
 let unsubProvidersChanged: (() => void) | null = null;
 let unsubNotifyFocus: (() => void) | null = null;
 
-// 会话切换时加载该会话生效模型；无会话（含草稿态）时展示全局默认模型
+// 会话切换时加载该会话生效模型锚点；无会话（含草稿态）时展示全局默认锚点
 watch(currentSessionId, (sid) => {
   if (sid !== null) void loadSessionModel(sid);
-  else currentSessionModel.value = defaultModel.value;
+  else currentSessionProviderId.value = defaultProviderId.value;
 });
 
 // 查看中的会话完成结果未读 → 调 session/markSessionRead 落盘已读（forge-store，
@@ -1383,7 +1387,7 @@ onUnmounted(() => {
             <MultiWindowCanvas
               ref="mwCanvasRef"
               :sessions="sessions"
-              :models="models"
+              :model-options="modelOptions"
               @close="multiWindow = false"
               @focus-session="onMultiWindowFocus"
               @opened-change="onOpenedChange"
@@ -1410,8 +1414,8 @@ onUnmounted(() => {
                 :session-id="currentSessionId!"
                 :project="convProject"
                 :session="currentSession"
-                :models="models"
-                :current-model="currentSessionModel"
+                :model-options="modelOptions"
+                :current-provider-id="currentSessionProviderId"
                 :project-picker="projectPicker ?? undefined"
                 @model-change="onModelChange"
                 @pick-project="onPickProject"
@@ -1427,8 +1431,8 @@ onUnmounted(() => {
               :session-id="currentSessionId"
               :project="convProject"
               :session="currentSession"
-              :models="models"
-              :current-model="currentSessionModel"
+              :model-options="modelOptions"
+              :current-provider-id="currentSessionProviderId"
               :project-picker="projectPicker ?? undefined"
               :auto-send-text="freeBootText"
               @model-change="onModelChange"
@@ -1442,8 +1446,8 @@ onUnmounted(() => {
                （不再强制先打开项目）；「打开项目…」入口保留在归属选择器菜单里 -->
           <LandingHero
             v-else
-            :models="models"
-            :current-model="currentSessionModel"
+            :model-options="modelOptions"
+            :current-provider-id="currentSessionProviderId"
             :project-picker="projectPicker ?? undefined"
             @model-change="onModelChange"
             @pick-project="onPickProject"

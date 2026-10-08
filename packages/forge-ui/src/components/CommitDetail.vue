@@ -11,7 +11,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import { createGitHistoryLoader, type CommitFileStat } from '../composables/useGitHistory.ts';
-import { avatarOf, absoluteTimeOf, relativeTimeOf } from '../utils/gitHistory.ts';
+import { avatarOf, absoluteTimeOf, relativeTimeSpec } from '../utils/gitHistory.ts';
 import { parseGitUnifiedDiff } from '../utils/gitDiffRows.ts';
 import type { SideBySideRow } from '@forge/core/side-by-side-diff';
 import { detectDiffLanguage, highlightDiffLine } from '@forge/core/side-by-side-diff';
@@ -29,6 +29,12 @@ const { t } = useI18n();
 
 const loader = createGitHistoryLoader();
 const now = ref(Math.floor(Date.now() / 1000)); // epoch **秒**（契约口径）
+
+/** 相对时间走 t()：utils/gitHistory 只给 i18n key，成串会把语言写死（AC-CE-031）。 */
+function relativeLabel(authoredAt: number): string {
+  const spec = relativeTimeSpec(authoredAt, now.value);
+  return t(spec.key, spec.params);
+}
 const copied = ref(false);
 
 loader.setProject(props.projectPath);
@@ -209,7 +215,7 @@ function close() {
             <div class="cd-name">{{ detail.authorName }}</div>
             <div class="cd-mail">&lt;{{ detail.authorEmail }}&gt;</div>
             <div class="cd-when">
-              {{ absoluteTimeOf(detail.authoredAt) }} · {{ relativeTimeOf(detail.authoredAt, now) }}
+              {{ absoluteTimeOf(detail.authoredAt) }} · {{ relativeLabel(detail.authoredAt) }}
               <span v-if="detail.isMerge" class="cd-tag">{{ t('code.historyMergeTag') }}</span>
               <span v-else-if="detail.isRoot" class="cd-tag">{{ t('code.historyFirstCommitTag') }}</span>
             </div>

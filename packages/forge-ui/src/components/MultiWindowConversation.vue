@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import { call } from '../bridge';
-import type { ProjectItem, ProjectPickerDescriptor, SessionItem } from '../types';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { call, subscribe } from '../bridge';
+import type { ProjectItem, ProjectPickerDescriptor, SessionItem, ModelOption } from '../types';
 import ConversationView from './ConversationView.vue';
 import { useI18n } from '../i18n/index.ts';
 
@@ -20,13 +20,13 @@ const props = defineProps<{
   sessionId: string;
   /** 所属会话（状态提示源 + projectPath 来源；会话删除时画布会同步摘窗，可为 null 防御） */
   session: SessionItem | null;
-  /** 可选模型列表（透传给输入框，与单视图一致） */
-  models: string[];
+  /** 模型可选项（透传给窗口内对话输入，与单视图一致） */
+  modelOptions: ModelOption[];
 }>();
 
 const { t } = useI18n();
 
-const currentModel = ref<string | null>(null);
+const currentProviderId = ref<string | null>(null);
 
 /**
  * 归属项目：自由会话（projectPath=null）传 null —— ConversationView 内部
@@ -53,26 +53,37 @@ const projectPicker = computed<ProjectPickerDescriptor | undefined>(() => {
 
 async function loadModel(): Promise<void> {
   try {
-    const res = await call<{ model: string | null }>('model/getSessionModel', {
-      sessionId: props.sessionId,
-    });
-    currentModel.value = res.model;
+    const res = await call<{ model: string | null; providerId: string | null }>(
+      'model/getSessionModel',
+      { sessionId: props.sessionId },
+    );
+    currentProviderId.value = res.providerId;
   } catch {
-    currentModel.value = null;
+    currentProviderId.value = null;
   }
 }
 
-async function onModelChange(model: string): Promise<void> {
+async function onModelChange(providerId: string): Promise<void> {
   try {
-    await call('model/setSessionModel', { sessionId: props.sessionId, model });
-    currentModel.value = model;
+    await call('model/setSessionModel', { sessionId: props.sessionId, providerId });
+    currentProviderId.value = providerId;
   } catch {
     // 持久化失败静默：ref 不更新，输入框保持回显真实值；切换横幅由 ConversationView 自管
   }
 }
 
+/** model.providersChanged 退订句柄（设置里改配置后本窗口要重解析生效模型） */
+let unsubProvidersChanged: (() => void) | null = null;
+
 onMounted(() => {
   void loadModel();
+  // 设置里改某个配置的模型 ID 后，本窗口的展示与生效模型都跟着重解析（锚点不变）
+  unsubProvidersChanged = subscribe('model.providersChanged', () => void loadModel());
+});
+
+onUnmounted(() => {
+  unsubProvidersChanged?.();
+  unsubProvidersChanged = null;
 });
 </script>
 
@@ -81,8 +92,8 @@ onMounted(() => {
     :session-id="sessionId"
     :project="project"
     :session="session"
-    :models="models"
-    :current-model="currentModel"
+    :model-options="modelOptions"
+    :current-provider-id="currentProviderId"
     :project-picker="projectPicker"
     @model-change="onModelChange"
   />

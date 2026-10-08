@@ -28,8 +28,8 @@ test('SHOT filmstrip', async ({ page }) => {
   await waitForMock(page);
   await page.evaluate(() => {
     const m = (window as unknown as { __forgeMock: any }).__forgeMock;
-    m.seed('model/queryModels', () => ({ code: 0, message: 'ok', data: { models: ['reason-pro'], defaultModel: 'reason-pro' } }));
-    m.seed('model/getSessionModel', () => ({ code: 0, message: 'ok', data: { model: 'reason-pro', effective: 'session' } }));
+    m.seed('model/queryModels', () => ({ code: 0, message: 'ok', data: { options: [{ providerId: 'reason-pro', model: 'reason-pro' }], defaultProviderId: 'reason-pro' } }));
+    m.seed('model/getSessionModel', () => ({ code: 0, message: 'ok', data: { model: 'reason-pro', providerId: 'reason-pro', effective: 'session' } }));
     m.seed('model/getModelThinkingLevels', () => ({ code: 0, message: 'ok', data: { levels: ['off', 'low', 'medium', 'high', 'max'] } }));
     m.seed('model/getSessionThinkingLevel', () => ({ code: 0, message: 'ok', data: { level: 'high', effective: 'session' } }));
     m.seed('model/setSessionThinkingLevel', () => ({ code: 0, message: 'ok', data: null }));

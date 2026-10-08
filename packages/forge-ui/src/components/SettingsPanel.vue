@@ -17,7 +17,7 @@ import { useWhatsNew } from '../composables/useWhatsNew';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import { capLabels, capsSeparator } from '../utils/platformKey';
 import SkillsSection from './SkillsSection.vue';
-import type { ThemeMode, ProviderItem, ThinkingLevel } from '../types';
+import type { ThemeMode, ProviderItem, ThinkingLevel, ModelOption } from '../types';
 
 /**
  * 设置面板。
@@ -38,8 +38,10 @@ const emit = defineEmits<{
 
 // 模型 provider 数据
 const providers = ref<ProviderItem[]>([]);
-const models = ref<string[]>([]);
-const defaultModel = ref<string | null>(null);
+/** 模型可选项（别名锚点 + 派生模型 ID），来自 model/queryModels */
+const modelOptions = ref<ModelOption[]>([]);
+/** 当前主会话配置的别名锚点（改该配置的模型 ID 时它不变，展示随派生值走） */
+const defaultProviderId = ref<string | null>(null);
 const loadingModels = ref(false);
 const providerError = ref<string | null>(null);
 
@@ -205,16 +207,29 @@ async function loadProviders(): Promise<void> {
 async function loadModels(): Promise<void> {
   loadingModels.value = true;
   try {
-    const res = await call<{ models: string[]; defaultModel: string | null }>('model/queryModels');
-    models.value = res.models;
-    defaultModel.value = res.defaultModel;
+    const res = await call<{ options: ModelOption[]; defaultProviderId: string | null }>(
+      'model/queryModels',
+    );
+    modelOptions.value = res.options;
+    defaultProviderId.value = res.defaultProviderId;
   } catch (e) {
-    models.value = [];
-    defaultModel.value = null;
+    modelOptions.value = [];
+    defaultProviderId.value = null;
   } finally {
     loadingModels.value = false;
   }
 }
+
+/**
+ * 「当前主会话模型」行展示：`别名 · 模型 ID`。
+ * 设置页这一行有宽度，带模型 ID 便于核对；对话框底部窄，只展示别名（InstructionInput）。
+ */
+const defaultModelLabel = computed<string>(() => {
+  const anchor = defaultProviderId.value;
+  if (anchor === null) return '';
+  const model = modelOptions.value.find((o) => o.providerId === anchor)?.model;
+  return model === undefined ? anchor : `${anchor} · ${model}`;
+});
 
 async function onSaveProvider(): Promise<void> {
   if (!canSubmitForm.value) return;
@@ -353,10 +368,11 @@ async function onDeleteProvider(id: string): Promise<void> {
   }
 }
 
-function onSetDefault(model: string): void {
+/** 「设为主会话」：写别名锚点（此后改该配置的模型 ID，主会话与所有引用它的会话自动跟随） */
+function onSetDefault(providerId: string): void {
   void (async () => {
     try {
-      await call('model/setDefault', { model });
+      await call('model/setDefault', { providerId });
       await loadModels();
     } catch (e) {
       providerError.value = e instanceof Error ? e.message : String(e);
@@ -367,7 +383,7 @@ function onSetDefault(model: string): void {
 function onClearDefault(): void {
   void (async () => {
     try {
-      await call('model/setDefault', { model: null });
+      await call('model/setDefault', { providerId: null });
       await loadModels();
     } catch (e) {
       providerError.value = e instanceof Error ? e.message : String(e);
@@ -375,8 +391,8 @@ function onClearDefault(): void {
   })();
 }
 
-function isDefault(model: string): boolean {
-  return defaultModel.value === model;
+function isDefault(providerId: string): boolean {
+  return defaultProviderId.value === providerId;
 }
 
 function selectTheme(mode: ThemeMode): void {
@@ -770,10 +786,10 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <!-- 当前主会话模型（置于列表上方，模型多时不遮挡） -->
-        <div v-if="defaultModel" class="default-model-row">
+        <!-- 当前主会话模型（置于列表上方，模型多时不遮挡）：别名 · 模型 ID -->
+        <div v-if="defaultProviderId" class="default-model-row">
           <span class="default-model-label">{{ t('settings.model.currentDefault') }}</span>
-          <span class="default-model-value">{{ defaultModel }}</span>
+          <span class="default-model-value">{{ defaultModelLabel }}</span>
           <button class="ghost small" @click="onClearDefault">{{ t('settings.model.clear') }}</button>
         </div>
 
@@ -906,11 +922,11 @@ onUnmounted(() => {
         </div>
         <div v-else-if="providers.length" class="provider-list">
           <div v-for="p in providers" :key="p.id" class="provider-item"
-            :class="{ 'is-default': p.models[0] && isDefault(p.models[0]) }">
+            :class="{ 'is-default': isDefault(p.id) }">
             <div class="provider-info">
               <div class="provider-name-row">
                 <span class="provider-name">{{ p.name }}</span>
-                <span v-if="p.models[0] && isDefault(p.models[0])" class="default-tag">{{ t('settings.model.defaultTag') }}</span>
+                <span v-if="isDefault(p.id)" class="default-tag">{{ t('settings.model.defaultTag') }}</span>
                 <span v-if="p.lastError" class="provider-error-tag" :title="p.lastError">{{ t('settings.model.errorTag') }}</span>
               </div>
               <div class="provider-meta">
@@ -927,10 +943,10 @@ onUnmounted(() => {
                 @click="onEdit(p)"
               >{{ t('settings.model.editBtn') }}</button>
               <button
-                v-if="p.models[0] && !isDefault(p.models[0])"
+                v-if="p.models[0] && !isDefault(p.id)"
                 class="provider-default-btn"
                 :data-tooltip="t('settings.model.setDefaultTooltip')"
-                @click="onSetDefault(p.models[0])"
+                @click="onSetDefault(p.id)"
               >{{ t('settings.model.setDefault') }}</button>
               <button
                 class="provider-delete"

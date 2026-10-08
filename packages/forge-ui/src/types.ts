@@ -203,6 +203,16 @@ export interface ProviderItem {
 /** 模型思考级别（模块 05 MP-S05；顺序固定 off→minimal→low→medium→high→xhigh→max） */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
+/**
+ * 模型可选项（model/queryModels 响应项，MP-S02）：一条 provider 配置 = 一个可选项。
+ * providerId 是别名锚点（写存储、判选中都用它，改配置里的模型 ID 时它不变），
+ * model 是该配置当前解析出的模型 ID（思考等级等运行时口径用它）。
+ */
+export interface ModelOption {
+  providerId: string;
+  model: string;
+}
+
 /** 思考级别切换器候选级别（空/缺省时 UI 隐藏切换入口） */
 export interface ModelThinkingLevels {
   levels: ThinkingLevel[];

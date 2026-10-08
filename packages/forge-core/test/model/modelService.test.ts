@@ -48,8 +48,14 @@ class MockModelsFileAdapter implements ModelsFileAdapter {
     if (this.writeError !== null) {
       throw this.writeError;
     }
-    this.writeSnapshots.push(providers.map((p) => ({ ...p })));
-    this.providers = providers.map((p) => ({ ...p }));
+    // 与 piModelsFileAdapter 同构：models.json 以 provider 别名（name）为 key，
+    // 读回时 id === name —— 锚点语义（modelService 设计决策 6）依赖这条不变量
+    const byName = new Map<string, ProviderFileRecord>();
+    for (const p of providers) {
+      byName.set(p.name, { ...p, id: p.name });
+    }
+    this.providers = [...byName.values()].map((p) => ({ ...p }));
+    this.writeSnapshots.push(this.providers.map((p) => ({ ...p })));
   }
 
   async readModelNames(): Promise<string[]> {
@@ -99,6 +105,10 @@ class MockModelStore implements ModelStorePort {
     this.settings.set(key, value);
   }
 
+  listSessions(): SessionRecord[] {
+    return [...this.sessions.values()].map((s) => ({ ...s }));
+  }
+
   getSession(sessionId: string): SessionRecord | undefined {
     return this.sessions.get(sessionId);
   }
@@ -134,15 +144,27 @@ function makeService(): {
   return { service, modelsFile, keychain, store };
 }
 
-/** 合法保存参数（可覆盖） */
+/** 合法保存参数（可覆盖）。name 即别名锚点，与 id 同名对齐 pi 侧口径（readProviders 的 id === name） */
 function validInput(overrides: Partial<SaveProviderInput> = {}): SaveProviderInput {
   return {
-    name: 'OpenAI',
+    name: 'openai',
     type: 'openai',
     baseUrl: 'https://api.openai.com/v1',
     models: ['gpt-4o', 'gpt-4o-mini'],
     apiKey: 'sk-secret-123',
     ...overrides,
+  };
+}
+
+/** 构造 provider 配置记录（id === name，与 pi models.json 的 provider key 口径一致） */
+function makeProvider(id: string, models: string[]): ProviderFileRecord {
+  return {
+    id,
+    name: id,
+    type: 'openai-completions',
+    baseUrl: 'https://example.test/v1',
+    models,
+    lastError: null,
   };
 }
 
@@ -155,7 +177,7 @@ test('saveProvider：合法配置写入，apiKey 明文落盘（v1，与 pi 原�
   assert.ok(written !== undefined);
   // v1 明文直写
   assert.equal(written.apiKey, 'sk-secret-123');
-  assert.equal(written.name, 'OpenAI');
+  assert.equal(written.name, 'openai');
   assert.equal(written.baseUrl, 'https://api.openai.com/v1');
   assert.deepEqual(written.models, ['gpt-4o', 'gpt-4o-mini']);
   // 文件内容即明文
@@ -224,13 +246,20 @@ test('saveProvider：v1 明文不受 keychain 可用性影响，仍明文落盘'
   assert.equal(keychain.stored.length, 0);
 });
 
-test('deleteProvider：删除 provider 并重置其所属全局默认模型', async () => {
+test('deleteProvider：删除 provider 并重置其全局默认（别名锚点与存量裸模型 ID 两种形态）', async () => {
   const { service, modelsFile, store } = makeService();
   await service.saveProvider(validInput({ id: 'openai', models: ['gpt-4o'] }));
+  // 存量形态：defaultModel 存的是裸模型 ID，按其归属命中
   store.setSetting('defaultModel', 'gpt-4o');
   const result = await service.deleteProvider('openai');
   assert.ok(result.ok);
   assert.equal(modelsFile.providers.length, 0);
+  assert.equal(store.getSetting('defaultModel'), null);
+
+  await service.saveProvider(validInput({ id: 'openai', models: ['gpt-4o'] }));
+  // 新形态：defaultModel 存别名锚点
+  store.setSetting('defaultModel', 'openai');
+  assert.ok((await service.deleteProvider('openai')).ok);
   assert.equal(store.getSetting('defaultModel'), null);
 });
 
@@ -244,36 +273,119 @@ test('deleteProvider：未知 provider 返回 1002', async () => {
   assert.equal(modelsFile.writeSnapshots.length, 0);
 });
 
-test('setDefault：合法模型持久化到 store；未知模型返回 1004', async () => {
+test('setDefault：合法别名持久化到 store；未保存的配置返回 1004', async () => {
   const { service, modelsFile, store } = makeService();
-  modelsFile.modelNames = ['gpt-4o', 'claude-sonnet-4'];
-  const ok = await service.setDefault('gpt-4o');
+  modelsFile.providers = [makeProvider('openai', ['gpt-4o']), makeProvider('anthropic', ['claude-sonnet-4'])];
+  const ok = await service.setDefault('openai');
   assert.ok(ok.ok);
-  assert.equal(store.getSetting('defaultModel'), 'gpt-4o');
+  assert.equal(store.getSetting('defaultModel'), 'openai');
   const unknown = await service.setDefault('nope');
   assert.ok(!unknown.ok);
   if (!unknown.ok) {
     assert.equal(unknown.code, 1004);
   }
-  assert.equal(store.getSetting('defaultModel'), 'gpt-4o');
+  assert.equal(store.getSetting('defaultModel'), 'openai');
 });
 
-test('getSessionModel：会话覆盖优先，无覆盖用全局默认', async () => {
-  const { service, store } = makeService();
-  store.sessions.set('sess-1', makeSession('sess-1', 'gpt-4o'));
+test('setDefault：别名可含空格（pi provider key 原样），不做模型 ID 形态校验', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('Grok 4.5', ['grok-4.5'])];
+  assert.ok((await service.setDefault('Grok 4.5')).ok);
+  assert.equal(store.getSetting('defaultModel'), 'Grok 4.5');
+});
+
+test('setDefault：改配置的模型 ID 后，主会话解析自动跟到新模型（本次回归的根因）', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3'])];
+  assert.ok((await service.setDefault('mx')).ok);
+  let models = await service.queryModels();
+  assert.ok(models.ok);
+  assert.deepEqual(models.data.options, [{ providerId: 'mx', model: 'MiniMax-M3' }]);
+
+  // 用户在设置里把模型 ID 改成 MiniMax-M3.1-Flash-Preview（别名不变）
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3.1-Flash-Preview'])];
+  models = await service.queryModels();
+  assert.ok(models.ok);
+  assert.equal(models.data.defaultProviderId, 'mx', '锚点不变，卡片徽标继续命中');
+  assert.deepEqual(models.data.options, [{ providerId: 'mx', model: 'MiniMax-M3.1-Flash-Preview' }]);
+  assert.equal(store.getSetting('defaultModel'), 'mx');
+});
+
+test('getSessionModel：会话覆盖锚点优先，无覆盖用全局默认锚点，两者都返回派生模型 ID', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3']), makeProvider('fs', ['ark-code-latest'])];
+  store.sessions.set('sess-1', makeSession('sess-1', 'mx'));
   store.sessions.set('sess-2', makeSession('sess-2', null));
-  store.setSetting('defaultModel', 'claude-sonnet-4');
+  store.setSetting('defaultModel', 'fs');
   const overridden = await service.getSessionModel('sess-1');
   assert.ok(overridden.ok);
   if (overridden.ok) {
-    assert.equal(overridden.data.model, 'gpt-4o');
+    assert.equal(overridden.data.model, 'MiniMax-M3');
+    assert.equal(overridden.data.providerId, 'mx');
     assert.equal(overridden.data.effective, 'session');
   }
   const global = await service.getSessionModel('sess-2');
   assert.ok(global.ok);
   if (global.ok) {
-    assert.equal(global.data.model, 'claude-sonnet-4');
+    assert.equal(global.data.model, 'ark-code-latest');
+    assert.equal(global.data.providerId, 'fs');
     assert.equal(global.data.effective, 'global');
+  }
+});
+
+test('getSessionModel：会话覆盖的模型 ID 被改后，该会话自动跟到新模型', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3'])];
+  store.sessions.set('sess-1', makeSession('sess-1', 'mx'));
+  const before = await service.getSessionModel('sess-1');
+  assert.ok(before.ok);
+  assert.equal(before.data.model, 'MiniMax-M3');
+
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3.1-Flash-Preview'])];
+  const after = await service.getSessionModel('sess-1');
+  assert.ok(after.ok);
+  assert.equal(after.data.model, 'MiniMax-M3.1-Flash-Preview');
+  assert.equal(after.data.providerId, 'mx');
+  assert.equal(after.data.effective, 'session');
+});
+
+test('getSessionModel：存量裸模型 ID 覆盖解析出归属后回写为别名（读时自愈，无需迁移脚本）', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3'])];
+  store.sessions.set('sess-1', makeSession('sess-1', 'MiniMax-M3'));
+  const first = await service.getSessionModel('sess-1');
+  assert.ok(first.ok);
+  assert.equal(first.data.model, 'MiniMax-M3');
+  assert.equal(first.data.providerId, 'mx');
+  // 读一次即落新形态
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'mx');
+});
+
+test('getSessionModel：全局默认的存量裸模型 ID 同样读时回写为别名', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3'])];
+  store.setSetting('defaultModel', 'MiniMax-M3');
+  store.sessions.set('sess-1', makeSession('sess-1', null));
+  const global = await service.getSessionModel('sess-1');
+  assert.ok(global.ok);
+  if (global.ok) {
+    assert.equal(global.data.providerId, 'mx');
+    assert.equal(global.data.effective, 'global');
+  }
+  assert.equal(store.getSetting('defaultModel'), 'mx');
+});
+
+test('getSessionModel：覆盖悬空（配置已删）时降级到全局默认，不报错', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('fs', ['ark-code-latest'])];
+  store.sessions.set('sess-1', makeSession('sess-1', 'gone'));
+  store.setSetting('defaultModel', 'fs');
+  const result = await service.getSessionModel('sess-1');
+  assert.ok(result.ok);
+  if (result.ok) {
+    assert.equal(result.data.model, 'ark-code-latest');
+    assert.equal(result.data.providerId, 'fs');
+    assert.equal(result.data.effective, 'global');
   }
 });
 
@@ -290,9 +402,9 @@ test('setSessionModel：设置/清除覆盖，仅影响该会话', async () => {
   const { service, store } = makeService();
   store.sessions.set('sess-1', makeSession('sess-1', null));
   store.sessions.set('sess-2', makeSession('sess-2', null));
-  const set = await service.setSessionModel('sess-1', 'gpt-4o');
+  const set = await service.setSessionModel('sess-1', 'mx');
   assert.ok(set.ok);
-  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'gpt-4o');
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'mx');
   assert.equal(store.sessions.get('sess-2')?.modelOverride, null);
   const clear = await service.setSessionModel('sess-1', null);
   assert.ok(clear.ok);
@@ -330,26 +442,29 @@ test('saveProvider：模型 ID 重复返回 1001，不写入', async () => {
   assert.equal(modelsFile.providers.length, 0);
 });
 
-test('setSessionModel：不在 modelsFile 列表里的 ID 仍可写入（会话模型以 pi 运行时为准）', async () => {
-  // 热切换场景：模型可能只存在于注入的 pi models.json，而不在本服务的 modelsFile 列表里。
-  // 把 modelsFile 列表当权威会凭空引入第二份真相，把合法切换误判成 1004。
+test('setSessionModel：providers 列表里没有的别名仍可写入（会话模型以 pi 运行时为准）', async () => {
+  // 热切换场景：配置可能只存在于注入的 pi models.json，而不在本服务的 modelsFile 列表里。
+  // 把列表当权威会凭空引入第二份真相，把合法切换误判成 1004。
   const { service, store, modelsFile } = makeService();
-  modelsFile.modelNames = [];
+  modelsFile.providers = [];
   store.sessions.set('sess-1', makeSession('sess-1', null));
-  const result = await service.setSessionModel('sess-1', 'forge-only-model');
+  const result = await service.setSessionModel('sess-1', 'forge-only-anchor');
   assert.ok(result.ok);
-  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'forge-only-model');
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'forge-only-anchor');
 });
 
-test('setSessionModel：模型 ID 含空格返回 1001，不写入覆盖', async () => {
+test('setSessionModel：别名可含空格（写入口不按模型 ID 形态校验）；空别名返回 1001', async () => {
   const { service, store } = makeService();
   store.sessions.set('sess-1', makeSession('sess-1', null));
-  const result = await service.setSessionModel('sess-1', 'MiniMax M3.1-Flash-Preview');
-  assert.ok(!result.ok);
-  if (!result.ok) {
-    assert.equal(result.code, 1001);
+  // pi models.json 的 provider key 可以带空格（如 "Grok 4.5"），锚点必须照收
+  const spaced = await service.setSessionModel('sess-1', 'Grok 4.5');
+  assert.ok(spaced.ok);
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'Grok 4.5');
+  const blank = await service.setSessionModel('sess-1', '   ');
+  assert.ok(!blank.ok);
+  if (!blank.ok) {
+    assert.equal(blank.code, 1001);
   }
-  assert.equal(store.sessions.get('sess-1')?.modelOverride, null);
 });
 
 test('queryProviderList：引用形式 apiKey（$VAR/!cmd）且 keychain 支持读取时返回明文（编辑回显用）', async () => {
@@ -414,32 +529,39 @@ test('queryProviderList：明文 apiKey 原样返回（与既有行为一致）'
   }
 });
 
-test('queryProviderList / queryModels：从适配器与 store 读取', async () => {
+test('queryProviderList / queryModels：可选项按配置给出，默认给别名锚点', async () => {
   const { service, modelsFile, store } = makeService();
-  modelsFile.providers = [
-    {
-      id: 'openai',
-      name: 'OpenAI',
-      type: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      models: ['gpt-4o'],
-      lastError: null,
-    },
-  ];
-  modelsFile.modelNames = ['gpt-4o', 'claude-sonnet-4'];
-  store.setSetting('defaultModel', 'claude-sonnet-4');
+  modelsFile.providers = [makeProvider('openai', ['gpt-4o']), makeProvider('anthropic', ['claude-sonnet-4'])];
+  store.setSetting('defaultModel', 'anthropic');
   const list = await service.queryProviderList();
   assert.ok(list.ok);
   if (list.ok) {
-    assert.equal(list.data.providers.length, 1);
+    assert.equal(list.data.providers.length, 2);
     assert.equal(list.data.providers[0]?.id, 'openai');
   }
   const models = await service.queryModels();
   assert.ok(models.ok);
   if (models.ok) {
-    assert.deepEqual(models.data.models, ['gpt-4o', 'claude-sonnet-4']);
-    assert.equal(models.data.defaultModel, 'claude-sonnet-4');
+    assert.deepEqual(models.data.options, [
+      { providerId: 'openai', model: 'gpt-4o' },
+      { providerId: 'anthropic', model: 'claude-sonnet-4' },
+    ]);
+    assert.equal(models.data.defaultProviderId, 'anthropic');
   }
+});
+
+test('queryModels：无模型的空配置不进可选项（也无法成为默认）', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('openai', ['gpt-4o']), makeProvider('empty', [])];
+  store.setSetting('defaultModel', 'empty');
+  const models = await service.queryModels();
+  assert.ok(models.ok);
+  if (models.ok) {
+    assert.deepEqual(models.data.options, [{ providerId: 'openai', model: 'gpt-4o' }]);
+    // 锚点指向空配置：解析不出模型，默认按未配置降级
+    assert.equal(models.data.defaultProviderId, null);
+  }
+  assert.ok(!(await service.setDefault('empty')).ok);
 });
 
 test('adapter 异常统一返回 5000 错误联合', async () => {
@@ -472,14 +594,13 @@ test('P3-D：saveProvider/deleteProvider/setDefault 触发审计且不含密钥'
     audit: (e) => auditEvents.push(e),
   });
 
-  await service.saveProvider(validInput({ name: 'Test', id: 'test-provider', models: ['m1'], apiKey: 'sk-super-sec-secret' }));
-  modelsFile.modelNames = ['m1']; // mock 的 readModelNames 独立于 providers（其余测试同约定）
+  await service.saveProvider(validInput({ name: 'test-provider', id: 'test-provider', models: ['m1'], apiKey: 'sk-super-sec-secret' }));
   assert.equal(auditEvents.length, 1);
   assert.equal(auditEvents[0]?.action, 'provider.saved');
   assert.equal(auditEvents[0]?.providerId, 'test-provider');
   assert.ok(auditEvents[0]?.ts);
 
-  await service.setDefault('m1');
+  await service.setDefault('test-provider');
   assert.equal(auditEvents.length, 2);
   assert.equal(auditEvents[1]?.action, 'model.defaultChanged');
 
@@ -495,9 +616,59 @@ test('P3-D：saveProvider/deleteProvider/setDefault 触发审计且不含密钥'
 
 test('P3-D：未注入审计回调时配置变更不报错', async () => {
   const { service } = makeService();
-  const saved = await service.saveProvider(validInput({ id: 'no-audit', models: ['m1'] }));
+  const saved = await service.saveProvider(validInput({ id: 'no-audit', name: 'no-audit', models: ['m1'] }));
   assert.equal(saved.ok, true);
   assert.equal((await service.deleteProvider('no-audit')).ok, true);
+});
+
+// ===== 锚点语义（设计决策 6）：改别名才需要传播，改模型 ID 零传播 =====
+
+test('saveProvider：改别名时传播锚点（全局默认 + 引用旧别名的会话一起改，其他会话不动）', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3']), makeProvider('fs', ['ark-code-latest'])];
+  store.setSetting('defaultModel', 'mx');
+  store.sessions.set('sess-1', makeSession('sess-1', 'mx'));
+  store.sessions.set('sess-2', makeSession('sess-2', 'fs'));
+  // 用户把别名 mx 改成 minimax（模型 ID 不变）——这是唯一需要传播的编辑
+  const saved = await service.saveProvider(
+    validInput({ id: 'mx', name: 'minimax', models: ['MiniMax-M3'] }),
+  );
+  assert.ok(saved.ok);
+  assert.equal(store.getSetting('defaultModel'), 'minimax');
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'minimax');
+  assert.equal(store.sessions.get('sess-2')?.modelOverride, 'fs');
+  const defaultModel = await service.resolveDefault();
+  assert.deepEqual(defaultModel, { providerId: 'minimax', model: 'MiniMax-M3' });
+});
+
+test('saveProvider：只改模型 ID 不动别名时不传播（存量引用继续命中）', async () => {
+  const { service, modelsFile, store } = makeService();
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3'])];
+  store.setSetting('defaultModel', 'mx');
+  store.sessions.set('sess-1', makeSession('sess-1', 'mx'));
+  const saved = await service.saveProvider(
+    validInput({ id: 'mx', name: 'mx', models: ['MiniMax-M3.1-Flash-Preview'] }),
+  );
+  assert.ok(saved.ok);
+  assert.equal(store.getSetting('defaultModel'), 'mx', '锚点原样保留');
+  assert.equal(store.sessions.get('sess-1')?.modelOverride, 'mx');
+  const session = await service.getSessionModel('sess-1');
+  assert.ok(session.ok);
+  if (session.ok) {
+    assert.equal(session.data.model, 'MiniMax-M3.1-Flash-Preview', '会话模型自动跟过去');
+    assert.equal(session.data.providerId, 'mx');
+  }
+});
+
+test('resolveDefault：给出别名锚点与派生模型 ID；未配置/悬空返回 null', async () => {
+  const { service, modelsFile, store } = makeService();
+  assert.equal(await service.resolveDefault(), null);
+  modelsFile.providers = [makeProvider('mx', ['MiniMax-M3'])];
+  store.setSetting('defaultModel', 'mx');
+  assert.deepEqual(await service.resolveDefault(), { providerId: 'mx', model: 'MiniMax-M3' });
+  // 配置被删 -> 锚点悬空（deleteProvider 已负责清空，这里验解析层不抛错）
+  modelsFile.providers = [];
+  assert.equal(await service.resolveDefault(), null);
 });
 
 // ===== MP-S06：contextWindow 上下文窗口 =====

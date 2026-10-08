@@ -377,12 +377,13 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
         getPiSupportedThinkingLevels(model, piModelsPath),
     },
   });
-  // 悬空模型 ID 自愈（回归：改完模型后发消息报「模型未配置或不可用: MiniMax M3.1-Flash-Preview」，
+  // 悬空模型自愈（回归：改完模型后发消息报「模型未配置或不可用: MiniMax M3.1-Flash-Preview」，
   // 且该会话此后每条消息都报同一个错）。
   //
-  // 根因链：设置里手打错的 ID（或改名/删掉的旧 ID）被原样存进 settings.defaultModel
-  // 与会话 modelOverride，而真正的解析发生在 pi 会话工厂创建时——即每条消息都重新
-  // 失败一次，会话树上却没有任何入口能看出坏在哪，用户在 UI 上的唯一出路是进去重选模型。
+  // 存储层已改为别名锚点（modelService 设计决策 6：settings.defaultModel / 会话 modelOverride
+  // 存 provider 别名，模型 ID 是解析出的派生值），改模型 ID 不再产生悬空引用。剩下的坏值场景
+  // 是「别名指向的配置被删/改名/清空 models」——getSessionModel 已在读侧降级到全局，这里再
+  // 兜一层：解析出的模型 ID 在 pi 运行时确实不存在时才动手。
   //
   // 自愈只在有确凿证据时动手（probePiModel 返回 'not-found'）：
   //   1) 会话生效模型已不存在 → 改用全局默认（用户在设置里修好后，旧会话立刻跟着好）；
@@ -398,8 +399,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     if (model === undefined || model === '') return undefined;
     if ((await probePiModel(model, piModelsPath)) !== 'not-found') return model;
 
-    const fallback = store.getSetting('defaultModel');
-    const fallbackModel = typeof fallback === 'string' && fallback.trim() !== '' ? fallback.trim() : undefined;
+    const fallbackModel = (await modelService.resolveDefault())?.model;
     if (
       fallbackModel === undefined ||
       fallbackModel === model ||
@@ -429,7 +429,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     providerReady: async () => {
       try {
         const models = await modelService.queryModels();
-        return models.ok && models.data.models.length > 0;
+        return models.ok && models.data.options.length > 0;
       } catch {
         return false;
       }
@@ -621,16 +621,21 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     },
     resolveChatTarget: async (sessionId) => {
       let model: string | null = null;
+      // 别名锚点：按配置取 provider（而非按模型 ID 反查），多个配置共用同一模型 ID
+      // 时不会认错 baseUrl / apiKey
+      let anchorId: string | null = null;
       if (sessionId !== null) {
         const r = await modelService.getSessionModel(sessionId);
         if (r.ok) {
           model = r.data.model;
+          anchorId = r.data.providerId;
         }
       }
       if (model === null) {
-        const r = await modelService.queryModels();
-        if (r.ok) {
-          model = r.data.defaultModel;
+        const r = await modelService.resolveDefault();
+        if (r !== null) {
+          model = r.model;
+          anchorId = r.providerId;
         }
       }
       if (model === null || model.trim() === '') {
@@ -640,9 +645,16 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       if (!pr.ok) {
         return { ok: false, code: 6008, message: pr.message };
       }
-      const provider = pr.data.providers.find((p) => p.models.includes(model));
+      const provider =
+        anchorId !== null
+          ? pr.data.providers.find((p) => p.id === anchorId)
+          : pr.data.providers.find((p) => p.models.includes(model));
       if (provider === undefined) {
-        return { ok: false, code: 6008, message: `模型未归属任何已配置 provider: ${model}` };
+        return {
+          ok: false,
+          code: 6008,
+          message: `模型未归属任何已配置 provider: ${anchorId ?? model}`,
+        };
       }
       if (provider.baseUrl === null || provider.baseUrl.trim() === '') {
         return { ok: false, code: 6008, message: `provider「${provider.id}」缺少 baseUrl，无法调用` };
