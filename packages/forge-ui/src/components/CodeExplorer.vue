@@ -18,6 +18,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import CodeViewer from './CodeViewer.vue';
+import CommitDetail from './CommitDetail.vue';
 import CodeSplitter from './CodeSplitter.vue';
 import { useCodeExplorer } from '../composables/useCodeExplorer';
 import type { GitStatusFile } from '../types';
@@ -34,6 +35,9 @@ import { useI18n } from '../i18n/index.ts';
 const props = defineProps<{
   /** 正在浏览代码的项目；null = 不显示代码纸，组件退化为「只提供行布局的容器」 */
   projectPath: string | null;
+  /** CE-S11：当前选中的提交 sha（null = 看代码纸）。由 App 从左栏 CodeTreePanel 的
+   *  `select-commit` 事件中转过来——两者是兄弟节点，没有父子关系可直传。 */
+  commit?: string | null;
 }>();
 
 const { t } = useI18n();
@@ -62,7 +66,32 @@ function onSetMode(mode: 'file' | 'inline' | 'side'): void {
  * 否则一进代码态就被一块「请选择文件」的空态盖住对话——这就是用户反馈的
  * 「进来的页面有问题」。
  */
-const showEditor = computed(() => props.projectPath !== null && openFiles.value.length > 0);
+/** CE-S11：当前选中的提交 sha。null = 未选中，右栏回到常规代码纸。
+ *  与 openFiles **并存**而非互斥：选中提交不关掉已开的签，从提交回到文件无需重开。 */
+const activeCommit = computed(() => props.commit ?? null);
+
+/** 右栏展示条件：代码纸在场 = 有打开的文件 **或** 看选中提交。
+ *  提交详情没有文件可开，所以不能沿用 openFiles.length 判据，否则从历史点进来会没反应。 */
+const showEditor = computed(
+  () => props.projectPath !== null && (openFiles.value.length > 0 || activeCommit.value !== null),
+);
+
+const emit = defineEmits<{ (e: 'close-commit'): void }>();
+
+function onCloseCommit(): void {
+  emit('close-commit');
+}
+
+/** 选中提交后，左栏点文件 / 点变更文件都要把右侧切回代码纸。
+ *  之前 activeCommit 非空时 CommitDetail 无条件盖在 CodeViewer 上，
+ *  于是「看完提交点个文件接着读」这个最自然的动作没反应（用户 2026-10-08 报）。
+ *  判据用**激活文件变化**而不是监听点击：文件可以从树 / 变更清单 / 签条三处打开，
+ *  统一收敛到 openFile → activeRel 这一条路径，不漏入口。 */
+watch(activeRel, (rel, prev) => {
+  if (rel !== null && rel !== prev && activeCommit.value !== null) {
+    onCloseCommit();
+  }
+});
 
 /** 实际生效的布局：偏好 + 窗口宽度共同决定（与 App 侧同一个函数，避免两处漂移） */
 const effectiveLayout = computed<CodeViewerLayout>(() =>
@@ -170,7 +199,16 @@ const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
       <!-- A：整屏覆盖。代码纸绝对定位盖住对话区，对话 DOM 与宽度都不动 -->
       <Transition name="cex-dock">
         <div v-if="showEditor" class="cex-cover">
+          <!-- CE-S11：选中提交时右栏换成提交详情（否则回到代码纸） -->
+          <CommitDetail
+            v-if="activeCommit !== null"
+            :key="activeCommit"
+            :project-path="projectPath ?? ''"
+            :sha="activeCommit"
+            @close="onCloseCommit"
+          />
           <CodeViewer
+            v-else
             :files="openFiles"
             :active-rel="activeRel"
             :project-path="projectPath"
@@ -198,7 +236,15 @@ const splitPctLabel = computed(() => `${Math.round(splitPct.value)}%`);
       />
       <Transition name="cex-dock">
         <div v-if="showEditor" class="cex-split" :style="{ flexBasis: `${splitPct}%` }">
+          <CommitDetail
+            v-if="activeCommit !== null"
+            :key="activeCommit"
+            :project-path="projectPath ?? ''"
+            :sha="activeCommit"
+            @close="onCloseCommit"
+          />
           <CodeViewer
+            v-else
             :files="openFiles"
             :active-rel="activeRel"
             :project-path="projectPath"

@@ -95,6 +95,28 @@
         "test-e2e": { "path": "docs/test/07_pi/e2e.md", "status": "approved" },
         "test-api": { "path": "docs/test/07_pi/api.md", "status": "approved" }
       }
+    },
+    "12_code_explorer": {
+      "status": "approved",
+      "note": "PRD 主体已于 2026-10-02 交付并迭代至 v6.16；本条目为 2026-10-08 补登（此前 artifacts.json 登记止于 07，08~13 整体缺登，属独立待办）。接口不单独建 api/12 文件——file/* 与 git/* 契约均记于 docs/api/11_git_commit_push.md（CE-S11 三 RPC 见其 §6~§8）。",
+      "artifacts": {
+        "prd": { "path": "docs/prd/12_code_explorer.md", "status": "approved" },
+        "verification": { "path": "docs/test/12_code_explorer/coverage-matrix.md", "status": "approved" },
+        "api": { "path": "docs/api/11_git_commit_push.md", "status": "approved" },
+        "test-unit": { "path": "docs/test/12_code_explorer/unit.md", "status": "approved" },
+        "test-api": { "path": "docs/test/12_code_explorer/api.md", "status": "approved" },
+        "test-e2e": { "path": "docs/test/12_code_explorer/e2e.md", "status": "approved" }
+      },
+      "extensions": {
+        "CE-S11_git_history": {
+          "status": "approved",
+          "added": "2026-10-08",
+          "ac_ids": ["AC-CE-032", "AC-CE-033", "AC-CE-034", "AC-CE-035", "AC-CE-036", "AC-CE-037", "AC-CE-038", "AC-CE-039", "AC-CE-040", "AC-CE-041", "AC-CE-042", "AC-CE-043", "AC-CE-044"],
+          "case_ids": ["U-CE-03", "U-CE-13", "U-CE-14", "U-CE-15", "U-CE-16", "U-CE-17", "U-CE-18", "A-CE-02", "A-CE-03", "A-CE-04", "A-CE-05", "A-CE-06", "A-CE-07", "A-CE-08", "A-CE-09", "A-CE-10", "A-CE-11", "A-CE-12", "E-CE-30", "E-CE-31", "E-CE-32", "E-CE-33", "E-CE-34", "E-CE-35", "E-CE-36", "E-CE-37"],
+          "depends_on": ["11_git_commit_push_gitService"],
+          "notes": "Zed 同款 Git 提交历史浏览 + 提交人展示。原型 prototypes/git-history-panel.html（双主题 × 3 状态，2026-10-08）。归属模块 12 而非新开模块：§3.6「变更视图」已确立「左栏加 git 视图归本模块」先例。关键架构决策=两级取数（getCommitDetail 只返 meta+numstat，5.9KB；全量 patch 1.6MB，差 268 倍，单文件 patch 展开时才取）。实现未开始，状态 approved 指**设计**已确认，非代码已交付。"
+        }
+      }
     }
   }
 }

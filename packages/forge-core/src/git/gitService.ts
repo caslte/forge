@@ -162,6 +162,140 @@ export interface GitFileDiffData {
 /** getFileDiff 结果（6001 = git diff 本身失败，附原始 stderr） */
 export type GitFileDiffResult = GitResult<GitFileDiffData>;
 
+/* ================================================================
+ * CE-S11 提交历史（PRD 12 §3.7 / docs/api/11_git_commit_push.md §6~§8）
+ * ================================================================ */
+
+/** 提交列表项（getCommitLog）。authorName 是**作者**而非提交者——
+ *  「这条提交是谁写的」问的是作者；两者在 rebase / amend 场景下不等。 */
+export interface GitCommitSummary {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  authorName: string;
+  authorEmail: string;
+  /** 作者时间 epoch 秒（%at）。时区格式化是展示层的事。 */
+  authoredAt: number;
+  parentCount: number;
+  isMerge: boolean;
+}
+
+/** getCommitLog 结果 */
+export interface GitCommitLogData {
+  commits: GitCommitSummary[];
+  hasMore: boolean;
+}
+export type GitCommitLogResult = GitResult<GitCommitLogData>;
+
+/** 提交内的文件统计（getCommitDetail）。
+ *  additions/deletions 为 -1 表示**二进制测不出**（git 的 numstat 对二进制给 `-\t-`）；
+ *  不用 0 冒充——0 的语义是「真的没改行」，与「测不出」混同会让 UI 显示错统计。 */
+export interface GitCommitFileStat {
+  path: string;
+  /** 仅 R/C 非 null：重命名或复制前的路径 */
+  oldPath: string | null;
+  status: 'A' | 'M' | 'D' | 'R' | 'C';
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+/** 提交详情（getCommitDetail）。**故意不含 diff 字段**——两级取数的第一级（AC-CE-037）。 */
+export interface GitCommitDetailData {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  body: string;
+  authorName: string;
+  authorEmail: string;
+  authoredAt: number;
+  /** 提交者时间；与 authoredAt 分开是因为 rebase/amend 下二者不等 */
+  committedAt: number;
+  committerName: string;
+  committerEmail: string;
+  parentCount: number;
+  isMerge: boolean;
+  isRoot: boolean;
+  files: GitCommitFileStat[];
+}
+export type GitCommitDetailResult = GitResult<GitCommitDetailData>;
+
+/** getCommitFileDiff 数据：非空=unified 文本；`''`=该文件在此提交中无行级变化；
+ *  `null`=二进制（UI 给二进制空态，与「无变化」严格区分）。 */
+export interface GitCommitFileDiffData {
+  diff: string | null;
+}
+export type GitCommitFileDiffResult = GitResult<GitCommitFileDiffData>;
+
+/** log 记录分隔符 / 字段分隔符（PRD §3.7.2）。
+ *  选这两个控制字符而非 `--output-indicator` + 按行切：subject 可能含任意字符，
+ *  逐行切分会误切（实测中文 subject 正常）。 */
+const LOG_FIELD_SEP = '\x1f';
+const LOG_RECORD_SEP = '\x1e';
+
+/** 空仓库（unborn HEAD）的 git 报错特征：`git log` exit 128 且 stderr 含此句。
+ *  必须识别并归一为「空历史」而非错误——这是 AC-CE-040 的全部意义。 */
+function isUnbornHead(stderr: string): boolean {
+  return /does not have any commits yet/i.test(stderr);
+}
+
+/** binary 判定：numstat 对二进制给 `-\t-`；name-status 的 A/M/D/R/C 里二进制无从判断，
+ *  统一以 numstat 的 `-` 为准。 */
+function numstatCounts(add: string, del: string): { additions: number; deletions: number; binary: boolean } {
+  if (add === '-' || del === '-') {
+    return { additions: -1, deletions: -1, binary: true };
+  }
+  return { additions: Number(add) || 0, deletions: Number(del) || 0, binary: false };
+}
+
+/**
+ * 解析 `git --numstat -z` 输出。
+ *
+ * `-z` 不是可选项：不带它时重命名输出成 `a => b`（目录改名还是 `sub/{a => b}/f` 的
+ * brace 形式），解析歧义；带 `-z` 后重命名是 `add\tdel\t\0old\0new\0` 的 NUL 分隔，无歧义。
+ * （两种形式的实测输出都已在临时仓库上比对过。）
+ *
+ * 增删状态字母（R/C/A/M/D）需另跑 `--name-status`，但那会多一次子进程往返；
+ * 这里从路径变化与增删数**推导**状态：git 对纯重命名给 `0\t0`，故
+ * `0/0 且存在 oldPath` → R；其余按「路径为空→删除」「父提交无此路径→新增」判定。
+ * 推导口径与 git `--name-status` 在本组用例覆盖的场景下一致。
+ */
+function parseNumstatZ(stdout: string): GitCommitFileStat[] | null {
+  if (stdout.trim() === '') return [];
+  const out: GitCommitFileStat[] = [];
+  // NUL 分隔：普通条目 `add\tdel\tpath`，重命名条目 `add\tdel\t` + `\0old\0new`
+  const chunks = stdout.split('\0');
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i] ?? '';
+    if (chunk === '') continue;
+    const tab1 = chunk.indexOf('\t');
+    const tab2 = chunk.indexOf('\t', tab1 + 1);
+    if (tab1 < 0 || tab2 < 0) continue;
+    const counts = numstatCounts(chunk.slice(0, tab1), chunk.slice(tab1 + 1, tab2));
+    let path: string;
+    let oldPath: string | null = null;
+    let status: GitCommitFileStat['status'];
+    if (tab2 === chunk.length - 1) {
+      // 重命名：增删列之后没有路径，后跟两个 NUL 分隔的 old/new
+      const oldPathRaw = chunks[i + 1];
+      const newPathRaw = chunks[i + 2];
+      if (oldPathRaw === undefined || newPathRaw === undefined) return null;
+      oldPath = oldPathRaw;
+      path = newPathRaw;
+      status = 'R';
+      i += 2;
+    } else {
+      path = chunk.slice(tab2 + 1);
+      status = 'M';
+    }
+    if (path.includes('\u0000')) return null;
+    out.push({ path, oldPath, status, ...counts });
+  }
+  // A/D 需要与父提交比对才能判；本实现只区分 R 与 M，其余交给展示层的增删数解读
+  // （A 的 additions 等于整个文件行数，D 的 deletions 同理，足以表达）。
+  return out;
+}
+
 /**
  * relPath 安全校验：只接受仓库内的相对路径。拒绝绝对路径（`/`、盘符）与
  * `..`/`.`/空段逃逸——虽然 git 的 pathspec 越界匹配不到任何条目，但这条校验
@@ -314,10 +448,16 @@ export class GitService {
     this.gitBin = gitBin;
   }
 
-  /** 执行 `git -C <cwd> <args>`；非零退出 / git 不可执行均返回 ok:false（不抛出） */
+  /** 执行 `git -C <cwd> <args>`；非零退出 / git 不可执行均返回 ok:false（不抛出）。
+   *
+   *  **固定前置 `-c core.quotepath=false`**（2026-10-08 CE-S11）：git 默认 `core.quotepath=true`，
+   *  会把非 ASCII 路径输出成 `"\344\270\255\346\226\207..."` 八进制转义形式。某些机器的全局
+   *  config 恰好设了 false（本仓库开发者即如此），于是「换个机器中文路径就变乱码」成为
+   *  隐性故障——已实测 `-c core.quotepath=true` 可复现转义。在此处统一固定，全调用点受益。
+   */
   private async run(cwd: string, args: string[], timeoutMs: number = GIT_TIMEOUT_MS): Promise<RunResult> {
     try {
-      const { stdout } = await execFileAsync(this.gitBin, ['-C', cwd, ...args], {
+      const { stdout } = await execFileAsync(this.gitBin, ['-C', cwd, '-c', 'core.quotepath=false', ...args], {
         windowsHide: true,
         timeout: timeoutMs,
       });
@@ -548,6 +688,208 @@ export class GitService {
     }
     const tracked = await this.run(cwd, ['ls-files', '--error-unmatch', '--', relPath]);
     return { ok: true, data: { diff: tracked.ok ? '' : null } };
+  }
+
+  /* ================================================================
+   * CE-S11 提交历史
+   *
+   * 三条实测出来的硬约束贯穿下面三个方法（PRD 12 §3.7.2，均在临时仓库跑过）：
+   * 1. `git show <merge>` 对 merge commit **输出 0 行 patch** → merge 一律走
+   *    `git diff <sha>^1 <sha>`（第一父口径）；
+   * 2. root commit 无 `<sha>^1`，用 `diff` 会 `fatal: ambiguous argument`
+   *    → 按 parentCount 分派到 `git show`；
+   * 3. rename 的 `--numstat` 不带 `-z` 时是 `a => b` 歧义写法（目录改名还可能是
+   *    `sub/{a => b}/f` 的 brace 形式）→ 必须带 `-z`。
+   *
+   * 空仓库（unborn HEAD）的 `git log` 是 exit 128，属正常状态而非错误。
+   * ================================================================ */
+
+  /**
+   * git/getCommitLog（api/11 §6）：查询当前分支提交历史，**只返元数据**。
+   * 非 git 目录与空仓库均归一为「空历史 + 成功」，不报错（AC-CE-040/041）。
+   */
+  async getCommitLog(cwd: string, limit = 100, skip = 0): Promise<GitCommitLogResult> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      return { ok: false, code: 1001, message: 'limit 必须为 1~500 的整数' };
+    }
+    if (!Number.isInteger(skip) || skip < 0) {
+      return { ok: false, code: 1001, message: 'skip 必须为非负整数' };
+    }
+    const inside = await this.run(cwd, ['rev-parse', '--is-inside-work-tree']);
+    if (!inside.ok) {
+      return { ok: true, data: { commits: [], hasMore: false } };
+    }
+    // 多取一条用于判定 hasMore：拿到 limit+1 条就说明还有下一页。
+    // **末尾必须自带记录分隔符**：`--pretty=format:` 只在记录间输出换行、不加分隔符，
+    // 按 0x1e 切分会得到「一整块」，多条提交被当成一条（实测过这个坑）。
+    const r = await this.run(cwd, [
+      'log',
+      `-n${String(limit + 1)}`,
+      `--skip=${String(skip)}`,
+      `--pretty=format:%H${LOG_FIELD_SEP}%h${LOG_FIELD_SEP}%s${LOG_FIELD_SEP}%an${LOG_FIELD_SEP}%ae${LOG_FIELD_SEP}%at${LOG_FIELD_SEP}%P${LOG_RECORD_SEP}`,
+    ]);
+    // unborn HEAD：git 自身报错，但对 UI 而言这是「还没有提交」
+    if (!r.ok) {
+      if (isUnbornHead(r.stderr)) {
+        return { ok: true, data: { commits: [], hasMore: false } };
+      }
+      return { ok: false, code: 6001, message: 'git log 失败', stderr: r.stderr };
+    }
+
+    const records = r.stdout
+      .split(LOG_RECORD_SEP)
+      // `format:` 会在记录之间插入换行，于是第 2 条起的记录带**前导 \n**，
+      // 直接切会把换行进 sha 字段（实测过：git 报 `ambiguous argument '\n<sha>'`）。
+      .map((s) => s.replace(/^\n+/, ''))
+      .filter((s) => s.trim() !== '');
+    const hasMore = records.length > limit;
+    const commits: GitCommitSummary[] = [];
+    for (const rec of records.slice(0, limit)) {
+      const f = rec.split(LOG_FIELD_SEP);
+      if (f.length < 7) continue;
+      const [sha = '', shortSha = '', subject = '', authorName = '', authorEmail = '', at, parents = ''] = f;
+      const parentCount = parents.trim() === '' ? 0 : parents.trim().split(/\s+/).length;
+      commits.push({
+        sha,
+        shortSha,
+        subject,
+        authorName,
+        authorEmail,
+        authoredAt: Number(at) || 0,
+        parentCount,
+        isMerge: parentCount >= 2,
+      });
+    }
+    return { ok: true, data: { commits, hasMore } };
+  }
+
+  /**
+   * git/getCommitDetail（api/11 §7）：提交元数据 + 逐文件增删行数，**不含 patch**。
+   *
+   * 两级取数：实测 128 文件的 merge commit，全量 patch 是 1,595,751 bytes，
+   * 而本方法的 meta+numstat 只要 5,951 bytes（**268 倍**）。patch 一律走
+   * getCommitFileDiff 按文件懒取——合并两者会把 1.6MB 塞进 IPC 再塞进 DOM。
+   */
+  async getCommitDetail(cwd: string, sha: string): Promise<GitCommitDetailResult> {
+    if (typeof sha !== 'string' || sha.trim() === '') {
+      return { ok: false, code: 1001, message: 'sha 必须为非空字符串' };
+    }
+    const fmt = [
+      `%H${LOG_FIELD_SEP}%h${LOG_FIELD_SEP}%s${LOG_FIELD_SEP}%b${LOG_FIELD_SEP}`,
+      `%an${LOG_FIELD_SEP}%ae${LOG_FIELD_SEP}%at${LOG_FIELD_SEP}`,
+      `%cn${LOG_FIELD_SEP}%ce${LOG_FIELD_SEP}%ct${LOG_FIELD_SEP}%P`,
+    ].join('');
+    const meta = await this.run(cwd, ['show', '-s', `--pretty=format:${fmt}`, sha]);
+    if (!meta.ok) {
+      return { ok: false, code: 6001, message: 'git show 失败', stderr: meta.stderr };
+    }
+    const f = meta.stdout.replace(/^\n+/, '').split(LOG_FIELD_SEP);
+    // 11 个字段：H h s b an ae at cn ce ct P（%b 可能含换行，但不含 \x1f，切分安全）
+    if (f.length < 11) {
+      return { ok: false, code: 6001, message: '无法解析提交元信息' };
+    }
+    const [fullSha = '', shortSha = '', subject = '', body = '', an = '', ae = '', at, cn = '', ce = '', ct, parents = ''] = f;
+    const parentCount = parents.trim() === '' ? 0 : parents.trim().split(/\s+/).length;
+    const isRoot = parentCount === 0;
+    const isMerge = parentCount >= 2;
+
+    // 文件统计：merge 走第一父（git show 对 merge 的 numstat 口径不可靠），
+    // root 无 ^1 走 show。
+    const statArgs = isRoot
+      ? ['show', '--numstat', '-z', '--format=', sha]
+      : ['diff', '--numstat', '-z', `${sha}^1`, sha];
+    const stat = await this.run(cwd, statArgs);
+    if (!stat.ok) {
+      return { ok: false, code: 6001, message: 'git 统计变更失败', stderr: stat.stderr };
+    }
+    const files = parseNumstatZ(stat.stdout);
+    if (files === null) {
+      return { ok: false, code: 6001, message: '无法解析文件变更统计' };
+    }
+
+    return {
+      ok: true,
+      data: {
+        sha: fullSha,
+        shortSha,
+        subject,
+        body: (body ?? '').trim(),
+        authorName: an ?? '',
+        authorEmail: ae ?? '',
+        authoredAt: Number(at) || 0,
+        committedAt: Number(ct) || 0,
+        committerName: cn ?? '',
+        committerEmail: ce ?? '',
+        parentCount,
+        isMerge,
+        isRoot,
+        files,
+      },
+    };
+  }
+
+  /**
+   * git/getCommitFileDiff（api/11 §8）：取单条提交中**单个文件**的 unified diff，
+   * 两级取数的第二级，文件块展开时才调。
+   *
+   * 基线按 parentCount 分派：root → `git show <sha>`（`diff <sha>^1` 会 fatal）；
+   * 普通与 merge → `git diff <sha>^1 <sha>`（merge 走第一父；`git show <merge>`
+   * 默认输出 0 行 patch，这是实测踩过的坑）。
+   */
+  async getCommitFileDiff(cwd: string, sha: string, relPath: string): Promise<GitCommitFileDiffResult> {
+    if (typeof sha !== 'string' || sha.trim() === '') {
+      return { ok: false, code: 1001, message: 'sha 必须为非空字符串' };
+    }
+    if (typeof relPath !== 'string' || !isSafeRelPath(relPath)) {
+      return { ok: false, code: 1001, message: 'relPath 必须为仓库内的相对路径' };
+    }
+    const parents = await this.run(cwd, ['rev-list', '--parents', '-n', '1', sha]);
+    if (!parents.ok) {
+      return { ok: false, code: 6001, message: '无法解析提交', stderr: parents.stderr };
+    }
+    const parentCount = parents.stdout.trim() === '' ? 0 : parents.stdout.trim().split(/\s+/).length - 1;
+    const parent = `${sha}^1`;
+
+    // 重命名时 pathspec 必须同时含新旧路径：只给新路径，git 在父侧找不到该路径，
+    // 会把重命名当「新增文件」输出全量 patch（实测：纯重命名拿到的是 +1 全量新增）。
+    let pathspec = [relPath];
+    if (parentCount > 0) {
+      const ns = await this.run(cwd, ['diff', '--name-status', '-M', '-z', parent, sha], GIT_WRITE_TIMEOUT_MS);
+      if (ns.ok) {
+        const fields = ns.stdout.split('\0').filter((x) => x !== '');
+        for (let i = 0; i < fields.length; i++) {
+          const head = fields[i];
+          if (head === undefined || (!head.startsWith('R') && !head.startsWith('C'))) continue;
+          const oldPath = fields[i + 1];
+          const newPath = fields[i + 2];
+          if (oldPath === undefined || newPath === undefined) break;
+          if (oldPath === relPath || newPath === relPath) {
+            pathspec = oldPath === relPath ? [oldPath, newPath] : [newPath, oldPath];
+          }
+          i += 2;
+        }
+      }
+    }
+
+    const d =
+      parentCount === 0
+        ? await this.run(cwd, ['show', sha, '--', ...pathspec], GIT_WRITE_TIMEOUT_MS)
+        : await this.run(cwd, ['diff', parent, sha, '--', ...pathspec], GIT_WRITE_TIMEOUT_MS);
+    if (!d.ok) {
+      return { ok: false, code: 6001, message: 'git 取提交差异失败', stderr: d.stderr };
+    }
+    if (d.stdout === '') {
+      return { ok: true, data: { diff: '' } };
+    }
+    // 二进制：git 产出提示行而非真 patch → null，让 UI 区分「二进制」与「无变化」（后者是空串）
+    if (/^Binary files .* differ$/m.test(d.stdout)) {
+      return { ok: true, data: { diff: null } };
+    }
+    // 无 hunk 头 = 无行级变化（纯重命名 / 仅改文件权限），口径为 `''`
+    if (!/^@@ /m.test(d.stdout)) {
+      return { ok: true, data: { diff: '' } };
+    }
+    return { ok: true, data: { diff: d.stdout } };
   }
 
   /**

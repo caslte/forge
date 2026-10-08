@@ -81,6 +81,9 @@ export class GitApi {
       'git/switchBranch': (params) => this.switchBranch(params),
       'git/getStatus': (params) => this.getStatus(params),
       'git/getFileDiff': (params) => this.getFileDiff(params),
+      'git/getCommitLog': (params) => this.getCommitLog(params),
+      'git/getCommitDetail': (params) => this.getCommitDetail(params),
+      'git/getCommitFileDiff': (params) => this.getCommitFileDiff(params),
       'git/commit': (params) => this.commit(params),
       'git/push': (params) => this.push(params),
     };
@@ -195,6 +198,90 @@ export class GitApi {
       return fail(result.code, result.message);
     } catch (err) {
       console.error('[getFileDiff] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /**
+   * git/getCommitLog（CE-S11，api/11 §6）：提交历史列表。
+   * 空仓库（unborn HEAD）与非 Git 目录均由**服务层**归一为 code=0 + 空数组，
+   * 本层不重复判断——判断逻辑只有一处，避免两处口径漂移。
+   */
+  private async getCommitLog(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    const rawLimit = isRecord(params) ? params.limit : undefined;
+    const rawSkip = isRecord(params) ? params.skip : undefined;
+    // 缺省口径与 api/11 §6 一致；非法值原样下传由服务层拒（1001），不在这里夹取
+    const limit = rawLimit === undefined ? 100 : rawLimit;
+    const skip = rawSkip === undefined ? 0 : rawSkip;
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      const result = await this.gitService.getCommitLog(path, limit as number, skip as number);
+      if (result.ok) {
+        return ok(result.data);
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[getCommitLog] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /** git/getCommitDetail（CE-S11，api/11 §7）：提交元数据 + 逐文件增删，**不含 patch** */
+  private async getCommitDetail(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    const sha = requireString(params, 'sha');
+    if (sha === null) {
+      return fail(1001, '参数错误：sha 必须为非空字符串');
+    }
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      const result = await this.gitService.getCommitDetail(path, sha);
+      if (result.ok) {
+        return ok(result.data);
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[getCommitDetail] internal error', err);
+      return fail(5000, 'internal error');
+    }
+  }
+
+  /** git/getCommitFileDiff（CE-S11，api/11 §8）：单文件提交级 unified diff（两级取数第二级） */
+  private async getCommitFileDiff(params: unknown): Promise<RpcResult> {
+    const path = requireString(params, 'path');
+    if (path === null) {
+      return fail(1001, '参数错误：path 必须为非空字符串');
+    }
+    const sha = requireString(params, 'sha');
+    if (sha === null) {
+      return fail(1001, '参数错误：sha 必须为非空字符串');
+    }
+    const file = requireString(params, 'file');
+    if (file === null) {
+      return fail(1001, '参数错误：file 必须为非空字符串');
+    }
+    try {
+      if (!this.isRegistered(path)) {
+        return fail(1002, `项目不存在: ${path}`);
+      }
+      const result = await this.gitService.getCommitFileDiff(path, sha, file);
+      if (result.ok) {
+        return ok(result.data);
+      }
+      return fail(result.code, result.message);
+    } catch (err) {
+      console.error('[getCommitFileDiff] internal error', err);
       return fail(5000, 'internal error');
     }
   }

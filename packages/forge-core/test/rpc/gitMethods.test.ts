@@ -23,6 +23,9 @@ import type {
   CommitResult,
   PushResult,
   CommitDiffContext,
+  GitCommitLogResult,
+  GitCommitDetailResult,
+  GitCommitFileDiffResult,
 } from '../../src/git/gitService.ts';
 
 /** fake GitService：返回预设结果，记录调用（含模块 11 写路径方法） */
@@ -44,6 +47,23 @@ class FakeGitService implements GitService {
   commitCalls: Array<{ cwd: string; message: string; includeUnstaged: boolean }> = [];
   pushCalls: string[] = [];
   throwOnSwitch: Error | null = null;
+
+  // CE-S11 提交历史
+  commitLog: GitCommitLogResult = { ok: true, data: { commits: [], hasMore: false } };
+  commitDetail: GitCommitDetailResult = {
+    ok: true,
+    data: {
+      sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 's', body: '',
+      authorName: '陈默', authorEmail: 'c@t.com', authoredAt: 1, committedAt: 1,
+      committerName: '陈默', committerEmail: 'c@t.com',
+      parentCount: 1, isMerge: false, isRoot: false, files: [],
+    },
+  };
+  commitFileDiff: GitCommitFileDiffResult = { ok: true, data: { diff: 'diff --git a/x b/x\n' } };
+  commitLogCalls: Array<{ cwd: string; limit: number; skip: number }> = [];
+  commitDetailCalls: Array<{ cwd: string; sha: string }> = [];
+  commitFileDiffCalls: Array<{ cwd: string; sha: string; relPath: string }> = [];
+  throwOnCommitLog: Error | null = null;
 
   async getBranchInfo(cwd: string): Promise<GitBranchInfo> {
     this.infoCalls.push(cwd);
@@ -80,6 +100,25 @@ class FakeGitService implements GitService {
 
   async collectCommitDiff(cwd: string): Promise<CommitDiffContext> {
     return this.diffContext;
+  }
+
+  // CE-S11
+  async getCommitLog(cwd: string, limit?: number, skip?: number): Promise<GitCommitLogResult> {
+    this.commitLogCalls.push({ cwd, limit: limit ?? 100, skip: skip ?? 0 });
+    if (this.throwOnCommitLog !== null) {
+      throw this.throwOnCommitLog;
+    }
+    return this.commitLog;
+  }
+
+  async getCommitDetail(cwd: string, sha: string): Promise<GitCommitDetailResult> {
+    this.commitDetailCalls.push({ cwd, sha });
+    return this.commitDetail;
+  }
+
+  async getCommitFileDiff(cwd: string, sha: string, relPath: string): Promise<GitCommitFileDiffResult> {
+    this.commitFileDiffCalls.push({ cwd, sha, relPath });
+    return this.commitFileDiff;
   }
 }
 
@@ -291,4 +330,93 @@ test('git/push：path 缺失 1001；未注册 1002；抛错 5000', async () => {
     throw new Error('boom');
   };
   assert.equal((await api.methods['git/push']({ path: 'C:/dev/a' })).code, 5000);
+});
+
+/* ==================== CE-S11 提交历史 RPC 契约 ==================== */
+
+test('git/getCommitLog：成功透传服务层结果，limit/skip 缺省口径为 100/0', async () => {
+  const { api, gitService } = makeApi();
+  gitService.commitLog = {
+    ok: true,
+    data: {
+      commits: [{
+        sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'feat: x',
+        authorName: '陈默', authorEmail: 'chenmo@kibo.com.cn',
+        authoredAt: 1791438623, parentCount: 1, isMerge: false,
+      }],
+      hasMore: false,
+    },
+  };
+  const r = await api.methods['git/getCommitLog']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.data, gitService.commitLog.ok ? gitService.commitLog.data : null);
+  assert.deepEqual(gitService.commitLogCalls[0], { cwd: 'C:/dev/a', limit: 100, skip: 0 });
+});
+
+test('git/getCommitLog：显式 limit/skip 透传；path 非法 1001；未注册 1002；异常 5000', async () => {
+  const { api, gitService } = makeApi();
+  await api.methods['git/getCommitLog']({ path: 'C:/dev/a', limit: 20, skip: 40 });
+  assert.deepEqual(gitService.commitLogCalls[0], { cwd: 'C:/dev/a', limit: 20, skip: 40 });
+
+  for (const params of [{}, { path: '' }, { path: '  ' }, { path: 1 }]) {
+    assert.equal((await api.methods['git/getCommitLog'](params)).code, 1001, JSON.stringify(params));
+  }
+  assert.equal((await api.methods['git/getCommitLog']({ path: 'C:/nope' })).code, 1002);
+
+  gitService.throwOnCommitLog = new Error('boom');
+  assert.equal((await api.methods['git/getCommitLog']({ path: 'C:/dev/a' })).code, 5000);
+});
+
+test('git/getCommitLog：空仓库由服务层归一为 code 0 + 空数组，本层不重复判断', async () => {
+  const { api, gitService } = makeApi();
+  gitService.commitLog = { ok: true, data: { commits: [], hasMore: false } };
+  const r = await api.methods['git/getCommitLog']({ path: 'C:/dev/a' });
+  assert.equal(r.code, 0, '空仓库不得变成错误码');
+  assert.deepEqual(r.data, { commits: [], hasMore: false });
+});
+
+test('git/getCommitDetail：成功透传；sha 缺失 1001；未注册 1002', async () => {
+  const { api, gitService } = makeApi();
+  const ok1 = await api.methods['git/getCommitDetail']({ path: 'C:/dev/a', sha: 'abc' });
+  assert.equal(ok1.code, 0);
+  assert.deepEqual(gitService.commitDetailCalls[0], { cwd: 'C:/dev/a', sha: 'abc' });
+
+  for (const params of [{ path: 'C:/dev/a' }, { path: 'C:/dev/a', sha: '' }, { sha: 'abc' }]) {
+    assert.equal((await api.methods['git/getCommitDetail'](params)).code, 1001, JSON.stringify(params));
+  }
+  assert.equal((await api.methods['git/getCommitDetail']({ path: 'C:/nope', sha: 'abc' })).code, 1002);
+});
+
+test('git/getCommitDetail：服务层失败码原样透传（6001 不被改写）', async () => {
+  const { api, gitService } = makeApi();
+  gitService.commitDetail = { ok: false, code: 6001, message: 'git show 失败' };
+  const r = await api.methods['git/getCommitDetail']({ path: 'C:/dev/a', sha: 'deadbeef' });
+  assert.equal(r.code, 6001);
+});
+
+test('git/getCommitFileDiff：成功透传；file 缺失/逃逸前置 1001；未注册 1002', async () => {
+  const { api, gitService } = makeApi();
+  const r = await api.methods['git/getCommitFileDiff']({ path: 'C:/dev/a', sha: 'abc', file: 'src/a.ts' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(gitService.commitFileDiffCalls[0], { cwd: 'C:/dev/a', sha: 'abc', relPath: 'src/a.ts' });
+
+  for (const params of [
+    { path: 'C:/dev/a', sha: 'abc' },
+    { path: 'C:/dev/a', file: 'a.ts' },
+    { path: 'C:/dev/a', sha: 'abc', file: '' },
+    { sha: 'abc', file: 'a.ts' },
+  ]) {
+    assert.equal((await api.methods['git/getCommitFileDiff'](params)).code, 1001, JSON.stringify(params));
+  }
+  assert.equal(
+    (await api.methods['git/getCommitFileDiff']({ path: 'C:/nope', sha: 'abc', file: 'a.ts' })).code,
+    1002,
+  );
+});
+
+test('CE-S11：三方法均已注册进 methods map（未注册会在主进程返 404）', async () => {
+  const { api } = makeApi();
+  for (const m of ['git/getCommitLog', 'git/getCommitDetail', 'git/getCommitFileDiff']) {
+    assert.equal(typeof api.methods[m], 'function', `${m} 未注册`);
+  }
 });

@@ -17,6 +17,7 @@
 | 09 | Skill 管理 | prd/09_skill_management.md | 开发中 | 设置页 Skills 分区：列表（全局+项目级）、导入本地文件夹、模板新建、删除（回收站优先）；四方法 skill/* RPC；代码与单测/mock 链路已完成，真机（Electron 实应用 + Windows 回收站 AC-09-10）待验收 |
 | 10 | 内嵌终端 | prd/10_embedded_terminal.md | PRD 已确认（待开工） | 底部面板多 tab 交互终端（xterm.js+node-pty）；新 tab cwd 自动跟随当前会话项目，tab 手动管理；工具栏图标+Ctrl+\` 入口；**前置风险：node-pty 原生模块 spike（TD-TM-01）**；demo 2026-09-23 验收通过 |
 | 11 | Git 提交与推送 | prd/11_git_commit_push.md | PRD 已确认（待开工） | 提交或推送弹窗（全量语义，无"仅本会话"）：状态行+分支浮窗双入口、包含未暂存变更勾选、AI 生成=一次 chat/completions 调用复用 provider、push stderr 弹窗内回显；git/getStatus·commit·push·generateCommitMessage 四 RPC；demo 2026-09-23 验收通过 |
+| 12 | 内置代码浏览器 | prd/12_code_explorer.md | **已交付**（2026-10-02 主体交付，多轮迭代至 v6.16） | 左栏整栏替换的只读代码浏览器：目录树懒加载 + 多签代码纸 + 布局 A/B（整屏覆盖/左右分割，窄窗自动降级）、签条跟随磁盘自动刷新、右键复制路径/外部编辑器打开；扩展：Git 变更视图 + 并排/行内 diff（§3.6，用户反馈驱动）；**git 提交历史视图归属本模块**（拟 CE-S11，见 3.7）；demo 2026-10-01 验收通过 |
 | 13 | 快捷键 | prd/13_keyboard_shortcuts.md | PRD 已确认（待开工） | 设置页第 5 个 Tab：只读快捷键清单 4 组 16 行（布局 B、排 Skills 之后）；主修饰键抽象（Mac ⌘/其他 Ctrl，顺带修 ``⌘+` `` 在 Mac 失效）；新增 3 个全局键 `Ctrl+,` 设置 toggle、`Ctrl+B` 侧栏、`Ctrl+Shift+N` 新建会话；**本期不做改键**，零新增接口；demo 2026-10-08 定稿 |
 
 ## 状态说明
@@ -34,6 +35,7 @@
 | CV-S09/CV-S10 → 模块 03 | 消息队列/输入历史，纯前端 | 模块 03 自含 | 输入框增强（2026-09-04） |
 | **CV-S11 ↔ TE-S05** | **CV-S11 消费 TE-S05 透传的 details 字段** | **模块 03 + 模块 04** | **输入框上方 todo 面板（2026-09-10）** |
 | 模块 12 ↔ 模块 11 | 代码树行尾复用 git/getStatus 变更集标注 M/A/D/U | 模块 12 + 11 | 内置代码浏览器（2026-10-01） |
+| **CE-S11 → 模块 12** | **Git 提交历史视图：新增 git/getCommitLog·git/getCommitDetail·git/getCommitFileDiff 三 RPC（复用模块 11 的 gitService 底座，不新增写入语义）；UI 落在模块 12 左栏第三视图** | **模块 12 自含** | **Zed 同款提交历史浏览 + 提交人（2026-10-08，PRD 12 §3.7 / api/11 §6~§8）** |
 
 ## 更新规则
 

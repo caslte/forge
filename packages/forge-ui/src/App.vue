@@ -266,6 +266,9 @@ function onFoldAll(): void {
 /** 当前打开代码浏览器的项目路径；null = 左栏显示项目树、右栏无代码纸 */
 const codeOpenPath = ref<string | null>(null);
 
+/** CE-S11：左栏历史视图选中的提交 sha（经左栏 → App → 右栏中转，两者无父子关系） */
+const codeCommit = ref<string | null>(null);
+
 /** 代码浏览器的宿主项目（用于取项目名；与 ProjectTree 的显示名规则保持一致） */
 const codeProjectName = computed(() => {
   const p = projects.value.find((x) => x.path === codeOpenPath.value);
@@ -1271,6 +1274,7 @@ onUnmounted(() => {
             :layout="codeViewerLayout"
             @back="closeCode"
             @toggle-layout="toggleCodeLayout"
+            @select-commit="(sha: string) => (codeCommit = sha)"
           />
         </div>
         <div class="sidebar-footer">
@@ -1304,7 +1308,7 @@ onUnmounted(() => {
       <!-- 模块 12：CodeExplorer 始终挂载并拥有这行 flex（无项目时退化为「只包对话列」）。
            不用「有项目才 v-if」：v-if 会把对话纸整块卸载重建，流式输出、滚动位置、
            输入框草稿全丢。始终挂载也让「谁决定布局」只有一个答案。 -->
-      <CodeExplorer :project-path="codeOpenPath">
+      <CodeExplorer :project-path="codeOpenPath" :commit="codeCommit" @close-commit="codeCommit = null">
         <div v-if="sessionError" class="error-toast" @click="clearError">
           {{ sessionError }}
         </div>

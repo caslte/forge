@@ -74,6 +74,11 @@ export type ForgeMethod =
   | 'git/getStatus'
   // 模块 12：单文件 unified diff（代码查看器「并排 diff」数据源，只读）
   | 'git/getFileDiff'
+  // CE-S11：Git 提交历史视图（PRD 12 §3.7 / api/11 §6~§8，只读）
+  // 两级取数：getCommitDetail 只返 meta+numstat，单文件 patch 展开时才取
+  | 'git/getCommitLog'
+  | 'git/getCommitDetail'
+  | 'git/getCommitFileDiff'
   | 'git/commit'
   | 'git/push'
   | 'git/generateCommitMessage'

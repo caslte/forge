@@ -61,6 +61,8 @@ export const enCode = {
   // ===== Git changes view + commit bar (2026-10-03) =====
   'code.viewFiles': 'Files',
   'code.viewChanges': 'Changes',
+  // CE-S11: Git commit history view (PRD 12 §3.7)
+  'code.viewHistory': 'History',
   'code.groupChanged': 'Uncommitted changes',
   'code.changesViewModes': 'Changes list layout',
   'code.changesFlat': 'Flat',
@@ -88,4 +90,29 @@ export const enCode = {
   'code.diffFailTitle': 'Failed to load diff',
   'code.diffFailHint': 'git diff returned nothing. Try again later.',
   'code.diffVsHead': 'vs HEAD',
+
+  // ===== CE-S11 Git commit history view =====
+  'code.historyFilterPlaceholder': 'Filter by message / author',
+  'code.historyFilterHint': 'Filters the loaded page only; it does not search older history',
+  'code.historyLoading': 'Loading commit history…',
+  'code.historyNotGitRepo': 'Not a Git repository',
+  'code.historyNotGitRepoHint': 'There is no version history to show.',
+  'code.historyEmpty': 'No commits yet',
+  'code.historyEmptyHint': 'Records will appear here after the first commit.',
+  'code.historyNoMatch': 'No matching commits',
+  'code.historyNoMatchHint': 'Try an author name or a keyword from the message.',
+  'code.historyLoadMore': 'Load more commits',
+  'code.historyMergeTag': 'Merge',
+  'code.historyFirstCommitTag': 'First commit',
+  'code.historyCommitSha': 'Copy SHA',
+  'code.historyShaCopied': 'Copied',
+  'code.historyNoFiles': 'This commit has no file changes',
+  'code.historyBinaryFile': 'Binary file: diff not shown',
+  'code.historyBinaryHint': 'The content cannot be compared line by line. Use an external tool to view it.',
+  'code.historyNoLineChange': 'No line-level change in this commit (rename only or mode change)',
+  'code.historyDiffFail': 'Failed to load diff',
+  'code.historyFilesTitle': '{n} files',
+  'code.pickCommitTitle': 'Select a commit on the left',
+  'code.pickCommitHint': 'Open a commit to see who wrote it and which files changed.',
+  'code.historyExpandBody': 'Expand full commit message',
 };

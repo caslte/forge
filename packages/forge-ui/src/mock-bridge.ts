@@ -137,6 +137,126 @@ const DB: {
 /** mock 项目路径（与 DB.projects 首项一致，代码树 fixture 挂在它下面） */
 const MOCK_PROJECT_PATH = 'D:/work/aiwork/forge';
 
+/* ===== CE-S11 提交历史 mock 数据 =====
+ * 作者刻意选「王工 / 李工」这类**末字相同**的名字：头像首字母若取末字，
+ * 两人会渲染成同一个字，E-CE-31 正是为此钉住「必须取姓氏」。
+ * 时间戳按 2026-10-08 14:00 倒排，让相对时间在 mock 下也能覆盖
+ * 「刚刚 / 小时前 / 天前 / 更早」多档。
+ */
+const MOCK_COMMITS = [
+  {
+    sha: '18b1ab025d12655afabf480dad9166e71d7690c3', shortSha: '18b1ab0',
+    subject: 'feat(forge-ui): 新增键盘快捷键系统与设置面板，支持代码浏览器右键复制',
+    authorName: '陈默', authorEmail: 'chenmo@kibo.com.cn', authoredAt: 1791438623,
+    body: '新增完整的键盘快捷键管理功能，包括快捷键配置、i18n 多语言支持、平台按键映射工具及 E2E 测试。\n重构设置面板为可折叠组件，集成快捷键展示与自定义入口。',
+    committedAt: 1791438623, committerName: '陈默', committerEmail: 'chenmo@kibo.com.cn',
+    parentCount: 1, isMerge: false, isRoot: false,
+  },
+  {
+    sha: 'd171af0c3ee7edbf5ea6b800433aad7ca3036b94', shortSha: 'd171af0',
+    subject: 'feat(forge-ui): 选区复制浮窗补右键触发，浮窗落在光标处',
+    authorName: '陈默', authorEmail: 'chenmo@kibo.com.cn', authoredAt: 1791427146,
+    body: '', committedAt: 1791427146, committerName: '陈默', committerEmail: 'chenmo@kibo.com.cn',
+    parentCount: 1, isMerge: false, isRoot: false,
+  },
+  {
+    sha: 'dd0365db6713fc6f94ffffbf105bc9ef74cb269c', shortSha: 'dd0365d',
+    subject: 'fix(model): 拦截非法模型 ID 并自愈悬空会话模型',
+    authorName: '陈默', authorEmail: 'chenmo@kibo.com.cn', authoredAt: 1791424276,
+    body: '会话里引用的模型被删掉后，输入框会一直空着且无法发送。\n现在启动时校验模型 ID，失效则回落到默认模型。\n\n现场报错「模型未配置或不可用: MiniMax M3.1-Flash-Preview」，正确 ID 是连字符版。\n\n根因链：ModelService.saveProvider 只 trim 不校验 ID 形态，空格版被写入 models.json。\n\n改动：\n1. saveProvider 拦截含空白字符的模型 ID，setDefault/setSessionModel 补齐形态校验。\n2. 发送前探测生效模型并自愈，仅在明确返回「无此模型」时改用全局默认。\n3. 模型解析移到任何磁盘写入之前，失败不再产生 header-only JSONL。\n4. ModelRuntime.create 失败后不缓存 rejected Promise。\n\n测试：forge-core 550/550、forge-ui 438/438 通过。',
+    committedAt: 1791424276, committerName: '陈默', committerEmail: 'chenmo@kibo.com.cn',
+    parentCount: 1, isMerge: false, isRoot: false,
+  },
+  {
+    sha: '8265d38eba8f855fa87274ebe52b9640948c3329', shortSha: '8265d38',
+    subject: 'Merge pull request #3 from caslte/dev-v0.2.0',
+    authorName: '王工', authorEmail: 'ligang@kibo.com.cn', authoredAt: 1791306606,
+    body: '', committedAt: 1791306606, committerName: '王工', committerEmail: 'ligang@kibo.com.cn',
+    parentCount: 2, isMerge: true, isRoot: false,
+  },
+  {
+    sha: 'cb9359106cba61ea2f5f1a7db42c1a3a2c3f7f9e1', shortSha: 'cb93591',
+    subject: 'docs: 补充内嵌终端 PRD 的 node-pty 原生模块风险说明',
+    authorName: '李工', authorEmail: 'lihua@kibo.com.cn', authoredAt: 1791305429,
+    body: '', committedAt: 1791305429, committerName: '李工', committerEmail: 'lihua@kibo.com.cn',
+    parentCount: 1, isMerge: false, isRoot: false,
+  },
+  {
+    sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', shortSha: 'a1b2c3d',
+    subject: 'refactor(forge-ui): 侧栏会话状态点改用盲文点阵',
+    authorName: '陈默', authorEmail: 'chenmo@kibo.com.cn', authoredAt: 1791091241,
+    body: '', committedAt: 1791091241, committerName: '陈默', committerEmail: 'chenmo@kibo.com.cn',
+    parentCount: 1, isMerge: false, isRoot: false,
+  },
+  {
+    sha: 'f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d', shortSha: 'f0e1d2c',
+    subject: 'chore: 升级 electron 到 33.2.1',
+    authorName: '王工', authorEmail: 'ligang@kibo.com.cn', authoredAt: 1790575320,
+    body: '', committedAt: 1790575320, committerName: '王工', committerEmail: 'ligang@kibo.com.cn',
+    parentCount: 1, isMerge: false, isRoot: false,
+  },
+  {
+    sha: '99887766554433221100ffeeddccbbaa99887766', shortSha: '9988776',
+    subject: 'feat: 首个提交：项目脚手架',
+    authorName: '陈默', authorEmail: 'chenmo@kibo.com.cn', authoredAt: 1755653400,
+    body: '', committedAt: 1755653400, committerName: '陈默', committerEmail: 'chenmo@kibo.com.cn',
+    parentCount: 0, isMerge: false, isRoot: true,
+  },
+];
+
+/** 提交内文件统计（getCommitDetail 返回；注意**不含 diff 字段**） */
+const MOCK_COMMIT_FILES = [
+  { path: 'packages/forge-ui/src/App.vue', oldPath: null, status: 'M', additions: 41, deletions: 12, binary: false },
+  { path: 'docs/prd/13_keyboard_shortcuts.md', oldPath: null, status: 'A', additions: 128, deletions: 0, binary: false },
+  { path: 'packages/forge-ui/src/i18n/domains/shortcuts.ts', oldPath: null, status: 'A', additions: 75, deletions: 0, binary: false },
+  // 纯重命名：oldPath 非 null、增删全 0（E-CE-36 展开它时应得空串而非「无变化」页）
+  { path: 'docs/说明.md', oldPath: 'docs/说明.md', status: 'R', additions: 0, deletions: 0, binary: false },
+  // 二进制：-1 而非 0（0 的语义是「真的没改行」）
+  { path: 'packages/forge-ui/public/logo.png', oldPath: null, status: 'M', additions: -1, deletions: -1, binary: true },
+];
+
+/** 单文件 patch（getCommitFileDiff）；null = 二进制，缺失键 = 无行级变化（空串） */
+const MOCK_COMMIT_DIFFS: Record<string, string | null> = {
+  'packages/forge-ui/src/App.vue': [
+    'diff --git a/packages/forge-ui/src/App.vue b/packages/forge-ui/src/App.vue',
+    'index 3f2a1bc..8c4d92e 100644',
+    '--- a/packages/forge-ui/src/App.vue',
+    '+++ b/packages/forge-ui/src/App.vue',
+    '@@ -1184,7 +1184,8 @@',
+    '  <aside class="sidebar">',
+    '+   <div class="tree-panel">',
+    '    <ProjectTree',
+    '@@ -1249,3 +1250,4 @@',
+    '    @toggle-layout="toggleCodeLayout"',
+    '- />',
+    '+    :layout="codeViewerLayout"',
+    '+  />',
+    ' </aside>',
+  ].join('\n'),
+  'docs/prd/13_keyboard_shortcuts.md': [
+    'diff --git a/docs/prd/13_keyboard_shortcuts.md b/docs/prd/13_keyboard_shortcuts.md',
+    'new file mode 100644',
+    'index 0000000..5a1c3e7',
+    '--- /dev/null',
+    '+++ b/docs/prd/13_keyboard_shortcuts.md',
+    '@@ -0,0 +1,3 @@',
+    '+# 13 快捷键',
+    '+',
+    '+设置页第 5 个 Tab：只读快捷键清单 4 组 16 行。',
+  ].join('\n'),
+  'packages/forge-ui/src/i18n/domains/shortcuts.ts': [
+    'diff --git a/packages/forge-ui/src/i18n/domains/shortcuts.ts b/packages/forge-ui/src/i18n/domains/shortcuts.ts',
+    'new file mode 100644',
+    'index 0000000..b7d2f90',
+    '--- /dev/null',
+    '+++ b/packages/forge-ui/src/i18n/domains/shortcuts.ts',
+    '@@ -0,0 +1,2 @@',
+    "+export const zhShortcuts = { 'terminal.toggle': '终端' };",
+    '+',
+  ].join('\n'),
+  'packages/forge-ui/public/logo.png': null,
+};
+
 /** 与 forge-core 的 MAX_SEARCH_NODES 同值：mock 的 limitReached 阈值不另起一套 */
 const FILE_SEARCH_MAX_NODES = 20_000;
 
@@ -1158,6 +1278,47 @@ const bridge: ForgeBridge = {
         const st = (g?.files ?? []).find((x) => x.path === dp.relPath);
         if (st?.status === '?') return { code: 0, message: 'ok', data: { diff: null } };
         return { code: 0, message: 'ok', data: { diff: MOCK_DIFFS[dp.relPath] ?? '' } };
+      }
+      // ===== CE-S11：Git 提交历史（PRD 12 §3.7 / api/11 §6~§8）=====
+      // mock 数据刻意造了三个「末字相同」的中文名（王工/李工），用于钉住
+      // 头像首字母必须取**姓氏**——取末字会让两人渲染成同一个字（E-CE-31）。
+      case 'git/getCommitLog': {
+        const gp = (params as { path?: string; limit?: number; skip?: number }).path ?? '';
+        if (!DB.git[gp]) {
+          // 非 git 项目：与服务层同口径归一为「空历史 + 成功」，不报错
+          return { code: 0, message: 'ok', data: { commits: [], hasMore: false } };
+        }
+        const rawLimit = (params as { limit?: number }).limit;
+        const rawSkip = (params as { skip?: number }).skip;
+        const limit = typeof rawLimit === 'number' && Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= 500 ? rawLimit : 100;
+        const skip = typeof rawSkip === 'number' && Number.isInteger(rawSkip) && rawSkip >= 0 ? rawSkip : 0;
+        const page = MOCK_COMMITS.slice(skip, skip + limit);
+        return {
+          code: 0,
+          message: 'ok',
+          data: { commits: page, hasMore: skip + limit < MOCK_COMMITS.length },
+        };
+      }
+      case 'git/getCommitDetail': {
+        const dp = params as { path?: string; sha?: string };
+        if (!DB.git[dp.path ?? '']) {
+          return { code: 0, message: 'ok', data: null };
+        }
+        const c = MOCK_COMMITS.find((x) => x.sha.startsWith(dp.sha ?? ''));
+        if (!c) return { code: 6001, message: '无法解析提交', data: null };
+        // 故意不含 diff 字段——两级取数契约，E-CE-34 会断言这一点
+        return { code: 0, message: 'ok', data: { ...c, files: MOCK_COMMIT_FILES } };
+      }
+      case 'git/getCommitFileDiff': {
+        const dp = params as { path?: string; sha?: string; file?: string };
+        if (!DB.git[dp.path ?? '']) return { code: 0, message: 'ok', data: { diff: null } };
+        if (!dp.file || dp.file.trim() === '') {
+          return { code: 1001, message: '参数错误：file 必须为非空字符串', data: null };
+        }
+        const hit = MOCK_COMMIT_DIFFS[dp.file];
+        if (hit === undefined) return { code: 0, message: 'ok', data: { diff: '' } };
+        if (hit === null) return { code: 0, message: 'ok', data: { diff: null } };
+        return { code: 0, message: 'ok', data: { diff: hit } };
       }
       case 'git/generateCommitMessage': {
         // GC-S11：mock 即时返回固定文案（无真 LLM 调用）；无变更演示 6008

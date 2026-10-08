@@ -142,23 +142,156 @@ AI 一键生成提交说明（GC-F05）。**参数**：
 成功响应 `data`：`{ "message": "feat: …" }`。失败统一 6008 + 可读 message；
 HTTP 非 2xx 日志只记状态码与模型名（响应体可能回显请求内容，刻意不记）。
 
-## 6. 错误码汇总（本模块）
+## 6. git/getCommitLog（CE-S11，2026-10-08 追加，只读幂等）
+
+查询当前分支的提交历史列表（**只返元数据，不返 patch**）。为模块 12 §3.7「Git 提交历史视图」左栏列表数据源。
+实现位置与 getStatus 同在 `gitService.ts` / `rpc/gitMethods.ts`。
+
+**参数**：`{ "path": "D:/work/xxx", "limit": 100, "skip": 0 }`（path 须已注册项目；limit 缺省 100、上限 500；skip 缺省 0）。
+
+成功响应 `data`：
+
+```json
+{
+  "commits": [
+    {
+      "sha": "18b1ab025d12655afabf480dad9166e71d7690c3",
+      "shortSha": "18b1ab0",
+      "subject": "feat(forge-ui): 新增键盘快捷键系统与设置面板",
+      "authorName": "陈默",
+      "authorEmail": "chenmo@kibo.com.cn",
+      "authoredAt": 1791438623,
+      "parentCount": 1,
+      "isMerge": false
+    }
+  ],
+  "hasMore": true
+}
+```
+
+| 字段 | 口径 |
+|---|---|
+| `authoredAt` | **epoch 秒**（git `%at`，作者时间），不返本地时区字符串 —— 时区格式化是展示层的事，跨时区与 DST 交由 UI 负责 |
+| `subject` | git `%s` 首行；**首行自身可能含换行以外的控制字符，已按记录分隔符 0x1e + 字段分隔符 0x1f 切分**（见下） |
+| `parentCount` / `isMerge` | `%P` 字段数；`>= 2` 即 merge commit。UI 据此打「合并」标记，且 `getCommitDetail` 据此选 diff 口径 |
+| `hasMore` | 本页取满 `limit` 且 `git log` 未到末尾时为 true；UI 据此挂滚动加载 |
+
+**空仓库（unborn HEAD）**：`git log` **exit 128**、stderr `your current branch 'xxx' does not have any commits yet` —— 服务层**识别该 stderr 并归一为 `{ commits: [], hasMore: false }`，code=0**，不当作错误上抛。UI 据此给「还没有任何提交」空态。**这是实测确认的行为，不是推测**（临时空仓库上跑过）。
+
+**分隔符口径**：一次 `git log` 取回整页，用 `%x1f`（0x1f）分隔字段、`%x1e`（0x1e）分隔记录。中文 commit message 实测正常（Windows 下 `execFile` 默认 utf8，无需 chcp）。选它而非 `--output-indicator` + 换行，是因为 subject 可能含任意字符，逐行切分会误切。
+
+**超时**：只读，沿用 `GIT_TIMEOUT_MS` 5s。实测 `-n 100` ≈ 90ms、`--skip 150` ≈ 98ms（深翻页不退化）。
+
+失败：1001（path 为空 / limit·skip 非法）；1002 项目未注册；6001 git 执行失败（data.stderr）；5000 内部错误。
+
+## 7. git/getCommitDetail（CE-S11，2026-10-08 追加，只读幂等）
+
+取单条提交的**元数据 + 逐文件增删行数**，**不返 patch**（两级取数的第一级，见下）。
+
+**参数**：`{ "path": "D:/work/xxx", "sha": "18b1ab02…" }`（path 须已注册项目；sha 接受完整或缩写短 SHA，git 自行解析；缩写有歧义时 git 报错→6001）。
+
+成功响应 `data`：
+
+```json
+{
+  "sha": "18b1ab025d12655afabf480dad9166e71d7690c3",
+  "shortSha": "18b1ab0",
+  "subject": "feat(forge-ui): 新增键盘快捷键系统与设置面板",
+  "body": "新增完整的键盘快捷键管理功能……\n重构设置面板为可折叠组件……",
+  "authorName": "陈默",
+  "authorEmail": "chenmo@kibo.com.cn",
+  "authoredAt": 1791438623,
+  "committedAt": 1791438623,
+  "committerName": "陈默",
+  "committerEmail": "chenmo@kibo.com.cn",
+  "parentCount": 1,
+  "isMerge": false,
+  "isRoot": false,
+  "files": [
+    { "path": "packages/forge-ui/src/App.vue", "oldPath": null, "status": "M", "additions": 41, "deletions": 12, "binary": false }
+  ]
+}
+```
+
+| 字段 | 口径 |
+|---|---|
+| `body` | `%b` 完整提交正文（可为空串）。与 `subject` 分开：列表只展示 subject，详情才展开正文 |
+| `authoredAt` / `committedAt` | epoch 秒。**两者分开返**：rebase /  amend 场景下作者时间 ≠ 提交时间，只返一个会让「谁在什么时候写的」变成无法回答的问题 |
+| `isRoot` | `parentCount === 0`。UI 据此打「首次提交」标记 |
+| `files[].status` | 单字符 `A`/`M`/`D`/`R`/`C`。R/C 时 `oldPath` 为原路径 |
+| `files[].oldPath` | 仅重命名/复制非 null |
+| `files[].additions`/`deletions` | 二进制为 `-1`（配套 `binary: true`），**不用 0 冒充** —— 0 表示「真的没改行」，与「测不出」语义不同 |
+| **不含 `diff`** | 见「两级取数」 |
+
+**两级取数（重要口径，勿合并为一次调用）**：本方法**只返 meta + numstat**，实测 128 文件的 merge commit 为 **5,951 bytes / 176ms**；若改成一次性返全量 patch 则为 **1,595,751 bytes / 360ms**（**268 倍**）。1.6MB 塞进 IPC 再塞进 DOM 会卡死UI，因此 patch 一律走 §8 按文件懒取。**后续维护不得为「少一次调用」把两者合并。**
+
+**merge commit 的统计口径**：merge 提交不能直接用 `git show --numstat <sha>`（实测默认对 merge 产出与 diff 不一致的结果），服务层统一用**第一父**口径 `git diff --numstat <sha>^1 <sha>`；`isRoot` 时无 `<sha>^1`，走 `git show --numstat` 分支。两者均已实测出正确 patch / 统计。
+
+**重命名口径**：必须带 `-z`（`--numstat -z`）。不带 `-z` 时 git 输出 `a => b` 歧义写法（目录改名的 brace 形式 `sub/{a => b}/f` 解析歧义更大）；带 `-z` 得 `0\t0\t\0old\0new\0` 的 NUL 分隔，无歧义。
+
+**路径编码**：服务层统一以 `-c core.quotepath=false` 执行。非 ASCII 路径否则会被 git 转义成 `"\344\270\255\346\226\207..."` 八进制形式（实测 `-c core.quotepath=true` 复现）。
+
+失败：1001（path/sha 为空）；1002 项目未注册；6001 git 执行失败（含 sha 不存在 / 缩写歧义，data.stderr）；5000 内部错误。
+
+## 8. git/getCommitFileDiff（CE-S11，2026-10-08 追加，只读幂等）
+
+取单条提交中**单个文件**的 unified diff（两级取数的第二级，文件块展开时才调）。
+参数口径与语义对齐 §2 `git/getFileDiff`，仅基线由「工作区 vs HEAD」改为「某提交 vs 其父」。
+
+**参数**：`{ "path": "D:/work/xxx", "sha": "18b1ab02…", "file": "src/App.vue" }`
+（file 为相对仓库根的 POSIX 路径；与 §2 同码校验——绝对路径 / `..` / 空段拒绝。）
+
+成功响应 `data`：
+
+```json
+{ "diff": "diff --git a/src/App.vue b/src/App.vue\n@@ -1,2 +1,3 @@\n-a\n+b\n+c\n" }
+```
+
+| 取值 | 口径 |
+|---|---|
+| 非空文本 | 该提交对该文件的 unified diff（3 行上下文，与 §2 同口径） |
+| `""` | 该文件在该提交中无行级变化（纯重命名 / 纯模式变更，如只改文件权限） |
+| `null` | 该文件在本次提交中是**二进制**：git 不产出可读 patch，UI 应渲染二进制空态而非「无改动」 |
+
+**基线口径（按 `parentCount` 分派，与 §7 一致）**：
+
+| 情况 | 命令 | 说明 |
+|---|---|---|
+| 普通提交 | `git diff <sha>^1 <sha> -- <file>` | 实测正确出 patch |
+| **merge commit** | 同上（第一父口径） | **`git show <merge>` 实测输出 0 行 patch**（未加 `-m` / `--first-parent`），故一律走 `diff <sha>^1 <sha>` |
+| **root commit** | `git show <sha> -- <file>` | root 无 `<sha>^1`，`diff` 会 fatal（`ambiguous argument`） |
+
+**超时**：与 §2 一致走 30s 放宽值（rebase 后的大文件 diff 可能较慢）。实测单文件 147ms / 28,516 bytes。
+
+**UI 侧体积控制**：本方法不设行数上限（服务层只做字节透传），截断由展示层负责 —— 沿用 `DiffView` 的 `INITIAL_ROWS = 200` + 「展开全部」，超限行为与模块 12 现有 diff 视图完全一致。
+
+失败：1001（path/sha/file 非空或 file 逃逸）；1002 项目未注册；6001 git 执行失败（data.stderr）；5000 内部错误。
+
+## 9. 错误码汇总（本模块）
 
 | code | 语义 |
 |---|---|
 | 0 | 成功 |
 | 1001 | 参数错误（path/message 空白） |
 | 1002 | 项目未注册 |
-| 6001 | git 命令执行失败（data.stderr；getFileDiff 复用，语义同 §11 api/01） |
+| 6001 | git 命令执行失败（data.stderr；getFileDiff / getCommitLog / getCommitDetail / getCommitFileDiff 复用，语义同 §11 api/01） |
 | 6006 | git 提交失败（data.stderr；含暂存空拒绝） |
 | 6007 | git 推送失败（data.stderr；含分离 HEAD 拒绝） |
 | 6008 | AI 生成失败（无变更/未配置模型/不支持协议/网络/非 2xx/空内容） |
 | 5000 | 内部错误 |
 
-## 7. 白名单与 UI 侧约定（forge-ui）
+## 10. 白名单与 UI 侧约定（forge-ui）
 
 - 双白名单已登记：`forge-desktop/src/ipc-contract.ts` ForgeMethod +4；`forge-ui/src/bridge.ts` 同名并集 +4
   （preload 无运行期方法白名单，零改动）。事件零新增（提交/推送不广播，弹窗打开时重查 getStatus）。
+- **CE-S11 再 +3**（2026-10-08 追加）：`forge-desktop/src/ipc-contract.ts` ForgeMethod 与
+  `forge-ui/src/bridge.ts` 同名并集各再登记 `git/getCommitLog` / `git/getCommitDetail` / `git/getCommitFileDiff`
+  （共 7 条 git 方法）。**preload 仍零改动** —— `preload.ts` 的 `contextBridge.exposeInMainWorld` 暴露的是整块泛化
+  `invoke(method, params)`，方法名只是字符串，无独立白名单。同理 `forge-ui/src/mock-bridge.ts` 需补三个 case
+  （e2e 跑在 mock 上，不补则组件用例拿不到数据）。事件仍零新增：历史列表按窗口 focus / 切项目 / 手动刷新拉取，不轮询。
+- **方法命名说明**：本模块沿用 `git/` 命名空间内的 `get*` 前缀（`getStatus` / `getBranchInfo` / `getFileDiff`），
+  未采用通用 RESTful 指南里的 `queryXXList` 形式 —— **同一模块内前缀统一优先于通用命名模板**，
+  否则 `git/queryCommitList` 会与既有 7 个方法分裂成两套前缀。新增方法名均为动宾结构且自解释。
 - UI 已交付（2026-09-23）：`GitCommitDialog.vue`（App 根常驻，`composables/useGitCommitDialog.ts` 模块级单例开合）；
   双入口=InstructionInput 状态行 meta-link + BranchBadge 浮窗「提交或推送…」（BranchBadge `git-repo` 事件驱动非 git 项目两处均不渲染）；
   6006/6007/6008 失败信封走 `invokeRaw`（弹窗内展示 stderr 不关窗）；i18n 新域 `domains/git.ts`；

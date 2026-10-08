@@ -65,6 +65,8 @@ export const zhCode = {
   // ===== Git 变更视图 + 提交条（2026-10-03） =====
   'code.viewFiles': '文件',
   'code.viewChanges': '变更',
+  // CE-S11：Git 提交历史视图（PRD 12 §3.7）
+  'code.viewHistory': '历史',
   'code.groupChanged': '本次变更',
   'code.changesViewModes': '变更清单形态',
   'code.changesFlat': '平铺',
@@ -92,4 +94,29 @@ export const zhCode = {
   'code.diffFailTitle': '对比加载失败',
   'code.diffFailHint': 'git diff 没有返回结果，可稍后重试。',
   'code.diffVsHead': '相对 HEAD',
+
+  // ===== CE-S11 Git 提交历史视图 =====
+  'code.historyFilterPlaceholder': '按说明 / 作者筛选',
+  'code.historyFilterHint': '仅筛选已加载的提交（当前页），不搜索更早的历史',
+  'code.historyLoading': '正在读取提交历史…',
+  'code.historyNotGitRepo': '此项目不是 Git 仓库',
+  'code.historyNotGitRepoHint': '没有版本历史可看。',
+  'code.historyEmpty': '还没有任何提交',
+  'code.historyEmptyHint': '在终端里完成第一次提交后，这里会出现记录。',
+  'code.historyNoMatch': '没有匹配的提交',
+  'code.historyNoMatchHint': '试试作者名或说明里的关键词。',
+  'code.historyLoadMore': '加载更多提交',
+  'code.historyMergeTag': '合并',
+  'code.historyFirstCommitTag': '首次提交',
+  'code.historyCommitSha': '复制 SHA',
+  'code.historyShaCopied': '已复制',
+  'code.historyNoFiles': '此提交没有文件变更',
+  'code.historyBinaryFile': '二进制文件不显示差异',
+  'code.historyBinaryHint': '内容无法按行对比，可用外部工具查看。',
+  'code.historyNoLineChange': '此文件在该提交中没有行级变化（纯重命名或仅改权限）',
+  'code.historyDiffFail': '差异加载失败',
+  'code.historyFilesTitle': '{n} 个文件',
+  'code.pickCommitTitle': '选择左侧的一条提交',
+  'code.pickCommitHint': '点开提交即可查看谁写的、改了哪些文件。',
+  'code.historyExpandBody': '展开完整提交说明',
 };

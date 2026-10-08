@@ -1,8 +1,28 @@
 # 12 内置代码浏览器（Code Explorer）
 
-> 状态：`草稿-待确认`
+> 状态：`已交付`（PRD 曾于 2026-10-01 定稿后长期停在 `草稿-待确认` 未回写，实际 2026-10-02 起已按定稿实现并多轮迭代 —— 见下方交付台账）
 > 原型：`prototypes/code-tree-viewer-demo.html`（2026-10-01，浅/深双主题 × 2 种布局 × 6 个状态可交互）
 > 定位：让 forge 用户**不必再切到 VSCode** 就能读项目代码 —— 目录树 + 只读代码查看器。
+> 承接：模块 01 PM-S05（`gitService`/`gitMethods` 底座）、模块 11（`git/getStatus` 变更集标注、`GitCommitDialog` 提交入口）
+
+### 交付台账
+
+| 日期 | 版本/提交 | 增量 |
+|---|---|---|
+| 2026-10-01 | PRD 定稿 | 本文档 + 原型双主题双布局验收 |
+| 2026-10-02 | `b0b3342` `c75dbbb` | 模块主体交付：左栏整栏替换、目录树懒加载、只读代码查看器、布局 A/B |
+| 2026-10-02 | `v6.11` | 隐藏「最近打开」分组（用户反馈：用处不大） |
+| 2026-10-02 | `v6.12` | 签条跟随磁盘变化自动刷新（`OpenFileWatcher` 目录级 fs.watch + `code.fileChanged`） |
+| 2026-10-02 | `v6.13` `3407fae` | 代码树右键「复制路径」+ 代码区右上角改终端开关 |
+| 2026-10-03 | `v6.4` | 代码树行右键菜单 + 外部编辑器打开 + 签可重排 |
+| 2026-10-03 | §3.6 | Git 变更视图 + 并排/行内 diff（用户反馈驱动，见 3.6） |
+| 2026-10-04 | `bce8c2a` | `git/getFileDiff` 单文件 diff 能力落地，配 226 行 core 单测 |
+| 2026-10-08 | `v6.15` | 修复布局 A 下「回到底部」提示条浮在代码正文上（层叠上下文缺失） |
+| 2026-10-08 | `v6.16` | 代码纸选区复制浮窗补右键触发 |
+
+测试资产：`packages/forge-ui/test/` 下 `changedTree` / `codeViewerLayout` / `gitDiffRows` / `gitStatusUi` / `gitTreeStatus` / `codeExplorerGitStatus` 等纯逻辑单测；`e2e/codeExplorer.spec.ts` + `e2e/codeCopy.spec.ts` 组件交互 e2e；`packages/forge-core/test/git/gitService.test.ts` 用真 git CLI 集成测。
+
+> **测试文档缺口**：`docs/test/` 下尚无 `12_code_explorer/` 目录（`index.md` 登记止于 07）。上表所列测试资产目前只存在于代码库，未落到静态测试设计文档 —— 与项目「文档与代码同步」的规范有缺口，待补。
 
 ---
 
@@ -182,6 +202,63 @@ main.content#contentConv │ ▌ │ main.content.content-code
   - **并排**：git diff 只产出变更块 ±上下文，hunk 之间的未变更区域以「⋯ 未变更 N 行 ⋯」分隔条显式交代（2026-10-03 用户确认并选定此方案——行号跳变不再是无声的；不做展开，全文阅读走行内视图）。
   - **默认有修改就展示对比**（2026-10-03 用户定稿）：树、标签、变更清单任意入口切到有变更的文件都直接进对比，具体进哪一种由**个性化 → 代码对比默认视图**决定（默认**并排**，用户 2026-10-03 定稿；可随时在代码纸右上角临时切换，不写回偏好）。git 状态是项目级共享状态（同步判定，切换零闪烁）；未变更文件永远是文件正文，**没有「没有未提交改动」空态页**（diff 为空即状态过期，静默落回正文）；未跟踪文件用已加载正文合成「全新增」；二进制给专门空态。
 
+### 3.7 Git 提交历史视图 CE-S11（2026-10-08，原型已验收，待开工）
+
+> 归属说明：不新开模块。§3.6 的「变更视图」已确立「左栏加 git 相关视图归本模块」的先例；历史提交详情本质是**只读的、按时间组织的 diff 查看器**，落在 §2「范围」内。仅承接模块 11 的 `gitService` 底座（与 §3.5/§3.6 同源），不新增 git 写入语义。
+
+- **入口**：左栏 `view` 从二值扩三值（`'files' | 'changes' | 'history'`）。侧栏宽度/折叠/拖拽手柄/项目状态**零改动**。
+- **提交人放第一优先级**（用户明确诉求）：列表行第二段为 `头像 · 姓名 · 相对时间 · 短SHA`。头像 = email 哈希 → 稳定色相 + 首字母，纯本地派生、**零网络请求**；同一作者视觉成串。相对时间复用 `relativeTimeParts()`，i18n key 现成。
+  - **首字母取姓氏（首字）**：原型实测取中文名末字会让「王工」「李工」双双渲染成「工」，两人在列表里完全一样，恰好毁掉按作者成串的设计意图。
+- **点开落在右栏**：提交详情含逐文件 diff，左栏 292px 放不下并排对比。头部给全量信息（姓名 + email + 绝对时间 + 可复制 SHA + 「合并/首次提交」标记），下面按文件分组可折叠，diff 复用 `parseGitUnifiedDiff` 与现有并排渲染。
+- **日期分隔条**：Zed 无此设计，但 forge 提交密度高（当天多条），无分隔条列表会读成一条平铺灰带。
+- **空态**：非 Git 项目 / 空仓库（unborn HEAD）各给明确文案，不报错不空白；两者下筛选框一并收起。
+
+#### 3.7.1 关键架构决策：两级取数（唯一必须在开工前定死的决策）
+
+实测依据（本仓库真实数据）：
+
+| 取法 | 耗时 | 体积 |
+|---|---|---|
+| `git show -m --first-parent <merge>`（全量 patch） | 360ms | **1,595,751 bytes / 17799 行 / 128 文件** |
+| `git show --numstat --format= <merge>`（仅统计） | 176ms | **5,951 bytes** |
+| 单文件 patch | 147ms | 28,516 bytes |
+
+「点开提交一次性拉全量 diff」在最坏情况下要把 1.6MB 塞进 IPC 再塞进 DOM。**因此拆两级**：
+1. `git/getCommitDetail` 只回 **meta + numstat**（5.9KB）→ 秒开文件列表与逐文件增删行数；
+2. **每个文件的 patch 展开时才单独取**（复用 `git/getFileDiff` 的按文件拉取思路）。
+
+与既有 `CodeViewer` 的「首屏 200 行 + 展开全部」是同一套渐进思路。
+
+#### 3.7.2 已实测的 git 边界（不可凭直觉实现）
+
+| 场景 | 实测行为 | 实现要点 |
+|---|---|---|
+| merge commit | `git show <merge>` **输出 0 行 patch** | 必须 `git diff <sha>^1 <sha>` 或 `-m --first-parent` |
+| root commit | `<sha>^1` 直接 fatal | 按 `parents.length` 分派，走 `git show` 分支 |
+| 空仓库（unborn HEAD） | `git log` **exit 128**，stderr `does not have any commits yet` | 判空给空态，**不能当报错** |
+| rename | `--numstat` 不带 `-z` 给 `a => b` 歧义写法 | 用 `--numstat -z`（NUL 分隔，`0\t0\t\0old\0new\0`） |
+| 二进制 | `--numstat` 给 `-\t-\tpath` | 给专门空态 |
+| 中文路径 | git 默认 `core.quotepath=true` 会转义成 `\344\270\255...` | 本机全局配了 `false` 才正常，**换机器会坏** |
+
+> **顺带修复建议**：在 `GitService.run()` 里统一加 `-c core.quotepath=false`（改 1 行，全调用点受益），一并消除现有「变更」视图的同类隐患。
+
+#### 3.7.3 接口与改动清单
+
+需新增 3 个 RPC（`ipc-contract.ts` 白名单 → `rpc/gitMethods.ts` handler → `gitService.ts` 实现 → `bridge.ts` 类型镜像 → `mock-bridge.ts` 补 case；**`preload.ts` 不改**，contextBridge 暴露的是整块泛化 invoke）：
+
+| 方法 | 入参 | 出参 |
+|---|---|---|
+| `git/getCommitLog` | `{ path, limit?, skip? }` | `{ commits: [{ sha, shortSha, subject, authorName, authorEmail, authoredAt, parentCount, isMerge }], hasMore }` |
+| `git/getCommitDetail` | `{ path, sha }` | `{ ...meta, files: [{ path, status, additions, deletions, binary }] }`（**不含 patch**） |
+| `git/getCommitFileDiff` | `{ path, sha, file }` | `{ diff: string }`（unified 文本，UI 一份解析出并排/行内两种投影） |
+
+**性能实测（可作容量基线）**：`git log -n 100` 稳定 ~90ms，深翻页（`--skip 150`）不退化。
+**分页**：首屏 100 条 + 滚动加载。
+
+#### 3.7.4 本期不做
+
+不做分支图（`git log --graph`，左栏宽度不够且属另一类视图）；不做 revert / cherry-pick / checkout（写操作归模块 11，本模块只读）；不做跨任意两提交的对比（需双 sha，属独立需求）；不做 gravatar 等联网头像。
+
 ## 4. 需要新增的接口
 
 现有 IPC 契约（`packages/forge-desktop/src/ipc-contract.ts`）只有 `project/*`（7 个）与 `git/*`（7 个），**没有任何文件读方法**。需新增：
@@ -216,6 +293,64 @@ main.content#contentConv │ ▌ │ main.content.content-code
 
 ## 6. 验收
 
+### 6.1 AC 编号体系
+
+本模块 AC 前缀 `AC-CE-`，用例前缀 `U-CE-`（unit）/ `A-CE-`（api）/ `E-CE-`（e2e）。**2026-10-08 建**：此前本模块 §6 验收为无编号 bullet，且 e2e 用例已在用 `E-CE-01~29`（散见于 changelog 与 `docs/test/03_conversation`）；建体系是为了让 `docs/test/12_code_explorer/coverage-matrix.md` 能稳定引用而不重新编号。**既有 `E-CE-01~29` 编号不变**，CE-S11 的新 e2e 用例自 `E-CE-30` 起。
+
+> 下表按 §3 决策小节归组，每条均可回溯到上文具体条款，不新增业务含义。
+
+| AC ID | 功能点 | 出处 | 对应用例 |
+|---|---|---|---|
+| AC-CE-001 | 项目视角行尾出现 `<>` 入口按钮；任务视角不出现 | §3.1 / §6 | E-CE-01 |
+| AC-CE-002 | 进入代码态后入口常驻高亮，充当状态指示 | §3.1 | E-CE-02 |
+| AC-CE-003 | 侧栏整栏互斥替换，项目树以 CSS 隐藏保活（展开态/选中/滚动不丢） | §3.2 | E-CE-03 |
+| AC-CE-004 | 返回三入口（顶栏 ← 返回 / `Esc` / 侧栏 ‹ 项目）语义一致 | §3.2 / §6 | E-CE-04 |
+| AC-CE-005 | 布局 A 覆盖：`.content` 宽度进入前后完全相等，对话区 DOM 未销毁 | §3.3 / §6 | E-CE-05 |
+| AC-CE-006 | 布局 A 覆盖完整性：对话区浮层不得浮到代码纸上 | §3.3 / §6 | E-CE-06 |
+| AC-CE-007 | 布局 B 分割：两侧保底 320px、双击恢复 46%、`←/→` 步进 2%、刷新后从 localStorage 恢复 | §3.3 / §6 | E-CE-07 |
+| AC-CE-008 | 布局切换双向同步（代码树 ⇄ 与设置项），偏好持久 | §3.3 / §6 | E-CE-08 |
+| AC-CE-009 | 窄窗（<820px）临时降级为 A 并提示，拉宽自动恢复，**偏好值始终不变** | §3.3 / §6 | E-CE-09 |
+| AC-CE-010 | 文件树懒加载：展开/收起、过滤、类型徽章，ignore 规则生效 | §3.4 / §6 | E-CE-10 |
+| AC-CE-011 | 语法高亮按扩展名分派（自实现，不引 shiki） | §3.4 | U-CE-01 |
+| AC-CE-012 | 行号列 sticky 且不可选中（复制结果为纯代码，不含行号） | §3.4 | E-CE-11 |
+| AC-CE-013 | 标签页：仅 ≥2 个文件时出现；中键关闭（mousedown+mouseup 同签配对） | §3.4 | E-CE-12 |
+| AC-CE-014 | 签可重排：拖拽（4px 阈值/不切激活签/吞 click）+ `Ctrl+Shift+PageUp/Down` + 右键菜单（边界置 disabled） | §3.4 | E-CE-13 |
+| AC-CE-015 | 最近打开与标签页解耦：上限 5、点已开签不重排、关签不从历史消失 | §3.4 | E-CE-14 |
+| AC-CE-016 | 选区复制：拖选浮选区上方；**右键浮光标处**；`Ctrl+A` 后右键可复制 | §3.4 | E-CE-15, E-CE-29 |
+| AC-CE-017 | 面包屑跳目录；右侧终端开关与顶栏/`` Ctrl+` `` 同源；代码态终端为全宽底部抽屉 | §3.4 | E-CE-16 |
+| AC-CE-018 | 共享右键菜单：Teleport + 视口钳位 + capture 关闭 + ESC + **150ms 宽限期** | §3.4 | E-CE-17 |
+| AC-CE-019 | 外部编辑器打开：三层解析（PATH 全部命中行 / 注册表 App Paths / 安装根扫描），**仅放行真实存在的 .exe**，启动不加 windowsHide | §3.4 | U-CE-02, A-CE-01 |
+| AC-CE-020 | 状态栏：行/列、总行数、编码、换行态、常驻「只读预览」 | §3.4 | E-CE-18 |
+| AC-CE-021 | 磁盘变更自动刷新：目录级 fs.watch + 300ms 防抖 + `code.fileChanged` 静默重读，保持滚动位置 | §3.4 / §6 | E-CE-19 |
+| AC-CE-022 | 降级态：二进制 / >2MB 或 >5 万行 / 无权限·已删除，各有明确态而非空白 | §3.4 / §6 | E-CE-20 |
+| AC-CE-023 | Git 状态角标 M/A/D/U（复用模块 11 `git/getStatus`），进入时拉一次并缓存、不轮询 | §3.5 | E-CE-21 |
+| AC-CE-024 | 双视图互斥（文件 / 变更），变更数角标非 0 上warning 色 | §3.6 | E-CE-22 |
+| AC-CE-025 | 清单形态平铺/级联切换；级联下目录聚合角标与子文件计数 | §3.6 | E-CE-23 |
+| AC-CE-026 | 状态色语义 M=橙/A 绿/D 红删除线/冲突 `!`，文件名与角标同色，父级目录同样染色 | §3.6 | E-CE-24 |
+| AC-CE-027 | 三档胶囊「文件/行内/并排」，默认并排；行内含滚动位置色块与删除占位条 | §3.6 | E-CE-25 |
+| AC-CE-028 | 并排视图 hunk 之间以「⋯ 未变更 N 行 ⋯」分隔条显式交代 | §3.6 | E-CE-26 |
+| AC-CE-029 | 未变更文件静默落回文件正文，**无「没有未提交改动」空态页**；未跟踪文件合成「全新增」 | §3.6 | E-CE-27 |
+| AC-CE-030 | 浅/深双主题对比度与纸层级关系（`--elev-codepaper` > `--elev-sheet`）成立 | §6 | E-CE-28 |
+| AC-CE-031 | i18n `zh-CN`/`en` 全量覆盖，无硬编码文案 | §6 | E-CE-29 |
+| **CE-S11 提交历史视图** | | | |
+| AC-CE-032 | 左栏 `view` 扩为三值，历史视图可切换；侧栏宽度/折叠/拖拽手柄/项目状态零改动 | §3.7 | E-CE-30 |
+| AC-CE-033 | 列表行展示 `说明 + 头像 + 姓名 + 相对时间 + 短SHA`；头像首字母取**姓氏（首字）**，email 哈希派生色相，零网络请求 | §3.7 | E-CE-31 |
+| AC-CE-034 | 筛选框按说明/作者过滤已加载列表；无匹配时给空态 | §3.7 | E-CE-32 |
+| AC-CE-035 | 日期分隔条（今天/昨天/M月D日）分组 | §3.7 | E-CE-30 |
+| AC-CE-036 | 点开提交落在右栏：头部全量 meta（姓名+email+绝对时间+可复制 SHA+合并/首次标记），逐文件分组可折叠 | §3.7 | E-CE-33 |
+| AC-CE-037 | **两级取数**：详情只回 meta+numstat（不返 patch），单文件 patch 展开时才取 | §3.7.1 | A-CE-02, E-CE-34 |
+| AC-CE-038 | merge commit 出 patch（`git diff <sha>^1 <sha>` 口径，`git show` 默认 0 行不可用） | §3.7.2 | A-CE-03 |
+| AC-CE-039 | root commit 正常出 patch（无 `<sha>^1`，按 `parents.length` 分派） | §3.7.2 | A-CE-04 |
+| AC-CE-040 | 空仓库（unborn HEAD，`git log` exit 128）判空给空态，不报错 | §3.7.2 | A-CE-05 |
+| AC-CE-041 | 非 Git 项目给明确空态；两种空态下筛选框一并收起 | §3.7 | E-CE-35 |
+| AC-CE-042 | rename 以 `--numstat -z` NUL 分隔正确还原 old/new；二进制 `-` 标记给专门空态 | §3.7.2 | A-CE-06 |
+| AC-CE-043 | 中文路径不经八进制转义（`run()` 统一 `-c core.quotepath=false`） | §3.7.2 | A-CE-07 |
+| AC-CE-044 | `git/getCommitLog` 分页：首屏 100 条，深翻页不退化（实测 `--skip 150` ≈98ms） | §3.7.3 | A-CE-08 |
+
+### 6.2 原验收清单（2026-10-01 定稿原文，保留备查）
+
+上表 AC-CE-001~031 已逐条承接下列原始验收条目，编号后不再以此为准：
+
 - 入口：`view === 'project'` 时项目行 hover 出现第三个按钮；`view === 'task'` 时**不出现**。
 - 侧栏：进入/返回各一次点击；返回后项目展开态、会话选中态、滚动位置与进入前一致。
 - **返回**：顶栏 `← 返回`、`Esc`、侧栏 `‹ 项目` 均可退出；两种布局下语义一致（关闭代码视图）。
@@ -232,7 +367,43 @@ main.content#contentConv │ ▌ │ main.content.content-code
 
 ## 7. 待确认
 
-1. 代码树是否需要**右键菜单**（在此处打开 / 在资源管理器中显示 / 复制相对路径）？—— 原型里只放了顶栏动作。
-2. 展开态与**布局偏好**是否需要跨设备同步（走 forgeStore 同步）还是仅本机 `localStorage`？
+1. ~~代码树是否需要**右键菜单**？~~ **已解决（2026-10-08 回写）**：已实现。共享 `ContextMenu` 组件（项目树 / 改动文件卡 / 代码树行 / 签条四处合一），代码树行菜单含按已装编辑器分项「用…打开」+ 复制路径 + 打开所在目录，`.html/.htm` 额外「用浏览器打开」；详见 §3.4「右键菜单（共享组件 `ContextMenu`）」与 §3.4「只读 ≠ 不能写代码」两段。对应 AC-CE-018 / AC-CE-019。
+2. 展开态与**布局偏好**是否需要跨设备同步（走 forgeStore 同步）还是仅本机 `localStorage`？—— 现状仅本机 `localStorage`（`forge:codeViewerLayout` / `forge:sidebar:width`），跨设备同步本期不做。
 3. 是否需要「只显示 AI 改过的文件」过滤开关（复用模块 11 的会话变更集）？
 4. 布局 B 是否需要支持**上下分割**（代码在对话下方）？当前只做左右；底部已被 `TerminalPanel` 占用，上下分割会与终端抢位置。
+
+## 8. 自检报告（2026-10-08）
+
+### 8.1 需求 → 详细设计 → AC 映射
+
+| 需求/决策（§3） | 承接功能点 | AC | 通过 |
+|---|---|---|---|
+| 3.1 入口与状态指示 | 项目行动作区 / `openCode` | AC-CE-001, AC-CE-002 | ✅ |
+| 3.2 侧栏整栏替换与返回 | `.tree-panel` 互斥 + 三处返回 | AC-CE-003, AC-CE-004 | ✅ |
+| 3.3 布局 A/B 与窄窗降级 | `CodeExplorer` / `CodeSplitter` | AC-CE-005~009 | ✅ |
+| 3.4 查看器细节（高亮/行号/签/历史/复制/面包屑/右键/状态栏/自动刷新/降级） | `CodeViewer` + `useCodeExplorer` | AC-CE-011~022 | ✅ |
+| 3.5 Git 状态角标 | `loadGitStatus` → 文件树角标 | AC-CE-023 | ✅ |
+| 3.6 变更视图 + 并排 diff | `CodeTreePanel` 双视图 + `gitDiffRows` | AC-CE-024~029 | ✅ |
+| 3.7 CE-S11 提交历史 | `CodeTreePanel` 第三视图 + 提交详情 | AC-CE-032~044 | ✅ |
+| §6 主题 / i18n | design-tokens / i18n 域 | AC-CE-030, AC-CE-031 | ✅ |
+
+AC-CE-010（文件树懒加载）对应 §3.4 首条与 §6 文件树条目。所有 §3 小节与 §6 条目均有具体 AC 引用，**无悬空项**。
+
+### 8.2 冲突与警告
+
+| 类型 | 位置 | 说明 | 处置 |
+|---|---|---|---|
+| **冲突** | §3.7.3 接口表 | PRD 内含 RPC 方法名/入参/出参（`git/getCommitLog` 等）—— 按 PRD 边界，这些属 API 文档职责，不应写进 PRD | 已同步写入 `docs/api/11_git_commit_push.md`（**§6/§7/§8**）。**PRD 保留此表作为设计摘要**，正式签以 API 文档为准；两者不一致时以 API 为准 |
+| **警告** | §3.7.2 | 「已实测的 git 边界」表含具体命令与字节数（`git show` 输出 0 行 patch、1.6MB/5951 bytes）—— 属经验证据而非业务规则 | 保留。这些是**设计依据**（为何两级取数），删掉会让 3.7.1 变成无根据的拍板；不构成契约 |
+| **警告** | `docs/test/` | 本模块无测试设计文档（索引止于 07） | 已按 `gen-doc-all` 补 `docs/test/12_code_explorer/coverage-matrix.md` |
+| 缺口 | §7 | 4 条历史待确认（右键菜单已实现故 1 实际已解；跨设备同步/AI 过滤/上下分割仍未决） | 与本模块 CE-S11 无关，不阻塞 |
+
+### 8.3 性能指标（已量化，无「快速」类表述）
+
+| 指标 | 口径 | 实测值 |
+|---|---|---|
+| 提交列表拉取 | `git log -n 100` | ~90ms |
+| 提交列表深翻页 | `--skip 150` | ~98ms（不退化） |
+| 提交详情首屏 | `--numstat`（128 文件的 merge commit） | 176ms / 5,951 bytes |
+| 单文件 patch | 按文件取 | 147ms / 28,516 bytes |
+| 读取上限 | 单文件 patch | 200 行截断 + 展开全部（沿用 `DiffView.INITIAL_ROWS`） |

@@ -46,6 +46,12 @@ export type ForgeMethod =
   | 'git/getStatus'
   // 模块 12：单文件 unified diff（代码查看器「并排 diff」数据源，只读）
   | 'git/getFileDiff'
+  // CE-S11：Git 提交历史视图（PRD 12 §3.7，契约 docs/api/11 §6~§8，只读）
+  // 三方法构成**两级取数**：getCommitDetail 只返 meta+numstat（5.9KB），
+  // 单文件 patch 展开时才走 getCommitFileDiff——全量 patch 实测 1.6MB，差 268 倍。
+  | 'git/getCommitLog'
+  | 'git/getCommitDetail'
+  | 'git/getCommitFileDiff'
   | 'git/commit'
   | 'git/push'
   | 'git/generateCommitMessage'

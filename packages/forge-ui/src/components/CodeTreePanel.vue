@@ -21,6 +21,8 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import type { GitStatusFile, GitStatusInfo } from '../types.ts';
 import type { CodeViewerLayout } from '../composables/usePreferences.ts';
 import { openGitCommitDialog } from '../composables/useGitCommitDialog.ts';
+import { createGitHistoryLoader } from '../composables/useGitHistory.ts';
+import { avatarOf, filterCommits, groupCommitsByDay, relativeTimeOf } from '../utils/gitHistory.ts';
 import { useI18n } from '../i18n/index.ts';
 
 /** 路径末段文件名（变更视图的扁平清单用） */
@@ -43,6 +45,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'back'): void;
   (e: 'toggle-layout'): void;
+  /** CE-S11：选中一条提交 → 右栏出提交详情。载荷仅 sha，详情由右栏自取（避免左栏先拉一遍详情再传） */
+  (e: 'select-commit', sha: string): void;
 }>();
 
 const { t } = useI18n();
@@ -50,8 +54,87 @@ const { getState, loadDir, toggleDir, openFile, search, loadGitStatus } = useCod
 
 /** 左栏第二视图（2026-10-03 模块 12 扩展）：文件 / 变更 双视图互斥。
  *  栏内切换而非新增一栏——两个视图消费同一份 useCodeExplorer 状态，
- *  切来切去不丢展开态与已开的签。 */
-const view = ref<'files' | 'changes'>('files');
+ *  切来切去不丢展开态与已开的签。
+ *  **CE-S11（2026-10-08）扩为三值**：再加「历史」。git 提交历史与「变更」
+ *  是同一类东西（都是 git 侧的项目级只读视图），塞进同一个 tablist 比另起一栏更省认知成本；
+ *  侧栏宽度/折叠/拖拽手柄/项目状态因此全部零改动。 */
+const view = ref<'files' | 'changes' | 'history'>('files');
+
+/* ===== CE-S11：Git 提交历史视图 =====
+ * 取数与缓存全在 loader 里（见 composables/useGitHistory.ts），这里只做渲染派生。
+ * 刻意不自己 fetch：左栏只发「选中哪条 sha」，详情与逐文件 patch 由右栏各取各的，
+ * 避免同一份数据被两个组件各拉一遍。 */
+const histLoader = createGitHistoryLoader();
+const histFilter = ref('');
+/** 相对时间的「现在」：分钟级刷新即可，不必每帧重算（写死会让相对时间永远停在打开瞬间） */
+const histNow = ref(Math.floor(Date.now() / 1000)); // epoch **秒**（契约口径）
+let histTimer: ReturnType<typeof setInterval> | null = null;
+
+const histCommits = computed(() => (histTick.value, histLoader.commits()));
+const histVisible = computed(() => filterCommits(histCommits.value, histFilter.value));
+const histGroups = computed(() => groupCommitsByDay(histVisible.value, histNow.value));
+
+/** 响应式绞链：loader 内部是普通闭包变量（为了能在 node:test 里直接驱动），
+ *  computed 追踪不到它。每做完一次操作手动 bump，否则「加载更多」点了列表不变。 */
+const histTick = ref(0);
+
+function loadHistory(skip: number): void {
+  void histLoader
+    .loadLog({ limit: 100, skip })
+    .then(() => {
+      histTick.value++;
+    })
+    .catch(() => {
+      histTick.value++;
+    });
+}
+/** 当前选中的 sha（纯高亮用）。
+ *  **不自己拉详情** —— 右栏 CommitDetail 会拉；左栏再拉一次就是重复请求，
+ *  同一份数据两个组件各取一遍（e2e E-CE-34 抓到的就是这个）。 */
+const histSelected = ref<string | null>(null);
+
+function onPickCommit(sha: string): void {
+  histSelected.value = sha;
+  emit('select-commit', sha);
+}
+
+function onHistFilterInput(v: string): void {
+  histFilter.value = v;
+}
+
+/** 空态分类：非 git 项目 / 空仓库（unborn）/ 正常但当前页为空 */
+type HistEmptyKind = 'none' | 'norepo' | 'empty' | 'nomatch';
+const histEmpty = computed<HistEmptyKind>(() => {
+  const g = state.value.gitInfo;
+  if (!g) return 'none';
+  if (!g.isGitRepo) return 'norepo';
+  if (histCommits.value.length === 0) return 'empty';
+  if (histVisible.value.length === 0) return 'nomatch';
+  return 'none';
+});
+
+onMounted(() => {
+  histLoader.setProject(props.projectPath);
+  loadHistory(0);
+  histTimer = setInterval(() => (histNow.value = Math.floor(Date.now() / 1000)), 60_000);
+});
+
+onBeforeUnmount(() => {
+  if (histTimer !== null) clearInterval(histTimer);
+  histTimer = null;
+});
+
+// 切项目 / 切到历史视图才拉；其余时候不轮询 git（PRD §3.7.3：事件零新增）
+watch(
+  () => props.projectPath,
+  (p) => {
+    histLoader.setProject(p);
+    if (view.value === 'history') loadHistory(0);
+  },
+);
+watch(view, (v) => {
+  if (v === 'history' && histCommits.value.length === 0) loadHistory(0);
+});
 
 const rootLoaded = ref(false);
 const searchInput = ref<'' | string>('');
@@ -492,6 +575,9 @@ function onFilterEsc(e: KeyboardEvent): void {
         {{ t('code.viewChanges') }}
         <span v-if="changedList.length > 0" class="ctp-count">{{ changedList.length }}</span>
       </button>
+      <button class="ctp-view" :class="{ 'is-on': view === 'history' }" type="button" role="tab" :aria-selected="view === 'history'" @click="view = 'history'">
+        {{ t('code.viewHistory') }}
+      </button>
     </div>
 
     <!-- 过滤框：只对「文件」视图有意义（变更视图本身就是文件清单） -->
@@ -521,10 +607,90 @@ function onFilterEsc(e: KeyboardEvent): void {
       </button>
     </div>
 
+    <!-- CE-S11：历史视图的筛选框（按说明/作者，**只筛已加载列表**，不上服务端） -->
+    <!-- 有已加载提交时就保留筛选框——**含「无匹配」态**。初版在无匹配时把框收起来，
+         结果用户打完字看到空态，却找不到清空的地方，输入框卡死在那里退不出。 -->
+    <div v-if="view === 'history' && (histEmpty === 'none' || histEmpty === 'nomatch')" class="ctp-filter">
+      <span class="ctp-filter-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+      </span>
+      <input
+        :value="histFilter"
+        class="ctp-filter-input"
+        type="text"
+        :placeholder="t('code.historyFilterPlaceholder')"
+        :title="t('code.historyFilterHint')"
+        spellcheck="false"
+        @input="onHistFilterInput(($event.target as HTMLInputElement).value)"
+        @keydown.esc="histFilter = ''"
+      />
+      <button
+        v-if="histFilter !== ''"
+        class="ctp-filter-clear"
+        type="button"
+        :title="t('code.filterClear')"
+        :aria-label="t('code.filterClear')"
+        @click="histFilter = ''"
+      >×</button>
+    </div>
+
     <!-- 树 / 过滤结果 -->
     <div class="ctp-scroll">
+      <!-- ★ CE-S11：Git 提交历史视图 -->
+      <template v-if="view === 'history'">
+        <p v-if="histEmpty === 'none' && histCommits.length === 0" class="ctp-note">{{ t('code.historyLoading') }}</p>
+        <div v-else-if="histEmpty === 'norepo'" class="ctp-empty">
+          <p class="ctp-empty-title">{{ t('code.historyNotGitRepo') }}</p>
+          <p class="ctp-empty-hint">{{ t('code.historyNotGitRepoHint') }}</p>
+        </div>
+        <div v-else-if="histEmpty === 'empty'" class="ctp-empty">
+          <p class="ctp-empty-title">{{ t('code.historyEmpty') }}</p>
+          <p class="ctp-empty-hint">{{ t('code.historyEmptyHint') }}</p>
+        </div>
+        <div v-else-if="histEmpty === 'nomatch'" class="ctp-empty">
+          <p class="ctp-empty-title">{{ t('code.historyNoMatch') }}</p>
+          <p class="ctp-empty-hint">{{ t('code.historyNoMatchHint') }}</p>
+        </div>
+        <template v-else>
+          <template v-for="g in histGroups" :key="g.label">
+            <div class="ctp-day">{{ g.label }}</div>
+            <button
+              v-for="c in g.commits"
+              :key="c.sha"
+              class="ctp-cmt"
+              :class="{ 'is-on': c.sha === histSelected }"
+              type="button"
+              :title="`${c.subject}\n${c.authorName} <${c.authorEmail}>`"
+              @click="onPickCommit(c.sha)"
+            >
+              <!-- 头像：email 哈希→稳定色相 + **姓氏首字**（取末字会让王工/李工撞成同一个字） -->
+              <span class="ctp-cmt-av" :style="{ background: `oklch(0.62 0.13 ${avatarOf(c.authorName, c.authorEmail).hue})` }" aria-hidden="true">
+                {{ avatarOf(c.authorName, c.authorEmail).initial }}
+              </span>
+              <span class="ctp-cmt-main">
+                <span class="ctp-cmt-subject">{{ c.subject }}</span>
+                <span class="ctp-cmt-meta">
+                  <span class="ctp-cmt-author">{{ c.authorName }}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{{ relativeTimeOf(c.authoredAt, histNow) }}</span>
+                  <span aria-hidden="true">·</span>
+                  <span class="ctp-cmt-sha">{{ c.shortSha }}</span>
+                  <span v-if="c.isMerge" class="ctp-cmt-merge">{{ t('code.historyMergeTag') }}</span>
+                </span>
+              </span>
+            </button>
+          </template>
+          <button
+            v-if="histTick >= 0 && histLoader.hasMore()"
+            class="ctp-cmt-more"
+            type="button"
+            @click="loadHistory(histCommits.length)"
+          >{{ t('code.historyLoadMore') }}</button>
+        </template>
+      </template>
+
       <!-- ★ 变更视图：git 报的变更文件清单（只读，无勾选槽） -->
-      <template v-if="view === 'changes'">
+      <template v-else-if="view === 'changes'">
         <p v-if="!gitInfo" class="ctp-note">{{ t('code.gitLoading') }}</p>
         <div v-else-if="!gitInfo.isGitRepo" class="ctp-empty">
           <p class="ctp-empty-title">{{ t('code.notGitRepo') }}</p>
@@ -1105,7 +1271,8 @@ function onFilterEsc(e: KeyboardEvent): void {
   background: var(--muted);
 }
 .ctp-view {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1117,6 +1284,10 @@ function onFilterEsc(e: KeyboardEvent): void {
   color: var(--muted-foreground);
   cursor: pointer;
   transition: var(--transition-fast);
+  /* 三视图后「变更 + 角标」在 292px 侧栏里会被压到逐字折行（两字竖成一列）。
+     宁可让角标小一点也不能让标签折行。 */
+  white-space: nowrap;
+  overflow: hidden;
 }
 .ctp-view:hover { color: var(--foreground); }
 .ctp-view.is-on {
@@ -1127,6 +1298,7 @@ function onFilterEsc(e: KeyboardEvent): void {
 }
 /* 变更数角标：非 0 时上 warning 色——「有没有东西没提交」的第一眼 */
 .ctp-count {
+  flex: none;
   font-family: var(--font-mono);
   font-size: 9.5px;
   font-weight: 700;
@@ -1284,5 +1456,141 @@ function onFilterEsc(e: KeyboardEvent): void {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted-foreground);
+}
+
+/* ===== CE-S11：Git 提交历史视图 =====
+ * 行高比文件树松一档：提交说明普遍比文件名长（常带前缀 `feat(forge-ui):`），
+ * 挤到 24px 一行会被截成两三个字。
+ */
+.ctp-day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--muted-foreground);
+}
+.ctp-day::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.ctp-cmt {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 0 8px;
+  width: 100%;
+  padding: 7px 12px 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+/* 悬停 = 选中背景（用户 2026-10-08：浅色下 hover 仍偏深，要求与选中同色）。
+   暗色保持原样：那边 transparent 混合本来就与 surface-active 视觉等价，没必要跟着换。 */
+.ctp-cmt:hover {
+  background: var(--surface-active);
+}
+:root[data-theme='dark'] .ctp-cmt:hover {
+  background: color-mix(in oklab, var(--brand) var(--select-hover-pct), transparent);
+}
+/* 选中态直接用 **--surface-active**（与本模块文件树选中行同款）。
+   之前写成 `color-mix(... var(--brand) var(--select-bg-pct), transparent)` ——
+   同样比例但混的是 transparent，10% 的深色 brand 叠在白底上是一块脏灰，
+   与背景混合才是「抬起来一层」的观感。左侧品牌色亮线已按用户要求去掉。 */
+.ctp-cmt.is-on {
+  background: var(--surface-active);
+}
+/* 头像：email 哈希→稳定色相。底色在 JS 侧算，组件只管尺寸/排版 */
+.ctp-cmt-av {
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: oklch(0.99 0 0);
+  user-select: none;
+}
+.ctp-cmt-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+/* 单行（用户 2026-10-08）：行尾已有 :title 兜底全文，且侧栏可拖宽；
+   两行会把「改��哪几个文件」的扫读节奏拖慢。 */
+.ctp-cmt-subject {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--foreground);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 元信息行：作者排第一——本需求的诉求就是「看清提交是谁写的」。
+ * **不换行**（初版作者名与相对时间各自折行，「2 小时前」被劈成两行，
+ * 行高忽高忽低）：作者可压缩并省略，其余项 flex:none 不参与收缩。 */
+.ctp-cmt-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  min-width: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  /* 窄侧栏下「作者 · 时间 · sha」会超出行盒被裁掉（实测 d171af0 被切） */
+  overflow: hidden;
+}
+.ctp-cmt-meta > span { flex: none; }
+.ctp-cmt-author {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  color: color-mix(in oklab, var(--foreground) 78%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctp-cmt-sha {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.ctp-cmt-merge {
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2.5px 5px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--warning) 20%, transparent);
+  color: color-mix(in oklab, var(--warning) 90%, var(--foreground));
+  flex: none;
+}
+.ctp-cmt-more {
+  width: calc(100% - 24px);
+  margin: 10px 12px;
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.ctp-cmt-more:hover {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
 }
 </style>
