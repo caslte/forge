@@ -1143,6 +1143,97 @@ test('E-CE-25 @P1 @mock-backend：签条等外壳不弹复制浮窗（选区区�
   await expect(page.locator('.selection-pop')).not.toHaveClass(/is-visible/);
 });
 
+/** 把 README.md 换成一份比视口高得多的长文件，其余路径原样交回 mock 默认分支。
+ *
+ *  要长：Ctrl+A 的选区矩形必须**上下都溢出视口**，才能证伪「右键浮窗锚到选区上」——
+ *  锚错时浮窗落在屏幕外，用例看到的就是一个永远等不到的 is-visible。 */
+async function seedTallReadme(page: Page, lines = 400): Promise<void> {
+  await page.evaluate((n) => {
+    window.__forgeMock!.seed('file/readFile', (params) => {
+      if (params['relPath'] !== 'README.md') return null;
+      const content = Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+      return {
+        code: 0,
+        message: 'ok',
+        data: {
+          relPath: 'README.md',
+          content,
+          totalLines: n,
+          truncated: false,
+          truncatedBy: null,
+          binary: false,
+          size: content.length,
+          mtimeMs: 0,
+        },
+      };
+    });
+  }, lines);
+}
+
+/** 一个真能点到代码行的坐标：既在视口内、hit-test 又确实落在 .cv-pre 上。
+ *  只按 getBoundingClientRect 挑会选中被面包屑条压住的那几行（hit-test 返回 .cv-crumbs，
+ *  右键于是被区域守卫正确放行，用例等不到浮窗）。
+ *  .cv-pre 的盒子会随内容长到屏幕外，也不能拿它算落点。 */
+function visibleCodeSpot(page: Page): Promise<{ x: number; y: number } | null> {
+  return page.evaluate(() => {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.cv-lc'))) {
+      const r = el.getBoundingClientRect();
+      const x = r.left + 40;
+      const y = r.top + r.height / 2;
+      if (x < 40 || y < 40 || y > window.innerHeight - 60) continue;
+      if (document.elementFromPoint(x, y)?.closest('.cv-pre')) return { x, y };
+    }
+    return null;
+  });
+}
+
+test('E-CE-29 @P0 @mock-backend：Ctrl+A 全选后右键，浮窗落在光标处且完整在视口内；无选区时右键不拦', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await seedTallReadme(page);
+  await openCodeWithFile(page);
+  await expect(page.locator('.cv-lc').first()).toBeVisible();
+
+  // 点进代码纸中段把插入点放进去（焦点若留在左栏过滤框，Ctrl+A 就变成选输入框），
+  // 这一滚也让选区的上沿跑到视口之外
+  await page.locator('.cv-lc').nth(200).click();
+  await page.keyboard.press('Control+a');
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected.split('\n').length).toBeGreaterThan(300);
+
+  const spot = await visibleCodeSpot(page);
+  expect(spot).not.toBeNull();
+  await page.mouse.click(spot!.x, spot!.y, { button: 'right' });
+
+  const pop = page.locator('.selection-pop');
+  await expect(pop).toHaveClass(/is-visible/);
+  await expect(page.locator('.selection-pop-btn')).toHaveText('复制文本');
+  const box = (await pop.boundingBox())!;
+  // 跟随光标（ContextMenu 同款落位），而不是选区上方。
+  // 断言发生在 mouse.click 之后，也就是右键的 mouseup 已经跑过——它没有把浮窗搬回
+  // 选区上方（那会搬出视口），这一条同时钉住了 mouseup 只认主键。
+  expect(Math.abs(box.x - spot!.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(box.y - spot!.y)).toBeLessThanOrEqual(2);
+  const vp = page.viewportSize()!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(vp.width);
+  expect(box.y + box.height).toBeLessThanOrEqual(vp.height);
+
+  await page.locator('.selection-pop-btn').click();
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clip.replace(/\r\n/g, '\n')).toBe(selected);
+  await expect(pop).not.toHaveClass(/is-visible/, { timeout: 4000 });
+
+  // 复制后选区已清空：此时右键不该拦下任何东西，也不该冒出浮窗
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+  const spot2 = await visibleCodeSpot(page);
+  await page.mouse.click(spot2!.x, spot2!.y, { button: 'right' });
+  await expect(pop).not.toHaveClass(/is-visible/);
+
+  health.assertHealthy();
+});
+
 // ===== CE-S07 Git 状态角标 =====
 
 /** 用 __forgeMock.seed 接管 git/getStatus，让本组用例的变更集由测试自己定。

@@ -174,3 +174,32 @@ test('E-SC-003 @P1 @mock-backend：非消息区（会话树）选择文字不弹
 
   health.assertHealthy();
 });
+
+test('E-SC-004 @P1 @mock-backend：拖选后在选区内右键，浮窗从选区上方搬到光标处且复制的还是那段选区', async ({ page }) => {
+  const health = attachHealthGuards(page);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await openWithText(page, 'sess-sel-copy-4', '选区复制 右键', 'dark');
+
+  const selected = await dragSelect(page);
+  expect(selected.length).toBeGreaterThan(0);
+  const pop = page.locator('.selection-pop');
+  await expect(pop).toHaveClass(/is-visible/);
+
+  // 落点取拖选那一行的中点：必须仍在选区内，否则 Chromium 会把选区改成光标下那个词，
+  // 断言就变成「复制了另一个词」而不是「浮窗搬了位置」。
+  const box = (await page.locator('.msg-assistant .msg-content p').first().boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + Math.min(12, box.height / 2);
+  await page.mouse.click(x, y, { button: 'right' });
+
+  await expect(pop).toHaveClass(/is-visible/);
+  const after = (await pop.boundingBox())!;
+  // 右键这一路锚在光标（ContextMenu 同款落位），不再跟着选区跑
+  expect(Math.abs(after.x - x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(after.y - y)).toBeLessThanOrEqual(2);
+
+  await page.locator('.selection-pop-btn').click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+
+  health.assertHealthy();
+});

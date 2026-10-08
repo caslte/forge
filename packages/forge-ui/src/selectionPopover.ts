@@ -1,4 +1,4 @@
-// 选区复制浮窗（CV-S13）：消息气泡内拖选文字、松开鼠标后在选区上方弹出「复制文本」小浮窗。
+// 选区复制浮窗（CV-S13）：消息气泡/代码纸里选中文字后弹出「复制文本」小浮窗。
 //
 // 与 tooltip.ts 同款全局单例模式（main.ts 引入即生效）：
 // - fixed + transform 视口坐标定位，免疫滚动容器偏移（同 tooltip.ts 头注的坐标系问题）；
@@ -8,6 +8,8 @@
 // 行为定稿（prototypes/selection-copy-demo.html，2026-09-29 用户选变体 B）：
 // - 仅**已登记的区域**触发（见 SELECTABLE_REGIONS）：终端选区有 xterm 自己的 Ctrl+C/右键复制，
 //   画布 iframe 事件不回传，均天然不冲突；而应用外壳（签条、面包屑、按钮）不该弹复制按钮。
+// - 两种触发**各用各的锚点**：拖选松开鼠标 → 浮在选区上方；右键 → 落在光标处
+//   （与 ContextMenu 同口径）。右键不能走选区锚点，见 placeAtPoint 的注释。
 // - 复制 → 「已复制」打勾 1.4s → 收起并清空选区；
 // - 重新按下鼠标 / Escape / 滚动 → 立即收起。
 import { watch } from 'vue';
@@ -29,6 +31,12 @@ const SELECTABLE_REGIONS = ['.msg', '.cv-pre'] as const;
 
 function inSelectableRegion(el: Element | null): boolean {
   return !!el && SELECTABLE_REGIONS.some((sel) => el.closest(sel));
+}
+
+/** 事件/选区落点转成可判定的元素（文本节点取父元素，null 原样传） */
+function elementOf(node: Node | null): Element | null {
+  if (!node) return null;
+  return node.nodeType === 1 ? (node as Element) : node.parentElement;
 }
 
 const ICON_COPY =
@@ -75,6 +83,21 @@ function selectionRect(): DOMRect | null {
   return rect.width === 0 && rect.height === 0 ? null : rect;
 }
 
+/** 选区的文本与锚点元素；空/纯空白选区返回 null。mouseup 与 contextmenu 两条触发路径共用 */
+function readSelection(): { text: string; anchorEl: Element | null } | null {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const text = sel.toString().trim();
+  if (!text) return null;
+  return { text, anchorEl: elementOf(sel.anchorNode) };
+}
+
+function show(): void {
+  resetLabel();
+  pop.classList.add('is-visible');
+  pop.setAttribute('aria-hidden', 'false');
+}
+
 function place(rect: DOMRect): void {
   const w = pop.offsetWidth;
   const h = pop.offsetHeight;
@@ -86,22 +109,28 @@ function place(rect: DOMRect): void {
   pop.style.transform = `translate(${left - w / 2}px, ${top}px)`;
 }
 
-document.addEventListener('mouseup', () => {
+/**
+ * 右键路径的落点：浮窗左上角贴在光标处，贴边时钳进视口（与 ContextMenu 同一套落位口径）。
+ *
+ * 刻意不复用 place()：Ctrl+A 的选区矩形是**整篇文档**那么高（代码纸 310 行 ≈ 7000px，
+ * 且上下都超出视口），「选区上方 8px 居中」算出来落在屏幕外——表现就是右键弹了但看不见。
+ */
+function placeAtPoint(x: number, y: number): void {
+  const w = pop.offsetWidth;
+  const h = pop.offsetHeight;
+  const left = Math.min(x, window.innerWidth - w - EDGE);
+  const top = Math.min(y, window.innerHeight - h - EDGE);
+  pop.style.transform = `translate(${Math.max(EDGE, left)}px, ${Math.max(EDGE, top)}px)`;
+}
+
+document.addEventListener('mouseup', (e) => {
+  // 只认主键。右键抬起时选区没变，而这次 mouseup 会跟在 contextmenu 之后把浮窗从
+  // 光标处搬回「选区上方」——Ctrl+A 那一搬就把刚弹出来的浮窗搬出了视口。
+  if (e.button !== 0) return;
   // mouseup 时 Chrome 选区已稳定，setTimeout 只是兜住个别引擎的收尾时序
   setTimeout(() => {
-    const sel = window.getSelection();
-    const text = sel ? sel.toString().trim() : '';
-    if (!text) {
-      hide();
-      return;
-    }
-    const anchor = sel?.anchorNode;
-    const anchorEl = anchor
-      ? anchor.nodeType === 1
-        ? (anchor as Element)
-        : anchor.parentElement
-      : null;
-    if (!inSelectableRegion(anchorEl)) {
+    const found = readSelection();
+    if (!found || !inSelectableRegion(found.anchorEl)) {
       hide();
       return;
     }
@@ -110,12 +139,24 @@ document.addEventListener('mouseup', () => {
       hide();
       return;
     }
-    selectedText = text;
-    resetLabel();
+    selectedText = found.text;
     place(rect);
-    pop.classList.add('is-visible');
-    pop.setAttribute('aria-hidden', 'false');
+    show();
   }, 0);
+});
+
+document.addEventListener('contextmenu', (e) => {
+  // 落在浮窗上（含「已复制」反馈态）不重开，让那一轮反馈走完
+  if (pop.contains(e.target as Node | null)) return;
+  const found = readSelection();
+  if (!found || !inSelectableRegion(found.anchorEl)) return;
+  // 右键点本身也要在登记区域内：选区还在代码纸上、鼠标却点到签条/面包屑时不该弹
+  // （外壳元素自己 @contextmenu.prevent 掉了菜单，事件仍会冒泡到这里）
+  if (!inSelectableRegion(elementOf(e.target as Node | null))) return;
+  e.preventDefault();
+  selectedText = found.text;
+  placeAtPoint(e.clientX, e.clientY);
+  show();
 });
 
 btn.addEventListener('click', async (e) => {
