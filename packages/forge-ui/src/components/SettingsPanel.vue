@@ -14,6 +14,7 @@ import {
 } from '../composables/usePreferences';
 import { useUpdater } from '../composables/useUpdater';
 import { useWhatsNew } from '../composables/useWhatsNew';
+import { useOnboarding } from '../composables/useOnboarding';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import { capLabels, capsSeparator } from '../utils/platformKey';
 import SkillsSection from './SkillsSection.vue';
@@ -524,6 +525,18 @@ async function loadPiInfo(): Promise<void> {
 // 进入设置面板顺带补一次首查（App 启动已查过则幂等返回；失败过则此处重试），
 // 说明可用时版本行显示「查看本次更新说明」入口，点击打开与首启同一个弹窗。
 const { available: whatsNewAvailable, ensureChecked: ensureWhatsNewChecked, open: openWhatsNew } = useWhatsNew();
+
+// ===== 首次使用指引回看入口（关于页，2026-10-09 拍板：二次入口只放这里）=====
+const { openTour: openOnboardingTour } = useOnboarding();
+/**
+ * 重看指引必须先退出设置视图再起蒙层：第 3、4 步锚的是工具条上的「新会话」与「终端开关」，
+ * 而 .app-toolbar 在 settings 视图整条不渲染（App.vue 的 v-if）——不先关设置，这两步会被
+ * 当成锚点缺失静默跳过，用户看到的就少了两条。
+ */
+function onReplayTour(): void {
+  emit('close');
+  void nextTick(() => openOnboardingTour());
+}
 
 // ===== 应用自更新（07 IN-S03 改造）：状态与动作在 useUpdater 全局单例，本面板为「关于」页镜像消费方 =====
 // 口径：发现新版不再弹 toast（提示由侧栏 UpdateEntry 图标承担）；检查/下载/安装失败静默可重试
@@ -1168,6 +1181,14 @@ onUnmounted(() => {
           </div>
         </div>
       </section>
+      <!-- 重看使用指引（首次使用指引的二次入口，拍板只放在「关于」）：一卡一行，与个性化 Tab 同构 -->
+      <div class="pref-row">
+        <div class="pref-text">
+          <span class="pref-title">{{ t('onboarding.replay.title') }}</span>
+          <span class="pref-desc">{{ t('onboarding.replay.desc') }}</span>
+        </div>
+        <button class="tour-btn" @click="onReplayTour">{{ t('onboarding.replay.action') }}</button>
+      </div>
     </div>
 
     <!-- Skills Tab（模块 09）：独立 Tab 页，进入即挂载刷新 -->
@@ -1732,7 +1753,10 @@ onUnmounted(() => {
   -webkit-user-select: text;
 }
 
-.up-btn {
+/* .tour-btn = 关于页「重看使用指引」，与「检查更新」同款；类名必须分开——
+   e2e/updater.spec.ts 用裸 .up-btn 选更新按钮，关于页多一个同类会被它选成两个（strict mode）。 */
+.up-btn,
+.tour-btn {
   flex-shrink: 0;
   min-width: 84px;
   display: inline-flex;

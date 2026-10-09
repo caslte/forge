@@ -1,5 +1,61 @@
 # 变更日志
 
+## v6.19 (功能：导出会话交接包 SM-S08 —— 代码 + 文档交付)
+
+> 来源：2026-10-09 用户要求「增加一个下载会话的功能，把用户和 AI 的聊天记录下载下来，方便递交给其他 agent 做上下文分析来继续工作」。`think` 收敛 → `gen-doc-prd` 两轮 → 开发。
+
+- **真实需求不是"把文字弄出来"**：项目已有"复制整轮文本"（`useTurnFooter.computeTurnFooters`），缺的是**自包含交接包** —— 接手方无需追问即可续上。
+- **导出物 = ZIP，里面只有 `transcript.jsonl` 一份**：磁盘原始完整转录。
+  **原设计还带一份 `meta.json`（会话名/项目路径/时间/消息数/格式版本等十字段），用户复核后要求去掉** ——
+  参照 deepseek harness 的导出（那份同样只有 JSONL，无旁挂 meta）。
+  **根本原因是 meta 完全冗余**：会话身份信息本来就在转录首行里
+  （pi 原生 `{type:'session', version, id, timestamp, cwd}`），模型与思考级别在紧随其后的
+  `model_change` / `thinking_level_change` 行里。两处描述同一事实 = 以后必然漂移的维护债。
+  顺带发现：**pi 与 deepseek 那套格式是同源的**（后者就是 pi v4 序列化，`thinking`→`reasoning`、
+  `toolCall`→`tool-call`，envelope 从 `id/parentId/timestamp` 换成 `seq/time/data`），
+  所以"参考它的字段"对本案不构成格式转换需求 —— 原生转录已经是那个形状。
+  该决策登记为 **TD-SM-09**（新增），并把原先"用户裁定①按拟定元信息清单"标为被推翻。
+- **TD-SM-06 直读磁盘原生转录，不走界面加载链路** —— 全案最关键的技术决策。`loadPiSessionHistory.ts` 的 JSONL→消息转换是为界面显示做的有损处理：thinking 被 `stripThinkingContent`(L105) 丢弃、压缩掉的早期上下文被折叠成单个 system 标记(L71-80)、tool 入参靠预扫描回填重建(L52-66/L116-128)。**这些丢弃的恰是 AI 决策链所在**，交给下游 agent 时不可恢复。单测里点名锁了 thinking 行 / 空行 / 工具入参 / 非 ASCII 四类内容。
+- **TD-SM-07 零新增依赖自建打包器**（`src/export/zipWriter.ts`，~140 行）：根 node_modules 那份 `archiver@5.3.2` 是 electron-builder 的**间接依赖**，`forge-desktop/package.json` 未声明，打进 asar 后可用性无保障。改用内置 `deflateRaw` + 手写本地头/中央目录/EOCD。两个细节：**空内容退回 store**（deflate 空输入产 2 字节，比 store 的 0 字节还大）；**时间戳固定 1980-01-01**（取当前时间会破坏"重复导出等价"这条幂等要求，也让单测无法断言）。
+- **TD-SM-08 沿用既有落盘围栏**：扩展名限 `.zip` + 路径必须等于 `showSaveDialog` 最近一次返回值（`lastDialogSavePath` allowlist，CV-TRUST-03），**不新增更宽松的写盘通道**。`showSaveDialog` 的过滤器从写死 `['html','htm']` 改为按 `kind` 分流（`canvas` 保持原样 → 画布另存零回归）。
+- **实现期改过一次设计：包不在渲染层打包。** 原计划复用 `writeText` 写二进制，但转录里图片是 base64 内嵌的，包体可达数百 MB —— 穿 IPC 结构化克隆要再吃两份内存 + 一份缓冲。改为**主进程就地读盘打包直写**（`IPC_SESSION_EXPORT_BUNDLE`），中途不落任何明文中间文件。这也让该通道成为 shell 级而非 core RPC（core 还没组装完，用晚绑定引用，同 `bootState` 手法）。
+- **路径解析复用 `createForgeCore.resolveSessionFile` 的多候选链**（含 free-workspace 回落），并把它和 `getSessionRecord` 挂到 `ForgeCoreBundle` 上。另写一份会把「自由会话移入项目后继续对话」判成记录不存在（文件仍在创建时的 cwd 目录）。
+- **失败不留残件**（AC-SM-038）：读盘在打包之前完成，写盘是最后一步且只发生一次 —— 中途抛错不会在目标路径留下任何文件去误导接手方。
+- **用户四项裁定已落**：元信息按拟定清单 / **运行中允许导出**（快照语义 + `sessionStatusAtExport` 标注完整性，入口**不置灰**）/ **不设体积上限** / **入口只定在会话项右键菜单**（重命名之上、删除之下，不在工具条另设）。
+- **踩到的两个真 bug**：
+  ① `0o100644 << 16` 溢出成负数 → `writeUInt32LE` 抛 `ERR_OUT_OF_RANGE`（JS 位运算按 32 位有符号处理，须 `>>> 0`）。单测立刻咬住 —— 8 个用例全挂在第一个包上。
+  ② 写文件名清洗正则时手滑写进了**字面 NUL 字节**（本想写控制符范围），文件被识别为二进制、Grep 失效、`vue-tsc` 报键类型错。改用 `\x00-\x1f` 转义写法修掉。
+- **红探针实测留证**：把导出菜单项加 `disabled: s.status === 'streaming'` → SESSION-E2E-013 变红。**首版探针写成 `'running'` 没咬住** —— `SessionStatus` 实际取值是 `idle|streaming|error|done`，探针自身得先过 typecheck，否则"红探针"是假的（已记入 e2e.md）。
+- **测试分工（刻意不做自证）**：`zipWriter` 用**两条外部路径**验证格式 —— 仓库里的 `yauzl` + 测试内手写的独立解析器（只按 ZIP 格式读，不复用写入端代码；字段错位会互相抵消照样绿）。`transcript.jsonl` 逐字节一致等包内容断言全在 desktop 单测；浏览器 e2e 只测入口与编排。
+  - desktop 新增 17 例（`test/export/`：`zipWriter` 10 + `buildSessionBundle` 7）全绿。
+  - e2e 新增 5 例（`e2e/sessionExport.spec.ts` SESSION-E2E-012~016）全绿。**新增 `window.forge.session.exportBundle` mock 与 `__forgeMock.getSessionExports()` 账本**供断言。
+  - `forge-desktop` 全量 433 例：427 pass / **5 fail 为既有基线红**（`PiConversationAdapter`×2 / 软链×2 / 建窗底色×1）。已用 A/B 排除法验证：把本次改动全部 `git stash` 还原后这 5 条照红。
+  - `forge-desktop` 与 `forge-ui` typecheck 0 错。
+- **文档**：PRD `02_session_management.md` 增 SM-S08 场景 + TD-SM-06~09 + 功能点（AC-SM-031~041）+ 自检（43 PASS / 1 N/A）；API `02_session.md` 增 §8 导出会话（含 `saveFile` 载荷形态变更的兼容性说明）；测试 `02_session/coverage-matrix.md` 增 11 行矩阵 + U-SM-008~010 + A-SM-012/013 + 三条红探针登记，`e2e.md` 增 E-SM-012 分组；`overview.md`、`prd/index.md`、`test/index.md` 同步登记；需求收敛产物 `plan/think-20261009104016-plan.md`。
+- **一处既有兼容性变更（已在 API 文档标注）**：`forge:dialog:saveFile` 载荷从裸字符串改为 `{ name, kind }`。preload 保留旧签名包装，**渲染层既有调用方零改动**。
+- **待真机验收**：主进程改动不热更，需重启 `npm run dev` —— 重点看真实保存对话框的 ZIP 过滤器、以及真导一个含图片的会话验证包体与解压结果。
+
+## v6.18 (功能：首次使用指引蒙层 —— 新装首启带用户走一遍六个入口)
+
+> 来源：2026-10-09 用户要求「想给首次使用 app 的用户加一个蒙层的使用指引，你设计一下」。两轮 AskUserQuestion + 一支三形态 demo 定档：**形态 A 分步聚光灯**、**仅全新安装首启自动弹**、重看入口**只放设置「关于」Tab**、蒙层期间**全部不可操作**（不做逐锚点放行）。步骤清单由用户改写：「对话框的步骤不用说，输入框也不用指引，要带上 2 个：一个是终端在哪里，然后左侧树旁边的目录视图在哪里」，并附一句落地铁律 ——「你的锚点要对齐我们的真实代码」。
+
+- **改动前的现状**：首启只有一层 `BootWelcome` 开屏动画，讲品牌不讲功能，散场后什么都不留；`WhatsNewDialog` 与侧栏更新入口都只在**升级**路径出现，新装用户永远碰不到。于是最关键的三个入口（项目行尾 18×18 的 `<>`、工具条右端 26×26 的终端、侧栏底部 50×19 的「设置」）对第一次打开的人是隐形的。
+- **新装判定必须在主进程同步快照**（这条是整个模块唯一有坑的接口）：口径 = `updater-state.json` 里没有 `lastRunForgeVersion`。但 `startupUpdate` 在启动流程后段就会把它回写成当前版本，**渲染层任何时候再问都已经分不出「新装」和「平运行」**。所以 `main.ts` 在 `readUpdaterState` 之后、任何回写之前算好 `{ isFreshInstall, isUpgradeRun }`，新增 shell 级通道 `forge:startup-flags`（与 `forge:boot-state` 同族，不进 forge-core RPC 目录）把这份常量镜像出去。判定逻辑单独成 `startupFlags.ts` 纯函数，因为 forge-desktop 的单测只覆盖纯模块。**已知降级（接受）**：状态文件缺失与损坏都归一为 `null` → 都判成新装首启；损坏文件本来就该重写，多弹一次比少弹一次更可接受。
+- **锚点契约用 `data-onboarding` 标记，不用 class**：六个锚点分别落在 `App.vue`（`.tree-view` / 设置 `.sidebar-link` / 工具条「新会话」/ `.term-toggle`）、`ProjectTree.vue`（`.code-entry`）、`UpdateEntry.vue`（根按钮）。class 会随重构漂移，标记漂移了组件和 e2e 都立刻咬得住。**锚点缺失即自动剔除该步**：没有更新入口行（`UpdateEntry` 的 `v-if`）时那一步不出现，所以实际步数不是写死的 6 —— 计数与圆点都按剔除后的清单走（mock 实测 5 步）。
+- **零项目新装的「浏览目录」一步：退到备用锚点，不剪步**（用户拍板）。`<>` 挂在项目行上，而**全新装首启必然还没有项目**：实测清空项目后 `codeentry` 与 `update` 两个锚点都不在位，蒙层只剩 **4 步** —— 用户点名要讲的功能在最该讲的人群里反而不讲，这是设计洞不是边界情况。修法给 `TourStep` 加可选 `alt`：**备用锚点和配套文案一起换**，零项目时圈住侧栏「暂无项目」空态行（`ProjectTree.vue` 的 `.tree-empty`，实测 292×65 → 洞 304×77），标题走 `onboarding.step.code.empty.*`「浏览目录要先有项目」，正文改成「添加项目后它的行尾会出现 `<>` 图标」。只换锚点不换字是不行的：对着还没有的图标讲「点这个 `<>` 图标」是假话。备用文案刻意比主文案短（英文主 225px / 备 184px）。`ONB-E2E-004` 钉住这条，红探针：删掉 `alt` 立刻掉回 4 步。
+- **实测挖出来的真坑：被高亮的控件在蒙层下是透明的。** `<>` 图标住在 `.tree-node-actions` 里，那块基类是 `opacity: 0`、只有 `.tree-project:hover` 才显形 —— 而蒙层吃掉了全部指针事件，用户永远 hover 不到，第 2 步的高亮洞等于圈住一团空气。修法：`OnboardingTour` 在 `visible` 变化时给 `<html>` 挂/摘 `ob-tour-active`，`ProjectTree.vue` 加一档 `html.ob-tour-active .tree-project .tree-node-actions { opacity: 1 }`。**只提 opacity、不给 pointer-events**，看得见但点不到，与「全部不可操作」的拍板一致。这条有红探针：把那一档 CSS 改废，`ONB-E2E-001` 在第 2 步必红。
+- **三条几何硬结论（都是 rect 量出来的，写进组件头注释）**：① 洞有最小尺寸 76×30 —— 设置入口实测 50×19、`<>` 18×18，原样挖洞是针眼；锚点外扩 6px 再兜底，并把整洞夹回视口。② 卡片落位顺序右 → 左 → 下 → 上，候选先水平夹取、再要求完整在窗内且不压避让清单（清单里至少含自己的洞）；终端图标钉在工具条右端（1280 窗宽下 x≈1230）右侧无余量，实测退到左侧。③ 卡片高度按实测 —— 六步文案长短差一倍（zh 159~181px），写完文案先 `nextTick` 再量 `offsetHeight`，兜底常量只在量不到 DOM 时用。z 档 6000/6001/6002 压在 `ConversationView` 的 5000 之上；`Teleport to="body"`（祖先带 `transform` 会让 `position: fixed` 失效，仓内既有蒙层类组件的统一做法）。
+- **不留一层点不动的蒙层**：清单为空（一个锚点都没找到）立刻散场；首帧就位后才加 `is-open`，否则洞会从窗口左上角飞进来（`position` 过渡是常驻的）；点遮罩 / `Esc` / 末步「开始使用」三条出口都落盘 `forge:onboarding:seen:v1`；`Esc` 在**捕获阶段** `stopPropagation`，指引期间的 `Esc` 不许再冒给 App 的分层退出逻辑。
+- **关于页重看入口顺手挖出的第二个坑**：工具条是 `v-if="activeView !== 'settings'"`，如果点「重看」时不先关掉设置视图，「新建会话」「终端」两步会因为锚点不存在被静默剔除，用户看到的就是「重看怎么少两步」。所以那一行是 `emit('close')` → `nextTick` → `openTour()`。
+- **第三个坑是本轮自己踩出来的（邻域回归）**：那一行的按钮长得和「检查更新」一模一样，就顺手复用了 `.up-btn` —— 结果 `e2e/updater.spec.ts` 有 14 处用**裸 `.up-btn`** 选更新按钮，关于页多一个同类直接选中两个元素，5 例 `strict mode violation` 全红。样式并入基类选择器（`.up-btn, .tour-btn { … }`）保住视觉同款、类名拆成 `.tour-btn` 保住选择器唯一。**教训**：往一个已有页面加控件前，先 grep 一遍同类名被哪些用例当选择器用；「样式复用」不等于「类名复用」。改完 onboarding + updater 共跑 8/8 绿。
+- **不砸存量 e2e**：`mock-bridge.ts` 的 `startupFlags()` **默认报 `isFreshInstall: false`**，只有 `localStorage['forge-mock-fresh-install']='1'` 才为真。否则全部既有用例都会被一层蒙层挡住 —— 这是本期唯一一处「为测试而设的默认值」，理由写在注释里。
+- **i18n**：新增第 15 个域文件 `i18n/domains/onboarding.ts`（`zhOnboarding`/`enOnboarding`，键前缀 `onboarding.`），六步标题+说明（含零项目那一步的备用一套）、`eyebrow/skip/prev/next/done`、关于页三键；文案逐字取自已定稿的 demo，中英各量过一遍真实卡片高度（英文 step 2 主文案 225px，是六步里唯一超两行的，再加字会顶到窗口下沿）。关于页那句描述原先写死「逐步高亮六个入口」，实际步数会随锚点剔除而变，已改成不计数的说法。
+- **本期不做**：① 对话框/输入框讲解（用户明确砍）；② 洞内可点击 / 逐锚点放行；③ 分步截图、GIF、可拖拽卡片、进度条；④ 升级路径的指引（升级首启由 `WhatsNewDialog` 承接，两者互斥天然成立：新装 ⇒ `isUpgradeRun` 必假，故不写额外互斥代码）；⑤ 埋点。
+- **测试**：单测新增 `packages/forge-desktop/test/startupFlags.test.ts` 5 例（`null`→新装 / 落后→升级 / 相等→都不触发 / 回滚装→按升级不重弹 / 空串不算新装）。e2e 新增 `packages/forge-ui/e2e/onboarding.spec.ts` 3 例，视口钉 1280×800（窄窗会触发兜底落位、卡片压洞，量不到正常路径）：`ONB-E2E-001/002` 逐步骤断言洞反查到哪个 `data-onboarding`、锚点四边在洞内、洞 ≥76×30 且不越窗、卡片完整在窗内且**不与自己的洞相交**、锚点沿祖先链 `opacity≥0.9`、五步序列等于 `treelist→codeentry→newsession→terminal→settings`、末步按钮文案「开始使用」；`ONB-E2E-003` 覆盖 `Esc` 跳过即落盘 + `<html>` 类摘净 + reload 不再自动开 + 关于页重看回到 `1/5`；`ONB-E2E-004` 把 mock 的项目与会话清成 `[]` 复刻真实新装，断言主锚点计数为 0、圆点仍是 5（不是掉回的 4）、锚点清单含 `codeentry-empty`、第 2 步标题是「浏览目录要先有项目」。夹具里 `addInitScript` **只在本次 context 的首次导航**清 seen，否则 reload 也被清就测不出幂等。全仓 typecheck 0 错、forge-ui 单测全绿；`@forge/desktop` 7 例红是本机基线（`PiConversationAdapter`×2 / `ensurePiShellPath`×4 / `建窗底色`×1），与本模块无关。**全量 e2e（257 例）227 passed / 21 failed / 2 skipped**，21 例红无一在本模块（`branchBadge`×3、`gitHistory`×3、`thinkingLevel`×5、`subagent`×4、`mw-restore`×2、`contentWidth`×1、`todoPanel`×1、`session`×1、`__repro-*`/`tmp-filmstrip` 探针×2），单独重跑 6 个 spec 仍是同样 15 红 —— 稳定红非抖动；`subagent` 4 例与 `session` 1 例是 v6.16/v6.17 已登记的基线红，其余集中在最近两个提交（d8773ac 模型别名重构、70956d7 提交历史视图）动过的邻域，本期没碰这些文件，留待各自模块处理。
+- **视觉实拍**：`node prototypes/_shot-onboarding.mjs` → `prototypes/onboarding-shots/`，五个组合各五步：`{light,dark}-step-*`（zh 有项目）、`dark-en-step-*`、`{light-empty,dark-en-empty}-step-*`（零项目退路），各配一张 `-about.png`；脚本顺带打印每步「洞尺寸 / 卡片高 / 卡片底边」，改一句文案就要回来看这张表（窗口高 800，zh 第 2 步 184 / en 主文案 225 / en 零项目 184）。注意 browser-use 那条通道量不得动画：页面处于 hidden 时 rAF 全停，`.ob-spot` 的 `left/top/width/height` 过渡永远停在起始值，`getComputedStyle` 也会把 `opacity` 报成 0 —— 本轮两次「看起来是 bug」的现象都是这么来的，改用内联 `style` 目标值 + `getAnimations().finish()` 才看清真实状态。
+- **文档**：新增 `docs/prd/14_first_run_onboarding.md`（范围与不做清单 / 新装判定为何必须在主进程 / 锚点契约表含备用锚点 / 强制显形那一档的来由 / 三条几何硬结论 / 改动清单 / 验收），`docs/test/14_onboarding/coverage-matrix.md`（AC-OB-001~021）与 `e2e.md`（夹具、逐步骤断言口径、两条红探针记录），`docs/prd/index.md`、`docs/overview.md`、`docs/test/index.md` 登记模块 14；原型 `prototypes/onboarding-overlay-variants.html`（A/B/C 三形态同屏对比，定档依据；「模拟零项目新装」勾选框已同步退路行为）。
+- **待真机验收**：主进程改动不热更，需重启 `npm run dev` 后在真实 Electron 窗口走一遍 —— 重点看暗色主题的压暗档位与洞边框粗细（这两项是目测判断，没写成断言，写了等于自证）。
+
 ## v6.17 (功能：设置页「快捷键」Tab + 四个全局键位，主修饰键跨平台收口)
 
 > 来源：2026-10-08 用户要求「配置里面加一个快捷键的tab，扫描一下本项目已存在的快捷键，罗列进去」，并先同步值得配置的键。三轮拍板定档：**只读清单**（本期不改键）、**主修饰键抽象**（Mac 显 `⌘` 判 `metaKey`，其他平台显 `Ctrl` 判 `ctrlKey`）、接入**四个全局动作**。用户口径「先落文档再动代码」→ PRD 13 先行，确认后才落地。

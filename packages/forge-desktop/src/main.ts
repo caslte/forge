@@ -35,7 +35,9 @@ import { statsFromBitmap, FRAME_CONTENT_RATIO_MIN, type FrameStats } from './boo
 import { ATTACHMENT_DIALOG_FILTER } from '@forge/core';
 import { createNotifyToastManager } from './notifyToast.ts';
 import { createNotifyGate, type NotifyKind } from './notifyGate.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_LIST_TERMINAL_SHELLS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_BOOT_STATE, IPC_BOOT_SPLASH_READY, type BootState } from './ipc-contract.ts';
+import { resolveStartupFlags } from './startupFlags.ts';
+import { exportSessionBundle } from './export/buildSessionBundle.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_LIST_TERMINAL_SHELLS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_SESSION_EXPORT_BUNDLE, IPC_BOOT_STATE, IPC_STARTUP_FLAGS, IPC_BOOT_SPLASH_READY, type BootState, type StartupFlags } from './ipc-contract.ts';
 import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
 import { resolveEditorOpenTarget } from './shell/openEditorTarget.ts';
 import { collectInstalledEditors } from './shell/editorScan.ts';
@@ -485,11 +487,25 @@ function createAndLoadWindow(isDev: boolean, themeMode: ThemeMode): BrowserWindo
  * v3.76 欢迎页启动链：窗口创建后立即注册（core 组装是异步的，这批 handler 不等它），
  * 保证欢迎页期间窗口最小化/关闭/文件选择等都可用。
  * @param agentDir pi 数据域根（<userData>/agent），shell 健康探测据此解析
+ * @param flags 启动同步快照产出的启动特征（新装/升级），见 startupFlags.ts
  */
-function registerShellIpc(bootState: BootState, agentDir: string): void {
+/**
+ * SM-S08 会话导出依赖（core 组装完成后晚绑定）。
+ * registerShellIpc 注册 handler 时core 还没组装完（动态 import pi SDK），故用这个
+ * 可变引用晚绑定：handler 捕获的是**对象**而非快照，组装完成后原地填内容即可，
+ * 不必重注册（同一 channel 二次 ipcMain.handle 会抛错）。与 bootState 同一手法。
+ */
+const sessionExportDeps: {
+  resolveSessionFile: ((sessionId: string) => string | undefined) | null;
+} = { resolveSessionFile: null };
+
+function registerShellIpc(bootState: BootState, agentDir: string, flags: StartupFlags): void {
   // 启动状态查询（欢迎页门闩「拉」通道）：handler 引用 bootState 对象本身，
   // core 组装完成后原地改写字段即可，无需重注册 handler
   ipcMain.handle(IPC_BOOT_STATE, () => bootState);
+  // 启动特征（首次使用指引门闩）：返回同步快照的结论，不重读文件——startupUpdate
+  // 联动稍后会把 lastRunForgeVersion 改写为当前版本，届时再读就判不出「新装」了。
+  ipcMain.handle(IPC_STARTUP_FLAGS, () => flags);
   // shell 健康探测（对话区横幅数据源）：与 pi 会话同口径解析 bash，命中 WSL 占位/
   // 三级落空时先自动定位 Git Bash 写配置再复探，只有本机确实没有可用 bash 才回异常，
   // 见 pi/shellProbe.ts（横幅上的「重新检测」也走这条通道：装完 Git 点一下即自愈）
@@ -625,13 +641,22 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
   // 初始位置带出预期目录，这里一次性掐掉（用户仍可在对话框里自行改文件名）。
   // CV-TRUST-03：对话框返回的路径记入 allowlist，IPC_FILE_WRITE_TEXT 仅放行
   // 与之相等的路径——写盘通道与「用户亲手选定」绑定，渲染进程伪造的其他路径不生效。
+  // SM-S08 会话导出复用本对话框：kind='canvas' 给 HTML 过滤器（默认名 canvas.html），
+  // kind='session' 给 ZIP 过滤器（渲染进程传默认文件名）。两条通道共享 lastDialogSavePath。
   let lastDialogSavePath: string | null = null;
-  ipcMain.handle(IPC_DIALOG_SAVE_FILE, async (_e, name: unknown) => {
-    const safeName = typeof name === 'string' && name !== '' ? path.basename(name) : 'canvas.html';
+  ipcMain.handle(IPC_DIALOG_SAVE_FILE, async (_e, payload: unknown) => {
+    const arg = payload as { name?: unknown; kind?: unknown };
+    const kind = arg?.kind === 'session' ? 'session' : 'canvas';
+    const fallbackName = kind === 'session' ? 'forge-session.zip' : 'canvas.html';
+    const rawName = typeof arg?.name === 'string' ? arg.name : '';
+    const safeName = rawName !== '' ? path.basename(rawName) : fallbackName;
     const options = {
       title: '另存为',
       defaultPath: safeName,
-      filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+      filters:
+        kind === 'session'
+          ? [{ name: 'ZIP', extensions: ['zip'] }]
+          : [{ name: 'HTML', extensions: ['html', 'htm'] }],
     } as Electron.SaveDialogOptions;
     const res = mainWindow
       ? await dialog.showSaveDialog(mainWindow, options)
@@ -658,6 +683,32 @@ function registerShellIpc(bootState: BootState, agentDir: string): void {
       return true;
     } catch {
       return false;
+    }
+  });
+  // 会话导出 ZIP（SM-S08）：读盘 → 打包 → 一次性落盘，全在主进程完成。
+  // 为什么不走「渲染层打包 + writeText 写回」：转录里图片是 base64 内嵌的，包体可达
+  // 百余 MB，结构化克隆穿 IPC 会再吃两份内存，且 writeText 是 UTF-8 文本写入会毁包。
+  // 围栏与 writeText 同构——targetPath 必须等于最近一次保存对话框的返回值且限定 .zip，
+  // 不新增更宽松的写盘通道（CV-TRUST-03 威胁模型保持成立）。
+  ipcMain.handle(IPC_SESSION_EXPORT_BUNDLE, async (_e, args: unknown) => {
+    const sessionId = (args as { sessionId?: unknown } | null)?.sessionId;
+    const targetPath = (args as { targetPath?: unknown } | null)?.targetPath;
+    if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, reason: 'invalid-session' };
+    if (typeof targetPath !== 'string' || targetPath === '') return { ok: false, reason: 'invalid-path' };
+    if (!/\.zip$/i.test(targetPath)) return { ok: false, reason: 'invalid-path' };
+    if (targetPath !== lastDialogSavePath) return { ok: false, reason: 'not-user-selected' };
+    // core 尚未组装完成（用户秒点导出）→ 明确报"不可用"，不静默产空包
+    if (sessionExportDeps.resolveSessionFile === null) {
+      return { ok: false, reason: 'core-not-ready' };
+    }
+    try {
+      const res = exportSessionBundle(sessionId, targetPath, {
+        resolveSessionFile: sessionExportDeps.resolveSessionFile,
+      });
+      return res.ok ? res : { ok: false, reason: res.reason };
+    } catch (err) {
+      console.log(`[session-export] 导出失败（${sessionId}）：${String(err)}`);
+      return { ok: false, reason: 'internal' };
     }
   });
   // 主题回写（v3.78.6）：渲染进程解析/切换主题时告知主进程——落盘供下次冷启动建窗
@@ -794,10 +845,10 @@ app.whenReady().then(async () => {
   // 版本更新说明（升级后首启弹一次）：「升级启动」判定必须在此同步采集——startupUpdate
   // 联动阶段会异步把 lastRunForgeVersion 改写为当前版本，等 RPC 时刻再读就分不出
   // 「升级」与「平运行」。全新安装（lastRunForgeVersion=null）不算升级，不弹。
+  // 同一快照还产出「全新安装首启」标志（首次使用指引门闩），判定见 startupFlags.ts。
   const earlyUpdaterState = readUpdaterState(updaterStatePath);
-  const isUpgradeRun =
-    earlyUpdaterState.lastRunForgeVersion !== null &&
-    earlyUpdaterState.lastRunForgeVersion !== appVersion;
+  const startupFlags = resolveStartupFlags(earlyUpdaterState.lastRunForgeVersion, appVersion);
+  const isUpgradeRun = startupFlags.isUpgradeRun;
   // 说明文件位置：打包产物在 resources/（electron-builder extraResources 落点，asar 外）；
   // dev 回退包目录内仓库文件（release.mjs 生成、随 bump commit 入库）。
   const releaseNotesPath = app.isPackaged
@@ -848,7 +899,7 @@ app.whenReady().then(async () => {
   // 3) updater / 预热 / 首启预装全部顺延到 core 就绪之后（原本就依赖 methodTable/eventBus）。
   const bootState: BootState = { ready: false, startedAt: Date.now(), durationMs: null, splashShownAt: null };
   const win = createAndLoadWindow(!!process.env.FORGE_DEV_SERVER_URL, themeMode);
-  registerShellIpc(bootState, forgeAgentDir);
+  registerShellIpc(bootState, forgeAgentDir, startupFlags);
 
   // ===== v3.78.2：先让静态 splash 上屏，再放开主进程做同步重活 =====
   // core 组装（pi SDK 同步求值）与预热（jiti 同步编译）跑在 Node 事件循环上，而该
@@ -880,7 +931,12 @@ app.whenReady().then(async () => {
   });
 
   const { createForgeCore, invoke } = await import('./createForgeCore.ts');
-  const { methodTable, eventBus, killAllPtys } = createForgeCore(storePath, {
+  const {
+    methodTable,
+    eventBus,
+    killAllPtys,
+    resolveSessionFile,
+  } = createForgeCore(storePath, {
     keychain,
     // pi 数据域根注入（缺省会回退 ~/.pi/agent，生产禁止依赖缺省）
     piAgentDir: forgeAgentDir,
@@ -899,6 +955,10 @@ app.whenReady().then(async () => {
     trashItem: (targetPath) => shell.trashItem(targetPath),
   });
   coreEventBus = eventBus;
+  // SM-S08：把会话文件解析链绑给 shell 通道的导出 handler。
+  // 必须用 core 的 resolveSessionFile（带 free-workspace 回落），另写一份会把
+  // 「自由会话移入项目后继续对话」判成记录不存在。
+  if (resolveSessionFile !== undefined) sessionExportDeps.resolveSessionFile = resolveSessionFile;
   registerCoreIpc(invoke, methodTable, eventBus);
 
   // ===== 系统通知（AI 回复完成提示；方案 A：Win11 通知风格自绘小窗，原型

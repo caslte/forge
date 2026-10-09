@@ -10,6 +10,7 @@ import { usePreferences, codeLayoutDegraded } from './composables/usePreferences
 import { useCodeExplorer } from './composables/useCodeExplorer';
 import { useToast } from './composables/useToast';
 import { useI18n } from './i18n/index.ts';
+import type { MessageKey } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
 import ProjectTree from './components/ProjectTree.vue';
 import CodeTreePanel from './components/CodeTreePanel.vue';
@@ -23,7 +24,9 @@ import ToastNotification from './components/ToastNotification.vue';
 import ExitConfirmDialog from './components/ExitConfirmDialog.vue';
 import GitCommitDialog from './components/GitCommitDialog.vue';
 import WhatsNewDialog from './components/WhatsNewDialog.vue';
+import OnboardingTour from './components/OnboardingTour.vue';
 import { useWhatsNew } from './composables/useWhatsNew';
+import { useOnboarding } from './composables/useOnboarding';
 import TerminalPanel from './components/TerminalPanel.vue';
 import UpdateEntry from './components/UpdateEntry.vue';
 import BootWelcome from './components/BootWelcome.vue';
@@ -75,6 +78,8 @@ const formalUiReady = computed(() => bootReady.value && projectsLoaded.value);
  */
 const bootVeilLeaving = ref(false);
 const bootVeilGone = ref(false);
+// 首次使用指引（蒙层聚光灯）：veil 淡出后才判「要不要自动起」，判定细节见 composables/useOnboarding.ts
+const { autoStart: autoStartOnboarding } = useOnboarding();
 watch(formalUiReady, (ready) => {
   if (!ready) return;
   requestAnimationFrame(() => {
@@ -82,6 +87,9 @@ watch(formalUiReady, (ready) => {
   });
   setTimeout(() => {
     bootVeilGone.value = true;
+    // 首次使用指引：veil 撤了才起蒙层（起早了洞会挖在欢迎页底下，锚点也还没落地布局）。
+    // 判定与去重都在 useOnboarding.autoStart 里（仅全新安装首启，且 localStorage 未记过）。
+    void autoStartOnboarding();
   }, 400);
 });
 
@@ -892,6 +900,67 @@ async function onRenameSession(id: string, alias: string): Promise<void> {
   }
 }
 
+/**
+ * SM-S08 导出对话包。
+ *
+ * 顺序不能换：**先弹保存对话框拿到路径，再让主进程读盘打包直写**。
+ * 反过来（先打包再问存哪）会把包体在内存里白留一份，且用户取消时白读一遍磁盘。
+ *
+ * 默认文件名 `forge-<会话名>-<日期时间>.zip`；只把会话名当文件名片段，
+ * 主进程再取一次 basename 兜底（渲染层给的 title 理论上可含分隔符）。
+ */
+function exportFilenameSafe(alias: string | null | undefined): string {
+  // Windows 文件名非法字符 + 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）
+  const cleaned = (alias ?? '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
+  const base = cleaned === '' ? 'session' : cleaned.slice(0, 60);
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  return `forge-${base}-${stamp}.zip`;
+}
+
+/**
+ * SM-S08 导出失败原因 → i18n 键。
+ * 显式映射而非模板拼串：`t()` 的键参数是字面量联合，拼出来的 string 进不去（vue-tsc 会报错）；
+ * 且显式表能把「主进程漏了新 reason」变成编译期可见的缺口，而不是运行时显示成键名本身。
+ */
+const EXPORT_REASON_I18N: Record<string, MessageKey> = {
+  'session-not-found': 'project.exportReason.session-not-found',
+  'transcript-missing': 'project.exportReason.transcript-missing',
+  'transcript-unreadable': 'project.exportReason.transcript-unreadable',
+  'target-unwritable': 'project.exportReason.target-unwritable',
+  'not-user-selected': 'project.exportReason.not-user-selected',
+  'invalid-path': 'project.exportReason.invalid-path',
+  'invalid-session': 'project.exportReason.invalid-session',
+  'core-not-ready': 'project.exportReason.core-not-ready',
+  internal: 'project.exportReason.internal',
+};
+
+async function onExportSession(id: string): Promise<void> {
+  const s = sessions.value.find((x) => x.sessionId === id);
+  const suggested = exportFilenameSafe(s?.alias);
+  let target: string | null;
+  try {
+    target = await window.forge.dialog.saveFile(suggested, 'session');
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+    return;
+  }
+  // 用户取消 = 什么都没发生，静默返回（不是错误）
+  if (!target) return;
+  try {
+    const res = await window.forge.session.exportBundle(id, target);
+    if (!res.ok) {
+      const reasonKey = EXPORT_REASON_I18N[res.reason ?? 'internal'] ?? 'project.exportReason.internal';
+      showError(t('project.exportFailed', { reason: t(reasonKey) }));
+      return;
+    }
+    showToast(t('project.exportSessionDone', { name: target }), 'success');
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** 全局默认（主会话）模型的别名锚点（草稿态预览/未配置会话级覆盖时展示） */
 const defaultProviderId = ref<string | null>(null);
 
@@ -1196,7 +1265,7 @@ onUnmounted(() => {
                用户「看一眼代码回来发现项目全折叠了」是最不能接受的体验。
                display:none 不销毁组件，ref 原样活着，视觉上仍是「整栏替换」，
                但退出代码态时展开态 / 选中项 / 滚动位置一点不差地回来。 -->
-          <div class="tree-view" :class="{ 'is-hidden': codeOpenPath !== null }">
+          <div class="tree-view" :class="{ 'is-hidden': codeOpenPath !== null }" data-onboarding="treelist">
           <div class="sidebar-top">
             <div class="view-seg" :class="{ 'is-task': treeView === 'task' }" ref="viewSegEl" role="tablist" :aria-label="t('app.sessionListPerspective')">
               <button
@@ -1265,6 +1334,7 @@ onUnmounted(() => {
             @delete-session="onDeleteSession"
             @rename-session="onRenameSession"
             @move-session="onMoveSession"
+            @export-session="onExportSession"
             @fold-state="allCollapsed = $event"
           />
           </div>
@@ -1282,7 +1352,7 @@ onUnmounted(() => {
           />
         </div>
         <div class="sidebar-footer">
-          <button class="sidebar-link" @click="openSettings">
+          <button class="sidebar-link" data-onboarding="settings" @click="openSettings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -1320,6 +1390,7 @@ onUnmounted(() => {
         <div v-if="activeView !== 'settings'" class="app-toolbar">
           <button
             class="app-toolbar-btn"
+            data-onboarding="newsession"
             :data-tooltip="t('app.newSessionTooltip')"
             @click="onCreateSession()"
           >
@@ -1361,6 +1432,7 @@ onUnmounted(() => {
           <!-- 终端开关（模块 10 D5 定稿）：纯图标无边框，激活态品牌色底 -->
           <button
             class="app-toolbar-btn term-toggle"
+            data-onboarding="terminal"
             :class="{ 'is-active': terminalOpen }"
             :data-tooltip="t('terminal.toggle', { hotkey: TERMINAL_HOTKEY })"
             @click="setTerminalOpen(!terminalOpen)"
@@ -1487,6 +1559,10 @@ onUnmounted(() => {
 
     <!-- 版本更新说明弹窗（升级后首启自动弹 + 关于页回看）：useWhatsNew 单例开合 -->
     <WhatsNewDialog />
+
+    <!-- 首次使用指引蒙层（仅全新安装首启自动起 + 关于页重看）：useOnboarding 单例开合，
+         本体 Teleport 到 body，锚点靠元素上的 data-onboarding 标记定位 -->
+    <OnboardingTour />
 
     <ToastNotification
       v-if="toastMessage"

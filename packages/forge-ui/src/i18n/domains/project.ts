@@ -43,6 +43,20 @@ export const zhProject = {
   'project.moveToFree': '移出到自由对话',
   'project.movedToProject': '已移入「{name}」，代码树与终端已启用',
   'project.movedToFree': '已移出到自由对话',
+  // SM-S08 会话导出
+  'project.exportSession': '导出对话包',
+  'project.exportSessionDone': '已导出 {name}',
+  'project.exportSessionCanceled': '已取消导出',
+  'project.exportFailed': '导出失败：{reason}',
+  'project.exportReason.session-not-found': '会话不存在',
+  'project.exportReason.transcript-missing': '该会话记录不可读',
+  'project.exportReason.transcript-unreadable': '该会话记录不可读',
+  'project.exportReason.target-unwritable': '目标位置无法写入',
+  'project.exportReason.not-user-selected': '保存路径未通过校验',
+  'project.exportReason.invalid-path': '保存路径无效',
+  'project.exportReason.invalid-session': '会话标识无效',
+  'project.exportReason.core-not-ready': '内核尚未就绪，请稍后重试',
+  'project.exportReason.internal': '内部错误',
 } as const;
 
 export const enProject: Record<string, string> = {
@@ -90,4 +104,18 @@ export const enProject: Record<string, string> = {
   'project.moveToFree': 'Move out to Free chats',
   'project.movedToProject': 'Moved to "{name}" — code tree and terminal enabled',
   'project.movedToFree': 'Moved out to Free chats',
+  // SM-S08 session export
+  'project.exportSession': 'Export chat bundle',
+  'project.exportSessionDone': 'Exported {name}',
+  'project.exportSessionCanceled': 'Export canceled',
+  'project.exportFailed': 'Export failed: {reason}',
+  'project.exportReason.session-not-found': 'Session not found',
+  'project.exportReason.transcript-missing': 'Session record is unreadable',
+  'project.exportReason.transcript-unreadable': 'Session record is unreadable',
+  'project.exportReason.target-unwritable': 'Cannot write to the chosen location',
+  'project.exportReason.not-user-selected': 'Save path failed verification',
+  'project.exportReason.invalid-path': 'Invalid save path',
+  'project.exportReason.invalid-session': 'Invalid session id',
+  'project.exportReason.core-not-ready': 'Engine not ready yet, please retry',
+  'project.exportReason.internal': 'Internal error',
 };

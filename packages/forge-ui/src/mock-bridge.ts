@@ -41,6 +41,8 @@ const SUBAGENTS_STORAGE_KEY = 'forge-mock-subagents';
 const HISTORY_STORAGE_KEY = 'forge-mock-history';
 /** 项目持久化键：setProjects 后 reload 保留种子（空数组=零项目落地场景） */
 const PROJECTS_STORAGE_KEY = 'forge-mock-projects';
+/** 新装标志键：置 '1' 后 reload 会触发首次使用指引（真实应用由主进程判定，见 startupFlags.ts） */
+const FRESH_INSTALL_STORAGE_KEY = 'forge-mock-fresh-install';
 
 const DB: {
   projects: Array<Record<string, unknown>>;
@@ -552,6 +554,8 @@ interface MockControl {
   setCancelStream(opts: MockCancelOpts): void;
   /** 读取最近一次问卷回填载荷（Path 2；null = 尚无回填） */
   getLastAskUserReply(): Record<string, unknown> | null;
+  /** 读取 SM-S08 会话导出的调用账本（sessionId + targetPath 序列） */
+  getSessionExports(): Array<{ sessionId: string; targetPath: string }>;
 }
 
 declare global {
@@ -709,6 +713,10 @@ function termRun(id: string, p: MockPty, line: string): void {
   }, 80);
 }
 
+/** SM-S08：导出调用账本（e2e 断言「取到目标路径并真的调了主进程打包」）。
+ *  声明必须在 bridge 对象之前——bridge.session.exportBundle 是 TDZ 内的闭包引用。 */
+const sessionExportCalls: Array<{ sessionId: string; targetPath: string }> = [];
+
 const bridge: ForgeBridge = {
   // 纯浏览器预览：非 Electron 环境，UI 按「无系统窗口控件」处理（不影响 mock 布局核对）
   platform: 'browser',
@@ -717,6 +725,17 @@ const bridge: ForgeBridge = {
   // BootWelcome 字标入场动效的拉通道，只能等 2.5s 兜底）
   async bootState() {
     return { ready: true, startedAt: 0, durationMs: 0, splashShownAt: Date.now() };
+  },
+  // 首次使用指引门闩：默认「不是新装」——蒙层会挡住全窗口，e2e 用例不该被它拦下。
+  // 想在浏览器里核对指引落位，置 localStorage['forge-mock-fresh-install'] 后刷新即可。
+  async startupFlags() {
+    let fresh = false;
+    try {
+      fresh = localStorage.getItem(FRESH_INSTALL_STORAGE_KEY) === '1';
+    } catch {
+      // localStorage 不可用（隐私模式等）按非新装处理
+    }
+    return { isFreshInstall: fresh, isUpgradeRun: false };
   },
   // v3.78.7 splash 上屏回执：纯浏览器环境没有真实窗口可显示，空实现即可
   splashReady() {
@@ -1623,7 +1642,9 @@ const bridge: ForgeBridge = {
     selectDirectory: async () => 'D:/work/aiwork',
     selectFiles: async () => [],
     // 无原生保存对话框：一律视为用户取消（画布卡片据此不报错、静默返回）
-    saveFile: async () => null,
+    saveFile: async (_defaultName?: string, kind?: 'canvas' | 'session') =>
+      // SM-S08：导出走 mock 时给出可断言的假路径，让 e2e 能验证「确实取到了目标路径并调了打包」
+      kind === 'session' ? 'D:/tmp/forge-mock-export.zip' : null,
   },
   shell: {
     openPath: async () => true,
@@ -1665,6 +1686,13 @@ const bridge: ForgeBridge = {
       'D:/work/aiwork/forge/edu-community/src/index.ts',
       'D:/work/aiwork/forge/edu-community/docs/prd.md',
     ],
+  },
+  // SM-S08 会话导出：浏览器 dev/e2e 无盘可写，回成功并把调用记进 mock 账本供断言
+  session: {
+    exportBundle: async (sessionId: string, targetPath: string) => {
+      sessionExportCalls.push({ sessionId, targetPath });
+      return { ok: true, bytes: 2048 };
+    },
   },
 };
 
@@ -1794,6 +1822,9 @@ const mockControl: MockControl = {
   },
   getLastAskUserReply() {
     return lastAskUserReply === null ? null : { ...lastAskUserReply };
+  },
+  getSessionExports() {
+    return sessionExportCalls.map((c) => ({ ...c }));
   },
 };
 

@@ -17,6 +17,7 @@ import { zhGit } from './domains/git.ts';
 import { zhTerminal } from './domains/terminal.ts';
 import { zhShortcuts } from './domains/shortcuts.ts';
 import { zhCode } from './domains/code.ts';
+import { zhOnboarding } from './domains/onboarding.ts';
 
 export const zhCN = {
   ...zhCommon,
@@ -33,6 +34,7 @@ export const zhCN = {
   ...zhTerminal,
   ...zhShortcuts,
   ...zhCode,
+  ...zhOnboarding,
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

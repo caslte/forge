@@ -60,7 +60,7 @@ Paste them, drag files in — the rest is handled.
 
 ## 🧷 Execution Model
 
-Forge is a local coding agent: it reads and writes files and runs commands as you, with no permission gate in between. This is inherited from [pi](https://github.com/earendil-works/pi)'s design — real isolation belongs to the operating system or a container.
+Forge runs commands with the full permissions of the account that launched it. If a repo needs a stronger boundary, run Forge inside a container or VM. This follows [pi](https://github.com/earendil-works/pi)'s design: real isolation belongs to the operating system.
 
 ## Acknowledgements
 

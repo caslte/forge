@@ -37,6 +37,8 @@ const emit = defineEmits<{
   (e: 'move-session', sessionId: string, projectPath: string | null): void;
   /** 模块 12：点项目行尾的 <> 进入内置代码浏览器（左栏整栏切成代码树） */
   (e: 'open-code', path: string): void;
+  /** SM-S08：导出对话包（ZIP = 原始转录 + 元信息），由App 层组织保存对话框与落盘 */
+  (e: 'export-session', id: string): void;
 }>();
 
 const VISIBLE_SESSION_LIMIT = 5;
@@ -424,6 +426,9 @@ const ICON_OPEN_DIR = 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 
 const ICON_RENAME =
   'M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z';
 const ICON_TRASH = 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2';
+/** SM-S08：向下箭头入托盘 = 导出/下载语义（feather download） */
+const ICON_EXPORT =
+  'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3';
 const ICON_SESSIONS =
   'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6';
 
@@ -578,6 +583,9 @@ const sessionMenuItems = computed<ContextMenuItem[]>(() => {
   if (!s) return [];
   const items: ContextMenuItem[] = [
     { key: 'rename', label: t('project.renameSession'), icon: ICON_RENAME },
+    // SM-S08 导出对话包：置于重命名之上、删除之下（危险操作内聚在下）。
+    // 运行中会话**不置灰**——用户明确裁定允许导出快照，置灰等于替用户做了决定。
+    { key: 'export', label: t('project.exportSession'), icon: ICON_EXPORT },
   ];
   if (s.projectPath === null) {
     // 自由会话：移入任一已注册项目（menu 无子菜单，直接列目标）
@@ -609,6 +617,12 @@ function onSessionMenuSelect(key: string): void {
     closeSessionMenu();
     const s = props.sessions.find((x) => x.sessionId === id);
     if (s) startRenameSession(s);
+    return;
+  }
+  if (key === 'export') {
+    // 菜单先关：保存对话框是模态的，菜单留着会在其下闪一层残影
+    closeSessionMenu();
+    emit('export-session', id);
     return;
   }
   if (key.startsWith('move:')) {
@@ -1077,7 +1091,10 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered">{{ t('project.noProjects') }}</div>
+      <!-- 零项目空态同时是首次使用指引第 2 步的备用锚点：新装首启必然零项目，
+           「<>」那时还不存在，这一步若只认主锚点会被整步剪掉（用户点名要讲的功能反而不讲）。
+           只挂在这一行，任务视角的「暂无会话」不挂同名标记。 -->
+      <div v-if="projects.length === 0" class="tree-empty tree-empty-centered" data-onboarding="codeentry-empty">{{ t('project.noProjects') }}</div>
 
     <div v-else class="tree-section" @dragover="onSectionDragOver" @drop="onSectionDrop">
       <div
@@ -1141,6 +1158,7 @@ onUnmounted(() => {
             <button
               type="button"
               class="tree-icon-button code-entry"
+              data-onboarding="codeentry"
               :class="{ active: codeOpenPath === project.path }"
               :aria-label="t('code.entryTooltip')"
               :data-tooltip="t('code.entryTooltip')"
@@ -1503,6 +1521,13 @@ onUnmounted(() => {
 .tree-session:hover .tree-node-actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* 首次使用指引打开时强制显形：锚点「<>」（data-onboarding="codeentry"）就在这块里，
+   而蒙层吃掉了全部指针事件——不提这一档，第 2 步的高亮洞圈住的是个透明图标（2026-10-09 实测）。
+   仍然点不到（pointer-events 不给），与「全部不可操作」的拍板一致。 */
+html.ob-tour-active .tree-project .tree-node-actions {
+  opacity: 1;
 }
 
 /* 代码浏览器已打开时，<> 入口常驻可见：它此刻是一条「返回代码」的路径，

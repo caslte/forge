@@ -58,6 +58,17 @@
 | AC-SM-028 | SM-S01 输入框项目选择器 | 跨模块协作 | 正常流程:草稿态选归属 | P0 | - | - | E-SM-007 | 草稿下拉可选归属项目（选中=切当前项目，草稿保留）；条目按最近使用置顶排序（MRU：新建项目/创建会话成功触发置顶，纯选中不改序，持久）；条目悬停可移除（两阶段确认，仅删 forge 元数据）；条目不显运行中点/✓；含“打开项目…”直接弹系统目录选择器，注册后自动选中为草稿归属（草稿保留，v3.48） | 双视角下均可见；移除当前归属后回落首个剩余项目 |
 | AC-SM-029 | SM-S01 会话中信息态 | 状态 | 正常流程：归属可见 | P1 | - | - | E-SM-007 | 会话中 pill 只读显示归属，不弹浮窗 | 归属不可更换 |
 | AC-SM-030 | SM-S01 新建默认落点 | 状态 | 正常流程：默认选列表第一项 | P0 | U-SM-006 | - | E-SM-007 | 默认=项目选择器列表第一项（列表序不变）；项目树行内新建固定归属所在项目；无项目才禁用新建 | 多窗口画布下新建先退回单会话视图 |
+| AC-SM-031 | SM-S08 导出入口 | 交互/安全 | 正常流程：右键导出 | P0 | U-SM-010（文件名非法字符清洗） | A-SM-009 | E-SM-012 | 右键菜单出现「导出对话包」且位于重命名之上删除之下；点后弹保存对话框，默认名 `forge-<会话名>-<日期>.zip` 不含目录成分 | 会话名含 `/` `\` `:` 时被替换 |
+| AC-SM-032 | SM-S08 包结构 | 一致性 | 正常流程：包内唯一内容 | P0 | U-SM-008（独立解析器验包） | A-SM-009 | - | 包内**只有 transcript.jsonl 一份**，无任何旁挂元信息文件；可被独立解析器按 ZIP 格式还原 | 不得出现源码/图片条目 |
+| AC-SM-033 | SM-S08 **信息完整性** | 信息完整性 | 正常流程：转录逐字节一致 | P0 | U-SM-008（会话头/模型行/thinking/空行/入参/非ASCII） | A-SM-009 | - | transcript.jsonl 与磁盘原文件逐字节一致：会话头（id/cwd/时间）、模型信息行、thinking、被压缩折叠的早期记录、工具原始入参、空行、非 ASCII 全部原样保留 | **红探针**：转录侧任何 trim/去空行/重排即红 |
+| AC-SM-034 | SM-S08 运行中导出 | 状态 | 状态流转：运行中可导 | P0 | U-SM-008 | A-SM-009 | E-SM-012 | 导出入口**不置灰**；包内不含点击后新产生的内容 | 不得因运行中而拒绝导出 |
+| AC-SM-035 | SM-S08 取消 | 一致性 | 异常：用户取消对话框 | P0 | - | A-SM-009 | E-SM-012 | 取消不落盘、无任何副作用（不调打包） | 不报错、不产生空包 |
+| AC-SM-036 | SM-S08 不含现场 | 安全/容量 | 正常流程：包内无源码/图片 | P0 | U-SM-008 | A-SM-009 | - | 包内条目名不带目录层级，不出现 .ts/.js/.png 等实体 | 会话含图片消息与读文件记录时同样不外带 |
+| AC-SM-037 | SM-S08 落盘失败 | 可用性 | 异常：磁盘满/无权限 | P1 | - | A-SM-009 | E-SM-012 | 就地提示失败原因；会话内容与状态不变，可重试 | 不留残缺文件 |
+| AC-SM-038 | SM-S08 无残件 | 数据一致性 | 异常：记录缺失/打包失败 | P0 | U-SM-009 | A-SM-009 | - | 目标路径下**不产生任何文件**，界面提示记录不可读 | 不得产出残缺包让接手方误判记录完整 |
+| AC-SM-039 | SM-S08 只读+幂等 | 一致性/幂等 | 正常流程：重复导出 | P1 | U-SM-009 | A-SM-009 | - | 导出前后会话内容/状态/输出流不变；两次导出得到逐字节一致的包 | 导出中运行中的会话不被中断 |
+| AC-SM-040 | SM-S08 二进制安全 | 信息完整性 | 正常流程：长会话非 ASCII | P1 | U-SM-008 | A-SM-009 | - | 按字节原样落盘（不经文本编码转换）；含中文/emoji 的大转录导出后内容不乱码 | 走文本写入即红（编码破坏） |
+| AC-SM-041 | SM-S08 落盘围栏 | 安全边界 | 安全：伪造路径 | P0 | - | A-SM-010 | - | 写盘仅接受用户在保存对话框亲手选定的路径 + `.zip` 格式；伪造路径与扩展名一律不生效 | 沿用 CV-TRUST-03 围栏，未新增宽松通道 |
 
 ---
 
@@ -74,6 +85,16 @@
 | U-SM-005 | AC-SM-023/024 | sessionView 纯函数（排序/全收起判定） | 状态/交互 | 混合状态会话集 + 激活序 | sessions + activatedOrder / paths + collapsed 集 | sortSessionsByActivation / nextFoldAllAction | 运行中置顶且保留；未激活稳定后置；任一展开→collapse、全收起→expand | 空列表/空折叠集不抛错，返回稳定结果 |
 | U-SM-006 | AC-SM-030 | App 新建默认落点（onCreateSession） | 状态 | ≥2 项目 + 已选中的旧项目 | 载荷路径 / 无载荷 | onCreateSession(sessionProjectPath?) | 无载荷→归属=选择器列表第一项；行内新建带路径→归属=该项目；均进入草稿态且不创建 pi session | 无项目时不进草稿；旧选中项目不被沿用 |
 | U-SM-007 | AC-SM-023（+ PRD 默认项「会话列表按最近活动时间排序」） | sessionService 排序持久化（setSessionStatus → store） | 状态 | 3 会话、活动时间固定为互异旧值 | sessionId 逐个 setSessionStatus(running/done) | 转 running 时 touch lastActiveAt 落盘 | listSessions 按活动降序：该会话置顶、done 后不回落；**重开 store（重启/新窗口读盘）后顺序保持** | 会话不存在不写盘；同轮重复 running 不重复写 |
+| U-SM-008 | AC-SM-032/033/034/036/040 | zipWriter + buildSessionBundle（SM-S08） | 信息完整性 | 按 pi 原生格式造的转录夹具（会话头含 cwd / model_change 行 / thinking / 空行 / 工具入参 / 非 ASCII） | 原样导出后 buildZip → **独立解析器**（只按 ZIP 格式读，不复用写入端代码）读回 | 内容逐字节一致；两处 CRC/长度/偏移全对得上；**包内只有 transcript.jsonl 一份**、无源码图片条目 | 独立解析器必须与写入端实现分离，否则字段错位会互相抵消照样绿 |
+| U-SM-009 | AC-SM-038/039 | exportSessionBundle 失败与幂等 | 数据一致性/幂等 | 目标路径不可写、记录文件缺失、0 字节转录 | 各场景重复导出 | 失败一律**不产生任何文件**；重复导出逐字节一致；空转录也产出结构合法的包 | 不得产出残缺包让接手方误判记录完整 |
+| U-SM-010 | AC-SM-031/041 | App 导出文件名清洗（纯函数） | 交互/安全 | 别名含 `/` `\` `:` `*` `?` `"` `<` `>` `|` 与控制符 | 各类别名 | 生成默认文件名 | 非法字符全被替换、不含目录成分、不含控制符、不超长截断 | 空别名回退 `session` |
+
+> **SM-S08 红探针（必须留证）**：
+> ① 在导出链路上给转录加一行 `raw.trim()` 或过滤空行 → `U-SM-008` 必红（AC-SM-033）；
+> ② 把 `IPC_SESSION_EXPORT_BUNDLE` 的 `targetPath !== lastDialogSavePath` 判定去掉 → AC-SM-041 必红；
+> ③ 把运行中会话的导出菜单项加 `disabled` → E-SM-012 必红（AC-SM-034）。
+> **已实测**：探针 ③ 留证时首版写成 `status === 'running'` 没咬住 —— `SessionStatus` 实际取值是
+> `idle | streaming | error | done`。**红探针自身必须先过 typecheck，否则"验证过了"是假的。**
 
 ### api（IPC 契约 + pi 对接 + 输出流管理）
 
@@ -89,6 +110,8 @@
 | A-SM-009 | AC-SM-021 | session/markSessionRead | 会话存在 | { sessionId } | 0 + session（含 doneReadAt） | forge-store 写 doneReadAt | session.updated 发射；1001/1002 校验 |
 | A-SM-010 | v0.3 自由对话 | session/createSession | projectPath 缺省/null/空白 | {} / null / { projectPath: null } / { projectPath: "  " } | 0 + session(projectPath=null) | forge-store 写入 projectPath=null | 数字类型 1001；adapter 收 null；服务层与 RPC 层空白语义一致 |
 | A-SM-011 | v0.3 自由对话 | session/updateSessionProject | 会话存在 + 目标合法 | { sessionId, projectPath: key \| null } | 0 + session（归属已变） | forge-store 改 projectPath，转录文件不动 | session.updated 发射；目标未注册 1002；会话不存在 1002；归属未变幂等；desktop 侧 resolveSessionFile 多候选（当前归属→自由目录回落）保证移入项目后历史续接 |
+| A-SM-012 | AC-SM-032/033/034/035/036/037/039/040 | `forge:session:exportBundle`（shell 级，非 core RPC）+ `forge:dialog:saveFile`(kind=session) | 会话存在（可运行中）；core 已组装 | { sessionId, targetPath }（targetPath 必须是 saveFile 刚返回的值） | `{ ok: true, bytes }`；失败 `{ ok: false, reason }` | 目标路径写出一个 ZIP；**会话存储零改动** | 包内**只有 transcript.jsonl**；转录逐字节一致；不含源码/图片实体；失败不留任何文件；**扩展名非 .zip → invalid-path**；**path≠对话框返回值 → not-user-selected**；非法 sessionId → invalid-session；core 未就绪 → core-not-ready |
+| A-SM-013 | AC-SM-041 | `forge:dialog:saveFile`(kind) 扩展名白名单 | 无 | { name, kind } | 合法路径 / 取消 null | `lastDialogSavePath` 记入 allowlist | kind=session → 过滤器仅 zip、默认名 `forge-session.zip`；kind=canvas → 保持 html/htm（**画布另存回归**）；取消时 allowlist 置空 |
 
 ### e2e
 

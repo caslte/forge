@@ -88,6 +88,13 @@ export interface ForgeCoreBundle {
   eventBus: EventEmitter;
   /** 模块 10：全量回收存活 pty（main.ts 在 before-quit 与渲染文档重载时调用） */
   killAllPtys: () => void;
+  /**
+   * SM-S08：会话 id → 磁盘转录文件路径（含 free-workspace 回落，见 resolveSessionFile 注释）。
+   * 主进程导出会话包时必须复用这条解析链 —— 另写一份会把「自由会话移入项目后继续对话」
+   * 的场景判成记录不存在（文件仍留在创建时的 cwd 目录，归属变更只改元数据不迁移文件）。
+   * 返回 undefined = 无磁盘历史（会话不存在 / ID 非法 / 文件缺失）。
+   */
+  resolveSessionFile?: (sessionId: string) => string | undefined;
 }
 
 /** 可选注入依赖（测试可传 mock；缺省走真实 pi 对接） */
@@ -916,7 +923,12 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     'conversation/sendMessage': wrappedSendMessage,
   };
 
-  return { methodTable, eventBus, killAllPtys: termService.killAll };
+  return {
+    methodTable,
+    eventBus,
+    killAllPtys: termService.killAll,
+    resolveSessionFile,
+  };
 }
 
 /** 构造错误信封（wu-06 helper；与 conversationApi.fail 同样形态） */

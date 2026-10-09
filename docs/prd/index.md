@@ -7,7 +7,7 @@
 | 编号 | 模块名称 | 路径 | 状态 | 备注 |
 |---|---|---|---|---|
 | 01 | 项目管理 | prd/01_project_management.md | PRD 已确认 | 工作台入口；对齐 pi cwd；信任继承 pi；扩展 PM-S05 分支查看与切换（输入框项目区徽标+浮窗切换） |
-| 02 | 会话管理 | prd/02_session_management.md | PRD 已确认 | 多会话并行；多窗口画布；复用 pi session |
+| 02 | 会话管理 | prd/02_session_management.md | PRD 已确认 | 多会话并行；多窗口画布；复用 pi session；扩展 SM-S08 导出会话交接包（右键导出 ZIP＝仅原始完整转录一份不加旁挂元信息，零新增依赖自建打包器，落盘沿用「用户亲手选定路径」围栏） |
 | 03 | 对话与消息 | prd/03_conversation.md | PRD 已确认 | 流式响应、Markdown/Mermaid、取消、历史；扩展：会话历史导航 CV-S06（主会话时间线+浮窗预览+点击定位）、斜杠命令 CV-S08（输入 / 浮窗选择 pi 生态命令，codex 风格美化）、消息队列 CV-S09（忙时入队+徽标）、输入历史翻阅 CV-S10（空输入 ↑/↓）、Todo 面板 CV-S11（输入框上方只读+折叠面板，复用 pi todo 工具 details 快照，依赖模块 04 TE-S05 IPC 透传） |
 | 04 | 工具执行展示 | prd/04_tool_execution.md | PRD 已确认 | tool 卡片、并排 Diff、状态流转；扩展 TE-S05 tool.completed.result 增加可选 details 透传（为模块 03 CV-S11 等结构化消费场景提供 IPC 支撑） |
 | 05 | 模型与 Provider 配置 | prd/05_model_provider.md | PRD 已确认 | models.json 可视化编辑、密钥安全、全局+会话模型；扩展：思考级别选择（输入框）、上下文 1M 配置 |
@@ -19,6 +19,7 @@
 | 11 | Git 提交与推送 | prd/11_git_commit_push.md | PRD 已确认（待开工） | 提交或推送弹窗（全量语义，无"仅本会话"）：状态行+分支浮窗双入口、包含未暂存变更勾选、AI 生成=一次 chat/completions 调用复用 provider、push stderr 弹窗内回显；git/getStatus·commit·push·generateCommitMessage 四 RPC；demo 2026-09-23 验收通过 |
 | 12 | 内置代码浏览器 | prd/12_code_explorer.md | **已交付**（2026-10-02 主体交付，多轮迭代至 v6.16） | 左栏整栏替换的只读代码浏览器：目录树懒加载 + 多签代码纸 + 布局 A/B（整屏覆盖/左右分割，窄窗自动降级）、签条跟随磁盘自动刷新、右键复制路径/外部编辑器打开；扩展：Git 变更视图 + 并排/行内 diff（§3.6，用户反馈驱动）；**git 提交历史视图归属本模块**（拟 CE-S11，见 3.7）；demo 2026-10-01 验收通过 |
 | 13 | 快捷键 | prd/13_keyboard_shortcuts.md | PRD 已确认（待开工） | 设置页第 5 个 Tab：只读快捷键清单 4 组 16 行（布局 B、排 Skills 之后）；主修饰键抽象（Mac ⌘/其他 Ctrl，顺带修 ``⌘+` `` 在 Mac 失效）；新增 3 个全局键 `Ctrl+,` 设置 toggle、`Ctrl+B` 侧栏、`Ctrl+Shift+N` 新建会话；**本期不做改键**，零新增接口；demo 2026-10-08 定稿 |
+| 14 | 首次使用指引蒙层 | prd/14_first_run_onboarding.md | **已交付**（2026-10-09，真机视觉验收待用户跑） | 六步分步聚光灯（形态 A，三形态 demo 后拍板）：会话树 → 目录视图 `<>` → 新建会话 → 终端 → 设置 → 侧栏更新入口；**仅全新安装首启自动弹一次**（主进程启动早期快照 `forge:startup-flags`，渲染层不可自行判定）；重看入口只放设置「关于」Tab；蒙层期间全部不可操作；锚点契约 = 真实元素 `data-onboarding` 标记，缺失自动剔步（mock 实测 5 步） |
 
 ## 状态说明
 

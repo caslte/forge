@@ -55,6 +55,7 @@ const entryTitle = computed(() => {
   <button
     v-if="entryVisible"
     class="up-entry"
+    data-onboarding="update"
     :class="[entryMode === 'ready' || entryMode === 'installing' ? 'is-round' : 'is-square', entryMode === 'ready' ? 'is-expandable' : '']"
     :disabled="entryMode === 'downloading' || entryMode === 'installing'"
     :data-mode="entryMode"

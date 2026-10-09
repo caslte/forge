@@ -209,6 +209,27 @@
 
 ---
 
+## E-SM-012 导出对话包（SM-S08）：入口位置 / 运行中不置灰 / 取消 / 失败反馈 / 文件名清洗
+
+- **关联 AC**：AC-SM-031/034/035/037 | **优先级**：P0 | **上线门禁**：是 | **自动化等级**：mock-backend
+- **角色/页面**：单用户 / 项目工作区
+- **前置条件**：项目已打开，会话池有 ≥1 个会话
+- **用例文件**：`packages/forge-ui/e2e/sessionExport.spec.ts`（5 例）
+
+| 用例 | 场景 | 核心断言 |
+|---|---|---|
+| SESSION-E2E-012 | 正常导出 | 菜单项「导出对话包」位于重命名之下、删除之上；点击后菜单关闭；`saveFile` 取到 `.zip` 路径；`exportBundle` 被调 1 次；会话树未变 |
+| SESSION-E2E-013 | 运行中会话 | 导出项**无 `disabled` class**且可点；导出后该会话仍在跑、未被中断 |
+| SESSION-E2E-014 | 用户取消 | `saveFile` 回 null → `exportBundle` **零调用**；无错误提示；会话树不变 |
+| SESSION-E2E-015 | 导出失败 | `exportBundle` 回 `{ok:false,reason:'transcript-missing'}` → 就地 `.error-toast` 显示「导出失败」+「不可读」；会话树不变可重试 |
+| SESSION-E2E-016 | 文件名清洗 | 会话名 `a/b:c*d?e"f<g>h|i` → 默认名匹配 `/^forge-[^-]*-\d{8}-\d{4}\.zip$/`，不含 `/ \ : * ? " < > \|` |
+
+- **分工边界**：本组**只覆盖入口与编排**。包内容正确性（转录逐字节一致、只有一份内容、失败不留残件）由 desktop 单测 `U-SM-008/009` 承担 —— 浏览器环境拿不到真实盘，在 e2e 里测打包必然是自证。
+- **红探针**：把导出菜单项加 `disabled: s.status === 'streaming'` → SESSION-E2E-013 在 `not.toHaveClass(/disabled/)` 处必红。**已实测留证**（首版探针写成 `'running'` 未生效，`SessionStatus` 实际取值是 `idle|streaming|error|done` —— 探针本身也需 typecheck，否则"红探针"是假的）。
+- **失败检查**：无 console error / pageerror。
+
+---
+
 ## 覆盖汇总
 
 | 用例 | AC | 优先级 | 自动化等级 | 触发展开项 |
@@ -223,5 +244,6 @@
 | E-SM-008 | —（性能回归锁） | P0 | mock-backend | 回归：冷启动会话树不等待 openProject（拖慢 openProject 6s，会话树须 2s 内到位） |
 | E-SM-009 | 022 | P1 | mock-backend | 回归：分段指示胶囊按开关实际盒子贴合（首贴 + 视角切换 + 侧栏折叠展开后不自愈即失败） |
 | E-SM-010 | 022 | P1 | mock-backend | 回归：英文首帧胶囊即贴合（Projects/Tasks 不等宽，CSS 50% 兜底必然偏窄） |
+| E-SM-012 | 031/034/035/037 | P0 | mock-backend | SM-S08：多步交互（入口位置 / 运行中不置灰 / 取消 / 失败反馈 / 文件名清洗）；包内容正确性由 desktop 单测承担 |
 
 > 注：多窗口并发为集成级风险，真实多 AgentSession 并发（非 mock）见 `test/integration/pi-core.md`（F5/F6）。

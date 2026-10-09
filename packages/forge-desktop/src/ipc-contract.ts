@@ -143,6 +143,24 @@ export const IPC_WINDOW_IS_MAXIMIZED = 'forge:window:isMaximized';
 export const IPC_BOOT_STATE = 'forge:boot-state';
 
 /**
+ * 启动特征查询通道（首次使用指引门闩）。
+ *
+ * 与 IPC_BOOT_STATE 同类：不依赖 forge-core 组装，窗口建好即可用。之所以要单独一条通道，
+ * 而不能让渲染层在 RPC 时自己判「新装」——updater/startupUpdate 联动阶段会**异步**把
+ * lastRunForgeVersion 改写为当前版本，渲染层此刻读到的永远是「已运行过」。因此判定必须
+ * 由主进程在启动同步快照阶段完成（见 startupFlags.ts），渲染层只消费结论。
+ */
+export const IPC_STARTUP_FLAGS = 'forge:startup-flags';
+
+/** 启动特征（forge:startup-flags 响应） */
+export interface StartupFlags {
+  /** 全新安装首启（updater-state.json 里没有 lastRunForgeVersion） */
+  isFreshInstall: boolean;
+  /** 升级后首启（lastRunForgeVersion 存在且不等于当前版本） */
+  isUpgradeRun: boolean;
+}
+
+/**
  * splash 上屏回执通道（v3.78.7，渲染进程 → 主进程，单向）。
  *
  * 主进程用 `show:false` 建窗，需要知道「splash 真的画到窗口表面了」才显示窗口——这样用户
@@ -271,9 +289,24 @@ export type ShellProbeResult =
  * 为什么走保存对话框而不是自造目录（如项目下 .forge/canvas/）：卡片是模型产出的
  * 一次性图示，落到项目里会污染 git 状态（改动文件卡会变吵），落到 userData 又不好
  * 找。让用户在对话框里自己决定去哪，两条顾虑一起消掉。
+ *
+ * SM-S08 会话导出复用同一套机制（同一对话框 / 同一围栏 / 同一写盘通道），
+ * 故 filters 与写盘扩展名白名单须同时放行 zip，见下方实现。
  */
 export const IPC_DIALOG_SAVE_FILE = 'forge:dialog:saveFile';
 export const IPC_FILE_WRITE_TEXT = 'forge:file:writeText';
+
+/**
+ * 会话导出 ZIP（SM-S08）：在**主进程**读盘、构建包、直写目标路径，返回统计信息。
+ *
+ * 为什么不在渲染层打包再传字节：转录里的图片是 base64 内嵌的，会话包体可达数百 MB，
+ * 结构化克隆穿 IPC 会再复制一份内存 + 一份缓冲，既慢又易崩。包在主进程就地生成、
+ * 一次性 writeFileSync 落盘，中间不落地任何明文中间文件。
+ *
+ * 围栏与 writeText 同构：targetPath 必须等于最近一次 IPC_DIALOG_SAVE_FILE 的返回值，
+ * 且扩展名限定 .zip。不新增更宽松的写盘通道（CV-TRUST-03 威胁模型保持成立）。
+ */
+export const IPC_SESSION_EXPORT_BUNDLE = 'forge:session:exportBundle';
 
 /**
  * preload ↔ main 主题通道（v3.78.6）：渲染进程把当前主题同步给主进程。

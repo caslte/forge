@@ -16,6 +16,7 @@ import { enGit } from './domains/git.ts';
 import { enTerminal } from './domains/terminal.ts';
 import { enShortcuts } from './domains/shortcuts.ts';
 import { enCode } from './domains/code.en.ts';
+import { enOnboarding } from './domains/onboarding.ts';
 
 export const en: Partial<Record<MessageKey, string>> = {
   ...enCommon,
@@ -32,4 +33,5 @@ export const en: Partial<Record<MessageKey, string>> = {
   ...enTerminal,
   ...enShortcuts,
   ...enCode,
+  ...enOnboarding,
 };

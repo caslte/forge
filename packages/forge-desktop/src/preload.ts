@@ -18,6 +18,7 @@ import {
   IPC_DIALOG_OPEN_FILE,
   IPC_DIALOG_SAVE_FILE,
   IPC_FILE_WRITE_TEXT,
+  IPC_SESSION_EXPORT_BUNDLE,
   IPC_SHELL_OPEN_EXTERNAL,
   IPC_SHELL_PROBE,
   IPC_SHELL_OPEN_PATH,
@@ -34,10 +35,12 @@ import {
   IPC_FILE_LIST_PROJECT,
   IPC_BOOT_SPLASH_READY,
   IPC_BOOT_STATE,
+  IPC_STARTUP_FLAGS,
   type ForgeMethod,
   type ForgeEvent,
   type ForgeResult,
   type BootState,
+  type StartupFlags,
   type ShellProbeResult,
   type ForgeAskUserQuestion,
   type AskUserQuestionRequestPayload,
@@ -68,9 +71,9 @@ const dialogControl = {
   async selectFiles(): Promise<string[]> {
     return ipcRenderer.invoke(IPC_DIALOG_OPEN_FILE) as Promise<string[]>;
   },
-  /** 另存对话框：返回用户选定的绝对路径，取消返回 null */
-  async saveFile(defaultName: string): Promise<string | null> {
-    return ipcRenderer.invoke(IPC_DIALOG_SAVE_FILE, defaultName) as Promise<string | null>;
+  /** 另存对话框：返回用户选定的绝对路径，取消返回 null。kind='canvas'（默认，HTML）| 'session'（ZIP，SM-S08） */
+  async saveFile(defaultName: string, kind?: 'canvas' | 'session'): Promise<string | null> {
+    return ipcRenderer.invoke(IPC_DIALOG_SAVE_FILE, { name: defaultName, kind }) as Promise<string | null>;
   },
 };
 
@@ -226,6 +229,24 @@ const askUserQuestionControl: ForgeAskUserQuestion = {
   },
 };
 
+/**
+ * window.forge.session 会话导出（SM-S08）：走 shell 级通道而非 forge-core RPC。
+ *
+ * 包在主进程就地读盘打包直写目标路径（转录里图片是 base64 内嵌，包体可达数百 MB，
+ * 穿 IPC 会再复制两份内存），故不经 IPC_INVOKE 的 core 分发。targetPath 必须是用户
+ * 刚在 saveFile 对话框里选定的路径，否则主进程围栏会拒。
+ */
+const sessionExportControl = {
+  /** 导出结果：ok=false 时 reason 说明失败原因，供 UI 就地提示 */
+  async exportBundle(sessionId: string, targetPath: string): Promise<{ ok: boolean; reason?: string; bytes?: number }> {
+    return ipcRenderer.invoke(IPC_SESSION_EXPORT_BUNDLE, { sessionId, targetPath }) as Promise<{
+      ok: boolean;
+      reason?: string;
+      bytes?: number;
+    }>;
+  },
+};
+
 /** window.forge 桥实现 */
 const forgeBridge = {
   /**
@@ -240,6 +261,10 @@ const forgeBridge = {
   /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
   bootState(): Promise<BootState> {
     return ipcRenderer.invoke(IPC_BOOT_STATE) as Promise<BootState>;
+  },
+  /** 启动特征查询（首次使用指引门闩）：主进程同步快照的结论，handler 不依赖 core */
+  startupFlags(): Promise<StartupFlags> {
+    return ipcRenderer.invoke(IPC_STARTUP_FLAGS) as Promise<StartupFlags>;
   },
   /** splash 上屏回执（v3.78.7）：由 index.html 内联脚本在双 rAF 后调用，供主进程决定何时
    *  把窗口显示出来。单向无返回；即便丢失也不影响功能（主进程有超时兜底）。 */
@@ -264,6 +289,7 @@ const forgeBridge = {
   theme: themeControl,
   locale: localeControl,
   file: fileControl,
+  session: sessionExportControl,
 };
 
 contextBridge.exposeInMainWorld('forge', forgeBridge);

@@ -149,6 +149,16 @@ export interface BootState {
 }
 
 /**
+ * 启动特征（与 @forge/desktop ipc-contract.ts StartupFlags 同构，本地声明惯例）。
+ * 由主进程在启动同步段快照得出——渲染层自行判定不可行：core 组装后的联动会把
+ * lastRunForgeVersion 改写为当前版本，届时读到的永远是「已运行过」。
+ */
+export interface StartupFlags {
+  isFreshInstall: boolean;
+  isUpgradeRun: boolean;
+}
+
+/**
  * shell 健康探测结果（与 @forge/desktop ipc-contract.ts ShellProbeResult 同构，本地声明惯例）。
  * 背景：pi 的 bash 三级兜底在 Windows 上可能命中 System32 的 WSL 占位（每条命令只回
  * 一句乱码的「未安装 Linux 子系统」），ok=false 时对话区渲染常驻横幅指引修复。
@@ -388,6 +398,8 @@ export interface ForgeBridge {
   invoke(method: ForgeMethod, params?: Record<string, unknown>): Promise<ForgeResult>;
   /** 启动状态查询（v3.76 欢迎页门闩「拉」通道；handler 不依赖 core，窗口建好即用） */
   bootState(): Promise<BootState>;
+  /** 启动特征查询（首次使用指引门闩）：主进程启动同步段的快照结论，同样不依赖 core */
+  startupFlags(): Promise<StartupFlags>;
   /** splash 上屏回执（v3.78.7）：主进程据此决定何时显示窗口；纯浏览器环境为空实现 */
   splashReady(): void;
   /**
@@ -408,8 +420,11 @@ export interface ForgeBridge {
   dialog: {
     selectDirectory(): Promise<string | null>;
     selectFiles(): Promise<string[]>;
-    /** 另存对话框（画布卡片用）：返回用户选定的绝对路径，取消返回 null */
-    saveFile(defaultName: string): Promise<string | null>;
+    /**
+     * 另存对话框（画布卡片用）：返回用户选定的绝对路径，取消返回 null。
+     * kind='canvas'（默认，HTML 过滤器）| 'session'（SM-S08 会话导出，ZIP 过滤器）。
+     */
+    saveFile(defaultName: string, kind?: 'canvas' | 'session'): Promise<string | null>;
   };
   shell: {
     /** 系统文件管理器打开目录（项目右键"打开项目所在目录"）；失败返回 false */
@@ -473,6 +488,14 @@ export interface ForgeBridge {
     listProjectFiles(projectPath: string): Promise<string[]>;
     /** 写 UTF-8 文本（画布卡片另存，主进程限定 .html/.htm）；失败返回 false */
     writeText(path: string, text: string): Promise<boolean>;
+  };
+  /**
+   * 会话导出（SM-S08）。包在主进程就地读盘打包直写（转录里图片是 base64 内嵌，
+   * 包体可达数百 MB，穿 IPC 会再吃两份内存），故不走 invoke 的 core 分发。
+   * targetPath 必须先经 dialog.saveFile 取得，否则主进程围栏会拒。
+   */
+  session: {
+    exportBundle(sessionId: string, targetPath: string): Promise<{ ok: boolean; reason?: string; bytes?: number }>;
   };
 }
 
@@ -689,6 +712,14 @@ export function fileSearchFiles(path: string, query: string): Promise<ForgeResul
  */
 export async function getBootState(): Promise<BootState> {
   return window.forge.bootState();
+}
+
+/**
+ * 查询启动特征（首次使用指引门闩）：只有全新安装首启才自动起指引。
+ * 结论来自主进程启动同步段的快照，渲染层无法自行判定（见 StartupFlags 注释）。
+ */
+export async function getStartupFlags(): Promise<StartupFlags> {
+  return window.forge.startupFlags();
 }
 
 /** 订阅主进程事件，返回取消订阅函数 */

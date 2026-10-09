@@ -186,7 +186,68 @@ pi 会话转录 `{agentDir}/sessions/{encodeURIComponent(cwd)}/forge-<sessionId>
 
 ---
 
-## 8. 事件
+## 8. 导出会话（交接包，SM-S08）
+
+### forge:dialog:saveFile（扩展）
+
+SM-S08 复用既有保存对话框，新增 `kind` 参数决定过滤器：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| name | string | 否 | 默认文件名。取 basename，目录成分被掐掉；缺省按 kind 取 `canvas.html` / `forge-session.zip` |
+| kind | `'canvas' \| 'session'` | 否 | 缺省 `canvas`。`session` → 过滤器 `zip`、默认名 `forge-session.zip` |
+
+**载荷形态变更（既有调用方兼容）**：此前该通道的载荷是裸字符串，现在是 `{ name, kind }` 对象。`preload` 已把旧签名 `saveFile(defaultName)` 包装成 `{ name: defaultName, kind: undefined }`，**渲染层调用方无需改动**。
+
+返回：用户选定的绝对路径；取消返回 `null`（取消时同时清空写盘 allowlist）。
+
+### forge:session:exportBundle
+
+**说明**：把会话导出为 ZIP 交接包。**shell 级通道，不走 forge-core RPC** —— 包在主进程就地读盘打包直写（转录内图片是 base64 内嵌，包体可达数百 MB，穿 IPC 结构化克隆会再吃两份内存）。
+
+**请求**
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| sessionId | string | 是 | 会话 ID |
+| targetPath | string | 是 | 目标路径。**必须等于最近一次 `forge:dialog:saveFile` 的返回值**，且扩展名为 `.zip` |
+
+**响应**
+
+```json
+{ "ok": true, "bytes": 24576 }
+```
+
+```json
+{ "ok": false, "reason": "transcript-missing" }
+```
+
+`reason` 枚举：
+
+| reason | 含义 |
+|---|---|
+| `invalid-session` / `invalid-path` | 参数非法 |
+| `not-user-selected` | 路径不等于最近一次保存对话框返回值（CV-TRUST-03 围栏） |
+| `core-not-ready` | 内核尚未组装完成（用户启动瞬间即点击） |
+| `session-not-found` | 会话无磁盘记录（**解析走 `resolveSessionFile` 多候选链**，含 free-workspace 回落） |
+| `transcript-missing` / `transcript-unreadable` | 转录文件不存在 / 读失败 |
+| `target-unwritable` | 落盘失败（磁盘满、无权限） |
+| `internal` | 未预期异常 |
+
+**包内容**：只有一份 —— `transcript.jsonl`，磁盘原生转录，**逐字节原样**（不 trim / 不去空行 / 不重排）。
+
+TD-SM-06：thinking、被压缩折叠的早期上下文、工具原始入参全须保留。转录首行本身即会话头（含 `id` / `cwd` / `timestamp`），紧随其后是模型与思考级别记录行 —— 所以**不再旁挂元信息文件**（TD-SM-09：两处描述同一事实必然漂移）。
+
+**不变量**
+
+- 只读：导出不改会话存储、不改状态、不中断运行中的会话；重复导出得到逐字节一致的包。
+- 失败**不留任何残件**：读盘在打包之前完成，写盘是最后一步且只发生一次。
+- 无体积上限（PRD 用户裁定）。
+- 包由 `zipWriter.ts` 自建（零新增依赖），不做 ZIP64 / 数据描述符；单条目或包体超 4GB 时构建失败。
+
+---
+
+## 9. 事件
 
 ### session.statusChanged
 
@@ -218,7 +279,7 @@ pi 会话转录 `{agentDir}/sessions/{encodeURIComponent(cwd)}/forge-<sessionId>
 
 ---
 
-## 9. 错误码
+## 10. 错误码
 
 | code | 说明 |
 |------|------|
@@ -226,3 +287,5 @@ pi 会话转录 `{agentDir}/sessions/{encodeURIComponent(cwd)}/forge-<sessionId>
 | 1002 | 会话不存在 / 项目不存在 |
 | 1004 | 会话重复开窗（已有关注窗口） |
 | 5000 | 内部错误 |
+
+> SM-S08 的 `forge:session:exportBundle` **不经此错误码表**（shell 级通道，返回 `{ ok, reason }`）。
