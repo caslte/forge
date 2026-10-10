@@ -15,6 +15,10 @@ export const zhTool = {
   'tool.waitAgentResult': '等待子 Agent 结果',
   'tool.steerAgent': '向子 Agent 发送指令',
   'tool.runAgentWorkflow': '运行子 Agent 工作流',
+  // goal 接入：pi-goal 的三个终局工具（goal_complete 是「目标达成」的证据声明）
+  'tool.goalComplete': '目标完成',
+  'tool.goalBlocked': '目标受阻',
+  'tool.goalWait': '等待外部事件',
   'tool.fallbackName': '工具',
   'tool.askMultiQuestions': '{question}（等 {n} 个问题）',
   'tool.answeredPrefix': '用户已回答：',
@@ -66,6 +70,10 @@ export const enTool: Record<string, string> = {
   'tool.waitAgentResult': 'Await subagent result',
   'tool.steerAgent': 'Send instruction to subagent',
   'tool.runAgentWorkflow': 'Run subagent workflow',
+  // goal 接入：pi-goal 的三个终局工具
+  'tool.goalComplete': 'Goal completed',
+  'tool.goalBlocked': 'Goal blocked',
+  'tool.goalWait': 'Waiting for external event',
   'tool.fallbackName': 'Tool',
   'tool.askMultiQuestions': '{question} (and {n} questions in total)',
   'tool.answeredPrefix': 'User has answered: ',

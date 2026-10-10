@@ -39,6 +39,7 @@ import type {
   AskUserQuestionRequestPayload,
   AskUserQuestionReplyParams,
   AskUserQuestionAnswer,
+  GoalUiReplyParams,
 } from '../conversation/conversationService.ts';
 import type { ClassifiedError } from '../errors/errorClassifier.ts';
 
@@ -131,6 +132,8 @@ export class ConversationApi {
       // Path 2 ask_user_question 回填：renderer → main 只能走方法调用（不是事件），
       // 故必须落在这里（契约 §4.2.1 ③）。
       'askUserQuestion/reply': (params) => this.replyAskUserQuestion(params),
+      // goal 接入：pi-goal 确认/输入弹窗的回填，同理必须是方法调用。
+      'goal/uiReply': (params) => this.replyGoalUi(params),
     };
   }
 
@@ -332,6 +335,24 @@ export class ConversationApi {
   }
 
   /**
+   * goal/uiReply：goal UI 回填（goal 接入，2026-10-10）。
+   * renderer 对 pi-goal 确认/输入弹窗的作答经此投回扩展侧等待中的 Promise
+   * （宿主 uiContext 在此 await）。校验在服务层（1001/1002），异常 5000；
+   * `delivered=false` 属正常降级（会话无 lease 或该请求已超时收敛）。
+   */
+  private replyGoalUi(params: unknown): Promise<RpcResult> {
+    const isObj = isRecord(params);
+    const value = isObj ? params.value : undefined;
+    const request: GoalUiReplyParams = {
+      sessionId: (isObj ? params.sessionId : undefined) as string,
+      requestId: (isObj ? params.requestId : undefined) as string,
+      cancelled: (isObj ? params.cancelled : undefined) as boolean,
+      value: value as string | boolean | null,
+    };
+    return this.call('goal/uiReply', () => this.service.replyGoalUi(request));
+  }
+
+  /**
    * 会话状态驱动（非 RPC 方法）：发射 conversation.statusChanged。
    * 供 sendMessage 成功后自动调用，也供 UI 层 / 测试直接驱动状态流转。
    * @param sessionId 会话 ID
@@ -447,6 +468,40 @@ export class ConversationApi {
    */
   emitAskUserQuestionRequested(payload: AskUserQuestionRequestPayload): void {
     this.events.emit('conversation.askUserQuestionRequested', payload);
+  }
+
+  /**
+   * goal 状态行推送（goal 接入）：发射 goal.statusChanged。
+   * 数据源是 pi-goal 的 `ctx.ui.setStatus("goal", …)`（经宿主 uiContext 转发到会话总线），
+   * **徽标的主数据源** —— 覆盖 active/waiting/paused/blocked/usage/budget/complete
+   * 全部形态且带 automatic 轮次与 token 用量。payload.text 为 null 表示清除徽标。
+   */
+  emitGoalStatusChanged(payload: { sessionId: string; text: string | null }): void {
+    this.events.emit('goal.statusChanged', payload);
+  }
+
+  /** goal 状态播报推送：发射 goal.notified（修 no-op UI 导致的「用户零感知」）。 */
+  emitGoalNotified(payload: { sessionId: string; message: string; level: 'info' | 'warning' | 'error' }): void {
+    this.events.emit('goal.notified', payload);
+  }
+
+  /** goal 用户裁决请求推送：发射 goal.uiRequested（confirm/input/editor/select）。 */
+  emitGoalUiRequested(payload: {
+    sessionId: string;
+    requestId: string;
+    kind: 'confirm' | 'input' | 'editor' | 'select';
+    title: string;
+    message: string;
+    placeholder?: string;
+    options?: string[];
+    timeoutMs: number;
+  }): void {
+    this.events.emit('goal.uiRequested', payload);
+  }
+
+  /** goal 宽限超时告警推送：发射 goal.uiTimedOut（避免静默拒绝无迹可寻）。 */
+  emitGoalUiTimedOut(payload: { sessionId: string; requestId: string; title: string }): void {
+    this.events.emit('goal.uiTimedOut', payload);
   }
 }
 

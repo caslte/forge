@@ -12,6 +12,8 @@ import {
 } from '../utils/slashCommand';
 import MermaidBlock from './MermaidBlock.vue';
 import HtmlCanvasBlock from './HtmlCanvasBlock.vue';
+import IrCanvasBlock from './IrCanvasBlock.vue';
+import { splitDiagramSegments } from '../utils/splitDiagramSegments.ts';
 import ImageLightbox from './ImageLightbox.vue';
 import { useI18n } from '../i18n/index.ts';
 
@@ -326,56 +328,21 @@ const bodyHtml = computed(() => {
   );
 });
 
-/** 正文分段：一段安全 HTML，或一个画布卡片槽位 */
-type Segment =
-  | { kind: 'html'; html: string }
-  | { kind: 'canvas'; key: string; encoded: string; blocked: boolean };
-
 /**
- * 正文分段：把 canvas 占位从 HTML 流里切出来，换成组件槽位。
+ * 正文分段：把 canvas / canvas-ir 占位从 HTML 流里切出来，换成组件槽位。
+ *
+ * 切分逻辑已抽到 utils/splitDiagramSegments.ts（正则与状态机必须可单测），
+ * 此处只负责把 options 接上：流式期给最后一张挂骨架。
  *
  * 与 mermaid 的差别是刻意的：mermaid 图统一堆到气泡底部（历史行为，不动它），
  * 而画布卡片是「夹在两段正文中间、给上文配图」的，切到底部就丢了语义——
- * 用户按顺序读时图必须在它解释的那段话旁边。
+ * 用户按顺序读时图必须在它解释的那段话旁边。canvas-ir 同样留在原位。
  */
-const segments = computed<Segment[]>(() => {
-  const html = bodyHtml.value;
-  const re = /<pre class="md-canvas-wrap"><code class="md-canvas" data-md-canvas="([^"]*)">[\s\S]*?<\/code><\/pre>/g;
-  const out: Segment[] = [];
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  let i = 0;
-  while ((match = re.exec(html)) !== null) {
-    if (match.index > cursor) {
-      out.push({ kind: 'html', html: html.slice(cursor, match.index) });
-    }
-    const encoded = match[1] ?? '';
-    out.push({ kind: 'canvas', key: `c${i}-${encoded.slice(0, 8)}`, encoded, blocked: false });
-    cursor = match.index + match[0].length;
-    i += 1;
-  }
-  if (cursor < html.length) {
-    out.push({ kind: 'html', html: html.slice(cursor) });
-  }
-  // 末围栏未闭合（流式中卡片只写了一半）：只有最后那张可能需要骨架蒙版。
-  // 蒙版高度 == 终态高度，所以闭合瞬间既不跳变也不顶动下方正文。
-  // 仅流式期间生效：终态（结束/取消/历史）围栏仍未闭合时不会再有后续 token，
-  // 骨架会永远转圈——此时直接按占位内容渲染（残缺 HTML 交给浏览器补齐，
-  // 非 HTML 走代码块降级），宁可显示半成品也不挂假进度。
-  //
-  // 是否真要挂骨架由 HtmlCanvasBlock 里的 judgeCanvasSource 决定（唯一口径）：
-  // 源码已够长且能判出「不是 HTML」时，它会直接出正文/代码块，不等闭合。
-  if (renderedOpenFence.value && props.streaming) {
-    for (let j = out.length - 1; j >= 0; j -= 1) {
-      const seg = out[j];
-      if (seg && seg.kind === 'canvas') {
-        seg.blocked = true;
-        break;
-      }
-    }
-  }
-  return out;
-});
+const segments = computed(() =>
+  splitDiagramSegments(bodyHtml.value, {
+    lastBlocked: renderedOpenFence.value && props.streaming,
+  }),
+);
 
 const timeLabel = computed(() => {
   try {
@@ -459,9 +426,13 @@ const riseIn = computed(() => {
           >{{ t('chat.skillTag') }}</span></template></template></div>
       <!-- 助手/系统/工具正文：分段渲染，画布卡片留在它原本的段落位置 -->
       <template v-else>
-        <template v-for="(seg, i) in segments" :key="seg.kind === 'canvas' ? seg.key : `h${i}`">
+        <template v-for="(seg, i) in segments" :key="seg.kind === 'html' ? `h${i}` : seg.key">
           <div v-if="seg.kind === 'html'" class="msg-content" v-html="seg.html" @click="onMarkdownContentClick"></div>
-          <HtmlCanvasBlock v-else :encoded="seg.encoded" :blocked="seg.blocked" />
+          <HtmlCanvasBlock v-else-if="seg.kind === 'canvas'" :encoded="seg.encoded" :blocked="seg.blocked" />
+          <IrCanvasBlock v-else
+            :encoded="seg.encoded"
+            :receipt-encoded="seg.receiptEncoded"
+            :blocked="seg.blocked" />
         </template>
       </template>
       <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->

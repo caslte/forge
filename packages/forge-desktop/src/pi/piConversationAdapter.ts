@@ -16,7 +16,8 @@ import type {
 } from '@forge/core';
 // L3 传输契约的通道名以 forge-extensions 为唯一事实来源（extension ↔ bridge 同在
 // main 进程内），此处不复制字面量，避免两侧漂移（契约 §4.2）。
-import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel } from '@forge/extensions';
+import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel, GOAL_STATUS_CHANNEL, GOAL_UI_NOTIFY_CHANNEL, GOAL_UI_REQUEST_CHANNEL, GOAL_UI_TIMEOUT_CHANNEL, goalUiReplyChannel } from '@forge/extensions';
+import type { GoalUiReplyPayload as PiGoalUiReplyPayload, GoalUiRequestPayload as PiGoalUiRequestPayload, GoalStatusPayload as PiGoalStatusPayload, GoalUiNotifyPayload as PiGoalNotifyPayload } from '@forge/extensions';
 import { stripThinkingContent } from './thinkingFilter.ts';
 import type { SubagentEventBus } from './createPiAgentSessionFactory.ts';
 
@@ -261,6 +262,30 @@ export interface PiConversationEventHandlers {
    * 上层据此转发 `conversation.askUserQuestionRequested` 到渲染进程。
    */
   onAskUserQuestionRequested?: (sessionId: string, payload: AskUserQuestionRequestPayload) => void;
+  /**
+   * pi-goal 状态行更新（goal 接入，2026-10-10）：pi-goal 每次状态变化调
+   * `ctx.ui.setStatus("goal", <紧凑状态串>)`，由 forge 的 uiContext 转发到会话总线
+   * （`goal:status`），此处按会话上抛。载荷 text 为 undefined 表示清除徽标。
+   * 这是 goal 徽标的**主数据源**（覆盖 active/waiting/paused/blocked/usage/budget/complete
+   * 全部形态且带用量；RPC 事件通道只覆盖受管运行模式）。
+   */
+  onGoalStatusChanged?: (sessionId: string, payload: PiGoalStatusPayload) => void;
+  /**
+   * pi-goal 状态通知（goal 接入）：pi-goal 的 notify 全部经此上抛
+   * （目标已启动 / 已暂停 / 预算耗尽等），修掉 no-op UI 导致的「用户零感知」。
+   */
+  onGoalNotified?: (sessionId: string, payload: PiGoalNotifyPayload) => void;
+  /**
+   * pi-goal 请求用户裁决（confirm / input / editor / select）：由 uiContext 转发到
+   * 会话总线（`goal-ui:request`），此处按会话上抛。上层转发到渲染进程弹窗，
+   * 用户作答后经 {@link replyGoalUi} 回填。
+   */
+  onGoalUiRequested?: (sessionId: string, payload: PiGoalUiRequestPayload) => void;
+  /**
+   * pi-goal 宽限到期未回填：宿主已按缺省值（confirm=false）收敛，并发此事件以便
+   * UI 提示用户「刚才那个确认超时了」。避免退化成无迹可寻的静默拒绝。
+   */
+  onGoalUiTimeout?: (sessionId: string, payload: { requestId: string; title: string }) => void;
 }
 
 type TurnCompletionHandler = (sessionId: string) => void;
@@ -326,6 +351,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
   private readonly slashCommandUnsubs = new Map<string, () => void>();
   /** 每会话在问卷请求 channel 上的订阅取消函数（removeSession 时释放） */
   private readonly askUserUnsubs = new Map<string, () => void>();
+  /** 每会话在 goal 四条通道（状态行 / 通知 / UI 请求 / 超时）上的退订集合（removeSession 时释放） */
+  private readonly goalUnsubs = new Map<string, () => void>();
   private eventHandlers: PiConversationEventHandlers = {};
   /** 队列镜像（CV-S09）：sessionId -> pi 当前 followUp 队列文本（FIFO 序），来自 queue_update 事件 */
   private readonly queueMirror = new Map<string, string[]>();
@@ -514,6 +541,8 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     this.bindSlashCommandBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     // Path 2：订阅问卷请求 channel（ask-user:request）→ onAskUserQuestionRequested
     this.bindAskUserBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
+    // goal 接入：订阅 pi-goal 的状态行 / 通知 / UI 请求 / 超时四条 channel
+    this.bindGoalBus(sessionId, lease as PiAgentSessionLease<MinimalPiSession>);
     try {
       // 附件统一给路径：路径行已随 content 发送，模型自行 read；
       // 非视觉模型遇图片时 pi-ai 传输层自动降级占位，adapter 恒单参调用。
@@ -964,6 +993,16 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       } catch {}
       this.askUserUnsubs.delete(sessionId);
     }
+    // goal 接入：退订 pi-goal 四条 channel。**必须退订**——否则会话删除后
+    // pi-goal 若仍 emit 迟到通知/请求，会上抛到已无窗格承载的渲染进程，
+    // 表现为弹出无主的确认框或幽灵徽标。
+    const goalUnsub = this.goalUnsubs.get(sessionId);
+    if (goalUnsub !== undefined) {
+      try {
+        goalUnsub();
+      } catch {}
+      this.goalUnsubs.delete(sessionId);
+    }
     // wu-06：退订后清空子 agent 会话内存态（会话删除是子 agent 注销的最终时机）
     this.subagentService?.disposeSession(sessionId);
     const lease = this.leases.get(sessionId);
@@ -1111,6 +1150,86 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
       this.eventHandlers.onAskUserQuestionRequested?.(sessionId, payload);
     });
     this.askUserUnsubs.set(sessionId, off);
+  }
+
+  /**
+   * goal 接入：按 lease 的事件总线订阅 pi-goal 的四条 channel（与 bindSlashCommandBus /
+   * bindAskUserBus 同构：先退订旧订阅再重绑防重复，removeSession 时统一退订）。
+   *
+   * 四条 channel 各自解决一个「用户看不见」的问题：
+   * - `goal:status`      pi-goal 的 `ui.setStatus("goal", …)` → 徽标（主数据源，含用量）
+   * - `goal-ui:notify`   pi-goal 的 `ui.notify(…)`        → 状态播报（启动/暂停/预算耗尽）
+   * - `goal-ui:request`  pi-goal 的 `ui.confirm/input/editor/select` → 用户裁决弹窗
+   * - `goal-ui:timeout`  宽限到期未回填 → 提示（避免静默拒绝无迹可寻）
+   *
+   * 会话隔离：总线是该会话私有的，订阅闭包天然持有 sessionId，跨进程载荷补 sessionId
+   * 后上抛，渲染端各窗格按它认领（与 askUserQuestion 的会话隔离约定一致）。
+   * 载荷非法时静默跳过（不崩、不投递）。
+   */
+  private bindGoalBus(
+    sessionId: string,
+    lease: PiAgentSessionLease<MinimalPiSession>,
+  ): void {
+    const bus = lease.events;
+    if (bus === undefined) {
+      return;
+    }
+    const prev = this.goalUnsubs.get(sessionId);
+    if (prev !== undefined) {
+      try { prev(); } catch {}
+      this.goalUnsubs.delete(sessionId);
+    }
+
+    const offs: Array<() => void> = [
+      bus.on(GOAL_STATUS_CHANNEL, (raw) => {
+        const payload = extractGoalStatusPayload(raw);
+        if (payload === null) return;
+        this.eventHandlers.onGoalStatusChanged?.(sessionId, payload);
+      }),
+      bus.on(GOAL_UI_NOTIFY_CHANNEL, (raw) => {
+        const payload = extractGoalNotifyPayload(raw);
+        if (payload === null) return;
+        this.eventHandlers.onGoalNotified?.(sessionId, payload);
+      }),
+      bus.on(GOAL_UI_REQUEST_CHANNEL, (raw) => {
+        const payload = extractGoalUiRequestPayload(raw);
+        if (payload === null) return;
+        this.eventHandlers.onGoalUiRequested?.(sessionId, payload);
+      }),
+      bus.on(GOAL_UI_TIMEOUT_CHANNEL, (raw) => {
+        if (!raw || typeof raw !== 'object') return;
+        const v = raw as Record<string, unknown>;
+        if (typeof v.requestId !== 'string' || typeof v.title !== 'string') return;
+        this.eventHandlers.onGoalUiTimeout?.(sessionId, { requestId: v.requestId, title: v.title });
+      }),
+    ];
+
+    this.goalUnsubs.set(sessionId, () => {
+      for (const off of offs) {
+        try { off(); } catch {}
+      }
+    });
+  }
+
+  /**
+   * goal UI 回填：把 renderer 的裁决结果经该会话总线投回 pi-goal 的 uiContext。
+   *
+   * 与 replyAskUserQuestion 同构（适配器此前只有 bus.on 面，这里补 emit 面）。
+   * 会话隔离：以 sessionId 定位 lease（无 lease = 错窗格 / 会话已删 → 不投递），
+   * 再以 requestId 定位监听者（该请求已超时收敛则 emit 落空）。
+   * @returns 是否已投递（false = 该会话无 lease 或无事件总线，作答被丢弃）
+   */
+  replyGoalUi(sessionId: string, requestId: string, payload: PiGoalUiReplyPayload): boolean {
+    const bus = this.leases.get(sessionId)?.events;
+    if (bus === undefined) {
+      return false;
+    }
+    bus.emit(goalUiReplyChannel(requestId), {
+      requestId,
+      value: payload.value,
+      cancelled: payload.cancelled,
+    });
+    return true;
   }
 
   /**
@@ -1570,6 +1689,56 @@ function extractAskUserRequest(
   return {
     requestId: raw.requestId,
     questions: raw.questions as AskUserQuestionItem[],
+    timeoutMs: raw.timeoutMs,
+  };
+}
+
+/**
+ * goal 接入载荷提取（三个通道共用的防御性归一）。
+ *
+ * 沿用 extractAskUserRequest 的口径：**非法载荷一律返回 null 静默丢弃**，不崩不投递。
+ * 这些数据来自扩展侧总线，属跨信任边界输入。
+ */
+
+/** goal:status —— pi-goal 的紧凑状态串（text 可为 undefined = 清除徽标）。 */
+function extractGoalStatusPayload(raw: unknown): PiGoalStatusPayload | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.key !== 'string' || raw.key === '') return null;
+  if (raw.text !== undefined && typeof raw.text !== 'string') return null;
+  return { key: raw.key, text: raw.text as string | undefined };
+}
+
+/** goal-ui:notify —— pi-goal 的状态播报。 */
+function extractGoalNotifyPayload(raw: unknown): PiGoalNotifyPayload | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.message !== 'string' || raw.message === '') return null;
+  const level = raw.level;
+  if (level !== 'info' && level !== 'warning' && level !== 'error') return null;
+  return { message: raw.message, level };
+}
+
+/** goal-ui:request —— pi-goal 请求用户裁决（confirm / input / editor / select）。 */
+function extractGoalUiRequestPayload(raw: unknown): PiGoalUiRequestPayload | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.requestId !== 'string' || raw.requestId === '') return null;
+  const kind = raw.kind;
+  if (kind !== 'confirm' && kind !== 'input' && kind !== 'editor' && kind !== 'select') return null;
+  if (typeof raw.title !== 'string') return null;
+  if (typeof raw.message !== 'string') return null;
+  if (typeof raw.timeoutMs !== 'number' || !Number.isFinite(raw.timeoutMs) || raw.timeoutMs <= 0) {
+    return null;
+  }
+  const placeholder = typeof raw.placeholder === 'string' ? raw.placeholder : undefined;
+  const options = Array.isArray(raw.options)
+    ? raw.options.filter((item): item is string => typeof item === 'string')
+    : undefined;
+  return {
+    requestId: raw.requestId,
+    kind,
+    title: raw.title,
+    message: raw.message,
+    ...(placeholder !== undefined ? { placeholder } : {}),
+    ...(options !== undefined ? { options } : {}),
     timeoutMs: raw.timeoutMs,
   };
 }

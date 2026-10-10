@@ -44,6 +44,11 @@ const TOOL_LABELS: Record<string, MessageKey> = {
   get_subagent_result: 'tool.waitAgentResult',
   steer_subagent: 'tool.steerAgent',
   subagentworkflow: 'tool.runAgentWorkflow',
+  // goal 接入：pi-goal 的三个终局工具。用户会在消息流里看到它们，
+  // 不加映射就显示裸英文工具名（goal_complete / goal_blocked / goal_wait）。
+  goal_complete: 'tool.goalComplete',
+  goal_blocked: 'tool.goalBlocked',
+  goal_wait: 'tool.goalWait',
 };
 
 /** 展示用工具名：有中文映射用中文，否则回退原始工具名 */

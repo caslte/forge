@@ -6,13 +6,14 @@ import InstructionInput from './InstructionInput.vue';
 import SuggestionChips from './SuggestionChips.vue';
 import TodoPanel from './TodoPanel.vue';
 import AskUserQuestionPanel from './AskUserQuestionPanel.vue';
+import GoalDialog from './GoalDialog.vue';
 import MessageListItem from './MessageListItem.vue';
 import ConversationTimelineRail from './ConversationTimelineRail.vue';
 import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
 import SubagentTabBar from './SubagentTabBar.vue';
 import SubagentResultView from './SubagentResultView.vue';
 import { useCompactBanner } from '../composables/useCompactBanner';
-import { useShellHealth } from '../composables/useShellHealth';
+import { goalRemainingOf, goalRequestOf, replyGoalUi } from '../composables/useGoalState';import { useShellHealth } from '../composables/useShellHealth';
 import { usePreferences } from '../composables/usePreferences';
 import { useSessionConversation } from '../composables/useSessionConversation';
 import { buildRoundSnapshot, type RoundSnapshot } from '../utils/conversationTimeline';
@@ -132,6 +133,23 @@ const {
   getStatusHint: () => props.session?.status,
   scrollToBottom: () => autoScrollToBottom(),
 });
+
+/**
+ * goal 接入：pi-goal 的用户裁决请求与倒计时（按当前会话隔离）。
+ *
+ * `goalRequest` 为 null 时 GoalDialog 整体不渲染（无目标 = 不占空间）。
+ * 回填统一走 composable 的 `replyGoalUi`，它负责回填 + 撤面板 + 失败提示，
+ * 组件本身只发意图不碰 IPC。
+ */
+const activeSessionId = computed(() => props.sessionId ?? createdSessionId);
+const goalRequest = computed(() => goalRequestOf(activeSessionId.value));
+const goalRemaining = computed(() => goalRemainingOf(activeSessionId.value));
+
+async function replyGoalDialog(payload: { value: string | boolean | null; cancelled: boolean }): Promise<void> {
+  const req = goalRequest.value;
+  if (req === null) return;
+  await replyGoalUi(req.sessionId, req.requestId, payload.value, payload.cancelled);
+}
 
 /**
  * 上下文压缩横幅（内存态，按 sessionId 隔离）：仅覆盖压缩中区间
@@ -1162,6 +1180,17 @@ onMounted(() => {
         :answered="askAnswered"
         @submit="submitAskUserAnswers"
         @dismiss="dismissAskAnswered"
+      />
+
+      <!-- goal 接入：pi-goal 的宿主交互弹窗（confirm / input / editor / select）。
+           与 AskUserQuestionPanel 同位置同形态（输入框正上方的浮窗），因为二者是
+           同一类东西——都在等用户裁决，且都必须在会话作用域内渲染（多窗格各认领自己的）。
+           挂这里的理由和 AskUserQuestionPanel 一样：子 agent 结果视图不渲染。 -->
+      <GoalDialog
+        v-if="!showResultView"
+        :request="goalRequest"
+        :remaining-sec="goalRemaining"
+        @reply="replyGoalDialog"
       />
 
       <!-- 空会话首屏 hero：absolute 挂在输入区上方，不参与 wrap 高度计算

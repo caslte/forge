@@ -30,6 +30,7 @@ import { hljs } from './hljsCore.ts';
 import sanitizeHtml from 'sanitize-html';
 
 import { CANVAS_LANGUAGE, looksLikeAsciiArt } from './canvasSandbox.ts';
+import { IR_FENCE_LANGUAGE, judgeIrFence } from './canvasIr.ts';
 
 /** marked 实例：gfm + 换行即 <br>（对齐消息正文既有行为） */
 const marked = new Marked({ gfm: true, breaks: true });
@@ -53,6 +54,55 @@ export {
   type CanvasTokens,
 } from './canvasSandbox.ts';
 
+/**
+ * 画布 IR 校验器（阶段 1，见 docs/plan/canvas-ir-archify-analysis.md）。
+ *
+ * 与上面的 canvasSandbox 并存不冲突：新链路走 canvasIr 判「IR 合不合法」，
+ * 旧链路仍由 canvasSandbox 判「HTML 像不像图」。此处一并 re-export，
+ * 是为了让 @forge/core/markdown 成为跨包引用的唯一入口（既有 canvasSandbox
+ * 也是这么做的）——跨包深引用 src/ 会违反 forge-desktop 的 rootDir 约束。
+ */
+export {
+  IR_FENCE_LANGUAGE,
+  IR_SCHEMA_VERSION,
+  IR_MAX_NODES,
+  IR_MAX_LABEL_CHARS,
+  IR_DIAGRAM_TYPES,
+  IR_NODE_KINDS,
+  parseIr,
+  judgeIr,
+  extractIrFences,
+  judgeIrFence,
+  formatIrReceipt,
+  type IrCode,
+  type IrDocument,
+  type IrNode,
+  type IrEdge,
+  type IrNodeKind,
+  type IrDiagramType,
+  type IrJudgement,
+  type IrDiagnostic,
+  type IrFenceOutcome,
+} from './canvasIr.ts';
+
+/**
+ * IR 编译器（IR → SVG）。
+ *
+ * 也从这里 re-export，是为了让 @forge/core/markdown 成为 UI 侧唯一入口——
+ * forge-ui 只依赖这个包入口，不深引用 src/（与 canvasSandbox 同一约定）。
+ */
+export {
+  IR_CARD_HEIGHT,
+  IR_MAX_CANVAS_W,
+  buildIrStandaloneFile,
+  compileIrToSvg,
+  compileIrWithMeta,
+  layoutIr,
+  measureTextUnits,
+  type IrLayout,
+  type LaidOutNode,
+} from './canvasIrRender.ts';
+
 /** 白名单标签（sanitize-html allowedTags） */
 const ALLOWED_TAGS = [
   'p', 'br', 'hr', 'strong', 'em', 'del', 'code', 'pre', 'blockquote',
@@ -67,7 +117,19 @@ const ALLOWED_ATTRIBUTES = {
   a: ['href', 'title', 'target'],
   img: ['src', 'alt', 'title'],
   pre: ['class'],
-  code: ['class', 'data-md-mermaid', 'data-md-canvas'],
+  code: [
+    'class',
+    'data-md-mermaid',
+    'data-md-canvas',
+    // IR 链路（阶段 1）。三类属性缺一都会静默失效：
+    // 少 data-md-canvas-ir → 前端扫不到标记，卡片永远出不来；
+    // 少 data-md-canvas-ir-receipt → 校验失败时前端拿不到回执，只剩空白；
+    // 少 data-ir-source → 无法回显「模型到底写了什么」。
+    // 与 data-md-canvas 同理，由canvasSandbox.test.ts 那条既有契约测试盯住。
+    'data-md-canvas-ir',
+    'data-md-canvas-ir-receipt',
+    'data-ir-source',
+  ],
   span: ['class'],
   div: ['class'],
   th: ['align'],
@@ -129,6 +191,26 @@ function codeRenderer(lang: string | undefined, text: string): string {
     const escaped = htmlEscape(trimmed);
     const encoded = encodeBase64Utf8(trimmed);
     return `<pre class="md-canvas-wrap"><code class="md-canvas" data-md-canvas="${encoded}">${escaped}</code></pre>`;
+  }
+
+  // Canvas IR：模型产出的类型化 JSON。与 canvas 围栏的本质差别是
+  // **校验发生在渲染期**，且校验失败的产物是「修复回执」而非一张画面——
+  // 数据不合法时无法「渲染」，只能把问题精确回灌给模型让它改。
+  //
+  // 流式安全：judgeIrFence 内部以「JSON 是否完整可解析」作为闭合判据，
+  // 故未闭合围栏（残缺 JSON）会自动判为流式态、只出骨架不出回执。
+  if (language === IR_FENCE_LANGUAGE) {
+    const escaped = htmlEscape(trimmed);
+    const outcome = judgeIrFence(trimmed);
+    if (outcome.ok) {
+      const encoded = encodeBase64Utf8(trimmed);
+      return `<pre class="md-canvas-ir-wrap"><code class="md-canvas-ir" data-md-canvas-ir="${encoded}">${escaped}</code></pre>`;
+    }
+    // 失败：源码留在 data-ir-source（供前端显示「你写了什么」），回执在 data-...-receipt
+    const srcEncoded = encodeBase64Utf8(trimmed);
+    const receiptEncoded = encodeBase64Utf8(outcome.receipt ?? '');
+    return `<pre class="md-canvas-ir-wrap is-invalid"><code class="md-canvas-ir" `
+      + `data-md-canvas-ir-receipt="${receiptEncoded}" data-ir-source="${srcEncoded}">${escaped}</code></pre>`;
   }
 
   let highlighted: string;

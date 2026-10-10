@@ -1,5 +1,41 @@
 # 变更日志
 
+## v6.21 (功能：Skills 批量管理删除 + 多选目录导入)
+
+> 来源：2026-10-10 用户「Skills 这边增加批量删除功能；导入 Skill 目录是否可以多选」。`think` 收敛 → `dev-tdd`（e2e 先红后绿）。交互形态用户拍板：**开关式「批量管理」**，不常驻复选框。
+
+- **批量管理（批量删除）**：头部新增「批量管理 Skill」按钮，点击进入批量模式——按钮变「退出批量管理」、每行出现复选框（选中行红色描边高亮）、行内单个删除图标隐藏、「批量删除 Skill (N)」危险按钮出现（N=0 禁用）；退出即全部还原。确认弹窗列出全部所选目录后**逐条调既有 `skill/deleteSkill`**（单条接口复用 containment 校验 + 回收站回退，后端零改动）；单条失败不中断，结束汇总 toast（成功数/永久删除数/失败数）；**全部成功自动退出批量模式**，有失败保留批量模式便于重试。删除中按钮禁用防重入。
+- **多选导入（含导入预览，无效项禁选）**：「导入 Skill 目录」改为一次可选多个目录。新增 `IPC_DIALOG_OPEN_DIRECTORIES` 通道（Electron `multiSelections`，标题「选择 Skill 目录（可多选）」，与「选择项目目录」单选通道隔离）+ `dialog.selectDirectories` 桥方法。系统窗口选完后**先弹「导入预览」**：新增只读 RPC `skill/checkImport`（与 `skill/importSkill` 共用抽出的 `validateImportSource` 校验函数 → 预览判断与真正导入永远同源口径），逐个标记 可导入/同名冲突/无法导入 三态徽标；**无效目录整行置灰且复选框禁用——用户点不了**，同名冲突标记可选；确认「导入所选 (N)」后仅勾选项入队（0 选中/校验未完成时按钮禁用），冲突项逐个弹既有 4090 确认框（新增「跳过」选项），取消/关闭冲突弹窗=终止剩余队列（已完成项保留）；结束 toast「导入完成：成功 N 个，跳过 M 个」。预览取消=什么都不导入。**不放宽「一次一个 skill」语义**：每个所选目录仍须自身含 SKILL.md，选父目录在预览中即标「无法导入」。
+- **实现要点**：`SkillsSection.vue` 导入重构为队列状态机（`importQueue/importStats/importing`），4090 挂起时队列头不弹出、确认或跳过后继续；批量选择用 `Set<dirPath>` + computed 条目列表（确认弹窗按展示顺序列名称+路径），批量操作条含「全选/全不选」切换按钮（只作用于实际渲染的全局+其它来源组，project 作用域不渲染不参与；SK-BATCH-04 咬出初版误计不可见条目后改用渲染集合）；i18n 新增 13 对 zh/en 键（`importSummary` 为简单 `{name}` 插值，i18n 核心不支持 ICU 复数）。`mock-bridge` 补 `selectDirectories`（返回 null=取消，E2E 直接覆盖注入）。**布局修复（SK-BATCH-03）**：批量模式隐藏行尾删除按钮后，`space-between` 会把短描述行的信息列挤到行右缘（偏移随内容长度漂移）——`.skill-info` 补 `flex:1` 占满剩余宽度（原型页本有此属性，真实代码漏同步）；新增 e2e 几何断言锁死（RED 实测 gap=616px → GREEN）。
+- **测试**：新增 `e2e/skillsBatch.spec.ts` **6 例全绿**（SK-BATCH-01 开关还原 / SK-BATCH-02 勾选两项批量删除+自动退出 / SK-IMPORT-MULTI 预览全选→冲突覆盖+汇总 / SK-IMPORT-MIXED 混合选择：无效项预览中禁选、仅有效项入库 / SK-IMPORT-PREVIEW-CANCEL 预览取消零副作用 / SK-IMPORT-MULTI-CANCEL 系统对话框取消无反馈）；RED 阶段实测全红后转绿。desktop `skillService` 单测 **18 pass**（新增 checkImport 三态只查不拷用例）+ `ipcEventContract` **3 pass**；回归 `settings.spec.ts` **10/10**、`i18n.test.ts` **7 pass**、vue-tsc 0 错。实施中 vue-tsc/回归咬出两个真 bug：① `onImport` 重置 `importStats` 漏了后加的 `skippedNames` 字段——4090 覆盖确认后的收尾汇总对 undefined 调 `.slice()` 抛 TypeError，toast 与列表刷新全部中断（快照比对定位）；② `mock-bridge` 的 `skill/importSkill` 无 SKILL.md 校验语义，E2E 无法模拟混合选择——补 `invalid-` 前缀目录拒绝规则（对齐真实端校验）。已知：`forge-ui` 普通 `tsc` 报 `useSessionConversation.ts` DisplayItem 1 错为工作区在途改动（canvas IR）既有问题，与本次无关（`vue-tsc` 构建链路 0 错）。
+- **文档**：PRD `09_skill_management.md` 新增 SK-F06（AC-09-14/15）+ SK-F02 多选增强（AC-09-16）+ §3.4 操作条更新；原型 `prototypes/skills-batch-delete-multi-import.html` 同步开关式交互。
+
+## v6.20 (修复：pi-goal 宿主适配 —— 目标模式从「静默失效」到真正可用)
+
+> 来源：2026-10-10 用户「forge 已经接入了 goal 插件，想把这个功能加到 forge 中，检验是否已集成、存在哪些问题，不完整就接入」。
+
+- **先纠正一个前提：pi-goal 早就装上了，但处于「半接通」状态。** 它已在预装清单内（`pi/recommendedPlugins.ts:22`），`/goal` 也已出现在斜杠命令浮窗里。真正的问题是 forge **没给扩展真实 UI 上下文**：`createPiAgentSessionFactory` 调 `bindExtensions({ mode:'rpc' })` 时未传 `uiContext`，pi 回落到 `noOpUIContext`（`pi-coding-agent/dist/core/extensions/runner.js:88`）—— `confirm: async () => false`、`notify`/`setStatus` 空实现。pi-goal 对 `ctx.ui` 有 13 处依赖（`menu.ts` 9 + `settings-ui.ts`），全部落在这三个空实现上。
+- **最严重的一条是静默失效，不只是体验差**：pi-goal 替换未完成目标时 `await ctx.ui.confirm("Replace goal?", …)`（`commands.ts:59`）恒得 false ⇒ **目标永远换不掉，而用户既看不到失败、也看不到原因**。同一个空实现还吞掉全部状态通知（「目标已启动 / 已自动 12 轮 / 预算耗尽」用户零感知）。
+- **修法是补宿主能力，不重写插件**：`ExtensionBindings.uiContext`（`agent-session.d.ts:145`）是 pi 官方注入点。新增 `forge-extensions/src/goalBridge/`（`channels.ts` + `uiContext.ts` + `extension.ts`）实现真实 `ExtensionUIContext`，四类交互（confirm/input/editor/select）转发到会话事件总线由 Vue 渲染、回填后 resolve。**pi-goal 侧零改动**，它那套被验证过的自治安全机制（25 轮上限 / 无进展熔断 / token 预算 / stale goal_id 守卫 / `agent_settled` 单飞续跑）整体复用。
+- **刻意不开 pi-goal 的受管运行 RPC**（`pi-goal.json` 的 `rpc.enabled`，本机原为 `false`）：该通道只额外提供 `summary`/`reason`（徽标与交互都不需要），而开启即等于**把「任何扩展可替用户启动/取消目标」的通道暴露出去**。不开更安全。用户控制目标的手段是斜杠命令（`/goal pause|resume|clear|status`），裸 `/goal` 的 TUI 菜单在 GUI 下本就不可达，UI 不提供该入口。
+- **`setStatus` 才是状态徽标的唯一完整数据源**（实现期修正了设计阶段的误判）：pi-goal 每次状态变化调 `ui.setStatus("goal", …)`（`runtime.ts:567`），覆盖 active/waiting/paused/blocked/usage/budget/complete 全部形态且带 `automatic 已用/上限` 与 token 用量。UI 侧 `utils/goalStatus.ts` 只做**拆片段**（`parseGoalStatus`），不二次拼装 —— 格式由 pi-goal 定义，自己拼一套必然随上游改版漂移。未知形态原样透传并用虚线框标出，**不猜测语义**。
+- **写测试时抓到三个真 bug**（都靠单测咬出来，不是靠肉眼）：
+  ① `confirm` 用户取消时 resolve 的是 `undefined` 而非 `false` —— truthiness 上等价，但 SDK 契约签名是 `Promise<boolean>`，上游加运行时断言就会抛。改为按 kind 收敛（`defaultForKind`）。
+  ② 宽限定时器加了 `unref()` —— Node 事件循环会在用户尚未作答时判定「无事可做」而退出（Electron 主进程同理会提前结束应用）。去掉；进程退出由 `dispose()` 收敛，不是靠定时器维持存活。
+  ③ `automatic Unlimited` 形态解析不出：`pi-goal` 的该形态是**裸词无数字**（`runtime.ts:1398`，只有有限上限才拼 `${used}/${limit}`），正则的 `(\d+)` 前缀匹配不进来。改为先判 Unlimited。
+- **一个刻意的反直觉决定：徽标清除后不做「保留旧值」兜底。** 目标已清空却还显示「进行中 12/25」，用户会以为它还在烧 token —— 那比徽标消失严重得多。载荷 `text: null` 即如实清空（E2E E-GOAL-003 锁此行为）。
+- **测试**：
+  - `forge-extensions` 单测 **85/85**（新增 `test/goalBridge/uiContext.test.ts` **16 例**：confirm 回填 / 四类交互 / notify 与 setStatus 转发 / 宽限收敛 / 迟到回填幂等 / dispose 收敛 / 总线抛错 / 并发不串扰）。
+  - `forge-ui` goalStatus **12/12**。
+  - IPC 事件契约测试 **3/3**（新增 2 例锁 desktop↔UI 双侧 `goal.*` 与 `goal/uiReply` 登记同步 —— 漏登记=静默丢弃，且浏览器 dev 下测不出）。
+  - `forge-ui/e2e/goal.spec.ts` **14 例**（mock-backend：徽标渲染/清除/警示态、confirm 点确定真回填 `value:true`、input/editor/select 四态、倒计时、跨会话不认领、运行期健康）。
+  - 四个包 typecheck 全绿；`ipcEventContract.test.ts` 全量通过（证明 4 条新事件白名单登记完整）。
+  - **已知：本机真机单测极慢**（单用例 331 秒，jiti 预热 `settings.packages` 全包）。跑 desktop 全量回归需预留 20 分钟以上，或走定向 `--test-name-pattern`。
+- **文档**：API `03_conversation.md` 新增「goal 通道（pi-goal 宿主适配）」章节（四事件 + `goal/uiReply` + 桥接约定 + 为何不开 RPC）；设计与实施记录 `plan/goal-integration-20261010101023.md`。
+- **未做**：裸 `/goal` TUI 菜单的 GUI 等价物（终端组件渲染，实测不可达）；`pi-goal.json` 设置页入口（`automaticTurns` / `noProgressTurns` 暂走手改文件）。
+- **顺带修复（会话列表错误徽标）**：用户反馈红色感叹号方块看不清「!」。根因是 24 网格里竖线只画了 5 格（y8→13）再缩到 8px，实际描边约 1px。放大字形（竖线 5.5→13.5、点 18.5→19）、描边 3→4、底板 11px→12px 占满槽位，实际描边约 1.5px、字形长度近乎翻倍。仅 `ProjectTree.vue` 三处模板与对应 CSS，无逻辑改动。
+- **顺带修复（终端白底用户输入字太淡）**：用户反馈浅色终端里自己键入的命令几乎看不清。根因：shell 交互输入的着色来自 PSReadLine 的 ANSI 16 色（命令=Yellow、参数=White），而 `TerminalPanel.vue` 的 xterm 主题只给了 `background/foreground/cursor/selection`，**ANSI 调色板缺省** → 用的是 xterm 内置暗底默认色，其中 white=`#d3d7cf`、yellow=`#c4a000`，压纯白底即隐形。修复：亮档显式注入白底校准的 ANSI 16 色（VS Code Light+ 终端口径，white→`#555555`、yellow→`#949800`）；暗档不传 ansi、维持 xterm 默认（暗底本就正常，避免无谓回归面）。xterm 重设 theme 时以默认调色板为底合并，切换配色档不会残留另一档的 ansi。仅 `TERM_PALETTE`/`xtermTheme()` 两处，`vue-tsc` 通过。
+
 ## v6.19 (功能：导出会话交接包 SM-S08 —— 代码 + 文档交付)
 
 > 来源：2026-10-09 用户要求「增加一个下载会话的功能，把用户和 AI 的聊天记录下载下来，方便递交给其他 agent 做上下文分析来继续工作」。`think` 收敛 → `gen-doc-prd` 两轮 → 开发。

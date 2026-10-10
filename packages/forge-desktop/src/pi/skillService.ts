@@ -1,7 +1,7 @@
 /**
  * Skill 管理 RPC（模块 09，docs/prd/09_skill_management.md）。
  *
- * 4 个方法：skill/listSkills | importSkill | createSkill | deleteSkill。
+ * 5 个方法：skill/listSkills | checkImport | importSkill | createSkill | deleteSkill。
  * 纯 TS（不 import Electron）：回收站能力经 deps.trashItem 端口注入
  * （main.ts 传 Electron shell.trashItem；缺省回退永久删除，TD-SK-04）。
  *
@@ -60,6 +60,15 @@ export interface ListSkillsResult {
   cwd: string;
   skills: SkillEntry[];
   issues: SkillIssue[];
+}
+
+/** skill/checkImport 响应 data（导入预览三态；状态码恒 0，invalid 原因在 reason） */
+export interface CheckImportResult {
+  status: 'ok' | 'conflict' | 'invalid';
+  /** conflict 时为已存在的同名目标目录绝对路径 */
+  conflictPath: string | null;
+  /** invalid 时的拒绝原因（与 importSkill 错误文案同源） */
+  reason: string | null;
 }
 
 /** loader.getSkills() 单条记录（真实 pi Skill 的结构子集，fake 同形） */
@@ -189,6 +198,54 @@ function listChildSkillDirs(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 导入源目录校验（importSkill / checkImport 共用 → 预览判断与真正导入永远同源口径）。
+ * 返回失败信封（1001/1002）或 null（通过，可进入冲突检测/复制阶段）。
+ */
+function validateImportSource(sourceDir: string, targetRoot: string): RpcResult | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(sourceDir);
+  } catch {
+    return failEnvelope(1002, `源目录不存在: ${sourceDir}`);
+  }
+  if (!stat.isDirectory()) {
+    return failEnvelope(1001, '参数错误：sourceDir 必须是目录');
+  }
+  // 自我复制守卫：源 == 目标根 / 源在目标根内
+  if (isUnder(realpathSafe(sourceDir), realpathSafe(targetRoot)) && fs.existsSync(targetRoot)) {
+    return failEnvelope(1001, '拒绝导入：源目录与目标 skills 根相同或位于其内');
+  }
+  // SKILL.md 校验（复用 pi loadSkillsFromDir 口径，AC-09-05）。
+  // loader 会递归识别嵌套子 skill，父目录也能过——因此额外要求源目录自身
+  // 就是 skill 目录（根级含 SKILL.md），杜绝一次导入整个 skills 父目录。
+  const loaded = loadSkillsFromDir({ dir: sourceDir, source: 'user' });
+  const hasRootSkillMd = fs.existsSync(path.join(sourceDir, 'SKILL.md'));
+  // 含 skill 子目录一律拒（即使自身有 SKILL.md）：整树拷贝会把子 skill 一起带进来，
+  // 语义上仍是「一次导入多个」，与 UI 承诺的「一次一个」冲突。
+  const childDirs = listChildSkillDirs(sourceDir);
+  if (childDirs.length > 0) {
+    const preview = childDirs.slice(0, 3).join('、') + (childDirs.length > 3 ? ' 等' : '');
+    if (!hasRootSkillMd) {
+      return failEnvelope(
+        1001,
+        `无法导入：一次只能导入一个 skill 目录。所选目录本身没有 SKILL.md，但包含 ${childDirs.length} 个 skill 子目录（${preview}），请进入后选择其中一个`,
+      );
+    }
+    return failEnvelope(
+      1001,
+      `无法导入：一次只能导入一个 skill 目录。所选目录自身含 SKILL.md，但还包含 ${childDirs.length} 个 skill 子目录（${preview}），整个导入会把它们一并带入，请改为选择其中一个子目录`,
+    );
+  }
+  if (loaded.skills.length === 0 || !hasRootSkillMd) {
+    const reason =
+      loaded.diagnostics.map((d) => d.message).find((m) => m !== undefined) ??
+      '目录中未找到有效 SKILL.md（需含非空 description）';
+    return failEnvelope(1001, `拒绝导入：${reason}`);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +412,31 @@ export function createSkillMethods(deps: SkillServiceDeps): SkillMethodTable {
       return okEnvelope({ cwd, skills: entries, issues });
     },
 
+    // 导入预览：只查不拷（与 importSkill 共用 validateImportSource → 同源口径）。
+    // 状态码恒 0，预览语义由 data.status 表达：ok=可直接导入 / conflict=目标同名 /
+    // invalid=源目录不合法（reason 带原因）。UI 多选导入先逐个 check，无效项置灰不可选。
+    'skill/checkImport': async (params: unknown): Promise<RpcResult> => {
+      const scope = readScopeParam(params);
+      const sourceDir = readStringParam(params, 'sourceDir');
+      const projectPath = readStringParam(params, 'projectPath');
+      if (scope === null || sourceDir === null) {
+        return failEnvelope(1001, '参数错误：scope/sourceDir 必须为非空字符串');
+      }
+      const targetRoot = targetRootFor(scope, projectPath);
+      if (targetRoot === null) {
+        return failEnvelope(1001, '参数错误：项目作用域需要已打开项目（projectPath）');
+      }
+      const fail = validateImportSource(sourceDir, targetRoot);
+      if (fail !== null) {
+        return okEnvelope<CheckImportResult>({ status: 'invalid', conflictPath: null, reason: fail.message });
+      }
+      const dest = path.resolve(targetRoot, path.basename(sourceDir));
+      if (fs.existsSync(dest)) {
+        return okEnvelope<CheckImportResult>({ status: 'conflict', conflictPath: dest, reason: null });
+      }
+      return okEnvelope<CheckImportResult>({ status: 'ok', conflictPath: null, reason: null });
+    },
+
     // 导入：源目录校验 → 目标根直接子目录复制（临时目录 + rename 原子落位）
     'skill/importSkill': async (params: unknown): Promise<RpcResult> => {
       const scope = readScopeParam(params);
@@ -368,46 +450,8 @@ export function createSkillMethods(deps: SkillServiceDeps): SkillMethodTable {
       if (targetRoot === null) {
         return failEnvelope(1001, '参数错误：项目作用域需要已打开项目（projectPath）');
       }
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(sourceDir);
-      } catch {
-        return failEnvelope(1002, `源目录不存在: ${sourceDir}`);
-      }
-      if (!stat.isDirectory()) {
-        return failEnvelope(1001, '参数错误：sourceDir 必须是目录');
-      }
-      // 自我复制守卫：源 == 目标根 / 源在目标根内
-      if (isUnder(realpathSafe(sourceDir), realpathSafe(targetRoot)) && fs.existsSync(targetRoot)) {
-        return failEnvelope(1001, '拒绝导入：源目录与目标 skills 根相同或位于其内');
-      }
-      // SKILL.md 校验（复用 pi loadSkillsFromDir 口径，AC-09-05）。
-      // loader 会递归识别嵌套子 skill，父目录也能过——因此额外要求源目录自身
-      // 就是 skill 目录（根级含 SKILL.md），杜绝一次导入整个 skills 父目录。
-      const loaded = loadSkillsFromDir({ dir: sourceDir, source: 'user' });
-      const hasRootSkillMd = fs.existsSync(path.join(sourceDir, 'SKILL.md'));
-      // 含 skill 子目录一律拒（即使自身有 SKILL.md）：整树拷贝会把子 skill 一起带进来，
-      // 语义上仍是「一次导入多个」，与 UI 承诺的「一次一个」冲突。
-      const childDirs = listChildSkillDirs(sourceDir);
-      if (childDirs.length > 0) {
-        const preview = childDirs.slice(0, 3).join('、') + (childDirs.length > 3 ? ' 等' : '');
-        if (!hasRootSkillMd) {
-          return failEnvelope(
-            1001,
-            `无法导入：一次只能导入一个 skill 目录。所选目录本身没有 SKILL.md，但包含 ${childDirs.length} 个 skill 子目录（${preview}），请进入后选择其中一个`,
-          );
-        }
-        return failEnvelope(
-          1001,
-          `无法导入：一次只能导入一个 skill 目录。所选目录自身含 SKILL.md，但还包含 ${childDirs.length} 个 skill 子目录（${preview}），整个导入会把它们一并带入，请改为选择其中一个子目录`,
-        );
-      }
-      if (loaded.skills.length === 0 || !hasRootSkillMd) {
-        const reason =
-          loaded.diagnostics.map((d) => d.message).find((m) => m !== undefined) ??
-          '目录中未找到有效 SKILL.md（需含非空 description）';
-        return failEnvelope(1001, `拒绝导入：${reason}`);
-      }
+      const fail = validateImportSource(sourceDir, targetRoot);
+      if (fail !== null) return fail;
       const dirName = path.basename(sourceDir);
       const dest = path.resolve(targetRoot, dirName);
       if (!isDirectChild(dest, targetRoot)) {

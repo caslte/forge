@@ -251,6 +251,25 @@ export interface AskUserQuestionReplyParams {
 /** 适配器投递用的作答载荷（sessionId / requestId 由调用方单独传参，不重复携带） */
 export type AskUserQuestionReplyData = Omit<AskUserQuestionReplyParams, 'sessionId' | 'requestId'>;
 
+/**
+ * goal UI 回填载荷（goal 接入，2026-10-10）。
+ *
+ * 语义对齐 pi-goal 经 `ctx.ui` 发出的四类交互：
+ * - `confirm` → value=true 确定 / false 取消 / cancelled=true 关闭弹窗
+ * - `select`  → value=选中项原文
+ * - `input` / `editor` → value=文本（空串或 cancelled 视为放弃）
+ */
+export interface GoalUiReplyData {
+  value: string | boolean | null;
+  cancelled: boolean;
+}
+
+/** goal UI 回填参数（RPC 入参）。 */
+export interface GoalUiReplyParams extends GoalUiReplyData {
+  sessionId: string;
+  requestId: string;
+}
+
 export interface PiConversationAdapter {
   sendMessage(sessionId: string, content: string, options?: ConversationRuntimeOptions): Promise<void>;
   loadHistory(sessionId: string): Promise<ConversationMessage[]>;
@@ -284,10 +303,20 @@ export interface PiConversationAdapter {
     requestId: string,
     payload: AskUserQuestionReplyData,
   ): Promise<boolean> | boolean;
+  /**
+   * goal UI 回填（goal 接入，2026-10-10）：把 renderer 对 pi-goal 确认/输入弹窗的裁决
+   * 投递回扩展侧等待中的 Promise（宿主 uiContext 在此 await）。
+   * 返回是否投递成功（false = 该会话无活跃 lease / 通道不可用；通常意味着宽限已先行收敛）。
+   * 未实现时服务层降级为 `{ delivered: false }`。
+   */
+  replyGoalUi?(
+    sessionId: string,
+    requestId: string,
+    payload: GoalUiReplyData,
+  ): Promise<boolean> | boolean;
 }
 
-/** 会话流式状态（每会话内存态，含内存累积文本） */
-export interface StreamState {
+/** 会话流式状态（每会话内存态，含内存累积文本） */export interface StreamState {
   status: ConversationStatus;
   /** 流式增量累积文本（取消/中断时保留，不丢弃已生成内容） */
   lastDeltaText?: string;
@@ -762,6 +791,52 @@ export class ConversationService {
       return { ok: true, data: { delivered } };
     } catch (err) {
       return { ok: false, code: 5000, message: `问卷回填失败: ${toMessage(err)}` };
+    }
+  }
+
+  /**
+   * goal UI 回填（goal 接入，2026-10-10）：把 renderer 对 pi-goal 确认/输入弹窗的裁决
+   * 投递回扩展侧等待中的 Promise。
+   *
+   * 语义与 replyAskUserQuestion 同构：renderer→main 只能是方法调用，故本方法是
+   * goal 弹窗作答的**唯一上行入口**；参数校验在服务层（1001/1002），异常为 5000；
+   * `delivered=false` 属正常降级（会话无 lease / 请求已超时收敛），仍返回 code 0。
+   *
+   * 幂等：面板倒计时回填与用户点击可能竞争，重复投递无副作用
+   * （宿主 uiContext 的 Promise 首次 resolve 后即忽略后续）。
+   */
+  async replyGoalUi(
+    params: GoalUiReplyParams,
+  ): Promise<ConversationResult<{ delivered: boolean }>> {
+    const sessionId = params?.sessionId;
+    const requestId = params?.requestId;
+    if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+      return { ok: false, code: 1001, message: '参数错误：sessionId 必须为非空字符串' };
+    }
+    if (typeof requestId !== 'string' || requestId.trim() === '') {
+      return { ok: false, code: 1001, message: '参数错误：requestId 必须为非空字符串' };
+    }
+    if (typeof params?.cancelled !== 'boolean') {
+      return { ok: false, code: 1001, message: '参数错误：cancelled 必须为布尔' };
+    }
+    const value = params.value;
+    if (value !== null && typeof value !== 'string' && typeof value !== 'boolean') {
+      return { ok: false, code: 1001, message: '参数错误：value 必须为字符串、布尔或 null' };
+    }
+    if (this.options.sessionExists !== undefined && !this.options.sessionExists(sessionId)) {
+      return { ok: false, code: 1002, message: `会话不存在: ${sessionId}` };
+    }
+    if (this.adapter.replyGoalUi === undefined) {
+      return { ok: true, data: { delivered: false } };
+    }
+    try {
+      const delivered = await this.adapter.replyGoalUi(sessionId, requestId, {
+        value,
+        cancelled: params.cancelled,
+      });
+      return { ok: true, data: { delivered } };
+    } catch (err) {
+      return { ok: false, code: 5000, message: `goal 回填失败: ${toMessage(err)}` };
     }
   }
 

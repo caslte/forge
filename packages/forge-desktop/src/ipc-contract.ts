@@ -125,7 +125,9 @@ export type ForgeMethod =
   | 'updater/markNotesShown'
   // ask_user_question（Path 2）：renderer → main 的问卷回填（唯一上行入口，
   // 必须是方法而非事件——main.ts 只经 IPC_INVOKE → invoke(methodTable) 接收）
-  | 'askUserQuestion/reply';
+  | 'askUserQuestion/reply'
+  // goal 接入：pi-goal 确认/输入弹窗回填（与 askUserQuestion/reply 同构）
+  | 'goal/uiReply';
 
 /** preload ↔ main 窗口控制通道 */
 export const IPC_WINDOW_MINIMIZE = 'forge:window:minimize';
@@ -193,6 +195,7 @@ export interface BootState {
 
 /** preload ↔ main 原生对话框通道 */
 export const IPC_DIALOG_OPEN_DIRECTORY = 'forge:dialog:openDirectory';
+export const IPC_DIALOG_OPEN_DIRECTORIES = 'forge:dialog:openDirectories';
 export const IPC_DIALOG_OPEN_FILE = 'forge:dialog:openFile';
 
 /** preload ↔ main shell 通道：系统文件管理器打开路径 */
@@ -365,6 +368,13 @@ export type ForgeEvent =
   | 'conversation.compacted'
   | 'conversation.slashCommandsUpdated'
   | 'conversation.askUserQuestionRequested'
+  // goal 接入（2026-10-10）：pi-goal 状态行（徽标主数据源，含 automatic 轮次与 token 用量；
+  // text 为 null 表示清除徽标）、状态通知（修 no-op UI 的「用户零感知」）、
+  // 用户裁决请求（confirm/input/editor/select）与宽限超时告警。
+  | 'goal.statusChanged'
+  | 'goal.notified'
+  | 'goal.uiRequested'
+  | 'goal.uiTimedOut'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -411,6 +421,11 @@ export const FORGE_EVENTS: readonly ForgeEvent[] = [
   'conversation.slashCommandsUpdated',
   // Path 2：主进程不转发未登记事件（静默丢弃），漏登记 → 渲染进程收不到 → 面板永不出现
   'conversation.askUserQuestionRequested',
+  // goal 接入：漏登记 → 渲染进程收不到 → 徽标不更新 / 确认框永不弹出（= 回到 no-op UI 的老问题）
+  'goal.statusChanged',
+  'goal.notified',
+  'goal.uiRequested',
+  'goal.uiTimedOut',
   'tool.started',
   'tool.completed',
   'tool.error',
@@ -591,9 +606,51 @@ export interface ForgeAskUserQuestion {
   reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<{ delivered: boolean }>>;
 }
 
+/**
+ * window.forge.goal：pi-goal 宿主适配的 renderer 侧接口（goal 接入，2026-10-10）。
+ *
+ * 同样为「请求-应答」语义单独开一条：确认/输入弹窗需要按 requestId 回填。
+ * 底层仍走同一套 IPC（事件 + invoke），不新增物理通道。
+ *
+ * 事件（单向广播，走 window.forge.on 亦可，此处仅做收窄类型）：
+ * - goal.statusChanged: { sessionId, text }（text=null 表示清除徽标）
+ * - goal.notified:      { sessionId, message, level }
+ * - goal.uiTimedOut:    { sessionId, requestId, title }
+ */
+export interface ForgeGoalControl {
+  /** 订阅目标状态行（徽标主数据源）。返回取消订阅函数。 */
+  onStatus(listener: (payload: { sessionId: string; text: string | null }) => void): () => void;
+  /** 订阅目标状态播报（「已启动 / 已暂停 / 预算耗尽」等）。 */
+  onNotified(
+    listener: (payload: { sessionId: string; message: string; level: 'info' | 'warning' | 'error' }) => void,
+  ): () => void;
+  /** 订阅用户裁决请求（confirm / input / editor / select）。多窗格按 sessionId 认领。 */
+  onUiRequested(listener: (payload: GoalUiRequestedPayload) => void): () => void;
+  /** 订阅宽限超时告警（确认框超时被当成取消时提示用户）。 */
+  onUiTimedOut(listener: (payload: { sessionId: string; requestId: string; title: string }) => void): () => void;
+  /** 回填裁决结果。必须携带 sessionId + requestId。 */
+  uiReply(params: {
+    sessionId: string;
+    requestId: string;
+    value: string | boolean | null;
+    cancelled: boolean;
+  }): Promise<ForgeResult<{ delivered: boolean }>>;
+}
+
+/** goal 用户裁决请求载荷（renderer 渲染弹窗所需）。 */
+export interface GoalUiRequestedPayload {
+  sessionId: string;
+  requestId: string;
+  kind: 'confirm' | 'input' | 'editor' | 'select';
+  title: string;
+  message: string;
+  placeholder?: string;
+  options?: string[];
+  timeoutMs: number;
+}
+
 /** IPC 主通道：渲染进程发起方法调用 */
 export const IPC_INVOKE = 'forge:invoke';
-
 /** IPC 主通道：主进程向渲染进程推送事件 */
 export const IPC_EVENT = 'forge:event';
 
@@ -627,6 +684,8 @@ export interface ForgeBridge {
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** ask_user_question（Path 2）双向通道：订阅问卷请求 + 回填作答 */
   askUserQuestion: ForgeAskUserQuestion;
+  /** pi-goal 宿主适配（goal 接入）：状态徽标、状态播报、确认/输入弹窗与回填。 */
+  goal: ForgeGoalControl;
   /** 原生对话框（目录选择等） */
   dialog: ForgeDialog;
 }
@@ -640,6 +699,11 @@ export interface ForgeDialog {
    * @returns 用户选中的目录绝对路径；取消/失败返回 null。
    */
   selectDirectory(): Promise<string | null>;
+  /**
+   * 打开系统目录选择框（多选，Skills 批量导入用）。
+   * @returns 选中目录的绝对路径数组；取消/未选中返回 null。
+   */
+  selectDirectories(): Promise<string[] | null>;
   /**
    * 打开系统文件选择框（多选，图片 + 文本过滤，附件）。
    * @returns 选中文件的绝对路径数组（不读内容，模型自行 read）；取消返回空数组。

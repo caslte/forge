@@ -49,6 +49,47 @@ const ZH_DRAW_RES: readonly RegExp[] = [
   /^[整来][一两三几]?[张幅个]?图/,
 ];
 
+/**
+ * 改图 / 重出信号（2026-10-10 真机漏网修复）。
+ *
+ * 真机实测：用户说「重新画一下」全部漏网 ⇒ 只注入常驻段 ⇒ 模型不知道 IR 长什么样
+ * ⇒ 退回手写 HTML + `cat > /tmp/x.html` 写文件（截图证实）。
+ *
+ * 这些词**不含「图」字**（"重新画一下"里没有图），所以原有两条正则都抓不到。
+ * 单独成表而不是并入 ZH_GENRE_PATTERNS：它们是「动作」信号而非「体裁」信号，
+ * 混在一起会让「重画」被误当成一种图的体裁。
+ */
+const ZH_REDO_RES: readonly RegExp[] = [
+  /重新?画/,
+  /再画/,
+  /重画/,
+  /换个.{0,4}画/,
+  /换.{0,3}方式画/,
+  /再来一[版个]/,
+  /重新?出.{0,2}[版个]/,
+  // 对图的质量抱怨：命中即可，不必等用户明说「重画」。
+  // 取舍依据本文件既有的不对称原则：多命中 = 200 token + 一次画图倾向；
+  // 漏命中 = 模型不响应用户抱怨（真机已有过漏网事故）。故偏宽松。
+  // 但要求确实在抱怨**图**（带「图」字或「难看/太丑」），避免把对代码/方案的
+  // 抱怨（「这段代码太丑」）也算成出图意图。
+  /图.{0,6}(不好看|不对|太丑|不清楚|太密|太挤|错了|难看)/,
+  /(难看|太丑|不好看).{0,4}(图|卡片|布局|排版)/,
+];
+
+/**
+ * 受限放宽的体裁词（2026-10-10）。
+ *
+ * 「架构」「结构」这类词在真机里非常常用（「梳理一下项目架构」），但**单独不能命中**
+ * —— 否则就回到 2026-09 那次收窄的老坑：泛主题词命中会让模型把纯文字说明也包成卡片，
+ * 产出大量「文字塞卡片」伪图示（用户当时实测抱怨的正是这个）。
+ *
+ * 故限定为**必须与出图意图动词共现**。词表刻意短，只收真正常搭配的。
+ */
+const ZH_TOPIC_PATTERNS: readonly string[] = ['架构', '结构'];
+const ZH_INTENT_VERBS: readonly RegExp[] = [
+  /梳理|理清|整理|分析|画|绘|出一版|给我|来个|展示|看看|看下|看一下|过一遍|浏览/,
+];
+
 /** 英文意图信号（界面中英双语，提示词也可能是英文） */
 const EN_PATTERNS: readonly string[] = [
   'diagram',
@@ -77,6 +118,15 @@ export function looksLikeDiagramRequest(prompt: string): boolean {
   if (text === '') return false;
   if (ZH_GENRE_PATTERNS.some((k) => text.includes(k))) return true;
   if (ZH_DRAW_RES.some((re) => re.test(text))) return true;
+  // 改图信号：不含「图」字，只能靠动作词命中（真机漏网修复）
+  if (ZH_REDO_RES.some((re) => re.test(text))) return true;
+  // 受限放宽：体裁词 + 意图动词共现才命中，避免泛主题词全命中
+  if (
+    ZH_TOPIC_PATTERNS.some((k) => text.includes(k)) &&
+    ZH_INTENT_VERBS.some((re) => re.test(text))
+  ) {
+    return true;
+  }
   const lower = text.toLowerCase();
   return EN_PATTERNS.some((k) => lower.includes(k));
 }

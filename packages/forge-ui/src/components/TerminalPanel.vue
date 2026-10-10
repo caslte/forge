@@ -133,10 +133,25 @@ function cssVar(name: string, fallback: string): string {
  */
 const TERM_PALETTE = {
   // 暗档光标取纯白（用户 2026-09-29：不要品牌绿）
+  // ansi 不给 → 用 xterm 默认调色板（为暗底设计，暗档显示正常，不额外引入回归面）
   dark: { background: '#15171d', foreground: '#ccced0', cursor: '#ffffff', selection: '#2a2c31' },
   // 亮档光标取纯黑（用户 2026-09-29）；暗档不能也用黑——会沉进 #15171d 底色看不见
   // 亮档底色 = 纯白（用户 2026-09-29：去掉灰底，与 app 白底融为一体）
-  light: { background: '#ffffff', foreground: '#333333', cursor: '#000000', selection: '#dfdede' },
+  // ansi 必须显式给：shell 交互输入（PSReadLine 语法着色）走 ANSI 16 色，xterm 默认
+  // 调色板为暗底设计——其中的 white(#d3d7cf)/yellow(#c4a000) 压白底 = 输入命令几乎隐形
+  // （用户 2026-10-10：白底用户输入字太淡）。取值 = VS Code Light+ 终端 16 色（白底校准）。
+  light: {
+    background: '#ffffff',
+    foreground: '#333333',
+    cursor: '#000000',
+    selection: '#dfdede',
+    ansi: [
+      '#333333', '#cd3131', '#00bc00', '#949800',
+      '#0451a5', '#bc05bc', '#0598bc', '#555555',
+      '#666666', '#cd3131', '#14ce14', '#b5ba00',
+      '#0451a5', '#bc05bc', '#0598bc', '#a5a5a5',
+    ],
+  },
 } as const;
 
 /** 生效档：auto 跟随应用主题，dark/light 为用户手选 */
@@ -167,6 +182,9 @@ function xtermTheme() {
     foreground: p.foreground,
     cursor: p.cursor,
     selectionBackground: p.selection,
+    // light 档带白底校准的 ANSI 16 色；dark 档无 ansi → xterm 每次重设 theme 时
+    // 以默认调色板为底合并，未指定的键自动回落默认（切换配色档不残留另一档的 ansi）
+    ...('ansi' in p ? { ansi: p.ansi } : {}),
   };
 }
 

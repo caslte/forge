@@ -30,12 +30,12 @@ export const CANVAS_FENCE_LANGUAGE = 'canvas';
  * mermaid、没有别的渲染器」这一件事——不教细节，不构成「每轮都画」的推力。
  */
 export const CANVAS_STANZA = [
-  'Use a ```' + CANVAS_FENCE_LANGUAGE + ' fenced block only when you will actually draw a layout:',
-  'boxes connected by arrows, a state machine, or a side-by-side multi-column grid.',
-  'A flow you would write as sentences, numbered steps, or inline "A → B → C" is ordinary markdown, not a diagram —',
-  'never wrap prose in a canvas block; a card containing only paragraphs of text is a defect.',
+  'Use a ```' + CANVAS_FENCE_LANGUAGE + ' fenced block whenever you would otherwise write the structure out as a list:',
+  'boxes connected by arrows, a state machine, a layered architecture, or a side-by-side multi-column grid.',
   'The fence body is a self-contained HTML+CSS fragment (inline styles or one <style> block) —',
   'not mermaid syntax, and there is no built-in renderer: only the host card displays it.',
+  'It must be written in your reply text. Never produce a diagram via a file write, command line, or any other tool —',
+  'the user sees only what is in your reply, and tool-produced output is invisible to them.',
 ].join(' ');
 
 /**
@@ -51,8 +51,9 @@ export const CANVAS_STANZA = [
 export const CANVAS_SPEC: readonly string[] = [
   '## Diagram output contract (this turn)',
   '',
-  `The user asked for a diagram. Emit a \`\`\`${CANVAS_FENCE_LANGUAGE} fenced block containing a self-contained HTML fragment — but only if the answer has a genuinely visual structure (boxes, arrows, lanes, timelines, grids).`,
-  'Plain markdown — headings, lists, tables — is the default and carries most answers; when it does, skip the card and write markdown instead.',
+  `The user asked for a diagram. Emit a \`\`\`${CANVAS_FENCE_LANGUAGE} fenced block containing a self-contained HTML fragment.`,
+  'When to draw: the answer is about components, layers, states, steps, or how things connect — that is the same answer as a picture.',
+  'In that case a card IS the answer; do not write the same content as a list and also add a card.',
   'The host renders the fragment inside a sandboxed iframe card, inline in your reply, so the user sees the picture without leaving the conversation.',
   '',
   'Hard rules — violating any of them makes the card render as a blank box, a plain-text block, or a code block:',
@@ -71,5 +72,13 @@ export const CANVAS_SPEC: readonly string[] = [
   '8. Label in the user\'s language. Keep prose around the card short: the card carries the structure, so do not restate it as a list right before or after.',
   '9. One card per reply unless the request genuinely has several independent structures.',
   '',
-  'If the answer turns out to be plain facts, a short list, or a table, skip the card and answer in markdown.',
+  'Where the content must go — this is not optional:',
+  '',
+  '- Put the diagram in a fenced block IN THIS REPLY. The user reads the card inline, where you wrote it.',
+  '- Do NOT write the diagram to a file, do NOT use a tool, command line, shell, or terminal to produce it,',
+  '  and do NOT tell the user to open some other artifact to see it.',
+  '  Anything produced by a tool lives outside the conversation: the user sees nothing and no error is reported.',
+  '  A diagram only exists to the user if it is in the fenced block of your reply.',
+  '',
+  'If the answer genuinely has no visual structure at all (a plain fact, a single number, a definition), skip the card and answer in markdown.',
 ];

@@ -47,3 +47,36 @@ test('forge-core 发出的全部事件通道均已登记 FORGE_EVENTS 转发白�
     `forge-core 发出但未登记 FORGE_EVENTS 的通道（主进程不转发，渲染进程收不到）: ${missing.join(', ')}`,
   );
 });
+
+test('goal 接入：desktop 与 UI 两侧的 ForgeEvent 集合一致（goal.* 四条）', () => {
+  // goal 接入的双向契约：desktop 侧 ipc-contract 决定「主进程转发什么」，
+  // UI 侧 bridge.ts 决定「渲染进程认什么」。两侧不同步 = 事件静默丢失，
+  // 而这类错在浏览器 dev 下测不出（mock-bridge 不经 IPC）。
+  const uiBridgeSrc = fs.readFileSync(
+    path.resolve(desktopRoot, '../forge-ui/src/bridge.ts'),
+    'utf8',
+  );
+  const goalEvents = ['goal.statusChanged', 'goal.notified', 'goal.uiRequested', 'goal.uiTimedOut'];
+
+  const registered = new Set<string>(FORGE_EVENTS);
+  for (const ev of goalEvents) {
+    assert.ok(registered.has(ev), `desktop 侧 FORGE_EVENTS 缺 ${ev}（主进程不会转发）`);
+    assert.ok(uiBridgeSrc.includes(`'${ev}'`), `UI 侧 ForgeEvent 缺 ${ev}（渲染进程认不出）`);
+  }
+});
+
+test('goal 接入：goal/uiReply 已在两侧登记（回填通道漏登记 = 弹窗点确定无反应）', () => {
+  const uiBridgeSrc = fs.readFileSync(
+    path.resolve(desktopRoot, '../forge-ui/src/bridge.ts'),
+    'utf8',
+  );
+  const desktopSrc = fs.readFileSync(
+    path.resolve(desktopRoot, 'src/ipc-contract.ts'),
+    'utf8',
+  );
+  assert.ok(
+    desktopSrc.includes("| 'goal/uiReply'"),
+    'desktop 侧 ForgeMethod 联合类型缺 goal/uiReply（preload 发不出 invoke）',
+  );
+  assert.ok(uiBridgeSrc.includes("| 'goal/uiReply'"), 'UI 侧 ForgeMethod 缺 goal/uiReply');
+});

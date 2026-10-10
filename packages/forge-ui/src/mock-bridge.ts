@@ -534,6 +534,10 @@ interface MockControl {
       | 'conversation.compacted'
       | 'conversation.slashCommandsUpdated'
       | 'conversation.askUserQuestionRequested'
+      | 'goal.statusChanged'
+      | 'goal.notified'
+      | 'goal.uiRequested'
+      | 'goal.uiTimedOut'
       | 'updater.stateChanged',
     payload: Record<string, unknown>,
   ): void;
@@ -554,6 +558,8 @@ interface MockControl {
   setCancelStream(opts: MockCancelOpts): void;
   /** 读取最近一次问卷回填载荷（Path 2；null = 尚无回填） */
   getLastAskUserReply(): Record<string, unknown> | null;
+  /** goal 接入：取最近一次 goal/uiReply 回填（e2e 断言用） */
+  getLastGoalUiReply(): Record<string, unknown> | null;
   /** 读取 SM-S08 会话导出的调用账本（sessionId + targetPath 序列） */
   getSessionExports(): Array<{ sessionId: string; targetPath: string }>;
 }
@@ -585,6 +591,8 @@ let cancelOpts: MockCancelOpts = { cascadeSubagents: true };
 
 /** 最近一次问卷回填载荷（Path 2；浏览器 dev/e2e 断言用，真实端交给扩展侧 Promise） */
 let lastAskUserReply: Record<string, unknown> | null = null;
+/** goal 接入：最近一次 goal/uiReply 回填（e2e 断言用） */
+let lastGoalUiReply: Record<string, unknown> | null = null;
 
 /** 子 agent 是否处于活跃态（排队中/运行中） */
 function isActive(status: Subagent['status']): boolean {
@@ -1500,11 +1508,35 @@ const bridge: ForgeBridge = {
         // 枚举口径与真实端一致：projectPath 缺省时项目组自然为空（按路径归组在 UI 侧）
         return { code: 0, message: 'ok', data: { cwd: (params as { projectPath?: string }).projectPath ?? '', skills: [...mockSkills], issues: [] } };
       }
+      case 'skill/checkImport': {
+        // 导入预览（只查不拷）：校验口径与 importSkill 同源（invalid- 前缀 = 无 SKILL.md）
+        const p = params as { scope?: string; sourceDir?: string; projectPath?: string };
+        const root = skillRootFor(p.scope, p.projectPath);
+        if (root === null || typeof p.sourceDir !== 'string' || p.sourceDir === '') {
+          return { code: 1001, message: '参数错误：scope/sourceDir 非法或项目作用域缺少 projectPath', data: null };
+        }
+        if (/(^|[\\/])invalid-[^\\/]*$/.test(p.sourceDir)) {
+          return {
+            code: 0,
+            message: 'ok',
+            data: { status: 'invalid', conflictPath: null, reason: '目录中未找到有效 SKILL.md（需含非空 description）' },
+          };
+        }
+        const dest = `${root}/${basenameOf(p.sourceDir)}`;
+        if (findMockSkill(dest)) {
+          return { code: 0, message: 'ok', data: { status: 'conflict', conflictPath: dest, reason: null } };
+        }
+        return { code: 0, message: 'ok', data: { status: 'ok', conflictPath: null, reason: null } };
+      }
       case 'skill/importSkill': {
         const p = params as { scope?: string; sourceDir?: string; projectPath?: string; overwrite?: boolean };
         const root = skillRootFor(p.scope, p.projectPath);
         if (root === null || typeof p.sourceDir !== 'string' || p.sourceDir === '') {
           return { code: 1001, message: '参数错误：scope/sourceDir 非法或项目作用域缺少 projectPath', data: null };
+        }
+        // 模拟真实端 SKILL.md 校验（E2E 混合选择用例）：invalid- 前缀目录视为无有效 SKILL.md，拒绝
+        if (/(^|[\\/])invalid-[^\\/]*$/.test(p.sourceDir)) {
+          return { code: 1001, message: '拒绝导入：目录中未找到有效 SKILL.md（需含非空 description）', data: null };
         }
         const dirName = basenameOf(p.sourceDir);
         const dest = `${root}/${dirName}`;
@@ -1631,6 +1663,22 @@ const bridge: ForgeBridge = {
       return { code: 0, message: 'ok', data: { delivered: true } };
     },
   },
+  goal: {
+    // 与真实 preload 同构：复用同一事件多路复用（订阅 goal:* 四条事件）
+    onStatus: (listener) =>
+      bridge.on('goal.statusChanged', (payload) => listener(payload as never)),
+    onNotified: (listener) =>
+      bridge.on('goal.notified', (payload) => listener(payload as never)),
+    onUiRequested: (listener) =>
+      bridge.on('goal.uiRequested', (payload) => listener(payload as never)),
+    onUiTimedOut: (listener) =>
+      bridge.on('goal.uiTimedOut', (payload) => listener(payload as never)),
+    uiReply: async (params) => {
+      // 浏览器 dev/e2e：记录最近一次回填供断言（真实端交给宿主 uiContext 的 Promise）
+      lastGoalUiReply = params as unknown as Record<string, unknown>;
+      return { code: 0, message: 'ok', data: { delivered: true } };
+    },
+  },
   window: {
     minimize: () => {},
     toggleMaximize: () => {},
@@ -1640,6 +1688,8 @@ const bridge: ForgeBridge = {
   dialog: {
     // 浏览器 dev 下无原生对话框，返回默认示例路径（可直接回车创建）
     selectDirectory: async () => 'D:/work/aiwork',
+    /** 多选目录 mock：空数组 = 取消（E2E 直接覆盖 window.forge.dialog.selectDirectories 注入） */
+    selectDirectories: async () => null,
     selectFiles: async () => [],
     // 无原生保存对话框：一律视为用户取消（画布卡片据此不报错、静默返回）
     saveFile: async (_defaultName?: string, kind?: 'canvas' | 'session') =>
@@ -1822,6 +1872,10 @@ const mockControl: MockControl = {
   },
   getLastAskUserReply() {
     return lastAskUserReply === null ? null : { ...lastAskUserReply };
+  },
+  /** goal 接入：取最近一次 goal/uiReply 回填（e2e 断言用） */
+  getLastGoalUiReply() {
+    return lastGoalUiReply === null ? null : { ...lastGoalUiReply };
   },
   getSessionExports() {
     return sessionExportCalls.map((c) => ({ ...c }));

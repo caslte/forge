@@ -85,6 +85,11 @@ export type {
   AskUserQuestionReplyParams,
   AskUserQuestionReplyData,
 } from './conversation/conversationService.ts';
+// goal UI 回填（goal 接入，2026-10-10）
+export type {
+  GoalUiReplyData,
+  GoalUiReplyParams,
+} from './conversation/conversationService.ts';
 
 // 对话与消息 RPC 方法层（wu-03-rpc）
 export { ConversationApi, createConversationApi } from './rpc/conversationMethods.ts';

@@ -308,6 +308,49 @@ test('importSkill：源目录 == 目标根拒绝（自我复制守卫）', async
   }
 });
 
+// checkImport（导入预览：只查不拷，与 importSkill 同源校验口径）
+// ---------------------------------------------------------------------------
+
+test('checkImport：ok/conflict/invalid 三态，只查不拷（预览用）', async () => {
+  const { methods, agentDir, root } = harness();
+  try {
+    // ok：合法且无冲突
+    const okDir = path.join(root, 'src', 'good-skill');
+    writeSkill(okDir, 'good-skill', '有效');
+    const ok = await methods['skill/checkImport']({ scope: 'user', sourceDir: okDir });
+    assert.equal(ok.code, 0);
+    assert.deepEqual(ok.data, { status: 'ok', conflictPath: null, reason: null });
+    // 只查不拷：目标根未产生任何目录
+    assert.equal(fs.existsSync(path.join(agentDir, 'skills', 'good-skill')), false);
+
+    // conflict：目标已存在同名目录（旧目录不被改动）
+    const dupDir = path.join(root, 'src', 'dup-skill');
+    writeSkill(dupDir, 'dup-skill', '新版');
+    const dest = path.join(agentDir, 'skills', 'dup-skill');
+    writeSkill(dest, 'dup-skill', '旧版');
+    const conflict = await methods['skill/checkImport']({ scope: 'user', sourceDir: dupDir });
+    assert.equal(conflict.code, 0);
+    assert.deepEqual(conflict.data, { status: 'conflict', conflictPath: dest, reason: null });
+    assert.ok(fs.readFileSync(path.join(dest, 'SKILL.md'), 'utf8').includes('旧版'));
+
+    // invalid：无 SKILL.md（带原因，状态码仍 0——预览语义由 data.status 表达）
+    const empty = path.join(root, 'src-empty');
+    fs.mkdirSync(empty, { recursive: true });
+    const invalid = await methods['skill/checkImport']({ scope: 'user', sourceDir: empty });
+    assert.equal(invalid.code, 0);
+    const d = invalid.data as { status: string; reason: string | null; conflictPath: string | null };
+    assert.equal(d.status, 'invalid');
+    assert.equal(d.conflictPath, null);
+    assert.ok(typeof d.reason === 'string' && d.reason.length > 0);
+
+    // 参数缺失：仍走错误信封（与 importSkill 同口径）
+    const bad = await methods['skill/checkImport']({ scope: 'user' });
+    assert.equal(bad.code, 1001);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // createSkill
 // ---------------------------------------------------------------------------

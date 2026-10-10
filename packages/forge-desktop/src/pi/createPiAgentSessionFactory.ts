@@ -12,7 +12,7 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
-import { askUserQuestionExtension, canvasHintExtension, slashCommandReporterExtension, suggestNextStepsExtension } from '@forge/extensions';
+import { askUserQuestionExtension, canvasHintExtension, canvasIrHintExtension, canvasIrRepairExtension, createForgeUiContext, goalBridgeExtension, slashCommandReporterExtension, suggestNextStepsExtension } from '@forge/extensions';
 
 import type {
   MinimalPiSession,
@@ -234,7 +234,19 @@ export function createPiAgentSessionFactory(
       // CV-S08：命令上报扩展（slash-commands:reported）。
       // Path 2（ask_user_question 自建内置扩展，契约见 docs/plan/ask-user-question-contract.md）：
       // 与 rpiv 插件工具同名，靠下方 extensionsOverride 屏蔽插件本体，二者不共存。
-      extensionFactories: [slashCommandReporterExtension, askUserQuestionExtension, suggestNextStepsExtension, canvasHintExtension],
+      extensionFactories: [
+        slashCommandReporterExtension,
+        askUserQuestionExtension,
+        suggestNextStepsExtension,
+        canvasHintExtension,
+        // 画布 IR 契约（阶段 1）。由 FORGE_IR_CANVAS=1 开启，默认关——
+        // 关闭时该扩展不注入任何内容，故与现有行为完全一致。
+        // 与 canvasHint 并存不冲突：两者互斥，开关只让IR 一方生效。
+        canvasIrHintExtension,
+        // 修复回路：IR 校验失败自动回灌回执（预算 1 次），闭环最后一块
+        canvasIrRepairExtension,
+        goalBridgeExtension,
+      ],
       // 冲突处置（契约 §5 / 计划 §3.5）：agent 目录 settings.json 的 packages
       // 含 @juicesharp/rpiv-ask-user-question，DefaultResourceLoader.reload() 会经
       // packageManager.resolve() 把它也加载进来并注册同名 ask_user_question。
@@ -264,10 +276,20 @@ export function createPiAgentSessionFactory(
     // wu-06：绑定扩展运行时并触发 session_start（pi 宿主 TUI/RPC 模式创建会话后
     // 均如此；不绑定则 session_start 不发射）。pi-subagents 的跨扩展 RPC 处理器
     // （subagents:rpc:*）与会话级调度器都在 session_start 中注册，缺失时 forge 的
-    // 终止 RPC 与扩展侧会话级行为永远不会激活。uiContext 缺省时 runner 使用 no-op。
+    // 终止 RPC 与扩展侧会话级行为永远不会激活。
+    //
+    // uiContext（2026-10-10 goal 接入）：此前**不传** uiContext，pi 回落到
+    // `noOpUIContext`（pi-coding-agent/dist/core/extensions/runner.js:88）——
+    // `confirm` 恒返回 false、`notify`/`setStatus` 空实现。对无 UI 依赖的扩展无影响，
+    // 但会让 pi-goal 彻底不可用：替换未完成目标时确认框恒 false ⇒ 静默拒绝且无提示
+    // （pi-goal commands.ts:59），且全部状态通知丢失（用户看不到进度/预算耗尽）。
+    // 现传入真实实现：交互转发到会话事件总线由 renderer 渲染，回填后 resolve。
+    // 详见 docs/plan/goal-integration-20261010101023.md。
+    const goalUi = createForgeUiContext({ bus: subagentEventBus });
     try {
       await rawSession.bindExtensions({
         mode: 'rpc',
+        uiContext: goalUi.ui,
         onError: (err) => {
           console.warn(
             `[createPiAgentSessionFactory] extension error (${err.extensionPath}) on ${err.event}: ${err.error}`,
@@ -295,7 +317,12 @@ export function createPiAgentSessionFactory(
 
     return {
       session,
-      dispose: () => rawSession.dispose(),
+      // goalUi.dispose 必须先跑：它会把所有等待中的 UI 请求按缺省值收敛，
+      // 否则 pi-goal 的 confirm/input await 会随会话销毁悬挂。
+      dispose: () => {
+        goalUi.dispose();
+        rawSession.dispose();
+      },
       events: subagentEventBus,
       handle: {
         get sessionFile() {

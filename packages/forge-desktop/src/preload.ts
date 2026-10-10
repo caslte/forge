@@ -15,6 +15,7 @@ import {
   IPC_WINDOW_CLOSE,
   IPC_WINDOW_IS_MAXIMIZED,
   IPC_DIALOG_OPEN_DIRECTORY,
+  IPC_DIALOG_OPEN_DIRECTORIES,
   IPC_DIALOG_OPEN_FILE,
   IPC_DIALOG_SAVE_FILE,
   IPC_FILE_WRITE_TEXT,
@@ -43,6 +44,8 @@ import {
   type StartupFlags,
   type ShellProbeResult,
   type ForgeAskUserQuestion,
+  type ForgeGoalControl,
+  type GoalUiRequestedPayload,
   type AskUserQuestionRequestPayload,
   type AskUserQuestionReplyParams,
 } from './ipc-contract.ts';
@@ -67,6 +70,10 @@ const windowControl = {
 const dialogControl = {
   async selectDirectory(): Promise<string | null> {
     return ipcRenderer.invoke(IPC_DIALOG_OPEN_DIRECTORY) as Promise<string | null>;
+  },
+  /** 多选目录（Skills 批量导入）：返回选中目录数组；取消返回 null */
+  async selectDirectories(): Promise<string[] | null> {
+    return ipcRenderer.invoke(IPC_DIALOG_OPEN_DIRECTORIES) as Promise<string[] | null>;
   },
   async selectFiles(): Promise<string[]> {
     return ipcRenderer.invoke(IPC_DIALOG_OPEN_FILE) as Promise<string[]>;
@@ -230,6 +237,40 @@ const askUserQuestionControl: ForgeAskUserQuestion = {
 };
 
 /**
+ * window.forge.goal（goal 接入，2026-10-10）：
+ * - 四个 on*：复用事件多路复用订阅，收窄 payload 类型
+ * - uiReply：经 IPC_INVOKE 调 goal/uiReply 方法（renderer→main 的唯一上行路径）
+ *
+ * 与 askUserQuestion 同构：请求-应答语义（按 requestId 回填），故单独开一条。
+ */
+const goalControl: ForgeGoalControl = {
+  onStatus(listener) {
+    return subscribeEvent('goal.statusChanged', (payload) =>
+      listener(payload as { sessionId: string; text: string | null }),
+    );
+  },
+  onNotified(listener) {
+    return subscribeEvent('goal.notified', (payload) =>
+      listener(payload as { sessionId: string; message: string; level: 'info' | 'warning' | 'error' }),
+    );
+  },
+  onUiRequested(listener) {
+    return subscribeEvent('goal.uiRequested', (payload) => listener(payload as GoalUiRequestedPayload));
+  },
+  onUiTimedOut(listener) {
+    return subscribeEvent('goal.uiTimedOut', (payload) =>
+      listener(payload as { sessionId: string; requestId: string; title: string }),
+    );
+  },
+  uiReply(params) {
+    return ipcRenderer.invoke(IPC_INVOKE, {
+      method: 'goal/uiReply' satisfies ForgeMethod,
+      params,
+    }) as Promise<ForgeResult<{ delivered: boolean }>>;
+  },
+};
+
+/**
  * window.forge.session 会话导出（SM-S08）：走 shell 级通道而非 forge-core RPC。
  *
  * 包在主进程就地读盘打包直写目标路径（转录里图片是 base64 内嵌，包体可达数百 MB，
@@ -283,6 +324,7 @@ const forgeBridge = {
     return subscribeEvent(event, listener);
   },
   askUserQuestion: askUserQuestionControl,
+  goal: goalControl,
   window: windowControl,
   dialog: dialogControl,
   shell: shellControl,

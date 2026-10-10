@@ -570,3 +570,77 @@ window.forge.askUserQuestion = {
 
 > 验收 AC-CV-043\~049 详见 `docs/test/03_conversation/coverage-matrix.md`。
 
+---
+
+## goal 通道（pi-goal 宿主适配，2026-10-10）
+
+`@narumitw/pi-goal` 已在预装清单内（`pi/recommendedPlugins.ts`），其状态机 / 工具 / 提示词契约
+均可用。但它按 **TUI 宿主**设计 —— 一切用户可见交互都走 `ctx.ui`。
+
+**接入前的真实故障**：`createPiAgentSessionFactory` 调 `bindExtensions({ mode:'rpc' })` 时
+**未传 `uiContext`**，pi 回落到 `noOpUIContext`
+（`pi-coding-agent/dist/core/extensions/runner.js:88`）：
+
+```js
+confirm: async () => false,   // 恒 false
+notify:  () => { },            // 空实现
+setStatus: () => { },         // 空实现
+```
+
+pi-goal 对 `ctx.ui` 有 13 处依赖（`menu.ts` 9 处 + `settings-ui.ts`），全部落在这三个空实现上：
+
+| 现象 | 根因 |
+| --- | --- |
+| **替换未完成目标时被静默拒绝** | `commands.ts:59` 的 `await ctx.ui.confirm("Replace goal?", …)` 恒得 false —— 用户以为换掉了，其实没有，且**没有任何提示** |
+| 裸 `/goal` 打开不了管理菜单 | 菜单由终端组件渲染，GUI 不可达 |
+| 状态全无感知 | `notify`/`setStatus` 空实现 ⇒ 「目标已启动 / 预算耗尽 / 已自动 12 轮」全部静默 |
+
+### 修复方式
+
+`bindExtensions` 传入真实 `uiContext`（`createForgeUiContext`），四类交互转发到会话事件总线
+由 renderer 渲染，回填后 resolve。**pi-goal 侧零改动。**
+
+### 事件
+
+| 事件名 | 载荷 | 说明 |
+| --- | --- | --- |
+| `goal.statusChanged` | `{ sessionId, text: string \| null }` | pi-goal 每次状态变化调 `ui.setStatus("goal", …)`（`runtime.ts:567`）。**徽标主数据源** —— 覆盖 active/waiting/paused/blocked/usage/budget/complete 全部形态且带用量。`text` 为 null 表示清除徽标 |
+| `goal.notified` | `{ sessionId, message, level }` | pi-goal 的 `ui.notify`（`errors.ts` 的 `notifyTerminal`）→ toast |
+| `goal.uiRequested` | `{ sessionId, requestId, kind, title, message, placeholder?, options?, timeoutMs }` | 用户裁决请求。`kind ∈ confirm \| input \| editor \| select` |
+| `goal.uiTimedOut` | `{ sessionId, requestId, title }` | 宽限到期未回填（已按取消收敛）→ toast，避免静默拒绝无迹可寻 |
+
+### goal/uiReply（RPC 方法）
+
+**说明**：裁决回填的唯一上行入口。必须是方法（同 `askUserQuestion/reply`）。
+
+请求参数：
+
+| 参数名 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| sessionId | string | 是 | 会话 ID |
+| requestId | string | 是 | 请求 ID，原样带回匹配 pending |
+| value | string \| boolean \| null | 是 | confirm → true/false；select → 选中项；input/editor → 文本；null 视为取消 |
+| cancelled | boolean | 是 | 用户显式取消 / 超时 |
+
+响应 data：`{ "delivered": true }`（false = 该会话无 lease 或请求已超时收敛，属正常降级不报错）。
+
+### 桥接约定（forge-desktop 内部）
+
+- **上行**：`replyGoalUi(sessionId, requestId, payload)` 经该会话总线的 `goal-ui:reply:{requestId}` 投递；无 lease 返回 `false` 且零投递。
+- **宽限**：`GOAL_UI_REPLY_GRACE_MS`（10 分钟）到期按缺省语义收敛（confirm → **false**，其余 → undefined）并发 `goal.uiTimedOut`。**必须收敛为 false 而非悬挂** —— 否则 pi-goal 的 await 永挂、会话卡死。
+- **会话隔离**：总线每会话私有，`sessionId` 取自订阅闭包。
+- **事件白名单**：四条 `goal.*` 必须登记 `FORGE_EVENTS`，否则主进程静默丢弃 → 徽标不更新 / 弹窗永不出现。
+
+### 不使用 pi-goal 的 RPC 通道
+
+pi-goal 内置受管运行协议（`pi.events` 上的 `pi-goal:start`/`cancel`/`event:{runId}`），
+**forge 刻意不开**（不写 `pi-goal.json` 的 `rpc.enabled`）：
+
+1. 该通道只额外提供 `summary`/`reason`，徽标与交互不需要；
+2. 开启即暴露「任何扩展可替用户启动/取消目标」的攻击面，不开更安全。
+
+用户控制目标的手段是斜杠命令：`/goal <目标>` 启动、`/goal pause` / `resume` / `clear` / `status` 控制。
+**裸 `/goal` 的 TUI 菜单在 GUI 下不可达**，UI 不提供该入口。
+
+> 设计与实施记录见 `docs/plan/goal-integration-20261010101023.md`。
+

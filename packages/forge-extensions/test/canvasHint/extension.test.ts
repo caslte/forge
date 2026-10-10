@@ -16,8 +16,17 @@ import {
   canvasHintExtension,
   registerCanvasHint,
 } from '../../src/canvasHint/extension.ts';
+import { IR_EXTENSION_ENV } from '../../src/canvasIrHint/extension.ts';
 import { looksLikeDiagramRequest } from '../../src/canvasHint/detect.ts';
 import { CANVAS_SPEC, CANVAS_STANZA } from '../../src/canvasHint/prompt.ts';
+
+/**
+ * 本文件测的是 canvasHint **自身**的行为，故必须显式声明「IR 链路关闭」。
+ * 2026-10-10 起 IR 默认开启（用户裁定，为便于真机验证），若不传 env，
+ * applyCanvasHint 会读到 process.env 里 IR=开 ⇒ 本扩展让位 ⇒ 断言全红。
+ * 让位行为本身由 test/canvasLinkage/mutualExclusion.test.ts 守着。
+ */
+const IR_OFF = { [IR_EXTENSION_ENV]: '0' };
 
 const BASE = 'You are a coding agent.';
 
@@ -75,7 +84,7 @@ test('意图判定：短事实问答不命中，避免白塞规范文本', () =>
 });
 
 test('两段式：未命中只追加常驻段，不含输出契约', () => {
-  const out = applyCanvasHint(BASE, '这个函数叫什么名字');
+  const out = applyCanvasHint(BASE, '这个函数叫什么名字', IR_OFF);
   assert.ok(out.startsWith(BASE));
   assert.ok(out.includes(CANVAS_STANZA));
   assert.ok(!out.includes('## Diagram output contract'));
@@ -88,7 +97,7 @@ test('常驻段自带最小画法：漏网轮也不许把围栏体幻觉成 merm
 });
 
 test('两段式：命中时追加完整契约', () => {
-  const out = applyCanvasHint(BASE, '画个登录流程图');
+  const out = applyCanvasHint(BASE, '画个登录流程图', IR_OFF);
   assert.ok(out.includes(CANVAS_STANZA));
   assert.ok(out.includes('## Diagram output contract'));
   // 契约里必须含三条硬约束（沙箱不开脚本 / 不外链资源 / 只能用注入的语义色）
@@ -97,15 +106,15 @@ test('两段式：命中时追加完整契约', () => {
 });
 
 test('幂等：常驻段已存在时原样返回，不随轮次累积', () => {
-  const once = applyCanvasHint(BASE, '画个流程图');
-  const twice = applyCanvasHint(once, '画个流程图');
+  const once = applyCanvasHint(BASE, '画个流程图', IR_OFF);
+  const twice = applyCanvasHint(once, '画个流程图', IR_OFF);
   assert.equal(twice, once);
-  const thrice = applyCanvasHint(twice, '再梳理一次');
+  const thrice = applyCanvasHint(twice, '再梳理一次', IR_OFF);
   assert.equal(thrice.length, once.length);
 });
 
 test('空系统提示不崩', () => {
-  assert.ok(applyCanvasHint('', '画个流程图').includes(CANVAS_SPEC[0]));
+  assert.ok(applyCanvasHint('', '画个流程图', IR_OFF).includes(CANVAS_SPEC[0]));
 });
 
 test('扩展注册形态：name 唯一、只挂 before_agent_start', () => {
@@ -119,7 +128,7 @@ test('扩展注册形态：name 唯一、只挂 before_agent_start', () => {
       assert.fail('canvas_hint 不注册工具');
     },
   };
-  registerCanvasHint(pi as never);
+  registerCanvasHint(pi as never, IR_OFF);
   assert.equal(handlers.length, 1);
 });
 
@@ -130,7 +139,7 @@ test('钩子往返：本轮 systemPrompt 被替换，且不改写下轮基准（
       captured = handler as never;
     },
   };
-  registerCanvasHint(pi as never);
+  registerCanvasHint(pi as never, IR_OFF);
   assert.ok(captured);
   const hook = captured as (e: { prompt: string; systemPrompt: string }) => Promise<{ systemPrompt: string }>;
   const res = await hook({ prompt: '画个流程图', systemPrompt: BASE });

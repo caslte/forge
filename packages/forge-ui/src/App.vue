@@ -9,6 +9,7 @@ import { useTheme } from './composables/useTheme';
 import { usePreferences, codeLayoutDegraded } from './composables/usePreferences';
 import { useCodeExplorer } from './composables/useCodeExplorer';
 import { useToast } from './composables/useToast';
+import { startGoalCountdown, useGoalEvents } from './composables/useGoalState';
 import { useI18n } from './i18n/index.ts';
 import type { MessageKey } from './i18n/index.ts';
 import TitleBar from './components/TitleBar.vue';
@@ -429,6 +430,17 @@ const projectPicker = computed<ProjectPickerDescriptor | null>(() => {
 // 设置
 const { themeMode, setTheme } = useTheme();
 const { message: toastMessage, type: toastType, seq: toastSeq, show: showToast, clear: clearToast } = useToast();
+
+/**
+ * goal 接入（pi-goal）：App 级订阅四条 goal 事件 + 倒计时心跳。
+ *
+ * 为什么订阅在 App 而不在 ConversationView：状态行与弹窗请求都是**跨会话事件**
+ * （pi-goal 在任一会话里起目标，事件进的是那条会话的通道），而徽标挂在输入框、
+ * 弹窗挂在各会话的 ConversationView —— 事件源必须比消费点更靠上。
+ * 两者都按 sessionId 分发，故多窗格各自只处理自己会话的事件（与 ask_question 同纪律）。
+ */
+useGoalEvents();
+startGoalCountdown();
 const { terminalOpen, setTerminalOpen, codeViewerLayout } = usePreferences();
 // 版本更新说明弹窗（升级后首启自动弹 + 关于页回看；弹窗本体见模板 WhatsNewDialog）
 const { ensureChecked: ensureWhatsNewChecked } = useWhatsNew();

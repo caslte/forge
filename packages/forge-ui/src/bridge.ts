@@ -52,6 +52,7 @@ export type ForgeMethod =
   | 'subagent/queryOutput'
   // skill（09：Skill 管理，docs/prd/09_skill_management.md）
   | 'skill/listSkills'
+  | 'skill/checkImport'
   | 'skill/importSkill'
   | 'skill/createSkill'
   | 'skill/deleteSkill'
@@ -93,7 +94,9 @@ export type ForgeMethod =
   | 'updater/getReleaseNotes'
   | 'updater/markNotesShown'
   // ask_user_question（Path 2）：问卷回填（renderer → main 的唯一上行入口）
-  | 'askUserQuestion/reply';
+  | 'askUserQuestion/reply'
+  // goal 接入：pi-goal 确认/输入弹窗回填
+  | 'goal/uiReply';
 
 /** 全部事件名 */
 export type ForgeEvent =
@@ -111,6 +114,11 @@ export type ForgeEvent =
   | 'conversation.compacted'
   | 'conversation.slashCommandsUpdated'
   | 'conversation.askUserQuestionRequested'
+  // goal 接入（2026-10-10）：pi-goal 状态行 / 通知 / 裁决请求 / 宽限超时
+  | 'goal.statusChanged'
+  | 'goal.notified'
+  | 'goal.uiRequested'
+  | 'goal.uiTimedOut'
   | 'tool.started'
   | 'tool.completed'
   | 'tool.error'
@@ -338,8 +346,61 @@ export interface ForgeAskUserQuestion {
   reply(params: AskUserQuestionReplyParams): Promise<ForgeResult<AskUserQuestionReplyResult>>;
 }
 
-/** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json）。与 @forge/desktop ipc-contract 同步 */
-export interface PiGetInfoResult {
+/**
+ * goal 用户裁决请求载荷（goal 接入，2026-10-10）。
+ *
+ * 与 @forge/desktop ipc-contract 的 GoalUiRequestedPayload 同步。
+ * 多窗格按 sessionId 认领，只在发起会话的窗格弹窗。
+ */
+export interface GoalUiRequestedPayload {
+  sessionId: string;
+  requestId: string;
+  kind: 'confirm' | 'input' | 'editor' | 'select';
+  /** 弹窗标题（pi-goal 给的英文原文，如 "Replace goal?"） */
+  title: string;
+  /** 正文；confirm 场景是「当前目标 / 新目标」对照文本，可能很长，展示层需截断 */
+  message: string;
+  placeholder?: string;
+  options?: string[];
+  timeoutMs: number;
+}
+
+/** goal/uiReply 请求参数 */
+export interface GoalUiReplyParams {
+  sessionId: string;
+  requestId: string;
+  /** confirm → true/false；select/input/editor → 文本；null 视为取消 */
+  value: string | boolean | null;
+  cancelled: boolean;
+}
+
+/** goal/uiReply 响应 data */
+export interface GoalUiReplyResult {
+  /** 是否已投递到扩展侧等待中的 Promise（false = 会话无 lease 或该请求已超时收敛） */
+  delivered: boolean;
+}
+
+/**
+ * window.forge.goal：pi-goal 宿主适配的 UI 侧接口（goal 接入，2026-10-10）。
+ *
+ * 与 window.forge.askUserQuestion 同构：请求-应答语义（按 requestId 回填）。
+ */
+export interface ForgeGoal {
+  /** 订阅目标状态行（徽标主数据源）。text=null 表示清除徽标 */
+  onStatus(listener: (payload: { sessionId: string; text: string | null }) => void): () => void;
+  /** 订阅目标状态播报（「已启动 / 已暂停 / 预算耗尽」等） */
+  onNotified(
+    listener: (payload: { sessionId: string; message: string; level: 'info' | 'warning' | 'error' }) => void,
+  ): () => void;
+  /** 订阅用户裁决请求（confirm / input / editor / select） */
+  onUiRequested(listener: (payload: GoalUiRequestedPayload) => void): () => void;
+  /** 订阅宽限超时告警（确认框超时被当成取消时提示用户） */
+  onUiTimedOut(listener: (payload: { sessionId: string; requestId: string; title: string }) => void): () => void;
+  /** 回填裁决结果 */
+  uiReply(params: GoalUiReplyParams): Promise<ForgeResult<GoalUiReplyResult>>;
+}
+
+/** pi/getInfo 响应 data（设置页「关于」Tab；组件明细不回传 UI——走结构化日志与 updater-state.json）。与 @forge/desktop ipc-contract 同步 */export interface PiGetInfoResult {
   forgeVersion: string;
 }
 
@@ -411,6 +472,8 @@ export interface ForgeBridge {
   on(event: ForgeEvent, listener: (payload: unknown) => void): () => void;
   /** Path 2 问卷双向通道：订阅请求（收窄类型）+ 回填作答 */
   askUserQuestion: ForgeAskUserQuestion;
+  /** pi-goal 宿主适配（goal 接入）：状态徽标 + 状态播报 + 裁决弹窗与回填 */
+  goal: ForgeGoal;
   window: {
     minimize(): void;
     toggleMaximize(): void;
@@ -419,6 +482,8 @@ export interface ForgeBridge {
   };
   dialog: {
     selectDirectory(): Promise<string | null>;
+    /** 多选目录（Skills 批量导入）：返回选中目录绝对路径数组；取消/未选中返回 null */
+    selectDirectories(): Promise<string[] | null>;
     selectFiles(): Promise<string[]>;
     /**
      * 另存对话框（画布卡片用）：返回用户选定的绝对路径，取消返回 null。

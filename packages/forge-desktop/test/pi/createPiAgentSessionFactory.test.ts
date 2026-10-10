@@ -447,3 +447,47 @@ test('工厂注入 projectTrustedFor=false 时会话仍可创建（未信任项�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('工厂向扩展注入真实 uiContext（goal 接入：confirm 不再恒 false）', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-pi-uictx-'));
+  try {
+    const projectDir = path.join(root, 'project');
+    const agentDir = path.join(root, '.pi-agent');
+    fs.mkdirSync(projectDir);
+
+    const handlers = new Map<string, Set<(data: unknown) => void>>();
+    const emitted: Array<{ channel: string; data: unknown }> = [];
+    const bus = {
+      emit(channel: string, data: unknown): void {
+        emitted.push({ channel, data });
+        for (const h of [...(handlers.get(channel) ?? [])]) h(data);
+      },
+      on(channel: string, handler: (data: unknown) => void): () => void {
+        let set = handlers.get(channel);
+        if (set === undefined) {
+          set = new Set();
+          handlers.set(channel, set);
+        }
+        set.add(handler);
+        return () => set.delete(handler);
+      },
+    };
+
+    const lease = await createPiAgentSessionFactory({ agentDir, eventBus: bus })({
+      cwd: projectDir,
+      sessionId: 'forge-uictx-1',
+    });
+
+    // pi 把 uiContext 落在会话私有字段 `_extensionUIContext`（agent-session.js:1832）。
+    // 不传时为 undefined ⇒ 扩展回落 noOpUIContext（confirm 恒 false）。
+    const injected = (lease.session as unknown as { _extensionUIContext?: { confirm?: unknown; notify?: unknown } })
+      ._extensionUIContext;
+    assert.ok(injected, '必须向 bindExtensions 传入 uiContext，否则扩展回落 no-op 实现');
+    assert.equal(typeof injected.confirm, 'function', 'confirm 必须被实现（不能是 no-op 的恒 false）');
+    assert.equal(typeof injected.notify, 'function', 'notify 必须被实现（不能是空函数）');
+
+    lease.dispose();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

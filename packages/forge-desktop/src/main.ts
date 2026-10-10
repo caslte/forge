@@ -37,7 +37,7 @@ import { createNotifyToastManager } from './notifyToast.ts';
 import { createNotifyGate, type NotifyKind } from './notifyGate.ts';
 import { resolveStartupFlags } from './startupFlags.ts';
 import { exportSessionBundle } from './export/buildSessionBundle.ts';
-import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_LIST_TERMINAL_SHELLS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_SESSION_EXPORT_BUNDLE, IPC_BOOT_STATE, IPC_STARTUP_FLAGS, IPC_BOOT_SPLASH_READY, type BootState, type StartupFlags } from './ipc-contract.ts';
+import { IPC_INVOKE, IPC_EVENT, FORGE_EVENTS, IPC_WINDOW_MINIMIZE, IPC_WINDOW_MAXIMIZE, IPC_WINDOW_CLOSE, IPC_WINDOW_IS_MAXIMIZED, IPC_DIALOG_OPEN_DIRECTORY, IPC_DIALOG_OPEN_DIRECTORIES, IPC_DIALOG_OPEN_FILE, IPC_SHELL_OPEN_PATH, IPC_SHELL_OPEN_IN_BROWSER, IPC_SHELL_OPEN_IN_EDITOR, IPC_SHELL_LIST_EDITORS, IPC_SHELL_LIST_TERMINAL_SHELLS, IPC_SHELL_OPEN_EXTERNAL, IPC_SHELL_PROBE, IPC_THEME_SET, IPC_LOCALE_SET, IPC_ATTACHMENT_SCAN, IPC_CLIPBOARD_SAVE_IMAGE, IPC_CLIPBOARD_SAVE_TEXT, IPC_FILE_READ_IMAGE, IPC_FILE_LIST_PROJECT, IPC_DIALOG_SAVE_FILE, IPC_FILE_WRITE_TEXT, IPC_SESSION_EXPORT_BUNDLE, IPC_BOOT_STATE, IPC_STARTUP_FLAGS, IPC_BOOT_SPLASH_READY, type BootState, type StartupFlags } from './ipc-contract.ts';
 import { resolveBrowserOpenTarget } from './shell/openTarget.ts';
 import { resolveEditorOpenTarget } from './shell/openEditorTarget.ts';
 import { collectInstalledEditors } from './shell/editorScan.ts';
@@ -539,6 +539,20 @@ function registerShellIpc(bootState: BootState, agentDir: string, flags: Startup
       return null;
     }
     return res.filePaths[0] ?? null;
+  });
+  // 原生目录选择（多选，Skills 批量导入）：返回选中目录绝对路径数组；取消/未选中返回 null
+  ipcMain.handle(IPC_DIALOG_OPEN_DIRECTORIES, async () => {
+    const options = {
+      title: '选择 Skill 目录（可多选）',
+      properties: ['openDirectory', 'createDirectory', 'multiSelections'],
+    } as Electron.OpenDialogOptions;
+    const res = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (res.canceled || res.filePaths.length === 0) {
+      return null;
+    }
+    return res.filePaths;
   });
   // 附件统一给路径：文件选择只返回绝对路径，不读内容（模型自行 read）；取消返回空数组
   ipcMain.handle(IPC_DIALOG_OPEN_FILE, async () => {

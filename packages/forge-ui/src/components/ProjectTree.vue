@@ -848,9 +848,9 @@ onUnmounted(() => {
               <polyline points="20 6 9 17 4 12" />
             </svg>
             <span v-if="session.status === 'error'" class="dot-bang">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-                <line x1="12" y1="8" x2="12" y2="13" />
-                <line x1="12" y1="16.5" x2="12" y2="17.5" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round">
+                <line x1="12" y1="5.5" x2="12" y2="13.5" />
+                <line x1="12" y1="18.5" x2="12" y2="19" />
               </svg>
             </span>
           </span>
@@ -1021,9 +1021,9 @@ onUnmounted(() => {
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
                   <span v-if="session.status === 'error'" class="dot-bang">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-                      <line x1="12" y1="8" x2="12" y2="13" />
-                      <line x1="12" y1="16.5" x2="12" y2="17.5" />
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round">
+                      <line x1="12" y1="5.5" x2="12" y2="13.5" />
+                      <line x1="12" y1="18.5" x2="12" y2="19" />
                     </svg>
                   </span>
                 </span>
@@ -1233,9 +1233,9 @@ onUnmounted(() => {
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
                 <span v-if="session.status === 'error'" class="dot-bang">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-                    <line x1="12" y1="8" x2="12" y2="13" />
-                    <line x1="12" y1="16.5" x2="12" y2="17.5" />
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round">
+                    <line x1="12" y1="5.5" x2="12" y2="13.5" />
+                    <line x1="12" y1="18.5" x2="12" y2="19" />
                   </svg>
                 </span>
               </span>
@@ -1936,14 +1936,16 @@ html.ob-tour-active .tree-project .tree-node-actions {
   display: block;
 }
 
-/* ===== 出错：11px 圆角方块 + 白色感叹号 =====
-   底板用 CSS 画方块（正方形无形变风险，不值得为它上 SVG），里面的「!」用描边路径，
-   与对勾同档 3px。红色只给需用户处理的错误（CV-ERR-01 口径），常显、静止。 */
+/* ===== 出错：12px 圆角方块 + 白色感叹号 =====
+   底板用 CSS 画方块（正方形无形变风险，不值得为它上 SVG），占满 12px 槽位。
+   里面的「!」用描边路径：竖线 5.5→13.5（8 格长）、点 18.5→19，stroke-width 4——
+   24 网格缩到 9px 后实际描边约 1.5px（旧版 3px 描边 + 短竖线只有 ~1px，用户反馈看不清）。
+   红色只给需用户处理的错误（CV-ERR-01 口径），常显、静止。 */
 .dot-bang {
   display: none;
   position: relative;
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
   border-radius: 3px;
   background: var(--destructive);
   color: #fff;

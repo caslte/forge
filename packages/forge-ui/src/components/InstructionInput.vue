@@ -28,8 +28,10 @@ import { useToast } from '../composables/useToast';
 import { openGitCommitDialog } from '../composables/useGitCommitDialog';
 import { useI18n } from '../i18n/index.ts';
 import { useCompactBanner, compactReductionPct } from '../composables/useCompactBanner';
+import { goalStatusOf } from '../composables/useGoalState';
 import ImageLightbox from './ImageLightbox.vue';
 import BranchBadge from './BranchBadge.vue';
+import GoalBadge from './GoalBadge.vue';
 
 /**
  * 指令输入框。
@@ -210,6 +212,8 @@ function openCommitDialog(): void {
 }
 /** 非 git 项目不渲染入口（AC：与 BranchBadge isGitRepo 语义一致）；真值由 BranchBadge git-repo 事件回填 */
 const gitIsRepo = ref(false);
+/** goal 接入：pi-goal 状态行原文（按当前会话取；null = 无目标 ⇒ 徽标不渲染） */
+const goalStatusText = computed(() => goalStatusOf(props.sessionId));
 watch(
   () => props.gitProjectPath,
   () => {
@@ -1910,6 +1914,11 @@ watch(
         :session-id="sessionId"
         @git-repo="gitIsRepo = $event"
       />
+      <!-- goal 接入（pi-goal）：目标状态徽标。与分支徽标同排同形态（pill）。
+           无目标时组件内部不渲染，故这里无条件挂载。
+           徽标内容来自 pi-goal 的 setStatus 状态行（徽标主数据源），此前被
+           pi 的 noOpUIContext 空实现吞掉 ⇒ 用户看不到目标是否在跑、烧了多少轮。 -->
+      <GoalBadge :status-text="goalStatusText" />
       <!-- 提交或推送入口（GC-S11）：与分支徽标同排，busy 禁用同款灰置；hero 空态隐藏 -->
       <button
         v-if="gitProjectPath && gitIsRepo && commitEntry !== false"

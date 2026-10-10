@@ -597,6 +597,38 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
       pokeMainTurnActivity(payload.sessionId);
       conversationApi.emitAskUserQuestionRequested(payload);
     },
+    // goal 接入：pi-goal 的状态行 / 通知 / 用户裁决请求 / 宽限超时。
+    // 状态行是徽标的主数据源（pi-goal 每次状态变化都调 ui.setStatus("goal", …)，
+    // 此前被 no-op UI 吞掉 ⇒ 用户看不到进度、预算耗尽、轮次上限）；
+    // 通知修掉「目标已启动/已暂停」等播报全部静默；
+    // 裁决请求把 pi-goal 的 confirm/input/editor 变成 GUI 弹窗（此前 confirm 恒 false
+    // ⇒ 替换未完成目标被静默拒绝）。四条事件均已登记 FORGE_EVENTS 白名单。
+    //
+    // sessionId 一律在此补齐：适配器订阅的是**每会话私有总线**，载荷里没有也不该有
+    // sessionId（与 askUserQuestion 同一约定）。
+    onGoalStatusChanged: (sessionId, payload) => {
+      // text 为 undefined（清除徽标）在跨进程载荷里用 null 表达——
+      // structured clone 不保留 undefined 的键存在性。
+      conversationApi.emitGoalStatusChanged({
+        sessionId,
+        text: payload.text ?? null,
+      });
+    },
+    onGoalNotified: (sessionId, payload) => {
+      conversationApi.emitGoalNotified({
+        sessionId,
+        message: payload.message,
+        level: payload.level,
+      });
+    },
+    onGoalUiRequested: (sessionId, payload) => {
+      // 弹窗等待用户期间主轮处于「空转」，需刷新看门狗避免被误判死。
+      pokeMainTurnActivity(sessionId);
+      conversationApi.emitGoalUiRequested({ sessionId, ...payload });
+    },
+    onGoalUiTimeout: (sessionId, payload) => {
+      conversationApi.emitGoalUiTimedOut({ sessionId, ...payload });
+    },
   });
 
   // setCompletionHandler 不再调用：done 由 subagentService.notifyMainTurnEnd 门控
