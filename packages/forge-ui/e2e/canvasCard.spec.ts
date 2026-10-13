@@ -8,7 +8,7 @@
  * 非 HTML 降级、```html 不被劫持、工具栏与放大浮层。
  */
 import { test, expect } from '@playwright/test';
-import { attachHealthGuards, seedHistory, seedSendScript, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedHistory, seedSendScript, seedSessions, waitForMock } from './helpers/index';
 
 const PROJECT = 'D:/work/aiwork/forge';
 
@@ -25,6 +25,9 @@ function mkSession(sid: string, alias: string): Record<string, unknown> {
 }
 
 async function openSession(page: import('@playwright/test').Page, alias: string): Promise<void> {
+  // v6.26 默认折叠：树渲染后展开项目组，会话行可见才能点
+  await expect(page.locator('.tree-panel')).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: alias }).first().click();
 }
 

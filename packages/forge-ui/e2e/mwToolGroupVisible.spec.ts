@@ -9,7 +9,7 @@
  * 本用例用矮窗格 + 工具组历史锁行为：工具组头部必须可见（offsetHeight > 0）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, seedHistory } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, seedHistory } from './helpers/index';
 
 const SID = 'sess-mw-toolgroup';
 
@@ -56,6 +56,9 @@ test('多窗口窄窗格工具组保持可见（flex 不收缩） @regression', 
   await seedHistory(page, SID, history);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 
   // 矮视口 → 画布/窗格必然矮于内容，锁住“内容超高”这一触发条件
   await page.setViewportSize({ width: 1280, height: 640 });

@@ -30,6 +30,16 @@ export function nextFoldAllAction(paths: string[], collapsed: Set<string>): 'col
   return paths.some((p) => !collapsed.has(p)) ? 'collapse' : 'expand';
 }
 
+/**
+ * 项目树默认折叠集合（v6.26）：默认进来项目文件夹**全部收起**，点行/箭头再展开。
+ * 返回「已折叠」路径集合，供 ProjectTree 初始化 collapsedPaths——
+ * 集合语义与 nextFoldAllAction 一致（全在集合 = 显示「展开全部」按钮态）。
+ * Windows 盘符路径统一归一为正斜杠（与 projectTagOf 同规则），集合键稳定可比较。
+ */
+export function defaultCollapsedPaths(projects: ProjectItem[]): Set<string> {
+  return new Set(projects.map((p) => p.path.replace(/\\/g, '/')));
+}
+
 /** 任务视角行尾项目 tag：项目别名优先，无别名/项目不在列表（脏数据）回退路径末段。 */
 export function projectTagOf(projectPath: string, projects: ProjectItem[]): string {
   const p = projects.find((x) => x.path === projectPath);

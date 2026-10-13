@@ -16,7 +16,7 @@
  * 顺带把半透明底合成到 --background 令牌上。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedHistory, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedHistory, seedSessions, waitForMock } from './helpers/index';
 
 const PROJECT = 'D:/work/aiwork/forge';
 const TEXT = '注册流程一共五步：填手机号、收验证码、设密码、绑定邮箱、进入工作台。';
@@ -92,6 +92,9 @@ async function openWithText(page: Page, sid: string, alias: string, theme: Theme
   ]);
   await page.reload();
   await waitForMock(page);
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
   await page.locator('.tree-session', { hasText: alias }).first().click();
   await expect(page.locator('.msg-assistant .msg-content p').first()).toBeVisible();

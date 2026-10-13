@@ -19,7 +19,7 @@
  * 自动化等级：mock-backend（mock-bridge 恒 ready:true；002/003 用 init script 覆写）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSessions } from './helpers/index';
+import { attachHealthGuards, waitForMock, seedSessions, expandAllProjects } from './helpers/index';
 
 const SESSION_ID = 'e2e-boot-gate-session';
 
@@ -33,11 +33,12 @@ function mkSession(): Record<string, unknown> {
   };
 }
 
-/** 正式界面已挂载的判据：会话树可见（欢迎页期间整棵树不存在） */
+/** 正式界面已挂载的判据：项目树可见（欢迎页期间整棵树不存在）+ 展开出会话行。
+ * v6.26 项目默认折叠：先展开全部项目，会话行才渲染。 */
 async function expectMainUi(page: Page, timeout = 15_000): Promise<void> {
-  await expect(page.locator('.tree-session').first()).toBeVisible({
-    timeout,
-  });
+  await expect(page.locator('.tree-panel')).toBeVisible({ timeout });
+  await expandAllProjects(page);
+  await expect(page.locator('.tree-session').first()).toBeVisible();
 }
 
 /**
@@ -126,7 +127,7 @@ test('BOOT-GATE-003 @P0 @mock-backend 逃生 2：bootState 恒 false 且无推�
   // 反向断言（防假绿）：覆写生效时 5s 后门闩必须还挡着（正式 UI 未挂载）
   await page.waitForTimeout(5_000);
   const stillGated = await page.evaluate(
-    () => document.querySelector('.tree-session') === null,
+    () => document.querySelector('.tree-panel') === null,
   );
   expect(stillGated).toBe(true);
 

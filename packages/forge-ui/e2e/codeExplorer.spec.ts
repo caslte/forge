@@ -13,7 +13,7 @@
  * 需求是「A 不许改变对话宽度」，只有像素能证伪。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedHistory, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedHistory, seedSessions, waitForMock } from './helpers/index';
 
 /** 打开代码浏览器并等根目录加载完。
  *  必须先 hover 项目行：<> 与 +/⋯ 一样是 hover 显形，父容器在非 hover 态是
@@ -1785,6 +1785,9 @@ test('E-CE-28 @P1 @mock-backend：代码纸盖住对话时，回看提示条不�
   ]);
   await seedHistory(page, sid, history);
   await page.reload();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '代码纸遮罩会话' }).click();
   await expect(page.locator('.msg-assistant').last()).toBeVisible({ timeout: 8_000 });
 

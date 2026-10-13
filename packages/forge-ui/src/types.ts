@@ -43,8 +43,6 @@ export interface ProjectItem {
   alias: string | null;
   lastOpenedAt: string;
   trust: string;
-  /** 前端本地状态：是否展开会话列表 */
-  expanded?: boolean;
 }
 
 export type SessionStatus = 'idle' | 'streaming' | 'error' | 'done';

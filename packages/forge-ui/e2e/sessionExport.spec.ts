@@ -8,7 +8,7 @@
  * 失败不留半成品）——浏览器环境拿不到真实盘，打包正确性在这里测必然是自证。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, waitForMock } from './helpers/index';
 
 /** 种子会话构造 */
 function mkSession(over: Record<string, unknown>): Record<string, unknown> {
@@ -28,6 +28,9 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 }
 
 /** 打开会话项右键菜单 */

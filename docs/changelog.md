@@ -1716,3 +1716,44 @@
 - 初始化 docs 目录（specs/templates/prd/db/api/test/plan/ui）。
 - 新增 PRD 队列（5 个业务模块，均草稿-待确认）：项目管理、会话管理、对话与消息、工具执行展示、模型与 Provider 配置。
 - 关联文档：`plan/forge-v1-plan.md`、`plan/embedded-agent-discussion.md`、`plan/think-1786004271124-plan.md`。
+
+## v6.26 (交互：项目树项目文件夹默认全部收起——启动只见项目行，点开再看会话)
+
+> 用户诉求：「默认进来的时候，项目树的文件夹折叠，现在是默认展开」。
+> 用户裁定：**全部折叠**（含启动自动打开的当前项目），不做「当前项目例外展开」。
+
+### 行为变更
+
+- 启动/进入应用时，侧栏项目树的**所有项目文件夹默认收起**：只显示项目行，不显示会话行；
+  点项目行或行首箭头展开该项目的会话列表。
+- 折叠状态仍为渲染层 UI 态、**不落盘**（与 PRD SM-S06 一致）：刷新/重启回到默认全折叠。
+- 之后新增的项目同样默认收起；点行尾「＋ 新建会话」自动展开归属项目（创建后立即看到新会话行，原行为保留）。
+- 「收起全部/展开全部」两态按钮语义不变：默认全折叠 ⇒ 按钮初始即显示「展开全部」（外扩图标），
+  点一次全部展开、再点全部收起；单项目折叠/展开不受影响。
+
+### 实现（TDD）
+
+- `packages/forge-ui/src/utils/sessionView.ts`：新增纯函数 `defaultCollapsedPaths(projects)`
+  —— 返回全部项目路径的归一化集合（反斜杠→正斜杠，与 `projectTagOf` 同规则），
+  语义与 `nextFoldAllAction` 的折叠集一致（单测 `U-SM-005` 扩 4 例，18/18 通过）。
+- `packages/forge-ui/src/components/ProjectTree.vue`：初始 `collapsedPaths` 改为
+  `defaultCollapsedPaths(props.projects)`；watch 增量同步（新项目默认收起、移除的项目清出集合防脏键）；
+  折叠集读写统一走 `normPath` 归一化键（Windows 盘符路径稳定比较）。
+- 移除 `ProjectItem.expanded` 字段（`types.ts`）——历史上从未被写入，本次默认折叠后语义失效，顺手清理死代码。
+- 原型同步（AGENTS.md 规则）：`prototypes/index.html` 主屏项目树改默认折叠 + 点行展开交互 + 折叠动画 CSS，
+  与真实 UI 视觉/交互一致。
+
+### 测试
+
+- 新增 e2e 助手（`e2e/helpers/index.ts`）：`expandProject(page, pathOrName)`、`expandAllProjects(page)`。
+- 默认态断言更新：`smoke.spec.ts`（启动 0 会话行 → 展开后 4 条）。
+- 凡启动后直接点会话行的 e2e 用例统一补「先展开项目组」前置（boot 助手或用例内一步），
+  覆盖：projectMenu / tooltip / bootGate / freeSession / session 及批次 A/B/C 共 30+ spec。
+- 新增用例组：E-SM-013（AC-SM-042，docs/test/02_session/e2e.md）。
+
+### 文档
+
+- `docs/prd/02_session_management.md`：SM-S06 业务规则补「默认折叠」条目 + AC-SM-042。
+- `docs/test/02_session/coverage-matrix.md`：U-SM-005 扩 `defaultCollapsedPaths`；AC-SM-042 行；E-SM-008 操作更新。
+- `docs/test/02_session/e2e.md`：新增 E-SM-013 用例卡；E-SM-006 操作注明默认折叠；汇总表补行。
+

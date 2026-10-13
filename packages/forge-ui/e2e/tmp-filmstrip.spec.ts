@@ -1,6 +1,6 @@
 /** 临时：真机 vs demo 密集胶片（0~1000ms 每 125ms 一帧），跑完即删 */
 import { test, expect } from '@playwright/test';
-import { seedSessions, waitForMock } from './helpers/index';
+import { expandAllProjects, seedSessions, waitForMock } from './helpers/index';
 
 const OUT = 'D:/work/aiwork/forge/prototypes';
 
@@ -35,6 +35,9 @@ test('SHOT filmstrip', async ({ page }) => {
     m.seed('model/setSessionThinkingLevel', () => ({ code: 0, message: 'ok', data: null }));
   });
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.compose-box')).toBeVisible();
   await page.locator('.level-wrap .meta-link').click();

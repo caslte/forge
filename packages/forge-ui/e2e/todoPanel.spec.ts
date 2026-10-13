@@ -13,6 +13,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
   attachHealthGuards,
+  expandAllProjects,
   waitForMock,
   seedSessions,
 } from './helpers/index';
@@ -35,6 +36,9 @@ async function boot(page: Page): Promise<void> {
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.compose-box')).toBeVisible();
 }

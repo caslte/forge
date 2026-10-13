@@ -3,6 +3,7 @@
  * 在多个视口宽度下注入运行中子 agent，打开结果视图，截图 + 量测关键元素宽度。
  */
 import { test, expect, type Page } from '@playwright/test';
+import { expandAllProjects } from './helpers/index';
 
 function mkSession(): Record<string, unknown> {
   return {
@@ -22,6 +23,9 @@ async function boot(page: Page): Promise<void> {
 }
 
 async function awaitTree(page: Page): Promise<void> {
+  // v6.26 默认折叠：展开项目组（让既有的 .tree-session 可见断言有可见对象）
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await expect(page.locator('.tree-session')).toBeVisible({ timeout: 15_000 });
 }
 

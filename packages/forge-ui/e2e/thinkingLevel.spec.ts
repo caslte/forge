@@ -14,6 +14,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
   attachHealthGuards,
+  expandAllProjects,
   seedSessions,
   seedSendScript,
   waitForMock,
@@ -144,6 +145,9 @@ async function boot(
   await page.reload();
   await applySeeds(page, sessions, initialStored, plainSids);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 }
 
 /** 打开指定会话并等待输入框（含思考级别切换器逻辑）就绪 */

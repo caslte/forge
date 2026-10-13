@@ -17,6 +17,7 @@ import {
   seedSessions,
   seedProjects,
   listMockSessions,
+  expandAllProjects,
 } from './helpers/index';
 
 const PROJ = 'D:/work/aiwork/forge';
@@ -33,12 +34,13 @@ function mkSession(over: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-/** 进入应用：加载种子并等待首屏就绪 */
+/** 进入应用：加载种子并等待首屏就绪（v6.26 默认折叠：顺手展开项目组） */
 async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promise<void> {
   await page.goto('/');
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  await expandAllProjects(page);
 }
 
 // ===== FREE-01 零项目 hero 发送即创建自由会话 =====

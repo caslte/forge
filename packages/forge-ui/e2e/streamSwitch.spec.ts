@@ -7,6 +7,7 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   attachHealthGuards,
   assertNoResidualStreaming,
+  expandAllProjects,
   seedSessions,
   seedSendScript,
   waitForMock,
@@ -28,6 +29,9 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 }
 
 test('E-CV-SWITCH-001 @P0 @mock-backend：流式中会话往返切换 + 工具聚组变化，无 Vue patch 崩溃', async ({ page }) => {

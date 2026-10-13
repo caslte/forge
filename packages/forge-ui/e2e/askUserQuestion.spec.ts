@@ -19,7 +19,7 @@
  * 自动化等级：mock-backend（mock-bridge.emit 注入 conversation.askUserQuestionRequested）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSessions } from './helpers/index';
+import { attachHealthGuards, waitForMock, seedSessions, expandAllProjects } from './helpers/index';
 
 const SESSION_ID = 'e2e-ask-session';
 /** 非本会话 id：用于「问卷只在发起会话的窗格弹出」的负向断言 */
@@ -79,6 +79,8 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>> = [mkSe
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.compose-box')).toBeVisible();
 }
@@ -467,6 +469,8 @@ test('ASK-E2E-006 @P0 @mock-backend E-CV-028：首屏右侧对话区渲染且无
   await page.goto('/');
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
 
   // 对话区三件套：视图容器 / 输入区 wrap / 输入框本体

@@ -17,7 +17,7 @@
  * > 「压缩后历史不丢」用例未经浏览器实跑，启动 Electron/浏览器后需补跑一次。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSessions } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, waitForMock, seedSessions } from './helpers/index';
 
 const SESSION_ID = 'sess-compact';
 
@@ -39,6 +39,8 @@ async function boot(page: Page): Promise<void> {
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.ctx-cmp')).toHaveCount(1);
 }

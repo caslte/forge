@@ -9,7 +9,7 @@
  * 判定：流式期间给卡片 DOM 打标记，走完终态后标记仍在 = 同一个 DOM 节点（未重挂）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, seedHistory } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, seedHistory } from './helpers/index';
 
 function mkSession(alias: string): Record<string, unknown> {
   return {
@@ -47,6 +47,9 @@ test('E-CV-STREAM-END-001 @P0 @mock-backend：终态覆盖 ts 后流式卡片仍
   await seedSessions(page, [s]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await seedHistory(page, s.sessionId as string, [
     { role: 'user', content: '上一轮提问', ts: new Date(Date.now() - 60_000).toISOString() },
     { role: 'assistant', content: '上一轮回复。', ts: new Date(Date.now() - 50_000).toISOString() },

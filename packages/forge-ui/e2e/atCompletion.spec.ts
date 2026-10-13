@@ -11,6 +11,7 @@ import {
   attachHealthGuards,
   waitForMock,
   seedSessions,
+  expandAllProjects,
 } from './helpers/index';
 
 const SESSION_ID = 'e2e-at-session';
@@ -31,6 +32,8 @@ async function boot(page: Page): Promise<void> {
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.compose-box')).toBeVisible();
 }

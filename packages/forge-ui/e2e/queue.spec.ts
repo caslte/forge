@@ -13,7 +13,7 @@
  * 途中被自动派发、条目消失，QC-001/QC-003 长期红就是这个原因（已确认非产品缺陷）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSessions, seedSendScript } from './helpers/index';
+import { attachHealthGuards, waitForMock, seedSessions, seedSendScript, expandAllProjects } from './helpers/index';
 
 const SESSION_ID = 'e2e-queue-session';
 const ALIAS = '队列会话';
@@ -48,6 +48,8 @@ async function boot(page: Page, s: typeof SCRIPT = SCRIPT): Promise<void> {
   await waitForMock(page);
   await seedSendScript(page, SESSION_ID, s);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: ALIAS }).click();
   await expect(page.locator('.compose-input')).toBeVisible();
 }
@@ -146,6 +148,8 @@ test('QC-004 @P1 切走再切回：待发送徽标不丢失（队列镜像按会
   await waitForMock(page);
   await seedSendScript(page, SESSION_ID, slowScript);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: ALIAS }).click();
 
   await startTurn(page, '首条消息');

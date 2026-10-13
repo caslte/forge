@@ -15,7 +15,7 @@
  * （Playwright 本机 Win32）→ 判定走 ctrlKey，用例统一按 Ctrl 组合按键。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, waitForMock } from './helpers/index';
 
 const PROJ = 'D:/work/aiwork/forge';
 
@@ -35,6 +35,9 @@ async function bootWithSession(page: Page): Promise<void> {
   await seedSessions(page, [mkSession('sess-sc-1', '快捷键会话一')]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '快捷键会话一' }).first().click();
   await expect(page.locator('.tree-session.active')).toHaveCount(1);
 }

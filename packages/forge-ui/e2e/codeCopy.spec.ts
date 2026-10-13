@@ -7,7 +7,7 @@
  * - 点一下剪贴板里真的是围栏原文（含多行缩进），并留下勾选回执。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedHistory, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedHistory, seedSessions, waitForMock } from './helpers/index';
 
 const PROJECT = 'D:/work/aiwork/forge';
 
@@ -30,6 +30,8 @@ async function openWithCode(page: Page, sid: string, alias: string): Promise<voi
   ]);
   await page.reload();
   await waitForMock(page);
+  // v6.26 默认折叠：展开项目组，会话行可见才能点
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: alias }).first().click();
 }
 
@@ -91,6 +93,8 @@ test('E-CC-002 @P1 @mock-backend：tooltip 跟随语言（复制代码 / Copy co
   await page.evaluate(() => window.localStorage.setItem('forge.locale', 'en'));
   await page.reload();
   await waitForMock(page);
+  // v6.26 默认折叠：重载后项目组回到折叠态，需再展开
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '代码块复制 i18n' }).first().click();
   await expect(page.locator('.msg-assistant .md-code-copy').first()).toHaveAttribute('data-tooltip', 'Copy code');
 

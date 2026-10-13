@@ -98,3 +98,58 @@ export async function seedSendScript(
     [sessionId, script] as const,
   );
 }
+
+/* ===== 项目树折叠（v6.26：项目文件夹默认全收起，用例需展开后才能点会话行） ===== */
+
+/**
+ * 展开单个项目（按项目路径 / 别名 / 路径末段定位 .tree-project 行，点折叠箭头）。
+ * 默认折叠后各用例要把会话行展开出来，统一走这里，避免每处手点选择器。
+ */
+export async function expandProject(page: Page, nameOrPath: string): Promise<void> {
+  const project = page.locator('.tree-project').filter({
+    has: page.locator(`.tree-node-title[title="${nameOrPath}"]`),
+  });
+  const row = (await project.count()) > 0
+    ? project.first()
+    : page.locator('.tree-project', { hasText: nameOrPath }).first();
+  // 状态感知：已是展开态（折叠项目）就不点，避免把已展开的项目误点回收起
+  const arrow = row.locator('.tree-arrow');
+  if ((await arrow.getAttribute('aria-label')) === '展开项目') {
+    await arrow.click();
+  }
+}
+
+/**
+ * 展开项目树里全部项目（不含自由分组；任务视角无项目行，安全空操作）。
+ * 状态感知：只点仍处于「展开项目」态的箭头（locale 由 playwright.config 钉死 zh-CN），
+ * 避免把用例前段经「新会话」等路径已自动展开的项目误点回收起；
+ * 有界重试兜底项目列表中途被 re-query 替换导致的漏点，终态统一校验。
+ */
+export async function expandAllProjects(page: Page): Promise<void> {
+  // 记住展开前的树滚动位置：逐个点箭头时 Playwright 会把每个箭头自动滚进视口，
+  // 展开后树停在底部；依赖「树从顶部开始」的用例（如 tooltip 滚动回归）会被带偏
+  const scrollTopBefore = await page
+    .evaluate(() => (document.querySelector('.project-tree') as HTMLElement | null)?.scrollTop ?? null)
+    .catch(() => null);
+  const pending = page.locator('.tree-project .tree-arrow[aria-label="展开项目"]');
+  for (let round = 0; round < 10; round += 1) {
+    if ((await pending.count()) === 0) break;
+    // 每轮都点「第一个未展开」：点击后它的 label 翻转，下一枚举自动后移；
+    // 列表中途重渲染时 nth(0) 也始终落在真实未展开的箭头上
+    const n = await pending.count();
+    for (let i = 0; i < n; i += 1) {
+      if ((await pending.count()) === 0) break;
+      await pending.first().click();
+    }
+    await page.waitForTimeout(50);
+  }
+  // 终态校验：不应再有任何「展开项目」态箭头
+  await expect(pending).toHaveCount(0);
+  // 还原滚动位置（树容器不存在/此前未滚过则为空操作）
+  if (scrollTopBefore !== null) {
+    await page.evaluate((top) => {
+      const scroller = document.querySelector('.project-tree') as HTMLElement | null;
+      if (scroller) scroller.scrollTop = top;
+    }, scrollTopBefore);
+  }
+}

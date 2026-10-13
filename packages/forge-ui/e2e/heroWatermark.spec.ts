@@ -7,7 +7,7 @@
  * hero 随加载开始同一 tick 直接移除。
  */
 import { test, expect } from '@playwright/test';
-import { attachHealthGuards, seedSessions, seedHistory, waitForMock } from './helpers/index';
+import { attachHealthGuards, seedSessions, seedHistory, waitForMock, expandAllProjects } from './helpers/index';
 
 function mkSession(over: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -33,6 +33,8 @@ test('E-CV-HERO-001 @mock-backend 从空会话切走加载历史时 hero 无虚�
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
 
   // 空会话：hero 水印可见（前置条件）
   await page.locator('.tree-session', { hasText: '空会话HERO' }).click();

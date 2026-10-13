@@ -7,7 +7,7 @@
  * error 会话时经 conversation/getLastError 拉取后端记录恢复横幅。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, waitForMock } from './helpers/index';
+import { attachHealthGuards, seedSessions, waitForMock, expandAllProjects } from './helpers/index';
 
 function mkSession(over: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -25,6 +25,8 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
 }
 
 const QUOTA_ERROR = '模型额度耗尽（429）：请检查账户额度';

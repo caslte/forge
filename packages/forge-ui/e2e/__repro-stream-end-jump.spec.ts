@@ -11,7 +11,7 @@
  * 用法：npx playwright test e2e/__repro-stream-end-jump.spec.ts
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, seedHistory } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, seedHistory } from './helpers/index';
 
 function mkSession(over: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -205,6 +205,9 @@ async function boot(
   await seedSessions(page, [session]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   if (history) await seedHistory(page, session.sessionId as string, history);
   await page.locator('.tree-session').first().click();
 }

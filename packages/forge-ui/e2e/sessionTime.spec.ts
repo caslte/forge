@@ -9,7 +9,7 @@
  * - 任务视角同样带时间，且与项目 tag 共存。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { seedSessions } from './helpers/index';
+import { expandAllProjects, seedSessions } from './helpers/index';
 
 const HOUR = 3_600_000;
 const iso = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -30,6 +30,9 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 }
 
 /** 行内时间元素；按别名定位行，避免用序号（项目视角默认只显示前 5 条） */

@@ -7,7 +7,7 @@
  * 3. 窗口窄于标准列宽时退化为满宽（min() 兜底），不会被压成窄条。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions } from './helpers/index';
+import { attachHealthGuards, seedSessions, expandAllProjects } from './helpers/index';
 
 /** 新会话发一条消息 → 真实会话态（有消息流，非首屏 hero 草稿态） */
 async function openConversation(page: Page): Promise<void> {
@@ -131,6 +131,8 @@ test('内容宽度：子 Agent Tab 栏跟随列宽（标准模式不铺满） @r
   ]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '会话CW' }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
   // 先发一条消息离开首屏 hero（空会话输入框恒 640px，与列宽无关，见下方 hero 用例），
@@ -208,6 +210,8 @@ test('内容宽度：子 Agent 结果视图跟随列宽（标准模式不铺满�
   ]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '会话CWS' }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
   await page.locator('.compose-input').fill('让子代理出一份架构报告');

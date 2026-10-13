@@ -17,7 +17,7 @@
  *   时机（竞态），重命名后的 re-query 则发生在注册之后，确定性通过。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock } from './helpers/index';
+import { attachHealthGuards, waitForMock, expandAllProjects } from './helpers/index';
 
 /** 种子项目路径 */
 const PROJ_PATHS = Array.from({ length: 12 }, (_, i) => `D:/work/demo-proj-${i}`);
@@ -106,6 +106,8 @@ async function bootWithOverflowTree(page: Page): Promise<void> {
   const row = page.locator('.tree-project').first();
   const rowBox = (await row.boundingBox())!;
   await row.click({ position: { x: rowBox.width - 110, y: rowBox.height / 2 } });
+  // v6.26 默认折叠：逐个展开 12 个项目组，会话行才可见
+  await expandAllProjects(page);
   // loadSessions 为全量加载：12 个项目组各显示前 5 条（VISIBLE_SESSION_LIMIT）→ 60 行
   await expect(page.locator('.tree-session')).toHaveCount(60);
 }

@@ -11,6 +11,7 @@ import {
   seedSendScript,
   listMockSessions,
   waitForMock,
+  expandAllProjects,
 } from './helpers/index';
 
 /** 种子会话构造 */
@@ -25,12 +26,13 @@ function mkSession(over: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-/** 进入应用：加载种子会话并等待首屏就绪 */
+/** 进入应用：加载种子会话并等待首屏就绪（v6.26 默认折叠：展开项目组出会话行） */
 async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promise<void> {
   await page.goto('/');
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  await expandAllProjects(page);
 }
 
 // ===== E-SM-001 新建会话发送首条消息后进入会话池 =====
@@ -340,8 +342,10 @@ test('SESSION-E2E-008 @P0 @mock-backend E-SM-008 回归：openProject 被拖慢�
   // 项目行先到（queryProjectList 未被拖慢）——复刻用户看到的「项目显示了」
   await expect(page.locator('.tree-project')).toHaveCount(1);
 
-  // 关键断言：会话树必须已随并行查询到位。修复前 loadSessions 串在 openProject 之后，
-  // 此处需等满 SLOW_OPEN_MS 才命中 → 用例在 TREE_TIMEOUT_MS 内失败。
+  // v6.26 默认折叠：展开后才能看到会话行；回归断言语义不变——
+  // 修复前 loadSessions 串在 openProject 之后，展开后此处仍需等满 SLOW_OPEN_MS
+  // 才命中 → 用例在 TREE_TIMEOUT_MS 内失败
+  await expandAllProjects(page);
   await expect(page.locator('.tree-session')).toHaveCount(1, { timeout: TREE_TIMEOUT_MS });
 
   health.assertHealthy();

@@ -16,6 +16,7 @@ import {
   seedSessions,
   seedSendScript,
   waitForMock,
+  expandAllProjects,
 } from './helpers/index';
 
 function mkSession(over: Record<string, unknown>): Record<string, unknown> {
@@ -34,6 +35,8 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组（后续按别名点 .tree-session 前必须可见）
+  await expandAllProjects(page);
 }
 
 /** 覆盖 git/getBranchInfo（干净工作区 / 含冲突分支等自定义状态） */

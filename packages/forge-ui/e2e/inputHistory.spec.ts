@@ -11,7 +11,7 @@
  * - AC-IH-007：连续发送相同内容去重，不产生重复条目
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSessions, seedSendScript } from './helpers/index';
+import { attachHealthGuards, waitForMock, seedSessions, seedSendScript, expandAllProjects } from './helpers/index';
 
 const SESSION_A = 'e2e-history-A';
 const SESSION_B = 'e2e-history-B';
@@ -43,6 +43,8 @@ async function bootAndPick(page: Page, sessionId: string, alias: string): Promis
   await waitForMock(page);
   await seedSendScript(page, sessionId, SCRIPT); // reload 后脚本要重新种
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: alias }).click();
   await expect(page.locator('.compose-input')).toBeVisible();
 }
@@ -134,6 +136,9 @@ test('AC-IH-005 历史按 sessionId 隔离', async ({ page }) => {
   await waitForMock(page);
   await seedSendScript(page, SESSION_A, SCRIPT);
   await seedSendScript(page, SESSION_B, SCRIPT);
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-panel')).toBeVisible();
+  await expandAllProjects(page);
 
   // A 发一条
   await page.locator('.tree-session', { hasText: aliasA }).click();
@@ -166,6 +171,8 @@ test('AC-IH-006 localStorage 持久化跨刷新', async ({ page }) => {
   await waitForMock(page);
   await seedSendScript(page, SESSION_A, SCRIPT);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: aliasA }).click();
   await expect(page.locator('.compose-input')).toBeVisible();
 

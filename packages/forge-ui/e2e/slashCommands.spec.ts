@@ -14,6 +14,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
   attachHealthGuards,
+  expandAllProjects,
   waitForMock,
   seedSessions,
   listMockSessions,
@@ -62,6 +63,9 @@ async function boot(page: Page, withSeed: boolean = true): Promise<void> {
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.compose-box')).toBeVisible();
   if (withSeed) await seedThreeCommands(page);
@@ -209,6 +213,9 @@ test('TSC-E2E-004 @P0 @mock-backend E-CV-017：草稿态 skills/模板无命令�
   await page.reload();
   await waitForMock(page);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   // 记录 getSlashCommands 调用参数（返回 null 走 mock 双模式默认：无 sessionId → skills+模板；有 → 三类全量）
   await page.evaluate(() => {
     window.__scCalls = [];

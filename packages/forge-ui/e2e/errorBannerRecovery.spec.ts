@@ -10,7 +10,7 @@
  * 断言横幅消失；并覆盖 retry 载荷与错误分类互斥（进度条不被旧错误盖住）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions } from './helpers/index';
+import { attachHealthGuards, seedSessions, expandAllProjects } from './helpers/index';
 
 const SESSION_ID = 'sess-errbanner-1';
 const RAW_ERROR = '529: {"type":"overloaded_error","message":"当前服务集群负载较高"}';
@@ -28,6 +28,8 @@ async function boot(page: Page): Promise<void> {
   ]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '错误恢复会话' }).click();
 }
 

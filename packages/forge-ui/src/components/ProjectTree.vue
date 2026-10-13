@@ -2,7 +2,7 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { ComponentPublicInstance } from 'vue';
 import type { ProjectItem, SessionItem, SessionStatus } from '../types';
-import { sortSessionsByActivation, projectTagOf, relativeTimeParts, formatAbsoluteTime } from '../utils/sessionView';
+import { sortSessionsByActivation, projectTagOf, relativeTimeParts, formatAbsoluteTime, defaultCollapsedPaths } from '../utils/sessionView';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import { useI18n, type MessageKey } from '../i18n/index.ts';
 
@@ -43,9 +43,22 @@ const emit = defineEmits<{
 
 const VISIBLE_SESSION_LIMIT = 5;
 
-// 折叠状态：记录“已折叠”的项目路径，未在集合中的默认展开（含新增项目）
-const collapsedPaths = ref<Set<string>>(
-  new Set(props.projects.filter((p) => p.expanded === false).map((p) => p.path)),
+// 折叠状态（v6.26）：记录"已折叠"的项目路径，默认态 = 全部折叠（点行/箭头再展开）。
+// 集合键用归一化路径（反斜杠→正斜杠），Windows 盘符路径也能对上；新增项目同样默认收起。
+const normPath = (p: string): string => p.replace(/\\/g, '/');
+const collapsedPaths = ref<Set<string>>(defaultCollapsedPaths(props.projects));
+watch(
+  () => props.projects.map((p) => normPath(p.path)),
+  (paths, oldPaths) => {
+    // 增量同步：新项目按默认规则收起；被移除的项目顺手清出集合，防止脏键堆积。
+    if (!oldPaths) return;
+    const added = paths.filter((p) => !oldPaths.includes(p));
+    if (added.length) {
+      const next = new Set(collapsedPaths.value);
+      for (const p of added) next.add(p);
+      collapsedPaths.value = next;
+    }
+  },
 );
 // 会话列表是否已“展开全部”（超过 5 条时）
 const expandedSessionLists = ref<Set<string>>(new Set());
@@ -168,13 +181,13 @@ function taskProjectTag(s: SessionItem): string {
 
 // ===== 收起全部/展开全部（仅项目视角；两态判定 nextFoldAllAction 见 sessionView） =====
 const allCollapsed = computed(() =>
-  props.projects.length > 0 && props.projects.every((p) => collapsedPaths.value.has(p.path)),
+  props.projects.length > 0 && props.projects.every((p) => collapsedPaths.value.has(normPath(p.path))),
 );
 
 watch(allCollapsed, (v) => emit('fold-state', v), { immediate: true });
 
 function collapseAll(): void {
-  collapsedPaths.value = new Set(props.projects.map((p) => p.path));
+  collapsedPaths.value = new Set(props.projects.map((p) => normPath(p.path)));
   // 顺手把每个项目里已"展开显示 N 个"的会话列表也恢复到默认截断（VISIBLE_SESSION_LIMIT 条），
   // 否则用户收起全部后再单独展开某个项目，会话会保持之前的全量展开态——与"收起"语义不符。
   expandedSessionLists.value = new Set();
@@ -217,13 +230,14 @@ function statusTitle(s: SessionItem): string {
 }
 
 function isExpanded(path: string): boolean {
-  return !collapsedPaths.value.has(path);
+  return !collapsedPaths.value.has(normPath(path));
 }
 
 function toggleExpand(path: string): void {
+  const key = normPath(path);
   const next = new Set(collapsedPaths.value);
-  if (next.has(path)) next.delete(path);
-  else next.add(path);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
   collapsedPaths.value = next;
 }
 
@@ -246,9 +260,10 @@ function selectSession(id: string): void {
 // create-session 携带项目 path（v3.38）：App 端归属优先用载荷，不再依赖 select-project 先行
 function onCreateSession(p: ProjectItem): void {
   emit('select-project', p.path);
-  if (collapsedPaths.value.has(p.path)) {
+  const key = normPath(p.path);
+  if (collapsedPaths.value.has(key)) {
     const next = new Set(collapsedPaths.value);
-    next.delete(p.path);
+    next.delete(key);
     collapsedPaths.value = next;
   }
   emit('create-session', p.path);

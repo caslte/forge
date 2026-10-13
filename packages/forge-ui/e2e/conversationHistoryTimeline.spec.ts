@@ -18,6 +18,7 @@ import {
   seedSessions,
   seedHistory,
   seedSendScript,
+  expandAllProjects,
 } from './helpers/index';
 
 /** 种子会话构造 */
@@ -38,6 +39,8 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
 }
 
 // =====================================================================

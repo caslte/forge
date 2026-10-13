@@ -3,6 +3,7 @@
  * 打开结果视图后量测 .stg-head 及子元素的计算样式与几何，并截图。
  */
 import { test, expect, type Page } from '@playwright/test';
+import { expandAllProjects } from './helpers/index';
 
 function mkSession(): Record<string, unknown> {
   return {
@@ -19,6 +20,9 @@ test('repro: stg-head 可见性', async ({ page }) => {
   await page.goto('/');
   await page.evaluate((list) => window.__forgeMock!.setSessions(list), [mkSession()]);
   await page.reload();
+  // v6.26 默认折叠：展开项目组（让既有的 .tree-session 可见断言有可见对象）
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await expect(page.locator('.tree-session')).toBeVisible({ timeout: 15_000 });
   await page.locator('.tree-session').first().click();
   await expect(page.locator('.compose-box')).toBeVisible();

@@ -7,6 +7,7 @@
  *   从未激活的保持后端原序（Array.sort 稳定），空激活序不重排；
  * - nextFoldAllAction：收起全部/展开全部两态判定——任一展开→collapse，全部已折叠→expand，
  *   空项目列表→expand（无可收起，点开展开是无操作的安全态）；
+ * - defaultCollapsedPaths：项目树默认折叠集合——默认态 = 全部折叠（空项目列表 = 空集合）；
  * - projectTagOf：任务视角行尾项目 tag——项目别名优先，无别名取路径末段，
  *   项目不在列表（脏数据）回退路径末段；
  * - relativeTimeParts：行尾相对活跃时间的分档判定（刚刚/分钟/小时/天/日期），
@@ -20,6 +21,7 @@ import assert from 'node:assert/strict';
 import {
   sortSessionsByActivation,
   nextFoldAllAction,
+  defaultCollapsedPaths,
   projectTagOf,
   relativeTimeParts,
   formatAbsoluteTime,
@@ -76,6 +78,32 @@ test('nextFoldAllAction: 全部已折叠 → expand（展开全部）', () => {
 
 test('nextFoldAllAction: 空项目列表 → expand（安全无操作态）', () => {
   assert.equal(nextFoldAllAction([], new Set()), 'expand');
+});
+
+/* ===== 项目树默认折叠（v6.26：默认进来项目文件夹全部收起） ===== */
+
+test('defaultCollapsedPaths: 全部项目路径进入折叠集合（默认态=全折叠）', () => {
+  const projects = [proj('/w/a', null), proj('C:\\works\\b', '乙')];
+  assert.deepEqual([...defaultCollapsedPaths(projects)].sort(), ['/w/a', 'C:/works/b']);
+});
+
+test('defaultCollapsedPaths: 反斜杠路径归一为正斜杠（与 isExpanded 同键比较）', () => {
+  const projects = [proj('C:\\works\\ai_work\\forge', null)];
+  assert.deepEqual([...defaultCollapsedPaths(projects)], ['C:/works/ai_work/forge']);
+});
+
+test('defaultCollapsedPaths: 空项目列表 → 空集合（无可折叠；fold-all 按钮两态不受影响）', () => {
+  assert.equal(defaultCollapsedPaths([]).size, 0);
+});
+
+test('defaultCollapsedPaths: 与 nextFoldAllAction 组合——默认态即「展开全部」按钮态', () => {
+  const projects = [proj('/w/a', null), proj('/w/b', null)];
+  const collapsed = defaultCollapsedPaths(projects);
+  assert.equal(
+    nextFoldAllAction(projects.map((p) => p.path), collapsed),
+    'expand',
+    '默认全折叠时，收起/展开全部按钮应显示「展开全部」',
+  );
 });
 
 function proj(path: string, alias: string | null): ProjectItem {

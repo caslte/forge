@@ -8,6 +8,7 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   attachHealthGuards,
   assertNoResidualStreaming,
+  expandAllProjects,
   seedSessions,
   waitForMock,
 } from './helpers/index';
@@ -30,6 +31,9 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 }
 
 // =====================================================================

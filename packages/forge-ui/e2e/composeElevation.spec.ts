@@ -12,7 +12,7 @@
  * 自动化等级：mock-backend（window.__forgeMock.onSend 注入慢回复，留出流式窗口）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSendScript, seedSessions } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, waitForMock, seedSendScript, seedSessions } from './helpers/index';
 
 const SESSION_ID = 'e2e-elevation-session';
 const ALIAS = '抬升验收';
@@ -46,6 +46,8 @@ async function boot(page: Page, theme: 'light' | 'dark' = 'light'): Promise<void
   await seedSendScript(page, SESSION_ID, SLOW_SCRIPT);
   await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: ALIAS }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
   // 让抬升令牌在主题切换后落位

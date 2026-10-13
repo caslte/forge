@@ -9,12 +9,14 @@
  * 历史回显即复现原 bug 场景。
  */
 import { test, expect } from '@playwright/test';
-import { attachHealthGuards, waitForMock } from './helpers/index';
+import { attachHealthGuards, waitForMock, expandAllProjects } from './helpers/index';
 
 test('E-CV-FOOTER-001 @P0 @mock-backend：一次回复被工具拆成多张 assistant 卡片时仅末卡显示 footer', async ({ page }) => {
   const health = attachHealthGuards(page);
   await page.goto('/');
   await waitForMock(page);
+  // v6.26 默认折叠：展开项目组（mock 默认种子会话挂在项目下）
+  await expandAllProjects(page);
 
   await page.locator('.tree-session', { hasText: '代码审查' }).click();
   await expect(page.locator('.msg-assistant')).toHaveCount(2, { timeout: 8_000 });

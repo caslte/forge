@@ -6,7 +6,7 @@
  * 同时锁定薄壳契约：模型状态仍在薄壳（currentModel 经 model/getSessionModel 加载）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions, seedHistory } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, seedHistory } from './helpers/index';
 
 function mkSession(): Record<string, unknown> {
   return {
@@ -43,6 +43,9 @@ test('多窗口窗口内渲染 ConversationView（单/多窗口同组件） @reg
   await seedSessions(page, [mkSession()]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 
   await page.locator('.app-toolbar-btn', { hasText: '多窗口' }).click();
   await expect(page.locator('.mw-canvas')).toBeVisible();
@@ -68,6 +71,9 @@ test('多窗口窄窗格长行不撑宽窗口，发送按钮不被裁 @regressio
   ]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 
   // 矮宽视口 → 自动布局后窗格很矮，长行内容 + 输入区共存
   await page.setViewportSize({ width: 1280, height: 640 });

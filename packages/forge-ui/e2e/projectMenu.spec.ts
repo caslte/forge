@@ -7,7 +7,7 @@
  * 本组用例钉住：首次点击后菜单必须保持打开并切到确认文案，第二次点击才生效。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedProjects, seedSessions } from './helpers/index';
+import { attachHealthGuards, seedProjects, seedSessions, expandAllProjects } from './helpers/index';
 
 const PROJ_A = 'D:/work/demo-alpha';
 
@@ -37,6 +37,8 @@ async function boot(
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
   await expect(page.locator('.tree-project').first()).toBeVisible();
+  // v6.26 默认折叠：展开后用例才能按会话行数断言
+  await expandAllProjects(page);
 }
 
 /** 打开指定项目的「更多操作」菜单（行尾 ⋯ 按钮，hover 才可见） */

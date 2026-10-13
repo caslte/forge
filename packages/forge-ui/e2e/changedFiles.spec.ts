@@ -7,7 +7,7 @@
  * 数据链路见 docs/api/04_tool.md §2 与 docs/api/03_conversation.md §3。
  */
 import { test, expect } from '@playwright/test';
-import { attachHealthGuards, seedSessions, seedHistory, waitForMock } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions, seedHistory, waitForMock } from './helpers/index';
 
 const PROJECT = 'D:/work/aiwork/forge';
 
@@ -22,6 +22,9 @@ function mkSession(sid: string, alias: string): Record<string, unknown> {
 }
 
 async function openSeededSession(page: import('@playwright/test').Page, alias: string): Promise<void> {
+  // v6.26 默认折叠：树渲染后展开项目组，会话行可见才能点
+  await expect(page.locator('.tree-panel')).toBeVisible();
+  await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: alias }).first().click();
 }
 

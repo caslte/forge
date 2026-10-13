@@ -2,7 +2,7 @@
  * 临时复现：贴边吸附 → 退出多窗口 → 重进，验证布局是否保留。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, seedSessions } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, seedSessions } from './helpers/index';
 
 function mkSession(over: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -20,6 +20,9 @@ async function boot(page: Page, sessions: Array<Record<string, unknown>>): Promi
   await seedSessions(page, sessions);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
+  // v6.26 默认折叠：展开项目组
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
 }
 
 interface Rect { x: number; y: number; w: number; h: number }

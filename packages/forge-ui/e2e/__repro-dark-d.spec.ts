@@ -3,6 +3,7 @@
  * 截图（会话视图 + hero）+ 关键元素计算背景采样，供与原型 D 档对照。
  */
 import { test, expect } from '@playwright/test';
+import { expandAllProjects } from './helpers/index';
 
 function mkSession(): Record<string, unknown> {
   return {
@@ -21,6 +22,9 @@ test('repro: dark theme D 档截图与采样', async ({ page }) => {
   await page.waitForFunction(() => Boolean((window as unknown as { __forgeMock?: unknown }).__forgeMock), undefined, { timeout: 15_000 });
   await page.evaluate((list) => window.__forgeMock!.setSessions(list), [mkSession()]);
   await page.reload();
+  // v6.26 默认折叠：展开项目组（让既有的 .tree-session 可见断言有可见对象）
+  await expect(page.locator('.tree-project').first()).toBeVisible();
+  await expandAllProjects(page);
   await expect(page.locator('.tree-session')).toBeVisible({ timeout: 15_000 });
 
   // hero 态截图（未进会话）
