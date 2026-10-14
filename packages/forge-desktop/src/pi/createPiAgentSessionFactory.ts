@@ -12,7 +12,7 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 
-import { askUserQuestionExtension, canvasHintExtension, canvasIrHintExtension, canvasIrRepairExtension, createForgeUiContext, goalBridgeExtension, slashCommandReporterExtension, suggestNextStepsExtension } from '@forge/extensions';
+import { askUserQuestionExtension, canvasHintExtension, createForgeUiContext, goalBridgeExtension, slashCommandReporterExtension, suggestNextStepsExtension } from '@forge/extensions';
 
 import type {
   MinimalPiSession,
@@ -239,12 +239,6 @@ export function createPiAgentSessionFactory(
         askUserQuestionExtension,
         suggestNextStepsExtension,
         canvasHintExtension,
-        // 画布 IR 契约（阶段 1）。由 FORGE_IR_CANVAS=1 开启，默认关——
-        // 关闭时该扩展不注入任何内容，故与现有行为完全一致。
-        // 与 canvasHint 并存不冲突：两者互斥，开关只让IR 一方生效。
-        canvasIrHintExtension,
-        // 修复回路：IR 校验失败自动回灌回执（预算 1 次），闭环最后一块
-        canvasIrRepairExtension,
         goalBridgeExtension,
       ],
       // 冲突处置（契约 §5 / 计划 §3.5）：agent 目录 settings.json 的 packages

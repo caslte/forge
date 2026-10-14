@@ -12,7 +12,6 @@ import {
 } from '../utils/slashCommand';
 import MermaidBlock from './MermaidBlock.vue';
 import HtmlCanvasBlock from './HtmlCanvasBlock.vue';
-import IrCanvasBlock from './IrCanvasBlock.vue';
 import { splitDiagramSegments } from '../utils/splitDiagramSegments.ts';
 import ImageLightbox from './ImageLightbox.vue';
 import { useI18n } from '../i18n/index.ts';
@@ -329,14 +328,14 @@ const bodyHtml = computed(() => {
 });
 
 /**
- * 正文分段：把 canvas / canvas-ir 占位从 HTML 流里切出来，换成组件槽位。
+ * 正文分段：把 canvas 占位从 HTML 流里切出来，换成组件槽位。
  *
  * 切分逻辑已抽到 utils/splitDiagramSegments.ts（正则与状态机必须可单测），
  * 此处只负责把 options 接上：流式期给最后一张挂骨架。
  *
  * 与 mermaid 的差别是刻意的：mermaid 图统一堆到气泡底部（历史行为，不动它），
  * 而画布卡片是「夹在两段正文中间、给上文配图」的，切到底部就丢了语义——
- * 用户按顺序读时图必须在它解释的那段话旁边。canvas-ir 同样留在原位。
+ * 用户按顺序读时图必须在它解释的那段话旁边。
  */
 const segments = computed(() =>
   splitDiagramSegments(bodyHtml.value, {
@@ -429,10 +428,7 @@ const riseIn = computed(() => {
         <template v-for="(seg, i) in segments" :key="seg.kind === 'html' ? `h${i}` : seg.key">
           <div v-if="seg.kind === 'html'" class="msg-content" v-html="seg.html" @click="onMarkdownContentClick"></div>
           <HtmlCanvasBlock v-else-if="seg.kind === 'canvas'" :encoded="seg.encoded" :blocked="seg.blocked" />
-          <IrCanvasBlock v-else
-            :encoded="seg.encoded"
-            :receipt-encoded="seg.receiptEncoded"
-            :blocked="seg.blocked" />
+          <div v-else class="msg-content" v-html="''"></div>
         </template>
       </template>
       <!-- 附件文件占位 chip（非图片路径，title 显示完整路径） -->

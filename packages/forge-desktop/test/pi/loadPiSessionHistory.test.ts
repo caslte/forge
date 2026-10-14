@@ -109,57 +109,6 @@ test('loadPiSessionHistory 剥离 MiniMax 混流思考正文（` thinking…resp
   }
 });
 
-// IR 修复回执过滤（2026-10-13 用户反馈「内部重试不该暴露给用户」）
-// canvasIrRepair 以用户消息身份回灌 [IR 修复回执]…，实时路径已在
-// piConversationAdapter message_start(user) 拦截；历史回放是第二条泄漏路：
-// 切会话/重启后转录文件里它仍是 role=user 记录，不过滤就会重新冒泡。
-test('loadPiSessionHistory 过滤 IR 修复回执（内部重试不以用户气泡复现）', async () => {
-  const root = makeTempDir();
-  try {
-    const file = path.join(root, 'session.jsonl');
-    const receipt =
-      '[IR 修复回执]\n' +
-      'IR 校验未通过，共 1 处。只做上述 supportedFixes 中列出的修复…';
-    fs.writeFileSync(file, [
-      { type: 'session', version: 3, id: 'pi-session-ir-retry', timestamp: '2026-01-01T00:00:00Z', cwd: root },
-      { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:01Z', message: { role: 'user', content: '画个架构图', timestamp: Date.parse('2026-01-01T00:00:01Z') } },
-      { type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-01-01T00:00:02Z', message: { role: 'assistant', content: [{ type: 'text', text: '好的，这是架构图' }], stopReason: 'stop', usage: {}, api: 'openai-completions', provider: 'test', model: 'test-model', timestamp: Date.parse('2026-01-01T00:00:02Z') } },
-      { type: 'message', id: 'm3', parentId: 'm2', timestamp: '2026-01-01T00:00:03Z', message: { role: 'user', content: receipt, timestamp: Date.parse('2026-01-01T00:00:03Z') } },
-      { type: 'message', id: 'm4', parentId: 'm3', timestamp: '2026-01-01T00:00:04Z', message: { role: 'assistant', content: [{ type: 'text', text: '已修正，请看图' }], stopReason: 'stop', usage: {}, api: 'openai-completions', provider: 'test', model: 'test-model', timestamp: Date.parse('2026-01-01T00:00:04Z') } },
-    ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
-
-    const history = await loadPiSessionHistory(file);
-
-    assert.deepEqual(history.map((m) => ({ role: m.role, content: m.content })), [
-      { role: 'user', content: '画个架构图' },
-      { role: 'assistant', content: '好的，这是架构图' },
-      // 回执被滤掉；模型据回执修正后的正式回答仍保留（用户感知是「回答变好了」）
-      { role: 'assistant', content: '已修正，请看图' },
-    ]);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('loadPiSessionHistory 用户正文非回执开头不误滤（含回执字样也要保留）', async () => {
-  const root = makeTempDir();
-  try {
-    const file = path.join(root, 'session.jsonl');
-    const mention = '之前那条 [IR 修复回执] 是什么东西？';
-    fs.writeFileSync(file, [
-      { type: 'session', version: 3, id: 'pi-session-ir-mention', timestamp: '2026-01-01T00:00:00Z', cwd: root },
-      { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:01Z', message: { role: 'user', content: mention, timestamp: Date.parse('2026-01-01T00:00:01Z') } },
-    ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
-
-    const history = await loadPiSessionHistory(file);
-
-    assert.equal(history.length, 1);
-    assert.equal(history[0]?.content, mention, 'startsWith 口径：只有回执开头的 user 才滤');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test('loadPiSessionHistory 不再剥离附件片段：历史消息按原文展示（含旧格式）', async () => {
   const root = makeTempDir();
   try {

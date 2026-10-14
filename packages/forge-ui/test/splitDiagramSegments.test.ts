@@ -1,5 +1,5 @@
 /**
- * 正文分段：把 canvas / canvas-ir 占位从 HTML 流里切出来，换成组件槽位。
+ * 正文分段：把 canvas 占位从 HTML 流里切出来，换成组件槽位。
  *
  * 为什么抽成纯函数（而不留在 MessageCard.vue 的 computed 里）：
  * 分段是**正则与状态机**逻辑，最容易出「切错位置」「漏切」「误切」三类 bug，
@@ -8,7 +8,6 @@
  *
  * 与既有 canvas 分段的差别（刻意保持）：
  * - canvas 卡片留在正文原位（给上文配图），不堆到气泡底部
- * - canvas-ir 同样留在原位，理由同上
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,48 +27,6 @@ test('单个 canvas 占位被切出', () => {
   const segs = splitDiagramSegments('<p>前</p>' + CANVAS_RE + '<p>后</p>');
   assert.deepEqual(segs.map(s => s.kind), ['html', 'canvas', 'html']);
   assert.equal(segs[1]!.kind === 'canvas' && segs[1]!.encoded, 'ENC1');
-});
-
-test('IR 合规占位被切出且带 encoded', () => {
-  const ir = '<pre class="md-canvas-ir-wrap"><code class="md-canvas-ir" data-md-canvas-ir="IRENC">原文</code></pre>';
-  const segs = splitDiagramSegments(ir);
-  assert.equal(segs.length, 1);
-  assert.equal(segs[0]!.kind, 'ir');
-  assert.equal(segs[0]!.kind === 'ir' && segs[0]!.encoded, 'IRENC');
-});
-
-test('IR 失败占位被切出且带回执载荷，不带 encoded', () => {
-  const bad =
-    '<pre class="md-canvas-ir-wrap is-invalid"><code class="md-canvas-ir" ' +
-    'data-md-canvas-ir-receipt="RCPT" data-ir-source="SRC">原文</code></pre>';
-  const segs = splitDiagramSegments(bad);
-  assert.equal(segs.length, 1);
-  assert.equal(segs[0]!.kind, 'ir');
-  if (segs[0]!.kind === 'ir') {
-    assert.equal(segs[0]!.receiptEncoded, 'RCPT');
-    assert.equal(segs[0]!.sourceEncoded, 'SRC');
-    assert.equal(segs[0]!.encoded, undefined, '失败态不应有 encoded，否则组件会优先走编译分支');
-  }
-});
-
-test('canvas 与 canvas-ir 混排，各自切出', () => {
-  const ir = '<pre class="md-canvas-ir-wrap"><code class="md-canvas-ir" data-md-canvas-ir="IR">o</code></pre>';
-  const segs = splitDiagramSegments(CANVAS_RE + ir);
-  assert.deepEqual(segs.map(s => s.kind), ['canvas', 'ir']);
-});
-
-test('IR 占位不被 canvas 正则误吃（两者 class 名相近）', () => {
-  // 首版正则若写成 data-md-canvas="([^"]*)" 会漏掉 -ir 后缀，
-  // 反之若贪婪匹配会把 IR 的属性吃进 canvas 的 encoded。必须各自分开匹配。
-  const ir = '<pre class="md-canvas-ir-wrap"><code class="md-canvas-ir" data-md-canvas-ir="IR">o</code></pre>';
-  const segs = splitDiagramSegments(ir);
-  assert.equal(segs.some(s => s.kind === 'canvas'), false, 'IR 不应被识别为 canvas');
-  assert.equal(segs.some(s => s.kind === 'ir'), true);
-});
-
-test('canvas 失败不误匹配 IR 回执属性', () => {
-  const segs = splitDiagramSegments(CANVAS_RE);
-  assert.equal(segs[0]!.kind === 'canvas' && segs[0]!.encoded, 'ENC1');
 });
 
 test('多个同类占位全部切出，顺序保持', () => {

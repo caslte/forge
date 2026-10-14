@@ -87,9 +87,7 @@ function runBuild(workspace) {
  * `@forge/extensions` 必须在列：forge-desktop 运行时 import 的是它的
  * `dist/index.js`（package.json exports 指向 dist，不是 src）。早先这里只构建
  * core + desktop，于是**改了 extensions 的 src 却不生效**——dev 一直跑在旧产物上，
- * 且完全静默。实测踩到过：`canvasIrHint/promptIr.ts` 已从「手抄契约」改成
- * 「由 schema 派生」，但 dist 仍是旧的，模型拿到的 schema_version 还是 v1，
- * 而校验器要 v2 ⇒ 开关一开就 100% 失败。
+ * 且完全静默。实测踩到过：改了扩展 src 但 dist 仍是旧的，运行期拿到的是上一版逻辑。
  */
 const DEV_BUILD_WORKSPACES = ['@forge/core', '@forge/extensions', '@forge/desktop'];
 /** --free-port：端口被占用时直接清掉占用方再继续（残留 vite 的头号解法）。 */

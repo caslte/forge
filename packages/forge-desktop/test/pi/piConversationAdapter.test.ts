@@ -1161,59 +1161,6 @@ test('CV-S09：直发路径的 user message_start 不转发（pendingDelivery �
   assert.deepEqual(userMessages, [], '无离队记录时不转发');
 });
 
-// ===== IR 修复回执不过用户气泡（2026-10-13 用户反馈「内部重试不该暴露给用户」）=====
-//
-// canvasIrRepair 在 agent_end 判定首轮图示不合格时，以
-// pi.sendUserMessage(回执文本, { deliverAs: 'followUp' }) 回灌修复指令——
-// 它与排队用户消息走同一条通道（queue_update → pendingDelivery →
-// message_start(user)）。设计意图是「模型收到、用户无感」；不拦的后果：
-// 对话区冒出用户气泡「[IR 修复回执] IR 校验未通过…可用修复…」，
-// 把内部重试机制直接亮给用户（真机实测两条深色气泡）。
-
-test('IR 修复回执：派发时命中回执标签不转发 user 气泡，队列记账照常消费', async () => {
-  const fake = new QueuedFakePiSession();
-  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
-  const userMessages: string[] = [];
-  adapter.setEventHandlers({
-    onQueueUpdated: () => undefined,
-    onMessage: (_sid, message) => {
-      if (message.role === 'user') userMessages.push(message.content);
-    },
-  });
-  await adapter.sendMessage('s1', '画个架构图'); // 建 lease
-
-  const receipt = '[IR 修复回执]\nIR 校验未通过，共 1 处。只做上述 supportedFixes…';
-  // 回执以 followUp 入队 → 离队进 pendingDelivery → message_start(user) 派发
-  fake.emit({ type: 'queue_update', followUp: [receipt] } as MinimalEvent);
-  fake.emit({ type: 'queue_update', followUp: [] } as MinimalEvent);
-  fake.emit({ type: 'message_start', message: { role: 'user', content: receipt } } as MinimalEvent);
-
-  assert.deepEqual(userMessages, [], '回执是内部重试指令，不得以用户气泡暴露');
-});
-
-test('IR 修复回执：回执之后的正常排队消息仍按序派发（记账不被带偏）', async () => {
-  const fake = new QueuedFakePiSession();
-  const adapter = new PiConversationAdapter(async () => ({ session: fake, dispose: () => undefined }));
-  const userMessages: string[] = [];
-  adapter.setEventHandlers({
-    onQueueUpdated: () => undefined,
-    onMessage: (_sid, message) => {
-      if (message.role === 'user') userMessages.push(message.content);
-    },
-  });
-  await adapter.sendMessage('s1', '画个架构图');
-
-  const receipt = '[IR 修复回执]\nIR 校验未通过，共 2 处…';
-  // 队首回执、队尾正常消息
-  fake.emit({ type: 'queue_update', followUp: [receipt, '对了再加一条'] } as MinimalEvent);
-  fake.emit({ type: 'queue_update', followUp: ['对了再加一条'] } as MinimalEvent);
-  fake.emit({ type: 'message_start', message: { role: 'user', content: receipt } } as MinimalEvent);
-  fake.emit({ type: 'queue_update', followUp: [] } as MinimalEvent);
-  fake.emit({ type: 'message_start', message: { role: 'user', content: '对了再加一条' } } as MinimalEvent);
-
-  assert.deepEqual(userMessages, ['对了再加一条'], '回执被吞、正常消息一个不少');
-});
-
 test('CV-S09：cancelStream 清空队列并返回文本，清空不派发（无 user 气泡）', async () => {
   const fake = new QueuedFakePiSession();
   fake.queueContent = ['q1', 'q2'];

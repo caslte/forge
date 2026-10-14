@@ -1,5 +1,99 @@
 # 变更日志
 
+## v6.33 (移除 IR 链路：canvas-ir 整体下线，AI 直出 HTML 成为唯一画布通路)
+
+> 来源：2026-10-15 用户「去掉 forge 中所有 IR 相关代码，我觉得无用，就让 AI 直出吧」。
+> 上承 v6.32《IR 投入重估》的分析结论。
+
+### 一句话结论
+
+**IR（canvas-ir）链路整体移除**：模型写受限 JSON → 宿主编译 SVG 这条路不再存在。
+画布回归**唯一通路**：`canvas` 围栏，模型直接写 HTML/CSS → iframe 沙箱渲染。
+理由（v6.32 已论证）：布局工程是永久债、IR 从未被真实用过（152 转录 0 条）、
+直出 + 风格知识库复利率高得多。
+
+### 删除范围（约 2 万行）
+
+| 层 | 删除内容 |
+|---|---|
+| forge-core src | `canvasIr.ts`（校验器 806 行）、`canvasIrRender.ts`（编译器 355 行）、`canvasIr/` 目录 10 个文件（schemaSpec / promptSpec / shapes / svg / textFit / labelPlace / layoutLayered / layoutTimeline / layoutTree / layoutTypes） |
+| forge-core test | 15 个测试文件（canvasIr / Flow / Tree / Sequence / Routing / Tiers / Fence / Extract / Spec / Render / LabelOcclusion / Edge / labelPlace） |
+| forge-extensions src | `canvasIrHint/`（提示词契约 + FORGE_IR_CANVAS 开关）、`canvasIrRepair/`（修复回路 + IR_RETRY_TAG） |
+| forge-extensions test | `canvasIrHint/`、`canvasIrRepair/`、`canvasLinkage/`（互斥测试，双方已有一方消失） |
+| forge-desktop src | `canvasIrStats/`（extractIrSamples + irPassRate，采样通道） |
+| forge-desktop test | `canvasIrFenceContract.test.ts`、`canvasIrStats/` |
+| forge-ui | `IrCanvasBlock.vue`（IR 卡片）、`utils/irCardTheme.ts`（--c-* 映射表）、`test/irCardTheme.test.ts` |
+| scripts | `ir-probe.mjs`、`ir-gate.mjs`、`ir-samples.mjs` + package.json 三条命令 |
+| 会话链路 | createPiAgentSessionFactory 的两个 IR 扩展注册、piConversationAdapter 的 IR_RETRY_TAG 过滤、loadPiSessionHistory 的同口径过滤、对应测试 |
+
+### 保留与回退
+
+- **`canvas` 链路一行未动**：canvasSandbox 判据体系（looksLikeHtmlCanvas / PROSE_* / SHELL_*）、HtmlCanvasBlock 四态、iframe `sandbox=""` 安全口径全部原样。
+- **canvasHint 扩展简化为单契约**：删掉 IR 互斥逻辑（`IR_EXTENSION_ENV` / `isIrExtensionEnabled` / env 参数），现在是唯一画布契约，无条件注入。
+- `renderMarkdown.ts` 的 canvas 分支与 sanitize 白名单的 IR 属性（`data-md-canvas-ir` / `-receipt` / `data-ir-source`）移除；渲染前的 `repairIrFenceOpeners` 预处理也一并移除。
+- `splitDiagramSegments` 正则从「canvas + canvas-ir 双分支」收窄为单一 canvas；IR 测试用例删除。
+- `detect.ts` 出图触发器的注释改为不引用 IR（"整段画布输出契约没注入"）。
+
+### 验证
+
+- `npm run typecheck`：**4 个工作区全绿**（core / desktop / ui / extensions）。
+- `npm run build`：**全绿**（含 vue-tsc + vite）。
+- canvas 链路回归：`canvasSandbox.test.ts` + `canvasCorpus.test.ts` + `splitDiagramSegments.test.ts` **54/54 绿**。
+- 全量 `npm test` 剩 5 条红，**均为 HEAD 既有失败**（已用 git stash 在 HEAD 上复跑确认，与本次无关）：
+  1. `piConversationAdapter`「工厂可注入…文本流映射」——本机无模型凭据（`No API key found`）。
+  2. 同上第二条「发送异常时映射 error」——同一个凭据问题。
+  3. `shellProbe` 两条 `ensurePiShellPath`——本机 Git Bash 探测环境差异。
+  4. `theme.test.ts`「建窗底色同源」——`theme.ts` 与 `design-tokens.css` 的 hex 漂移（v6.33 之前的既有问题）。
+
+### 文档
+
+- `docs/plan/canvas-ir-stage1-test-design.md`、`canvas-ir-archify-analysis.md`、`canvas-render-routes.md` 标为**历史存档**（内容保留，不再维护）。
+- `canvas-vcp-comparison.md`、`canvas-ir-cost-reassessment.md` 的分析结论已由本次落地，保留为决策依据。
+- `docs/plan/canvas-card.md` 是唯一现行画布契约文档。
+
+## v6.32 (文档：IR 投入重估——模型能自己画了，宿主还要不要代劳？)
+
+> 来源：2026-10-15 用户「我突然觉得 IR 并不香，模型自己画更自由；IR 固定了这些东西，
+> 很多时候需要 FORGE 自己把画做好才能体现，但模型智能度越来越高，我们岂不是在限制模型的运用？」
+
+### 本轮性质
+
+**纯文档轮，零代码改动。** 新增 `docs/plan/canvas-ir-cost-reassessment.md`（分析稿，待拍板），
+对 `canvas-render-routes.md` 的投入优先级做**立场修订**（技术结论不推翻）。
+
+### 核心判断
+
+1. **用户质疑成立的部分**：「宿主把画画好」= 无限期布局工程（每加一类图 = 一套布局算法 +
+   一轮几何 debug，与模型能力降价无关；archify 为 5 类图是独立项目，状态机图被砍就是这条税的证据）。
+2. **需要修正的部分**：IR 限制的不是模型的**表达力**运用，而是模型的**坐标计算**——
+   自回归 token 流 vs 全局耦合 2D 约束求解，属架构层短板，模型换代治不了它
+   （实证：archify 的美观来自 renderers/shared 几何模块而非模型自由发挥；
+   Next AI Draw.io 作者自述「AI 对空间布局的理解有时会飘」）。
+3. **最锋利的一条（如实记账）**：IR 至今**从未被验证**——FORGE_IR_CANVAS 默认关、
+   152 个转录 0 条真实 IR、G5 通过率未执行。默认关的这两年用户实际在用的就是 canvas 直出。
+4. **本轮认知增量——第三条路**：不限制模型画什么，给直出喂 styles/ 风格知识库
+   （VCP 已验证：常驻只注检索指引、知识按文档 read、复利高于布局工程）。
+
+### 修订后的分工（与 canvas-render-routes.md 的差异 = 优先级倒转）
+
+- **canvas 直出 + styles 知识库 = 主线**；IR = 冻结的「精确模式」后备，不再扩图类型。
+- 更正前两轮说重的一条：**主题税其实很小**——`buildCanvasDocument` 已注入宿主 tokens，
+  `remapDarkBackgrounds` 只是兜底模型写死浅色的情况。
+- 真正剩下的两条 canvas 税：**高度**（iframe postMessage 上报 scrollHeight，标准解，小改）、
+  **脚本/可信模式**（`allow-scripts` 可开但永不 `allow-same-origin`，比 VCP 内联更安全；待需求确认）。
+
+### 行动清单（按投入产出排序）
+
+① 跑 G5 真实对话门禁（IR 香不香的唯一硬数据）→ ② canvas 高度自适应 →
+③ 建 forge styles 知识库（3-5 份起步）→ ④ IR 冻结 → ⑤（可选）可信模式。
+**不做**：patch 流式、IR 第 5 类图、canvas 改内联渲染。
+
+### 文档
+
+- 新增 `docs/plan/canvas-ir-cost-reassessment.md`（六节：结论/质疑解剖/第三条路/分工修订/行动清单/开放问题）。
+- `canvas-vcp-comparison.md` / `canvas-render-routes.md` 一字未动；本文档为其上的优先级修订，三份并读。
+- 待用户拍板 4 条开放问题（分工认不认 / G5 何时跑 / styles 先建哪几类 / 可信模式有无需求）。
+
 ## v6.31 (文档：画布三条链路对照 —— 补 VCP v2 外部方案盘点与可信模式评估)
 
 > 来源：2026-10-14 用户「`github.com/plolpl789/dsh-raw-html-v2` 这个给 deepseek 做的插件是怎么
