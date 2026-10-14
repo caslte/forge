@@ -1,5 +1,47 @@
 # 变更日志
 
+## v6.34 (P0+P1：画布单一风格定调「青瓷数据」+ 风格规范注入)
+
+> 来源：2026-10-15 用户拍板。P0 demo（prototypes/canvas-style-candidates-v2.html 三候选）选定
+> **C+ 青瓷数据（porcelain-data）**，并裁定「固定一种风格先拟好，后期再做各种主题」——
+> 不做多风格并立，先钉死一种。
+
+### P0 · 风格定调（demo → 拍板）
+
+- `prototypes/canvas-style-candidates.html`（v1 三候选：编辑/档案/数据）→ 用户反馈「素了」。
+- `prototypes/canvas-style-candidates-v2.html`（v2 打开三杠杆）：**color-mix 派生色**
+  （暖纸/瓷青/荧青全部由语义 token 低比例混出，深浅主题自动成立）、**纯 CSS 纹理**
+  （纸纹/蓝图网格/光晕）、**系统字体三员**（衬线/楷体/等宽）。零脚本零外链，真机沙箱原样可用。
+- 用户选定 C+（暖纸底 + 瓷青墨 + 衬线数字 + dashed 徽章，强调收敛 accent 一族）。
+
+### P1 · 单一风格落地（本轮代码改动）
+
+- **`CANVAS_STYLE_SPEC`**（`canvasHint/prompt.ts` 新增第三段）：porcelain 风格 8 条规则
+  （纸底/瓷墨/字体三员/明度层级/结构线/青瓷纪律/▼箭头/来源行）+ 禁止清单 + 图例引用，
+  全英文写给模型。与 CANVAS_SPEC 的分工：SPEC 管能不能渲染（硬），STYLE 管好不好看（软），
+  注入顺序 SPEC → STYLE（先能活再好看）。
+- **注入链路**（`canvasHint/extension.ts`）：命中出图意图时 SPEC + STYLE 一起追加；
+  常驻段与幂等守卫不动。**单一风格不需要检索机制**——一份文档直接随 SPEC 注入，
+  消掉「模型不检索就漏规则」的风险。
+- **图例页** `prototypes/canvas-style-porcelain.html`：视觉基准（卡左则右，8 条一一对应），
+  是 CANVAS_STYLE_SPEC 的对照基准；后续改风格 = 改 SPEC + 本页两处同源。
+- **测试**（新增 3 锁）：注入顺序锁（SPEC 在 STYLE 前）；风格段禁裸 hex/rgb + 字体三员在场 +
+  「one style/consistent」声明在场；**跨包变量锁**——风格段引用的每个 `--c-*` 都必须在宿主
+  preflight 注入清单内（派生色的根基，preflight 改名即红）。
+- **文档**：新增 `docs/plan/canvas-style.md`（定调理由/8 条语法/改动清单/注入链路/P2 验收/P3 进化机制）。
+
+### 验证
+
+- typecheck（extensions/desktop）+ build 全绿；canvasHint + fence contract **31/31 绿**。
+- 图例页双主题截图自查通过（浅/深各一，`prototypes/.shots/style-porcelain-*.png`）。
+
+### 遗留（P2/P3）
+
+- **P2 取证**：≥20 轮真实对话逐卡对照风格打分（≥80% 无返工达标），失败归类按类改文档不改代码。
+- **P3 进化**：好卡存档 → 提炼技法回填 SPEC + 图例页（三处同源）。
+- 高度自适应（320/560）维持现状：被 `sandbox=""` 卡住（测量脚本也不执行），
+  三条路的取舍推迟，不影响风格主线。
+
 ## v6.33 (移除 IR 链路：canvas-ir 整体下线，AI 直出 HTML 成为唯一画布通路)
 
 > 来源：2026-10-15 用户「去掉 forge 中所有 IR 相关代码，我觉得无用，就让 AI 直出吧」。

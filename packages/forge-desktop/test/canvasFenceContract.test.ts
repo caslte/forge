@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { CANVAS_LANGUAGE, looksLikeHtmlCanvas } from '@forge/core/markdown';
-import { CANVAS_FENCE_LANGUAGE, CANVAS_SPEC } from '@forge/extensions';
+import { CANVAS_FENCE_LANGUAGE, CANVAS_SPEC, CANVAS_STYLE_SPEC } from '@forge/extensions';
 
 test('提示词里的围栏名 == 渲染层认的围栏名（不一致则卡片静默失效）', () => {
   assert.equal(CANVAS_FENCE_LANGUAGE, CANVAS_LANGUAGE);
@@ -27,6 +27,22 @@ test('输出契约文本里出现的围栏与注入的语义色，渲染层都�
   // 契约要求模型只用注入变量取色：preflight 若改名而契约未改，卡片会全黑/全白
   assert.ok(spec.includes('--c-ok-bg'));
   assert.ok(spec.includes('--c-muted-fg'));
+});
+
+test('风格规范引用的变量在宿主注入清单里（color-mix 派生色的根基，改名即翻车）', () => {
+  const spec = CANVAS_STYLE_SPEC.join('\n');
+  // 风格段只许从这批 token 派生：出现清单外的 --c-* 变量 = preflight 没注入 = 派生色解析失败
+  const allowed = new Set([
+    '--c-bg', '--c-fg', '--c-muted', '--c-muted-fg', '--c-surface', '--c-border',
+    '--c-ok', '--c-warn', '--c-bad', '--c-accent',
+    '--c-ok-bg', '--c-warn-bg', '--c-bad-bg',
+  ]);
+  const used = [...spec.matchAll(/--c-[a-z-]+/g)].map((m) => m[0]);
+  assert.ok(used.length > 0, '风格段应引用语义 token');
+  for (const v of used) {
+    assert.ok(allowed.has(v), `风格段引用了 ${v}，但宿主 preflight 不注入它`);
+  }
+  assert.ok(spec.includes('color-mix'), '派生色是 porcelain 风格的根基');
 });
 
 test('契约要求禁脚本，与渲染侧判据方向一致', () => {

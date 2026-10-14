@@ -11,4 +11,4 @@ export {
 } from './extension.ts';
 
 export { looksLikeDiagramRequest } from './detect.ts';
-export { CANVAS_FENCE_LANGUAGE, CANVAS_SPEC, CANVAS_STANZA } from './prompt.ts';
+export { CANVAS_FENCE_LANGUAGE, CANVAS_SPEC, CANVAS_STANZA, CANVAS_STYLE_SPEC } from './prompt.ts';

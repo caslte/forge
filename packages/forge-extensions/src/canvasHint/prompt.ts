@@ -82,3 +82,58 @@ export const CANVAS_SPEC: readonly string[] = [
   '',
   'If the answer genuinely has no visual structure at all (a plain fact, a single number, a definition), skip the card and answer in markdown.',
 ];
+
+/**
+ * 第三段：风格规范（命中出图意图时与 CANVAS_SPEC 一起追加）。
+ *
+ * 定调 2026-10-15（P0 demo 用户拍板）：forge 画布固定一种风格 ——「青瓷数据」
+ * （porcelain-data，图例 prototypes/canvas-style-candidates-v2.html 第三列），
+ * 不做多风格并立。单一风格是填空题不是选择题：模型不再需要「选一种好看」，
+ * 只需要把给定的语法用对 —— 一致性（每张卡都像同一个产品画的）是主要收益。
+ *
+ * 全部技法零脚本零外链，真机 sandbox="" 下原样可用：
+ * - color-mix 派生色（从语义 token 低比例混出暖纸底/瓷青墨），深浅主题自动成立
+ * - 纯 CSS 纹理（repeating-gradient 纸纹、radial-gradient 光晕）
+ * - 系统字体三员（衬线 Georgia/Songti 压标题与数字、等宽 Consolas 压标签）
+ *
+ * 与 CANVAS_SPEC 的关系：SPEC 管「能不能渲染出来」（硬约束，违规=白框/代码块），
+ * 本段管「渲染出来好不好看」（软约束，违规=卡片平庸但不坏）。两者同轮追加，
+ * 风格段放在 SPEC 之后 —— 先能活，再好看。
+ */
+export const CANVAS_STYLE_SPEC: readonly string[] = [
+  '## Card style — "porcelain data" (mandatory, one style for all cards)',
+  '',
+  'Every card uses this one style. Do not invent your own palette or pick another aesthetic:',
+  'consistent-looking cards are the product goal. The rules below are derived ONLY from the',
+  'host-injected CSS variables via `color-mix`, so they hold in both light and dark themes.',
+  '',
+  '1. Paper base: give the card a warm paper tint, not a flat background:',
+  '   `background: color-mix(in oklab, var(--c-warn) 7%, var(--c-bg))`, plus one soft glow',
+  '   `radial-gradient(100% 70% at 0% 100%, color-mix(in oklab, var(--c-accent) 6%, transparent), transparent 60%)`',
+  '   layered under it (glow at a corner, never centered).',
+  '2. Ink over paper: headings and key numbers use "porcelain ink" —',
+  '   `color: color-mix(in oklab, var(--c-accent) 40%, var(--c-fg))`. Body text stays `var(--c-fg)`.',
+  '3. Type staff (exactly three roles, nothing else):',
+  '   - Serif for the card title and big numbers: `font-family: Georgia, "Songti SC", "SimSun", serif`.',
+  '   - Sans (default body font) for explanatory text.',
+  '   - Monospace ONLY for small tag chips / data labels: `Consolas, monospace`.',
+  '   Big numbers: serif, `font-variant-numeric: tabular-nums`, 22-27px. Section keys: 9.5-10.5px,',
+  '   `letter-spacing: .16em`, uppercase, `var(--c-muted-fg)`.',
+  '4. Hierarchy by brightness, not hue: the most important element is the darkest ink / largest serif number;',
+  '   secondary content steps down in size and lightness. Do not introduce a second accent hue —',
+  '   semantic colors (`--c-ok/warn/bad`) appear only as tiny 6-8px dots or +delta text, never as large fills.',
+  '5. Structure lines: one hairline `border-top: 1px solid color-mix(in oklab, var(--c-accent) 30%, transparent)`',
+  '   under the header. Nodes/panels: `border: 1px solid color-mix(in oklab, var(--c-accent) 35%, transparent)`,',
+  '   `border-radius: 8px`, fill `color-mix(in oklab, var(--c-bg) 40%, transparent)`;',
+  '   the ONE load-bearing node may take `color-mix(in oklab, var(--c-accent) 10%, var(--c-bg))`.',
+  '6. Accent discipline: all accent usage (left border bars, dashed badges, chips, the progress bar)',
+  '   stays in the SAME family as `--c-accent`. A dashed pill badge (`border: 1px dashed`,',
+  '   `border-radius: 20px`, uppercase, `letter-spacing: .2em`) above the title is the signature opener.',
+  '7. Flow arrows between nodes: plain `▼` text, centered, 9px,',
+  '   `color: color-mix(in oklab, var(--c-accent) 60%, var(--c-muted-fg))`. No SVG arrows needed.',
+  '8. Source line last: 8.5px, uppercase, `letter-spacing: .2em`,',
+  '   `color: color-mix(in oklab, var(--c-accent) 45%, var(--c-muted-fg))`, top hairline at 18% accent.',
+  '',
+  'Reference implementation (open it in a browser to see the target look):',
+  '`prototypes/canvas-style-candidates-v2.html` — third column "C+ 青瓷数据".',
+];

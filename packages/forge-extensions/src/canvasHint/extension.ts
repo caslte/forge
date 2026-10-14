@@ -17,7 +17,7 @@
 import type { ExtensionAPI, InlineExtension } from '@earendil-works/pi-coding-agent';
 
 import { looksLikeDiagramRequest } from './detect.ts';
-import { CANVAS_SPEC, CANVAS_STANZA } from './prompt.ts';
+import { CANVAS_SPEC, CANVAS_STANZA, CANVAS_STYLE_SPEC } from './prompt.ts';
 
 /**
  * 组装本轮系统提示。
@@ -31,7 +31,9 @@ export function applyCanvasHint(systemPrompt: string, prompt: string): string {
   if (base.includes(CANVAS_STANZA)) return base;
   const withStanza = `${base}\n\n${CANVAS_STANZA}`;
   if (!looksLikeDiagramRequest(prompt)) return withStanza;
-  return `${withStanza}\n\n${CANVAS_SPEC.join('\n')}`;
+  // 命中出图意图：硬约束（SPEC）+ 风格规范（STYLE_SPEC）一起追加。
+  // 风格段在 SPEC 之后 —— 先保证能渲染，再保证好看。
+  return `${withStanza}\n\n${CANVAS_SPEC.join('\n')}\n\n${CANVAS_STYLE_SPEC.join('\n')}`;
 }
 
 /** 注册 before_agent_start 钩子。 */

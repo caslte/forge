@@ -17,7 +17,7 @@ import {
   registerCanvasHint,
 } from '../../src/canvasHint/extension.ts';
 import { looksLikeDiagramRequest } from '../../src/canvasHint/detect.ts';
-import { CANVAS_SPEC, CANVAS_STANZA } from '../../src/canvasHint/prompt.ts';
+import { CANVAS_SPEC, CANVAS_STANZA, CANVAS_STYLE_SPEC } from '../../src/canvasHint/prompt.ts';
 
 const BASE = 'You are a coding agent.';
 
@@ -94,6 +94,23 @@ test('两段式：命中时追加完整契约', () => {
   // 契约里必须含三条硬约束（沙箱不开脚本 / 不外链资源 / 只能用注入的语义色）
   assert.ok(out.includes('No `<script>`'));
   assert.ok(out.includes('--c-ok-bg'));
+  // 风格规范（P0 拍板：单一「青瓷数据」风格）与硬约束同轮追加，且排在 SPEC 之后
+  assert.ok(out.includes('## Card style'));
+  assert.ok(out.indexOf('## Diagram output contract') < out.indexOf('## Card style'),
+    '先保证能渲染（SPEC），再保证好看（STYLE）——顺序反了说明注入拼错');
+});
+
+test('风格规范只从语义 token 派生颜色（不许出现裸 hex/rgb 写死色，否则暗色主题翻车）', () => {
+  const spec = CANVAS_STYLE_SPEC.join('\n');
+  assert.ok(spec.includes('color-mix'), '派生色是这套风格的根基');
+  // 禁止「#rgb 三位/六位 hex 字面量」出现在风格段（示例色板都不行——模型会照抄）
+  assert.ok(!/#[0-9a-fA-F]{3,6}\b/.test(spec), '风格段不得出现写死的 hex 色');
+  assert.ok(!/rgb\(|rgba\(/.test(spec), '风格段不得出现写死的 rgb()');
+  // 字体三员锁死：衬线压标题数字、等宽只压标签
+  assert.ok(spec.includes('Georgia'), '衬线是标题/数字的主力');
+  assert.ok(spec.includes('Consolas'), '等宽只用于标签 chip');
+  // 一致性声明必须在场（这是单一风格的产品理由）
+  assert.ok(/one style|consistent/i.test(spec), '必须明说「只有一个风格，不许自创」');
 });
 
 test('幂等：常驻段已存在时原样返回，不随轮次累积', () => {
