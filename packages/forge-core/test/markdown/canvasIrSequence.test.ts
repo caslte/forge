@@ -28,7 +28,7 @@ import { judgeIr } from '../../src/markdown/canvasIr.ts';
 import { compileIrToSvg } from '../../src/markdown/canvasIrRender.ts';
 
 const SEQ = (overrides?: Record<string, unknown>) => JSON.stringify({
-  schema_version: 'forge-ir/1',
+  schema_version: 'forge-ir/2',
   diagram_type: 'sequence',
   meta: { title: '发消息时序' },
   participants: [
@@ -79,7 +79,7 @@ test('sequence 的 participants 非数组或缺字段报 IR015', () => {
 
 test('architecture 类型不受 sequence 规则影响（判据按 diagram_type 分派）', () => {
   const arch = JSON.stringify({
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: {},
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: {},
     nodes: [{ id: 'a', label: 'A', kind: 'process', col: 0, row: 0 }],
     edges: [],
   });
@@ -121,17 +121,46 @@ test('自消息（from === to）也渲染（标签在生命线旁，不出错）
   assert.ok(svg.includes('>本地校验<'));
 });
 
+test('线头落在激活条边缘，不插进块里（用户第二轮反馈的回归锁）', () => {
+  // 用户原话：「线头再对准一点，是不是线段到边就行了，还是要插到块里面去？」
+  // 答案是**到边**（UML 约定）。首版画到生命线中心 ⇒ 箭头插在激活条内部。
+  const svg = compileIrToSvg(judgeIr(SEQ()).ir!);
+
+  // 激活条：x = 生命线中心 - 4.5，宽 9 ⇒ 左右边缘就是线头该落的位置
+  const edges = new Set<number>();
+  // ⚠ 属性顺序必须写死（x / y / width）。用 `[^>]*` 通配会让正则贪婪地跳过
+  // `width="9"` 去匹配末尾的 `stroke-width="0.8"` —— 第一版就栽在这，算出来的
+  // 「激活条宽」是 0.8。
+  for (const m of svg.matchAll(/<rect class="ir-seq-activation" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"/g)) {
+    const x = Number(m[1]);
+    const w = Number(m[2]);
+    edges.add(Number((x).toFixed(2)));
+    edges.add(Number((x + w).toFixed(2)));
+  }
+  assert.ok(edges.size >= 4, '应至少识别出两条激活条的边缘');
+
+  const lines = [...svg.matchAll(/class="ir-seq-msg-line" d="M([\d.]+) ([\d.]+) H([\d.]+)"/g)];
+  assert.equal(lines.length, 3, '应有 3 条非自消息的连线');
+  for (const m of lines) {
+    const x1 = Number(Number(m[1]).toFixed(2));
+    const x2 = Number(Number(m[3]).toFixed(2));
+    assert.ok(edges.has(x1), `线头起点 ${x1} 不在任何激活条边缘上（应到边，不插入）`);
+    assert.ok(edges.has(x2), `线头终点 ${x2} 不在任何激活条边缘上（应到边，不插入）`);
+  }
+});
+
 test('连线可读性：stroke 用 muted-fg（比 border 深，交叉时能分清走向）', () => {
   // sequence 消息线与 architecture 边统一升级（深化自 --c-border）
   const seqSvg = compileIrToSvg(judgeIr(SEQ()).ir!);
   const msg = seqSvg.match(/class="ir-seq-msg-line"[^>]*/)![0];
   assert.ok(msg.includes('--c-muted-fg'), '消息线应用更深的 muted-fg：' + msg);
-  // architecture 边同样加深（回归确认）。⚠ 先剥 defs——marker 的 path 会抢 first match
+  // architecture 边同样加深（回归确认）。⚠ 先剥 defs——marker 的 path 会抢 first match。
+  // 用跨层边：同层边自 2026-10-13 起不再绘制，同层的样例会画不出任何线。
   const archSvg = compileIrToSvg(judgeIr(JSON.stringify({
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: {},
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: {},
     nodes: [
       { id: 'a', label: 'A', kind: 'process', col: 0, row: 0 },
-      { id: 'b', label: 'B', kind: 'process', col: 1, row: 0 },
+      { id: 'b', label: 'B', kind: 'process', col: 0, row: 1 },
     ],
     edges: [{ from: 'a', to: 'b' }],
   })).ir!);

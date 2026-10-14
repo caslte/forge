@@ -28,13 +28,34 @@ import {
 } from '../../src/markdown/canvasIrRender.ts';
 
 const IR = {
-  schema_version: 'forge-ir/1',
+  schema_version: 'forge-ir/2',
   diagram_type: 'architecture',
   meta: { title: '链路图' },
   nodes: [
     { id: 'a', label: '渲染进程', kind: 'component' as const, col: 0, row: 0 },
     { id: 'b', label: 'IPC 边界', kind: 'boundary' as const, col: 1, row: 0 },
     { id: 'c', label: '主进程', kind: 'process' as const, col: 2, row: 0 },
+  ],
+  edges: [
+    { from: 'a', to: 'b' },
+    { from: 'b', to: 'c' },
+  ],
+};
+
+/**
+ * 跨层边样例——**数连线条数的用例必须用它**。
+ *
+ * `IR` 的三个节点同在第 0 行，它的两条边都是同层边；自 2026-10-13 起架构图同层边
+ * 不再绘制（用户裁定「层内不画线」），拿 `IR` 去数 `<path>` 会得到 0 条。
+ * 这里改成三层各一个节点、两条相邻层边：跨层边会被归并成「层到层」箭头，
+ * 而 (0→1)、(1→2) 是两对不同的层，所以恰好两条 path。
+ */
+const IR_X = {
+  ...IR,
+  nodes: [
+    { id: 'a', label: '渲染进程', kind: 'component' as const, col: 0, row: 0 },
+    { id: 'b', label: 'IPC 边界', kind: 'boundary' as const, col: 0, row: 1 },
+    { id: 'c', label: '主进程', kind: 'process' as const, col: 0, row: 2 },
   ],
   edges: [
     { from: 'a', to: 'b' },
@@ -145,18 +166,39 @@ test('SVG 内每个节点一个 rect，且数量一致', () => {
 });
 
 test('SVG 内每条边一个 path，且数量一致', () => {
-  const out = compileIrToSvg(IR);
+  const out = compileIrToSvg(IR_X);
   // 只数连线：defs 里marker 自身也含一个 <path>，必须先剥掉 defs 再数，
   // 否则永远多1 条（首版就这么写错了）。
+  // 本样例每对层各一条边 ⇒ path 数 = 边数（归并见下一条用例）。
   const body = out.replace(/<defs>[\s\S]*?<\/defs>/, '');
   const paths = body.match(/<path/g) ?? [];
-  assert.equal(paths.length, IR.edges.length, '实际连线数 ' + paths.length);
+  assert.equal(paths.length, IR_X.edges.length, '实际连线数 ' + paths.length);
 });
 
-test('所有 path 都带 fill=none（避免连线被填充成怪形块）', () => {
-  const out = compileIrToSvg(IR);
-  for (const m of out.matchAll(/<path[^>]*>/g)) {
-    assert.ok(m[0]!.includes('fill="none"'), 'path 必须 fill=none：' + m[0]!.slice(0, 60));
+test('架构图：同一对层之间的多条边归并成一条箭头（不是每条边一条线）', () => {
+  // 归并是「层到层」的设计前提：同层的块级差异不再出现在线上，只保留「层与层有依赖」
+  // 这个方向性事实。两条 a→c、b→c 同属 (row0 → row1)，只应画出一条线。
+  const merged = {
+    ...IR_X,
+    nodes: [
+      { id: 'a', label: '渲染进程', kind: 'component' as const, col: 0, row: 0 },
+      { id: 'b', label: 'IPC 边界', kind: 'boundary' as const, col: 1, row: 0 },
+      { id: 'c', label: '主进程', kind: 'process' as const, col: 0, row: 1 },
+    ],
+    edges: [{ from: 'a', to: 'c' }, { from: 'b', to: 'c' }],
+  };
+  const body = compileIrToSvg(merged).replace(/<defs>[\s\S]*?<\/defs>/, '');
+  assert.equal((body.match(/<path/g) ?? []).length, 1, '同一对层的两条边应归并成一条');
+});
+
+test('所有连线 path 都带 fill=none（避免连线被填充成怪形块）', () => {
+  // ⚠ 先剥 defs：箭头 marker 自身的 path 是**实心**的（空心箭头在细线上看不出朝向，
+  // 用户明确要求「方向要看得清」）。本用例针对的是连线，不是箭头。
+  const out = compileIrToSvg(IR_X).replace(/<defs>[\s\S]*?<\/defs>/, '');
+  const paths = [...out.matchAll(/<path[^>]*>/g)];
+  assert.ok(paths.length > 0, '应至少有一条连线');
+  for (const m of paths) {
+    assert.ok(m[0]!.includes('fill="none"'), '连线 path 必须 fill=none：' + m[0]!.slice(0, 60));
   }
 });
 
@@ -186,7 +228,7 @@ test('HTML 特殊字符被转义（防标签注入）', () => {
 
 test('单节点无边时也能正常编译', () => {
   const out = compileIrToSvg({
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: {},
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: {},
     nodes: [{ id: 'solo', label: '独点', kind: 'process', col: 0, row: 0 }],
     edges: [],
   });
@@ -199,7 +241,7 @@ test('单节点无边时也能正常编译', () => {
 
 test('超宽图自动折行，宽度回到卡片可视范围内', () => {
   const many = {
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: {},
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: {},
     nodes: Array.from({ length: 12 }, (_, i) => ({
       id: 'n' + i, label: '节点' + i, kind: 'process' as const, col: i, row: 0,
     })),
@@ -229,7 +271,7 @@ test('卡片高度是常量（骨架与终态同高，零跳变）', () => {
 test('另存产物：自含 HTML，内嵌 SVG 与双主题变量（脱离 forge 可直接打开）', async () => {
   const { buildIrStandaloneFile } = await import('../../src/markdown/canvasIrRender.ts');
   const ir = {
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: { title: '分层' },
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: { title: '分层' },
     nodes: [{ id: 'a', label: '节点A', kind: 'process' as const, col: 0, row: 0 }],
     edges: [],
   };

@@ -2,6 +2,15 @@
  * AI 回复完成 · 系统级通知小窗（Windows 11 通知风格，方案 A 定稿）。
  * 交互原型：prototypes/ai-reply-toast-demo.html（用户选定 A 方案：Win11 原生观感）。
  *
+ * ## 运行时约束：只能在 Electron 主进程内被 import
+ *
+ * 本文件顶层 `import { BrowserWindow, ipcMain, screen } from 'electron'`——
+ * **不要用裸 node 执行它**（`node dist/notifyToast.js`）。electron 包在裸 node 下
+ * 导出的只是「可执行文件路径」这一个字符串，命名导入会直接 SyntaxError：
+ * `The requested module 'electron' does not provide an export named 'BrowserWindow'`。
+ * 那些导出只在 Electron 运行时（主进程）存在。想看图：跑 `npm run dev` 用真机，
+ * AI 回复到达终态且主窗口失焦时自动触发。
+ *
  * 为什么不用 `new Notification()`：原生通知样式完全跟随系统且不可定制（Windows 上还
  * 需要 App User Model ID / 开始菜单快捷方式才带应用名与图标），无法保证与参考形态
  * （应用图标 + 应用名 + 标题 + 3 行正文摘要）一致——故用独立 BrowserWindow 自绘。

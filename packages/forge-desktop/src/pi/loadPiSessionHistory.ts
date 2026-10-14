@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 
 import type { ConversationMessage } from '@forge/core';
+import { IR_RETRY_TAG } from '@forge/extensions';
 import { stripThinkingContent } from './thinkingFilter.ts';
 
 type PiContentPart = {
@@ -106,6 +107,12 @@ export async function loadPiSessionHistory(sessionFile: string): Promise<Convers
 
     // 跳过空的 assistant 占位（仅含 thinking/toolCall，无 text），避免空泡
     if (message.role === 'assistant' && content === '') continue;
+
+    // IR 修复回执是扩展以用户消息身份回灌的内部重试指令（canvasIrRepair 的
+    // sendUserMessage followUp，见 piConversationAdapter 同口径过滤）。实时路径
+    // 已拦（不冒泡），但转录文件里它仍是 role=user 的一条记录——不在这里再拦，
+    // 切换会话/重启后的历史回放会把「[IR 修复回执]…可用修复…」当用户气泡放出来。
+    if (message.role === 'user' && content.startsWith(IR_RETRY_TAG)) continue;
 
     const role =
       message.role === 'user' ? 'user'

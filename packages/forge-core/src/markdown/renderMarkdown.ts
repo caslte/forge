@@ -30,7 +30,7 @@ import { hljs } from './hljsCore.ts';
 import sanitizeHtml from 'sanitize-html';
 
 import { CANVAS_LANGUAGE, looksLikeAsciiArt } from './canvasSandbox.ts';
-import { IR_FENCE_LANGUAGE, judgeIrFence } from './canvasIr.ts';
+import { IR_FENCE_LANGUAGE, judgeIrFence, repairIrFenceOpeners } from './canvasIr.ts';
 
 /** marked 实例：gfm + 换行即 <br>（对齐消息正文既有行为） */
 const marked = new Marked({ gfm: true, breaks: true });
@@ -72,18 +72,51 @@ export {
   parseIr,
   judgeIr,
   extractIrFences,
+  repairIrFenceOpeners,
   judgeIrFence,
   formatIrReceipt,
+  formatIrUserReceipt,
   type IrCode,
   type IrDocument,
   type IrNode,
   type IrEdge,
+  type IrTier,
+  type IrParticipant,
+  type IrMessage,
+  type IrTreeHints,
   type IrNodeKind,
   type IrDiagramType,
   type IrJudgement,
   type IrDiagnostic,
   type IrFenceOutcome,
 } from './canvasIr.ts';
+
+/**
+ * 面向模型的提示词契约（两段式：常驻 STANZA + 命中追加 SPEC）。
+ *
+ * 从这里转出，是为了让 `forge-extensions` 的 `promptIr.ts` 只做转发、
+ * 不再手抄 schema——提示词与校验器共用 `canvasIr/schemaSpec.ts` 一份事实。
+ */
+export { IR_STANZA, IR_SPEC } from './canvasIr/promptSpec.ts';
+
+/** schema 规格表本身也转出，供探针与一致性测试直接比对。 */
+export {
+  IR_DIAGRAM_SPECS,
+  irSpecOf,
+  irMaxNodesOf,
+  type IrDiagramTypeSpec,
+} from './canvasIr/schemaSpec.ts';
+
+/**
+ * 渲染器用到的 `--c-*` 变量清单。
+ *
+ * 转出给 UI 侧做**双向锁**：渲染器声明它需要哪些变量，UI 的映射表断言自己都提供了。
+ * 少一个变量在真机上的表现是「某个 fill 回落成黑色」，不会报错——只有测试能拦。
+ */
+export { IR_REQUIRED_CSS_VARS } from './canvasIr/shapes.ts';
+
+/** 文本度量器的注入点（UI 用真实字形表覆盖默认的系数估算）。 */
+export { setIrTextMeasurer, type TextMeasurer } from './canvasIr/textFit.ts';
 
 /**
  * IR 编译器（IR → SVG）。
@@ -94,6 +127,7 @@ export {
 export {
   IR_CARD_HEIGHT,
   IR_MAX_CANVAS_W,
+  IR_HOST_CSS_VARS,
   buildIrStandaloneFile,
   compileIrToSvg,
   compileIrWithMeta,
@@ -206,9 +240,12 @@ function codeRenderer(lang: string | undefined, text: string): string {
       const encoded = encodeBase64Utf8(trimmed);
       return `<pre class="md-canvas-ir-wrap"><code class="md-canvas-ir" data-md-canvas-ir="${encoded}">${escaped}</code></pre>`;
     }
-    // 失败：源码留在 data-ir-source（供前端显示「你写了什么」），回执在 data-...-receipt
+    // 失败：源码留在 data-ir-source（供前端显示「你写了什么」），用户向失败说明在
+    // data-...-receipt。只写 userReceipt **不写** outcome.receipt：后者含
+    // supportedFixes / 「只做上述动作」等模型向指令，是回灌给模型的内部重试文本，
+    // 亮给用户属于把机制泄漏到界面（2026-10-13 真机截图实测）。
     const srcEncoded = encodeBase64Utf8(trimmed);
-    const receiptEncoded = encodeBase64Utf8(outcome.receipt ?? '');
+    const receiptEncoded = encodeBase64Utf8(outcome.userReceipt ?? '');
     return `<pre class="md-canvas-ir-wrap is-invalid"><code class="md-canvas-ir" `
       + `data-md-canvas-ir-receipt="${receiptEncoded}" data-ir-source="${srcEncoded}">${escaped}</code></pre>`;
   }
@@ -322,7 +359,13 @@ export function renderMarkdown(source: string, cacheable = true): string {
     renderCache.set(key, cached);
     return cached;
   }
-  const html = marked.parse(source ?? '', { async: false }) as string;
+  // 渲染前先修围栏开口：思考标记漏进 ```canvas-ir 开口行时，marked 会把语言名解析成
+  // 「canvas…」而掉进高亮分支 ⇒ 用户看到的是裸 JSON 而不是卡片，且没有任何报错。
+  // 修复必须在 parse 之前做（info string 一旦被 tokenize 就再也分不回来）。
+  // 采样端（extractIrSamples）与修复回路（decideIrRepair）走的是同一个
+  // repairIrFenceOpeners——三条链路一套修法，不分叉。
+  const repaired = repairIrFenceOpeners(source ?? '');
+  const html = marked.parse(repaired, { async: false }) as string;
   const sanitized = sanitizeHtml(html, {
     allowedTags: ALLOWED_TAGS,
     allowedAttributes: ALLOWED_ATTRIBUTES,

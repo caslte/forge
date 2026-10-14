@@ -32,3 +32,4 @@ tmp/
 .zcode/plans/
 docs/demo/
 AGENTS.md
+.workbuddy-ai/memory/

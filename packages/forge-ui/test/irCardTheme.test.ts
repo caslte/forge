@@ -23,6 +23,9 @@ import {
   IR_CARD_CSS_VARS,
   irCardVarsDeclaration,
 } from '../src/utils/irCardTheme.ts';
+// 清单由渲染器声明（@forge/core），不在这里手抄——手抄的清单会漂移，
+// 而且漂移的后果是「某个 fill 解析失败回落成黑色」，真机上才看得见。
+import { IR_REQUIRED_CSS_VARS } from '@forge/core/markdown';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -30,11 +33,15 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 
 test('变量表覆盖 IR 编译产物用到的全部语义色', () => {
-  // canvasIrRender.ts 的 KIND_STYLE 用到的必须全在
-  for (const k of ['--c-bg', '--c-fg', '--c-border', '--c-ok', '--c-warn', '--c-bad',
-                    '--c-ok-bg', '--c-warn-bg', '--c-bad-bg', '--c-muted-fg', '--c-surface']) {
-    assert.ok(k in IR_CARD_CSS_VARS, '变量表缺：' + k);
+  // 清单来自 @forge/core 的 canvasIr/shapes.ts（渲染器声明它需要什么），
+  // 这里断言 UI 确实提供了。两边各自改动而对方没跟上 ⇒ 这条红。
+  for (const k of IR_REQUIRED_CSS_VARS) {
+    assert.ok(k in IR_CARD_CSS_VARS, '变量表缺：' + k + '（渲染器会用到它）');
   }
+});
+
+test('渲染器要求的变量清单非空（防止清单被清空后上一条变成空转）', () => {
+  assert.ok(IR_REQUIRED_CSS_VARS.length >= 10, '清单异常短，疑似被误清空');
 });
 
 test('语义色全部走 var()，无硬编码（深浅色适配的前提）', () => {

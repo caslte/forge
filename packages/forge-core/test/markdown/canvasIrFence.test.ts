@@ -10,10 +10,11 @@
  *
  * 核心设计约束（决定了下面全部断言）：
  * IR 围栏**不能像 canvas 围栏那样先渲染再判**。IR 是数据，宿主必须在渲染前
- * 就校验——因为校验失败要产出的是**修复回执**（给模型），不是一张画面。
+ * 就校验——因为校验失败要产出的是**给模型的修复回执**，不是一张画面。
  * 故IR 围栏有三种终态：
  *   1. 校验通过 → 占位待编译（data-md-canvas-ir）
- *   2. 校验失败 → 仍出占位，但带上修复回执（data-md-canvas-ir-receipt）
+ *   2. 校验失败 → 仍出占位，但带用户向失败说明（data-md-canvas-ir-receipt；
+ *      模型向回执只走 canvasIrRepair 的回灌通道，不进 DOM——见 formatIrUserReceipt）
  *   3. 围栏未闭合（流式）→ 骨架占位，不校验（数据可能还没写完）
  */
 
@@ -28,7 +29,7 @@ import {
 } from '../../src/markdown/renderMarkdown.ts';
 
 const IR_OK = JSON.stringify({
-  schema_version: 'forge-ir/1',
+  schema_version: 'forge-ir/2',
   diagram_type: 'architecture',
   meta: { title: 't' },
   nodes: [{ id: 'a', label: '节点A', kind: 'process', col: 0, row: 0 }],
@@ -76,7 +77,7 @@ test('合规 IR 不带修复回执标记', () => {
 
 test('占位里的 base64 能还原回原始 IR（中文不乱码）', () => {
   const ir = JSON.stringify({
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: {},
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: {},
     nodes: [{ id: 'x', label: '中文节点', kind: 'process', col: 0, row: 0 }],
     edges: [],
   });
@@ -102,12 +103,26 @@ test('违规 IR 的回执里含缺陷码 IR001（版本不符）', () => {
   assert.ok(receipt.includes('IR001'), '回执应含 IR001：' + receipt.slice(0, 120));
 });
 
-test('违规 IR 的回执含可执行修复控件 supportedFixes', () => {
+test('违规 IR 的回执是用户向说明：有缺陷码与事实，无模型向修复指令', () => {
   const html = renderMarkdown('```' + IR_FENCE_LANGUAGE + '\n' + IR_BAD + '\n```');
   const m = html.match(/data-md-canvas-ir-receipt="([^"]+)"/);
   assert.ok(m);
   const receipt = Buffer.from(m[1]!, 'base64').toString('utf-8');
-  assert.ok(receipt.includes('补写 schema_version'), '回执应给具体修复动作');
+  // 用户向：缺陷码 + evidence 事实短句
+  assert.ok(receipt.includes('IR001'), '应含 IR001：' + receipt.slice(0, 120));
+  // 用户向绝不能出现内部重试机制的指令文本（2026-10-13 真机截图实测泄漏）
+  assert.ok(!receipt.includes('supportedFixes'), '用户向回执不得含模型修复控件');
+  assert.ok(!receipt.includes('可用修复'), '用户向回执不得含「可用修复」');
+  assert.ok(!receipt.includes('只做上述'), '用户向回执不得含回灌指令');
+  assert.ok(!receipt.includes('按下列修复'), '用户向回执不得含模型向开头语');
+});
+
+test('模型向回执仍在 outcome.receipt（宿主回灌用），与 DOM 属性互不串味', () => {
+  const outcome = judgeIrFence(IR_BAD);
+  assert.ok(outcome.receipt, '模型向回执必须还在（canvasIrRepair 的自建回执同样消费它）');
+  assert.ok(outcome.receipt!.includes('supportedFixes'), '模型向回执保留修复控件');
+  assert.ok(outcome.userReceipt, '用户向说明必须还在');
+  assert.ok(!outcome.userReceipt!.includes('supportedFixes'), '用户向说明不得混入修复控件');
 });
 
 test('违规 IR 的回执含全部缺陷，不是只报第一个', () => {
@@ -151,7 +166,7 @@ test('html 围栏仍走代码高亮（不被 IR 分支劫持）', () => {
 // ---------------------------------------------------------------- 流式
 
 test('IR 围栏未闭合时不校验（流式期数据不完整，判了必误报）', () => {
-  const partial = '```' + IR_FENCE_LANGUAGE + '\n{ "schema_version": "forge-ir/1", "nodes": [';
+  const partial = '```' + IR_FENCE_LANGUAGE + '\n{ "schema_version": "forge-ir/2", "nodes": [';
   const html = renderMarkdown(partial);
   assert.ok(!html.includes('data-md-canvas-ir-receipt="'),
     '流式期不应产出修复回执（模型正在逐字输出，卡片会反复闪错误态）');
@@ -165,7 +180,7 @@ test('流式期判据不依赖 marked 的行为假设 —— 残缺 JSON 即视�
   for (const src of [
     '{',
     '{ "schema_version"',
-    '{ "schema_version": "forge-ir/1", "nodes": [',
+    '{ "schema_version": "forge-ir/2", "nodes": [',
   ]) {
     const outcome = judgeIrFence(src);
     assert.equal(outcome.receipt, null, '流式残片不应产出回执：' + src);
@@ -188,4 +203,19 @@ test('完整但有缺陷的 JSON 仍应出回执（不能被流式判据误吞�
   assert.equal(outcome.ok, false);
   assert.ok(outcome.receipt, '完整但违规的 JSON 必须出回执');
   assert.ok(outcome.receipt!.includes('IR001'));
+});
+// ------------------------------------------------- 思考标记劈开围栏开口（flow-ci）
+
+test('思考标记漏进围栏开口行：渲染前修回，照常出 IR 占位（flow-ci 实测）', () => {
+  // 2026-10-13 门禁实测：mx 模型把 reasoning 块的闭合标记吐在正文流里，落在
+  // ```canvas-ir 开口行内 ⇒ 语言名被劈成「canvas + 标记 + 空行 + -ir」。
+  // marked 会把 info string 解析成「canvas…」而掉进高亮分支 ⇒ 用户看到裸 JSON，
+  // 不是卡片，也没有任何报错。修复必须发生在 parse 之前，否则 tokenize 之后
+  // 再也分不回来（采样端与修复回路同理，三者共用 repairIrFenceOpeners）。
+  const leak = '</' + 'thi' + 'nk>';
+  const md = 'Let me finalize.```canvas' + leak + '\n\n-ir\n' + IR_OK + '\n```';
+  const html = renderMarkdown(md);
+  assert.ok(html.includes('data-md-canvas-ir='), '开口修回后应出 IR 占位');
+  assert.ok(!html.includes('data-md-canvas-ir-receipt'), '合规 IR 不应带回执');
+  assert.ok(!html.includes('md-code-block'), '不应掉进普通代码高亮分支');
 });

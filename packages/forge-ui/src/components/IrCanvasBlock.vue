@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import {
   IR_CARD_HEIGHT,
+  IR_MAX_CANVAS_W,
   buildIrStandaloneFile,
   compileIrWithMeta,
   decodeCanvasSource,
@@ -21,13 +22,14 @@ import { useI18n } from '../i18n/index.ts';
  *
  * 三种终态（与 renderMarkdown 的占位契约一一对应）：
  * 1. 有合规载荷 → 编译出SVG
- * 2. 有回执载荷 → 展示修复回执（不是空白卡片）
+ * 2. 有回执载荷 → 展示**用户向**失败说明（不是空白卡片；模型向修复指令走
+ *    canvasIrRepair 的回灌通道，不进 DOM、不到界面——2026-10-13 用户实测反馈）
  * 3. 无载荷（流式未闭合）→ 骨架蒙版
  */
 const props = defineProps<{
   /** base64 编码的 IR 源码（合规时存在） */
   encoded?: string;
-  /** base64 编码的修复回执（校验失败时存在） */
+  /** base64 编码的失败说明（校验失败时存在；用户向，无模型修复指令） */
   receiptEncoded?: string;
   /** 围栏尚未闭合（流式中途）：显示骨架，绝不出半成品 */
   blocked?: boolean;
@@ -39,7 +41,7 @@ const source = computed(() =>
   props.encoded ? decodeCanvasSource(props.encoded) : '',
 );
 
-/** 回执文本。宿主不自行拼装，只解码 renderMarkdown 已生成的那份。 */
+/** 失败说明文本。宿主不自行拼装，只解码 renderMarkdown 已生成的那份（用户向）。 */
 const receipt = computed(() => {
   if (!props.receiptEncoded) return '';
   return decodeCanvasSource(props.receiptEncoded);
@@ -64,8 +66,45 @@ const compiled = computed(() => {
 const showSkeleton = computed(() => props.blocked === true && !compiled.value && !failed.value);
 
 const expanded = ref(false);
-const height = ref(320);
 const copied = ref(false);
+
+/**
+ * 卡片高度：随图自适应，但**只增不减**。
+ *
+ * ## 为什么只增不减
+ *
+ * 骨架态（流式未闭合）固定在 `IR_CARD_HEIGHT`，而骨架出现时还不知道图有多高。
+ * 若终态允许比骨架矮，闭合瞬间就会「缩一下」——这正是 canvas-card.md 里
+ * 「骨架与终态同高」那条不变式要避免的跳变。
+ *
+ * 只增不减把跳变降级成「长高」：图真的需要更多高度时才变高，且内容与高度同时到位。
+ * 上限 480px，再高就交给卡片内滚动 / 放大浮层，否则一张图会吃掉整个消息流。
+ */
+const MAX_ADAPTIVE_H = 480;
+/** 手动「加高」态：用户主动要求更大的画布。 */
+const manualTall = ref(false);
+/** 卡片内容区实测宽度（用于把 SVG 的宽高比换算成像素高度）。 */
+const cardW = ref(0);
+const frameRef = ref<HTMLElement | null>(null);
+let ro: ResizeObserver | null = null;
+
+/** 图按卡片宽度等比缩放后需要多高。 */
+const naturalHeight = computed(() => {
+  const c = compiled.value;
+  if (!c) return IR_CARD_HEIGHT;
+  const w = c.layout.width || 1;
+  const h = c.layout.height || 1;
+  // 未测到宽度时按画布上限估——宁可先矮一点（只增不减），也不要先给一个过高的空框
+  const avail = cardW.value > 24 ? cardW.value - 24 : IR_MAX_CANVAS_W;
+  // SVG 带固有尺寸，只会缩不会放 ⇒ 实际渲染宽度是 min(可用宽, 图的自然宽)
+  const renderW = Math.min(avail, w);
+  const scaled = (renderW * h) / w;
+  return Math.round(Math.min(MAX_ADAPTIVE_H, Math.max(IR_CARD_HEIGHT, scaled)));
+});
+
+const height = computed(() =>
+  manualTall.value ? Math.max(560, naturalHeight.value) : naturalHeight.value,
+);
 const saveState = ref<'idle' | 'saving'>('idle');
 const saveMessage = ref('');
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -79,7 +118,7 @@ const cardTitle = computed(() => {
 });
 
 function toggleHeight(): void {
-  height.value = height.value === 320 ? 560 : 320;
+  manualTall.value = !manualTall.value;
 }
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && expanded.value) expanded.value = false;
@@ -134,25 +173,53 @@ async function copy(): Promise<void> {
   }
 }
 
+/**
+ * 量卡片内容区宽度。
+ *
+ * ⚠ 不能在 onMounted 里直接绑：`.ir-frame` 只在 `compiled` 为真时才渲染，
+ * 而流式阶段 compiled 还是 null ⇒ 那时拿不到元素、observer 绑不上，
+ * 之后图出现了也没人量。所以改成 watch(compiled) + nextTick。
+ */
+function attachResizeObserver(): void {
+  if (ro || !frameRef.value || typeof ResizeObserver === 'undefined') return;
+  cardW.value = frameRef.value.clientWidth;
+  ro = new ResizeObserver((entries) => {
+    const w = entries[0]?.contentRect.width ?? 0;
+    if (w > 0) cardW.value = w;
+  });
+  ro.observe(frameRef.value);
+}
+
+watch(
+  compiled,
+  async () => {
+    await nextTick();
+    attachResizeObserver();
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   document.addEventListener('keydown', onKeydown);
 });
 onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown);
+  ro?.disconnect();
+  ro = null;
   if (copiedTimer) clearTimeout(copiedTimer);
   if (saveTimer) clearTimeout(saveTimer);
 });
 
 watch(
   () => props.encoded,
-  () => { expanded.value = false; },
+  () => { expanded.value = false; manualTall.value = false; },
 );
 </script>
 
 <template>
   <!-- 合规：编译出的图示。工具栏四按钮与 canvas 卡片同款（悬浮右上、hover 显现） -->
   <div v-if="compiled" class="ir-card">
-    <div class="ir-frame" :style="{ height: `${height}px` }">
+    <div ref="frameRef" class="ir-frame" :style="{ height: `${height}px` }">
       <div class="ir-tools">
         <button class="ir-tool" :title="t('canvas.expand')" @click="expanded = true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -160,7 +227,7 @@ watch(
             <line x1="21" y1="3" x2="13" y2="11" /><line x1="3" y1="21" x2="11" y2="13" />
           </svg>
         </button>
-        <button class="ir-tool" :title="height === 320 ? t('canvas.taller') : t('canvas.tallerReset')" @click="toggleHeight">
+        <button class="ir-tool" :title="manualTall ? t('canvas.tallerReset') : t('canvas.taller')" @click="toggleHeight">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="7 10 12 5 17 10" /><polyline points="7 14 12 19 17 14" />
           </svg>
@@ -186,7 +253,7 @@ watch(
     </div>
   </div>
 
-  <!-- 校验失败：展示修复回执，而不是空白卡片 -->
+  <!-- 校验失败：展示用户向失败说明，而不是空白卡片 -->
   <div v-else-if="failed" class="ir-card is-invalid">
     <div class="ir-bar">
       <span>图示未通过校验</span>
@@ -272,6 +339,7 @@ watch(
   --c-ok-bg: color-mix(in oklab, var(--success) 12%, var(--background));
   --c-warn-bg: color-mix(in oklab, var(--warning) 14%, var(--background));
   --c-bad-bg: color-mix(in oklab, var(--destructive) 12%, var(--background));
+  --c-accent-bg: color-mix(in oklab, var(--brand-accent) 12%, var(--background));
 
   margin-top: 8px;
   background: var(--c-bg);
@@ -405,15 +473,21 @@ watch(
   padding: 12px;
 }
 
-/* SVG 自身带 preserveAspectRatio，高度自适应，不写死 px */
 /*
  * ⚠ .ir-svg 必须显式 width:100%：
- * 它是 .ir-frame（flex）的 item，宽度 shrink-to-fit；而 SVG 无 width/height 属性
- * （只有 viewBox），max-width:100% 相对「由自己决定的宽度」⇒ 循环依赖 ⇒ 塌成 0×0。
+ * 它是 .ir-frame（flex）的 item，宽度 shrink-to-fit。若不写，容器的宽度由内容决定，
+ * 而内容的宽度又取决于容器 ⇒ 循环依赖 ⇒ 塌成 0×0。
  * 真机表现＝卡片全白但 computed fill 全部正常（颜色没坏，是整个 SVG 尺寸为 0）。
- * lightbox 里能看到图，正是因为那里显式写了 width:100%。
  */
 .ir-svg { width: 100%; }
+
+/*
+ * SVG 由编译器带上 width/height（固有尺寸）+ viewBox。配合下面两条：
+ * - max-width:100% ⇒ 图比卡片宽时等比缩小，不裁切
+ * - height:auto     ⇒ 高度按宽高比自动跟随
+ * 而图比卡片**窄**时按固有尺寸原样显示、**不放大**——否则窄高的图（例如 383×572 的
+ * 分层架构）会被拉满宽度、高度跟着涨到 800px 级别，字号失真且吃掉半个屏幕。
+ */
 .ir-svg :deep(svg) { max-width: 100%; height: auto; display: block; margin: 0 auto; }
 
 .ir-receipt {

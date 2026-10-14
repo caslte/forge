@@ -41,6 +41,11 @@ export const IR_CARD_CSS_VARS: Readonly<Record<string, string>> = {
   '--c-ok-bg': 'color-mix(in oklab, var(--success) 12%, var(--background))',
   '--c-warn-bg': 'color-mix(in oklab, var(--warning) 14%, var(--background))',
   '--c-bad-bg': 'color-mix(in oklab, var(--destructive) 12%, var(--background))',
+  // 2026-10-12 新增：component / dataflow 两种 kind 的底色，以及时序图激活条。
+  // 缺它时 var(--c-accent-bg) 解析失败 ⇒ SVG 的 fill 回落成黑色（真机「黑块吞字」）。
+  // 渲染器侧的要求清单在 @forge/core 的 canvasIr/shapes.ts（IR_REQUIRED_CSS_VARS），
+  // 两边有单测比对。
+  '--c-accent-bg': 'color-mix(in oklab, var(--brand-accent) 12%, var(--background))',
 };
 
 /**

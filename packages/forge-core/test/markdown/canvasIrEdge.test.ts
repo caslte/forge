@@ -107,7 +107,7 @@ test('同行正向边保留短贝塞尔（短弧不丑，且比直角更柔和�
 test('布局后的所有跨行连线，水平段不与中间行的任何节点矩形相交', () => {
   // 模型真实产出的形态：4 列 3 行 + 若干跨行边
   const ir = {
-    schema_version: 'forge-ir/1', diagram_type: 'architecture', meta: {},
+    schema_version: 'forge-ir/2', diagram_type: 'architecture', meta: {},
     nodes: [
       { id: 'ui', label: '渲染层', kind: 'component', col: 0, row: 0 },
       { id: 'desk', label: '主进程', kind: 'process', col: 1, row: 0 },

@@ -15,7 +15,7 @@ import {
   type MinimalMessage,
 } from '../../src/canvasIrRepair/extension.ts';
 
-const OK_IR = '```canvas-ir\n{"schema_version":"forge-ir/1","diagram_type":"architecture","meta":{},'
+const OK_IR = '```canvas-ir\n{"schema_version":"forge-ir/2","diagram_type":"architecture","meta":{},'
   + '"nodes":[{"id":"a","label":"A","kind":"process","col":0,"row":0}],"edges":[]}\n```';
 const BAD_IR = '```canvas-ir\n{"nodes":[{"id":"a","label":"A","kind":"process","col":0,"row":0}],"edges":[]}\n```';
 

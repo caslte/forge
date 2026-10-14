@@ -17,7 +17,7 @@ import {
 } from '../../src/canvasIrStats/irPassRate.ts';
 
 const IR = (n = 3) => JSON.stringify({
-  schema_version: 'forge-ir/1',
+  schema_version: 'forge-ir/2',
   diagram_type: 'architecture',
   meta: { title: 't' },
   nodes: Array.from({ length: n }, (_, i) => ({
@@ -33,7 +33,7 @@ const BAD_NO_VERSION = (() => {
 })();
 
 const BAD_GHOST_EDGE = JSON.stringify({
-  schema_version: 'forge-ir/1',
+  schema_version: 'forge-ir/2',
   diagram_type: 'architecture',
   meta: {},
   nodes: [{ id: 'a', label: 'A', kind: 'process', col: 0, row: 0 }],

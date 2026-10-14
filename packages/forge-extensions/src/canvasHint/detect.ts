@@ -16,9 +16,26 @@
  * ——漏网一语成谶（2026-09-29 真机）：「你画一个图」不在四个字面表里，契约没
  * 注入，模型凭常驻段幻觉出「pi 原生 canvas 渲染 ASCII」交了裸 mermaid。故动词
  * 类从字面表改正则枚举；体裁名词表不动，泛主题词照旧一律不命中。
+ *
+ * ## 2026-10-13 订正上面这句「用户真想看图会说『图』」
+ *
+ * 真实对话门禁（`npm run ir:gate`，mx / MiniMax-M3，20 条出图 prompt）实测：
+ * **7 条没命中**，其中「思维导图」「树形图」「一张树」「画一下这个项目的模块组成」
+ * 全是用户日常说法，而它们**不含「图」字**。漏命中的代价不是本文件假设的
+ * 「markdown 照样讲清楚」——IR 链路的代价是**契约整段没注入**，模型只拿到常驻段，
+ * 没见过 schema_version 取值 / diagram_type 枚举 / kind 词表 / label 24 字上限，
+ * 于是自创了一套 JSON（实测出现过 `{"type":"layered-architecture", ...}`）。
+ * 表现为 IR001/IR003/IR009/IR012 成片爆，**看起来像模型不听话，实际是没人告诉它规则**。
+ * 且探针永远测不到这一层——它无条件注入 IR_SPEC，绕开了本函数。
+ *
+ * 所以本次补的是「不缺『图』字就不算出图」这个假设，而不是单纯加几个词。
  */
 
-/** 中文意图信号：图的具体体裁（名词级，字面匹配即可），不含主题泛词 */
+/**
+ * 中文意图信号：图的具体体裁（名词级，字面匹配即可），不含主题泛词
+ *
+ * 2026-10-13 补「思维导图 / 树形图」一族，理由见文件头。
+ */
 const ZH_GENRE_PATTERNS: readonly string[] = [
   '流程图',
   '时序图',
@@ -32,6 +49,12 @@ const ZH_GENRE_PATTERNS: readonly string[] = [
   '图解',
   '图示',
   '可视化',
+  '思维导图',
+  '脑图',
+  '树形图',
+  '树状图',
+  '部署图',
+  '类图',
 ];
 
 /**
@@ -47,6 +70,29 @@ const ZH_GENRE_PATTERNS: readonly string[] = [
 const ZH_DRAW_RES: readonly RegExp[] = [
   /[画绘][一两三几]?[张幅个下]?图/,
   /^[整来][一两三几]?[张幅个]?图/,
+];
+
+/**
+ * 「画图但不带『图』字」的祈使式（2026-10-13 实测补）。
+ *
+ * `ZH_DRAW_RES` 要求 `[画绘]` 后面接「图」，所以「帮我**画一下**这个项目的模块组成」
+ * 整句漏网——句子里没有「图」字。真机后果同上：契约没注入，模型自创 JSON schema。
+ *
+ * 只收「画/绘 + 一下/一画/下」这三种纯祈使后缀，**不收**「画 + 任意名词」——
+ * 后者会扩到「画个分割线」「画出边界」这类真不是出图的场景，也与本文件
+ * 「体裁名词字面匹配、泛词一律不命中」的纪律冲突。多命中的边界止步于
+ * 「用户明确说出了『画』这个动作」。
+ */
+const ZH_DRAW_NO_TU_RES: readonly RegExp[] = [
+  /[画绘]一下/,
+  /[画绘]一画/,
+  /[画绘]下/,
+];
+
+/** 明确的出图工具性表达（不含体裁名词也不含画字）。 */
+const ZH_WITH_TU_RES: readonly RegExp[] = [
+  /用图(来?讲|说明|解释|展示|梳理|画)/,
+  /配图/,
 ];
 
 /**
@@ -84,8 +130,19 @@ const ZH_REDO_RES: readonly RegExp[] = [
  * 产出大量「文字塞卡片」伪图示（用户当时实测抱怨的正是这个）。
  *
  * 故限定为**必须与出图意图动词共现**。词表刻意短，只收真正常搭配的。
+ *
+ * 2026-10-13 加「树」：实测漏网样本「把 IR 校验的错误码按类别整理成**一张树**」——
+ * 「树」是图的体裁，但用户说的是「一张树」而不是「树形图」，体裁词表对不上，
+ * 只能靠「体裁 + 动词」共现这条通道接住。
+ *
+ * ⚠ 已知代价：这也让「帮我分析一下红黑树」这类**数据结构**提问命中。
+ * 取舍是刻意的——按本文件的不对称原则，多命中只多 200 token 与一次画图倾向，
+ * 而漏命中的代价是契约整段没注入（见文件头）。若日后再出「文字塞卡片」伪图示，
+ * 应优先改的是提示词里「什么时候该画」的判据，而不是把这条通道收回。
  */
-const ZH_TOPIC_PATTERNS: readonly string[] = ['架构', '结构'];
+const ZH_TOPIC_PATTERNS: readonly string[] = ['架构', '结构', '树'];
+
+/** 与上面这条通道共现的意图动词（「架构」单独出现不算，必须配一个动词）。 */
 const ZH_INTENT_VERBS: readonly RegExp[] = [
   /梳理|理清|整理|分析|画|绘|出一版|给我|来个|展示|看看|看下|看一下|过一遍|浏览/,
 ];
@@ -105,6 +162,10 @@ const EN_PATTERNS: readonly string[] = [
   'draw me',
   'sketch a',
   'chart',
+  'mind map',
+  'mindmap',
+  'tree diagram',
+  'org chart',
 ];
 
 /**
@@ -116,8 +177,14 @@ const EN_PATTERNS: readonly string[] = [
 export function looksLikeDiagramRequest(prompt: string): boolean {
   const text = (prompt ?? '').trim();
   if (text === '') return false;
+  // 体裁名词：出现即命中，不与动词共现
   if (ZH_GENRE_PATTERNS.some((k) => text.includes(k))) return true;
+  // 「画张图」这类带「图」字的祈使式
   if (ZH_DRAW_RES.some((re) => re.test(text))) return true;
+  // 「画一下」这类不带「图」字的祈使式（2026-10-13 实测漏网）
+  if (ZH_DRAW_NO_TU_RES.some((re) => re.test(text))) return true;
+  // 「用图讲一下」这类工具性出图表达
+  if (ZH_WITH_TU_RES.some((re) => re.test(text))) return true;
   // 改图信号：不含「图」字，只能靠动作词命中（真机漏网修复）
   if (ZH_REDO_RES.some((re) => re.test(text))) return true;
   // 受限放宽：体裁词 + 意图动词共现才命中，避免泛主题词全命中

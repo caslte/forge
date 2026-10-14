@@ -22,9 +22,10 @@ import { CANVAS_SPEC, CANVAS_STANZA } from '../../src/canvasHint/prompt.ts';
 
 /**
  * 本文件测的是 canvasHint **自身**的行为，故必须显式声明「IR 链路关闭」。
- * 2026-10-10 起 IR 默认开启（用户裁定，为便于真机验证），若不传 env，
- * applyCanvasHint 会读到 process.env 里 IR=开 ⇒ 本扩展让位 ⇒ 断言全红。
- * 让位行为本身由 test/canvasLinkage/mutualExclusion.test.ts 守着。
+ * IR 开关默认关（2026-10-10 回退裁定），但测试仍显式传 IR_OFF 而不是依赖默认值：
+ * 开发者本机可能开着 FORGE_IR_CANVAS=1 跑门禁，那时 env 读到 IR=开 ⇒ 本扩展让位
+ * ⇒ 断言全红，而失败原因与 canvasHint 自身无关。让位行为由
+ * test/canvasLinkage/mutualExclusion.test.ts 守着。
  */
 const IR_OFF = { [IR_EXTENSION_ENV]: '0' };
 

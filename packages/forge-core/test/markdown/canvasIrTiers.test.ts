@@ -34,7 +34,7 @@ const NODES = [
 const EDGES = [{ from: 'ui', to: 'main' }, { from: 'main', to: 'store' }];
 
 const base = (tiers?: unknown) => JSON.stringify({
-  schema_version: 'forge-ir/1',
+  schema_version: 'forge-ir/2',
   diagram_type: 'architecture',
   meta: { title: 't' },
   ...(tiers !== undefined ? { tiers } : {}),
@@ -120,7 +120,10 @@ test('泳道宽度覆盖画布全宽（泳道是横向分带，不是节点框�
   const vb = Number(svg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/)![1]);
   const m = svg.match(/class="ir-tier"[^>]*width="([\d.]+)"/);
   assert.ok(m, '泳道 rect 应带宽度');
-  assert.equal(Number(m[1]), vb, '泳道宽应等于画布宽，泳道=' + m[1] + ' 画布=' + vb);
+  // 允许 4px 内缩：泳道留 2px 边距，否则 1px 描边会被 viewBox 边缘裁掉一半。
+  // 本用例的意图是「泳道是横贯画布的带，不是包住节点的框」，内缩不影响该意图。
+  assert.ok(Math.abs(Number(m[1]) - vb) <= 4,
+    '泳道宽应覆盖画布宽（允许 4px 内缩），泳道=' + m[1] + ' 画布=' + vb);
 });
 
 test('泳道底色与节点底色可区分（层带是淡底，节点是实底）', () => {

@@ -27,17 +27,26 @@ import { looksLikeDiagramRequest } from '../canvasHint/detect.ts';
 import { IR_SPEC, IR_STANZA } from './promptIr.ts';
 
 /**
- * ## 为什么默认开（2026-10-10 用户裁定）
+ * ## 为什么默认关（2026-10-10 回退裁定，2026-10-13 门禁通过后仍维持）
  *
- * 用户明确要求「默认启动 dev 就 IR 开关开启」，以便直接真机验证。
- * 这是把上一阶段「备好但未接线」推到「已接线待验证」的决策。
+ * 历史轨迹：默认关 → 用户要求默认开便于真机验证 → 真机跑完用户结论「不可用，
+ * 还不如 html 直出，需要慢慢调优之后再用」→ 回退默认关（2026-10-10）。
  *
- * **风险已知**：默认开意味着 IR 链路的任何问题会直接出现在用户面前。
- * 故关闭能力必须保留为**显式 0**（不是靠「默认关」）：
- * 出问题立刻 `FORGE_IR_CANVAS=0` 即可回退到现状 HTML 链路，无需改代码。
+ * 2026-10-13 阶段 1 门禁通过（26 条真实对话，首轮通过率 21/22 = 95%，门槛 80%），
+ * 但**默认开关仍不翻**，理由是两条实测证据：
  *
- * 回退后 canvasHint 会自动恢复注入（见 canvasHint/extension.ts 的互斥逻辑），
- * 两条链路都保证至少一条能工作。
+ * 1. 阶段 1 的门槛只验「模型能否产出合规 IR」，不验「卡片渲染出来能不能看」——
+ *    后者是阶段 2 的九项门禁（重叠/标签溢出/视口溢出），尚未开始。
+ * 2. 同一次门禁里 26/26 条会话的可见正文都带着 reasoning 块的起止标记（模型把
+ *    思考直接吐在正文流里）。默认开等于把这个显示层缺陷直接推给所有用户。
+ *
+ * **量通过率不需要默认开**：探针（`npm run ir:probe`）与门禁驱动
+ * （`npm run ir:gate`）都自行注入契约、自行跑会话，见
+ * `docs/plan/canvas-ir-stage1-test-design.md` §八。
+ *
+ * 关闭能力保留为**显式 0**（不是靠「默认关」）：出问题 `FORGE_IR_CANVAS=0`
+ * 即可回退到现状 HTML 链路，无需改代码。回退后 canvasHint 会自动恢复注入
+ * （见 canvasHint/extension.ts 的互斥逻辑），两条链路都保证至少一条能工作。
  */
 
 /**
@@ -52,16 +61,18 @@ export const IR_EXTENSION_ENV = 'FORGE_IR_CANVAS';
 export type EnvLike = Record<string, string | undefined>;
 
 /**
- * 开关取值口径：**默认关**，显式 1 / on / true 才开（2026-10-10 用户回退裁定）。
+ * 开关取值口径：**默认关**，显式 1 / on / true 才开（2026-10-10 用户回退裁定，
+ * 2026-10-13 阶段 1 门禁通过后复核维持，理由见本文件头）。
  *
  * 历史轨迹：阶段 1 落地时默认关 → 用户要求默认开（便于真机验证）→ 真机跑完
  * 用户评价「不可用，还不如 html 直出，需要慢慢调优之后再用」→ 回退默认关。
  *
- * 这就是阶段 1 验收的真实结论：IR 首次通过率未达 80% 门槛（多次真机失败：
- * 漏头部字段、自创字段、连线鬼画符、缺层实体——各自已修但整体可用性未达标）。
- * 阶段 1 判定**不通过**，按预案「回去打磨提示词与排版，不加功能」。
+ * 2026-10-13 门禁通过（首轮通过率 21/22 = 95% ≥ 80%）只说明「模型能产出合规 IR」；
+ * 卡片渲染可读性（阶段 2 九项门禁）与正文里的思考标记泄漏（26/26 条会话可见）
+ * 都还没解决，故默认开关不因此翻转。翻默认的条件见
+ * `docs/plan/canvas-ir-stage1-test-design.md` §243。
  *
- * 开启方式（未来调优后再灰度）：FORGE_IR_CANVAS=1
+ * 开启方式：FORGE_IR_CANVAS=1
  */
 export function isIrExtensionEnabled(env: EnvLike): boolean {
   const raw = (env[IR_EXTENSION_ENV] ?? '').trim().toLowerCase();
@@ -74,9 +85,8 @@ export function isIrExtensionEnabled(env: EnvLike): boolean {
  * 幂等：已含常驻段就原样返回。理由同 canvasHint/extension.ts——
  * 提示词链由第三方框架维护，累积的后果是**无声膨胀且无任何报错**。
  *
- * 注意这里不再判「是否开启」——开关已由 isIrExtensionEnabled 决定默认为开。
- * 关闭时由调用方（registerCanvasIrHint 读同一个 env）整体跳过注册内容，
- * 或通过显式 0 让本函数返回空串。
+ * 注意「是否开启」在这里判（默认关 ⇒ 未显式开启时原样返回系统提示），
+ * 判据是 isIrExtensionEnabled。显式 0 或未设置都走这条回退路径。
  */
 export function applyIrHint(systemPrompt: string, prompt: string, env: EnvLike): string {
   const base = systemPrompt ?? '';
@@ -92,7 +102,7 @@ export function applyIrHint(systemPrompt: string, prompt: string, env: EnvLike):
 /** 注册 before_agent_start 钩子。 */
 export function registerCanvasIrHint(pi: ExtensionAPI, env?: EnvLike): void {
   const e = env ?? process.env;
-  // 默认开启 ⇒ 总是注册。若用户显式关闭，也仍注册但内部返回原串（少一层钩子开销差异，
+  // 总是注册，未显式开启时 applyIrHint 内部原样返回（少一层钩子开销差异，
   // 换来「两条链路的开关口径完全一致」，避免出现「IR 关了但 hook 行为不同」这类难查问题）。
   pi.on('before_agent_start', async (event) => ({
     systemPrompt: applyIrHint(event.systemPrompt, event.prompt, e),

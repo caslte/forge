@@ -16,7 +16,7 @@ import type {
 } from '@forge/core';
 // L3 传输契约的通道名以 forge-extensions 为唯一事实来源（extension ↔ bridge 同在
 // main 进程内），此处不复制字面量，避免两侧漂移（契约 §4.2）。
-import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel, GOAL_STATUS_CHANNEL, GOAL_UI_NOTIFY_CHANNEL, GOAL_UI_REQUEST_CHANNEL, GOAL_UI_TIMEOUT_CHANNEL, goalUiReplyChannel } from '@forge/extensions';
+import { ASK_USER_REQUEST_CHANNEL, askUserReplyChannel, GOAL_STATUS_CHANNEL, GOAL_UI_NOTIFY_CHANNEL, GOAL_UI_REQUEST_CHANNEL, GOAL_UI_TIMEOUT_CHANNEL, goalUiReplyChannel, IR_RETRY_TAG } from '@forge/extensions';
 import type { GoalUiReplyPayload as PiGoalUiReplyPayload, GoalUiRequestPayload as PiGoalUiRequestPayload, GoalStatusPayload as PiGoalStatusPayload, GoalUiNotifyPayload as PiGoalNotifyPayload } from '@forge/extensions';
 import { stripThinkingContent } from './thinkingFilter.ts';
 import type { SubagentEventBus } from './createPiAgentSessionFactory.ts';
@@ -1314,13 +1314,27 @@ export class PiConversationAdapter {  private readonly leases = new Map<string, 
     // CV-S09：排队消息派发确认 → 以 user 气泡进对话区（直发路径 pendingDelivery
     // 已在 sendMessage 起点清空，不会重复渲染本地已 push 的 user 消息）
     if (event.type === 'message_start' && event.message?.role === 'user') {
+      const text = extractAssistantText(event.message.content);
+      // IR 修复回执是扩展以用户消息身份**回灌**的内部重试指令（canvasIrRepair 的
+      // sendUserMessage followUp）。它必须抵达模型，但**不是用户说的话**——不拦的
+      // 后果：对话区出现一条用户气泡，内容是「IR 校验未通过，共 1 处…可用修复…」，
+      // 把内部重试机制直接暴露给用户（2026-10-13 真机实测）。
+      // 队列记账照常消费（shift），只是不转发成气泡。
+      if (text.startsWith(IR_RETRY_TAG)) {
+        const pending0 = this.pendingDelivery.get(sessionId);
+        if (pending0 !== undefined && pending0.length > 0) {
+          pending0.shift();
+          if (pending0.length === 0) this.pendingDelivery.delete(sessionId);
+        }
+        return;
+      }
       const pending = this.pendingDelivery.get(sessionId);
       if (pending !== undefined && pending.length > 0) {
         pending.shift();
         if (pending.length === 0) this.pendingDelivery.delete(sessionId);
         const message: ConversationMessage = {
           role: 'user',
-          content: extractAssistantText(event.message.content),
+          content: text,
           ts: new Date().toISOString(),
         };
         if (callback) {

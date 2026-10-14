@@ -18,7 +18,8 @@ import assert from 'node:assert/strict';
 
 import {
   IR_SCHEMA_VERSION,
-  IR_MAX_NODES,
+  formatIrUserReceipt,
+  irMaxNodesOf,
   judgeIr,
   parseIr,
 } from '../../src/markdown/canvasIr.ts';
@@ -28,7 +29,7 @@ function validIr(): string {
   return JSON.stringify({
     schema_version: IR_SCHEMA_VERSION,
     diagram_type: 'architecture',
-    meta: { title: 'forge 请求链路', quality_profile: 'showcase' },
+    meta: { title: 'forge 请求链路' },
     nodes: [
       { id: 'ui', label: '渲染进程', kind: 'component', col: 0, row: 0 },
       { id: 'ipc', label: 'IPC 边界', kind: 'boundary', col: 1, row: 0 },
@@ -66,7 +67,7 @@ test('schema_version 不匹配当前版本报 IR001并给出期望值', () => {
   const r = judgeIr(withIr((ir) => { ir.schema_version = 'forge-ir/999'; }));
   assert.equal(r.verdict, 'fail');
   assert.equal(r.diagnostics[0].code, 'IR001');
-  assert.match(r.diagnostics[0].evidence, /forge-ir\/1/);
+  assert.match(r.diagnostics[0].evidence, /forge-ir\/2/);
 });
 
 test('未知 diagram_type 报 IR003', () => {
@@ -132,15 +133,17 @@ test('非整数 col 或 row 报 IR010', () => {
 });
 
 test('节点数超过上限报 IR011并给出上限值', () => {
+  // 用该类型自己的预算，而不是基准常量——各类型上限可以不同（tree 是 16）。
+  const cap = irMaxNodesOf('architecture');
   const r = judgeIr(withIr((ir) => {
-    ir.nodes = Array.from({ length: IR_MAX_NODES + 1 }, (_, i) => ({
+    ir.nodes = Array.from({ length: cap + 1 }, (_, i) => ({
       id: 'n' + i, label: '节点' + i, kind: 'process', col: i, row: 0,
     }));
   }));
   assert.equal(r.verdict, 'fail');
   const d = r.diagnostics.find((x) => x.code === 'IR011');
   assert.ok(d);
-  assert.match(d.evidence, new RegExp(String(IR_MAX_NODES)));
+  assert.match(d.evidence, new RegExp(String(cap)));
 });
 
 test('label 超长报 IR012并给出实测宽度', () => {
@@ -188,4 +191,38 @@ test('多个缺陷一次性全部报出，不短路', () => {
 test('parseIr 对合规 IR 返回对象，对非法返回 null', () => {
   assert.equal(typeof parseIr(validIr()), 'object');
   assert.equal(parseIr('not json'), null);
+});
+// ===== 用户向失败说明（2026-10-13 用户反馈「内部重试不该暴露给用户」）=====
+//
+// 判定失败有两类受众：模型（回灌修复指令，含 supportedFixes）与人（卡片上的一句
+// 话说明）。formatIrUserReceipt 服务后者，断言重点全在「模型向话术不得出现」。
+
+test('formatIrUserReceipt：合格 IR 返回空串', () => {
+  assert.equal(formatIrUserReceipt(judgeIr(validIr())), '');
+});
+
+test('formatIrUserReceipt：含缺陷码与 evidence，不含模型向指令', () => {
+  const text = formatIrUserReceipt(judgeIr(withIr((ir) => {
+    ir.schema_version = 'forge-ir/9';
+    ir.nodes[0]!.label = '超长节点标签'.repeat(10);
+  })));
+  assert.ok(text.includes('IR001'), '应含缺陷码：' + text);
+  assert.ok(text.includes('上限'), '应含 evidence 事实：' + text);
+  // 模型向痕迹一条都不能有
+  for (const leak of ['supportedFixes', '可用修复', '只做上述', '按下列修复', 'subject=', 'detail=']) {
+    assert.ok(!text.includes(leak), '用户向说明不得含模型向话术「' + leak + '」：' + text);
+  }
+});
+
+test('formatIrUserReceipt：条数封顶 3 条，其余从略（失败卡片不成字墙）', () => {
+  const text = formatIrUserReceipt(judgeIr(withIr((ir) => {
+    delete ir.schema_version;
+    ir.nodes.push({ id: 'ui', label: 'dup', kind: 'process', col: 5, row: 5 });
+    ir.nodes.push({ id: 'ipc', label: 'dup2', kind: 'process', col: 6, row: 6 });
+    ir.edges.push({ from: 'ui', to: 'ghost' });
+    ir.edges.push({ from: 'nope', to: 'main' });
+  })));
+  const bullets = text.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(bullets.length, 4, '3 条明细 + 1 行从略');
+  assert.ok(text.includes('其余'), '应提示从略：' + text);
 });
