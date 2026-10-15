@@ -36,13 +36,18 @@ test('风格规范引用的变量在宿主注入清单里（color-mix 派生色�
     '--c-bg', '--c-fg', '--c-muted', '--c-muted-fg', '--c-surface', '--c-border',
     '--c-ok', '--c-warn', '--c-bad', '--c-accent',
     '--c-ok-bg', '--c-warn-bg', '--c-bad-bg',
+    // porcelain 纸底/瓷墨：宿主按主题算好注入（v6.35），模型只许引用不许自建
+    '--c-paper', '--c-ink',
   ]);
   const used = [...spec.matchAll(/--c-[a-z-]+/g)].map((m) => m[0]);
   assert.ok(used.length > 0, '风格段应引用语义 token');
   for (const v of used) {
     assert.ok(allowed.has(v), `风格段引用了 ${v}，但宿主 preflight 不注入它`);
   }
-  assert.ok(spec.includes('color-mix'), '派生色是 porcelain 风格的根基');
+  assert.ok(spec.includes('--c-paper') && spec.includes('--c-ink'),
+    'porcelain 两大 token 必须在场：模型不得用 color-mix 自建（跨主题不成立）');
+  assert.ok(!/--c-(paper|ink)\s*:\s*color-mix/.test(spec.replace(/var\(--c-\w+\)/g, '')),
+    '风格段不得教模型用 color-mix 重建 paper/ink');
 });
 
 test('契约要求禁脚本，与渲染侧判据方向一致', () => {

@@ -43,23 +43,39 @@ const source = computed(() => decodeCanvasSource(props.encoded));
  *
  * 从 :root 读计算值而不是硬编码一份：主题与调色板的唯一事实来源留在 design-tokens.css，
  * 这里只做映射。themeMode 进依赖链，切主题即重算 srcdoc（iframe 文档重建）。
+ *
+ * paper / ink（porcelain 风格的纸底与瓷墨）由宿主**按主题分别给配方**，而不是把一个
+ * color-mix 公式写给模型：同一比例跨主题不成立（暗色下 warn 混 bg = 浑浊橄榄底、
+ * accent 混 fg = 洗白淡青，2026-10-15 真机截图）。浅色照原公式；暗色改为
+ * 「bg 提亮的纸面」与「accent 提纯的墨」（比 fg 更亮更青，压得住标题）。
  */
 const tokens = computed<CanvasTokens>(() => {
   void themeMode.value;
   const cs = getComputedStyle(document.documentElement);
   const read = (name: string, fallback: string): string =>
     cs.getPropertyValue(name).trim() || fallback;
+  const bg = read('--background', '#ffffff');
+  const fg = read('--foreground', '#333333');
+  const warn = read('--warning', 'oklch(0.75 0.16 85)');
+  const accent = read('--brand-accent', 'oklch(0.62 0.09 170)');
+  const dark = themeMode.value === 'dark';
   return {
-    bg: read('--background', '#ffffff'),
-    fg: read('--foreground', '#333333'),
+    bg,
+    fg,
     muted: read('--muted', '#f5f5f5'),
     mutedFg: read('--muted-foreground', '#8a8a8a'),
     surface: read('--muted', '#f5f5f5'),
     border: read('--border', '#e5e5e5'),
     ok: read('--success', 'oklch(0.55 0.16 145)'),
-    warn: read('--warning', 'oklch(0.75 0.16 85)'),
+    warn,
     bad: read('--destructive', 'oklch(0.577 0.245 27.325)'),
-    accent: read('--brand-accent', 'oklch(0.62 0.09 170)'),
+    accent,
+    paper: dark
+      ? `color-mix(in oklab, ${accent} 5%, color-mix(in oklab, ${fg} 4%, ${bg}))`
+      : `color-mix(in oklab, ${warn} 7%, ${bg})`,
+    ink: dark
+      ? `color-mix(in oklab, ${accent} 75%, #ffffff)`
+      : `color-mix(in oklab, ${accent} 40%, ${fg})`,
   };
 });
 

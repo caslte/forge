@@ -506,6 +506,17 @@ export interface CanvasTokens {
   warn: string;
   bad: string;
   accent: string;
+  /**
+   * porcelain 风格的纸底与瓷墨（v6.35 上收宿主）。
+   *
+   * 为什么由宿主按主题算、而不是把 color-mix 公式写给模型：**同一个混色比例
+   * 伺候不了两个主题**——「warn 7% 混 bg」在浅色是米纸，在暗色是 warn（亮黄）
+   * 混进近黑 = 浑浊橄榄底；「accent 40% 混 fg」在浅色是青墨，在暗色是亮青混
+   * 浅灰 = 洗白的淡青，标题发虚（2026-10-15 真机截图实测，P2 首个样本）。
+   * 深浅两档各给各的配方，见 HtmlCanvasBlock 的 tokens 计算。
+   */
+  paper: string;
+  ink: string;
 }
 
 /**
@@ -531,6 +542,8 @@ export function buildCanvasPreflight(tokens: CanvasTokens): string {
   --c-warn:${tokens.warn};
   --c-bad:${tokens.bad};
   --c-accent:${tokens.accent};
+  --c-paper:${tokens.paper};
+  --c-ink:${tokens.ink};
   --c-ok-bg:color-mix(in oklab, ${tokens.ok} 12%, transparent);
   --c-warn-bg:color-mix(in oklab, ${tokens.warn} 14%, transparent);
   --c-bad-bg:color-mix(in oklab, ${tokens.bad} 12%, transparent);

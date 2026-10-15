@@ -1,5 +1,42 @@
 # 变更日志
 
+## v6.35 (P2 样本 #1：暗色主题 porcelain 派生色翻车 —— paper/ink 上收宿主按主题计算)
+
+> 来源：2026-10-15 用户真实截图（暗色主题的 forge 分层架构卡）：
+> 「黑色主题的时候，这个颜色有点不对劲」。
+
+### 病灶与根因
+
+旧配方让模型自建两个 color-mix：纸底 = `warn 7% 混 bg`、瓷墨 = `accent 40% 混 fg`。
+**同一个比例跨主题不成立**：
+
+- 暗色纸底：warn 是亮黄，混进近黑 bg = **浑浊橄榄底**（整卡泛黄发脏）
+- 暗色瓷墨：accent 是亮青，混进浅灰 fg = **洗白的淡青**（标题发虚，墨感全无）
+
+浅色档两公式都成立，问题只在暗档——正好是「写死浅色」问题的镜像：
+这次不是模型写死颜色，而是**宿主给的派生公式只对浅色成立**。
+
+### 修法：token 上收宿主，模型只引用不自建
+
+| 层 | 改动 |
+|---|---|
+| `canvasSandbox.ts` | `CanvasTokens` 新增 `paper`/`ink`；preflight 注入 `--c-paper`/`--c-ink` |
+| `HtmlCanvasBlock.vue` | 按主题分别给配方：浅色维持原公式；暗色 paper = bg 叠 fg 4% + accent 5%（冷暖极轻不浑），ink = accent 75% 提白（比正文亮、比 accent 沉） |
+| `CANVAS_STYLE_SPEC` | 规则 01/02 改为引用 `var(--c-paper)`/`var(--c-ink)`；开头明令「never rebuild them with color-mix yourself」；图例引用改为 porcelain 图例页 |
+| 契约测试 | 变量清单加 `--c-paper`/`--c-ink`；新锁：两 token 必须在场、SPEC 不得教模型用 color-mix 重建它们 |
+| 对照页 | `prototypes/canvas-style-dark-fix.html`（暗色值下旧公式 vs 新配方 A/B，截图自查通过） |
+| 文档 | `canvas-style.md` 规则 01/02 同步 + 头部修订注记 |
+
+### 验证
+
+- typecheck / build 全绿；canvasHint + fence contract **31/31 绿**。
+- A/B 对照页暗色截图：旧公式橄榄底+发虚标题 vs 新配方干净纸底+瓷墨标题，差异成立。
+
+### P2 取证记录
+
+- **样本 #1**（2026-10-15，暗色架构卡）：派生色跨主题失效 → 本轮修复（改宿主 + SPEC + 测试，代码路径 3 处）。
+- 取证教训入档：**风格规则里凡是「从 token 派生」的公式，跨主题一律不可信；要派生就宿主算好注入 token**。
+
 ## v6.34 (P0+P1：画布单一风格定调「青瓷数据」+ 风格规范注入)
 
 > 来源：2026-10-15 用户拍板。P0 demo（prototypes/canvas-style-candidates-v2.html 三候选）选定
