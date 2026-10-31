@@ -7,7 +7,8 @@
 import { computed, ref } from 'vue';
 import type { ToolEvent } from '../types';
 import { parseFileToolInput } from '../composables/useChangedFiles';
-import { useI18n, type MessageKey } from '../i18n/index.ts';
+import { useI18n } from '../i18n/index.ts';
+import { TOOL_LABELS } from '../utils/toolLabels.ts';
 import DiffView from './DiffView.vue';
 
 const { t } = useI18n();
@@ -19,37 +20,7 @@ const props = defineProps<{
 
 const open = ref(false);
 
-/** 工具名 → i18n 键（与 useStreamPhase 口径对齐）；key 是与后端工具名比对的逻辑串不动，展示值进字典；未知工具回退原名 */
-const TOOL_LABELS: Record<string, MessageKey> = {
-  ask_user_question: 'tool.askUser',
-  read: 'tool.readFile',
-  view: 'tool.readFile',
-  write: 'tool.writeFile',
-  apply_patch: 'tool.writeFile',
-  edit: 'tool.editFile',
-  multi_edit: 'tool.editFile',
-  bash: 'tool.runCommand',
-  powershell: 'tool.runCommand',
-  shell: 'tool.runCommand',
-  grep: 'tool.searchContent',
-  find: 'tool.findFile',
-  glob: 'tool.findFile',
-  ls: 'tool.listDir',
-  websearch: 'tool.webSearch',
-  web_search: 'tool.webSearch',
-  webfetch: 'tool.webFetch',
-  web_fetch: 'tool.webFetch',
-  todo: 'tool.updateTodo',
-  agent: 'tool.spawnAgent',
-  get_subagent_result: 'tool.waitAgentResult',
-  steer_subagent: 'tool.steerAgent',
-  subagentworkflow: 'tool.runAgentWorkflow',
-  // goal 接入：pi-goal 的三个终局工具。用户会在消息流里看到它们，
-  // 不加映射就显示裸英文工具名（goal_complete / goal_blocked / goal_wait）。
-  goal_complete: 'tool.goalComplete',
-  goal_blocked: 'tool.goalBlocked',
-  goal_wait: 'tool.goalWait',
-};
+/** 工具名映射表在 utils/toolLabels.ts（Agent 行也要用，避免两张表漂移） */
 
 /** 展示用工具名：有中文映射用中文，否则回退原始工具名 */
 const displayName = computed(() => {

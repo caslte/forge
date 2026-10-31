@@ -135,7 +135,8 @@ test('E-CV-007 @P0 @mock-backend：时间线横条标记正序展示、条目数
   );
   await expect(page.locator('.compose-box')).not.toHaveClass(/streaming/);
 
-  // ===== 子 agent 结果视图激活：时间线隐藏；切回主会话恢复 =====
+  // ===== v6.37 子 agent 改为消息流内的一行：Agent 行出现时时间线**保持可见** =====
+  // （旧形态是「Tab 点开 → 整页结果视图」，那时时间线必须隐藏；现在不切视图，故无隐藏一说）
   await page.evaluate((sessionKey) => {
     window.__forgeMock!.setSubagents(sessionKey, []);
     window.__forgeMock!.emit(sessionKey, 'subagent.updated', {
@@ -153,13 +154,16 @@ test('E-CV-007 @P0 @mock-backend：时间线横条标记正序展示、条目数
       },
     });
   }, sid);
-  const agentTab = page.locator('.subagent-tab', { hasText: '研究定价' });
-  await expect(agentTab).toBeVisible();
-  await agentTab.click();
-  await expect(rail).toBeHidden();
-  await page.locator('.subagent-tab', { hasText: '主会话' }).click();
+  await expect(page.locator('.agent-row')).toHaveCount(1, { timeout: 5_000 });
   await expect(rail).toBeVisible();
   await expect(items).toHaveCount(6);
+
+  // 展开 Agent 行也只在消息流内增高，不替换消息区、不动时间线
+  await page.locator('.agent-row .agent-head').click();
+  await expect(page.locator('.agent-row')).toHaveClass(/open/);
+  await expect(rail).toBeVisible();
+  await expect(items).toHaveCount(6);
+  await expect(page.locator('.agent-row .agent-head')).toBeVisible();
 
   // 证据：screenshot（docs/test/03_conversation/e2e.md E-CV-007）
   await page.screenshot({ path: 'e2e-report/E-CV-007-timeline.png' });

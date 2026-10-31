@@ -131,6 +131,22 @@ async function applySeeds(
       lvPlain: LEVELS_PLAIN,
     },
   );
+  /**
+   * seed 之后必须通知一次「模型列表变了」。
+   *
+   * 原因：`page.reload()` 会让 App 在挂载时就用**默认** mock 模型（deepseek-v4-flash）
+   * 拉一次 `model/queryModels` 并缓存到 `modelOptions`；本文件的 seed 是 reload **之后**
+   * 才注入的，此时 App 手里的清单还是旧的。而 `InstructionInput.currentModelId` 是
+   * 「用 currentProviderId 去 modelOptions 里找 model」的派生值——清单里没有
+   * reason-pro，它就恒为 null ⇒ `loadThinkingState()` 在 `if (!modelId) return` 处
+   * 提前返回 ⇒ 级别列表永远为空 ⇒ 切换器永不渲染（且不报错，静默失效）。
+   *
+   * 真机上不会遇到：真实主进程在设置变更后会主动推 model.providersChanged，
+   * App 随即重拉清单。mock 环境没有那个推送方，所以这里手动补一次。
+   */
+  await page.evaluate(() => {
+    window.__forgeMock!.emit('', 'model.providersChanged', {});
+  });
 }
 
 /** 进入应用：持久化会话种子到 reload，再注入思考级别 mock 与查询脚本数 */

@@ -11,12 +11,13 @@
  * 同一 key 的组件始终唯一，patch 不再跨列表位置错位。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import type { ConversationMessage, SessionStatus, ToolEvent } from '../types';
+import type { ConversationMessage, SessionStatus, Subagent, ToolEvent } from '../types';
 import type { ChangedFileSummary } from '../composables/useChangedFiles';
 import { formatElapsed } from '../utils/formatElapsed';
 import MessageCard from './MessageCard.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import ChangedFilesCard from './ChangedFilesCard.vue';
+import AgentRow from './AgentRow.vue';
 import { useI18n } from '../i18n/index.ts';
 
 const { t } = useI18n();
@@ -56,6 +57,18 @@ export type DisplayItem =
       /** CV-S07 上下文压缩边界：loader 由 pi compaction 条目派生，非真实消息 */
       kind: 'compaction-divider';
       ts: string;
+    }
+  | {
+      key: string;
+      /**
+       * 子 Agent 工具行（v6.37）：由 `agent` 工具调用绑定到的子 agent 记录渲染。
+       * 单独成 kind（而非并入 tool-group）才能在连续工具里「永远单独可见」。
+       */
+      kind: 'agent-row';
+      subagent: Subagent;
+      expanded: boolean;
+      /** 轮次 FORGE 字标挂载点（该轮首个展示项即 agent 行） */
+      turnBrand?: boolean;
     };
 
 const props = defineProps<{
@@ -74,6 +87,8 @@ const showDiffEff = computed(() => props.showDiff !== false);
 
 const emit = defineEmits<{
   (e: 'toggle-group', key: string, collapsed: boolean): void;
+  (e: 'toggle-agent', agentId: string): void;
+  (e: 'stop-agent', agentId: string): void;
 }>();
 
 /** 组内任一工具仍为 started → 组在跑，头部切「正在执行中 · Xs」并本地读秒 */
@@ -204,6 +219,17 @@ function isToolMessage(m: ConversationMessage): boolean {
       v-if="showDiffEff"
       :summary="item.summary"
       :project-path="projectPath"
+    />
+  </template>
+
+  <template v-else-if="item.kind === 'agent-row'">
+    <div v-if="item.turnBrand" class="msg-brand">FORGE</div>
+    <AgentRow
+      :subagent="item.subagent"
+      :session-id="sessionId"
+      :expanded="item.expanded"
+      @toggle="emit('toggle-agent', item.subagent.agentId)"
+      @stop="emit('stop-agent', item.subagent.agentId)"
     />
   </template>
 

@@ -48,6 +48,10 @@ export const zhChat = {
   'chat.phaseToolSteerAgent': '正在向子 Agent 发送指令',
   'chat.phaseToolWorkflow': '正在运行子 Agent 工作流',
   'chat.phaseToolNamed': '正在执行 {name}',
+  // v6.37 Agent 行（消息流内的子 Agent 一行）：headline 右侧固定三段
+  'chat.agentRunningTool': '正在执行 {name}…',
+  'chat.agentToolCount': '{count} 次工具',
+  'chat.agentToggleExpand': '展开或收起子 Agent「{name}」的执行过程',
   'chat.conversationError': '对话错误（{code}）',
   // CV-ERR-01 错误横幅：第一行结论（{subject} 带 provider 名）、第二行解释
   'chat.errorSubjectProviderNamed': '模型服务（{name}）',
@@ -127,6 +131,10 @@ export const enChat: Record<string, string> = {
   'chat.phaseToolSteerAgent': 'Sending an instruction to the subagent',
   'chat.phaseToolWorkflow': 'Running a subagent workflow',
   'chat.phaseToolNamed': 'Running {name}',
+  // v6.37 agent row: three fixed segments on the headline's right side
+  'chat.agentRunningTool': 'Running {name}…',
+  'chat.agentToolCount': '{count} tool calls',
+  'chat.agentToggleExpand': 'Expand or collapse the run log of subagent "{name}"',
   'chat.conversationError': 'Conversation error ({code})',
   // CV-ERR-01 error banner: first line is the verdict, second line explains
   'chat.errorSubjectProviderNamed': 'The model service ({name})',

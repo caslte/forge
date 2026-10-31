@@ -269,7 +269,7 @@ watch(
 /**
  * 截止时刻变化的兜底启停。
  *
- * 面板是**常驻挂载**的（`v-if="!showResultView"`，首屏无问卷时也挂着），所以
+ * 面板是**常驻挂载**的（首屏无问卷时也挂在输入框上方），所以
  * 不能只靠上面那个 requestId watch：它 `immediate` 跑在挂载时拿不到 request，
  * 后续只在 requestId 真正变化时才重启。deadline 与 requestId 虽同批写入、
  * 理论上够用，但一旦某个路径只更新了 deadline（或上游 Map 忘了做成响应式），

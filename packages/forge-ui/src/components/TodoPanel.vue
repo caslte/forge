@@ -352,7 +352,16 @@ defineExpose({
  */
 .todo-panel {
   position: relative;
-  z-index: 0;
+  /* 面板必须压在输入框之上（z-index 正数），否则会被后渲染的 .compose-box 整块盖住。
+   *
+   * 历史坑（2026-11-01 实测定位）：这里原本是 z-index: 0，而 .compose-box 是
+   * `position: relative` 且 z-index:auto —— 同为 auto/0 时**后出现的兄弟节点胜**，
+   * 即 compose-box 盖住整个面板。于是 -10px 负 margin 的「底边咬合」被放大成
+   * 「整个面板被吞」，hero-mode 下 --conv-hero-lift 再把整块上移，面板头部直接
+   * 落在 textarea 之下：elementFromPoint 命中 compose-input，头部点不动。
+   * 视觉咬合应由「面板垫在下面、输入框不透明背景盖住最后 10px」表达，而不是
+   * 靠面板整体被盖——那是把一条设计意图做成了功能故障。 */
+  z-index: 1;
   border: 1px solid var(--input);
   border-bottom: 0;
   border-radius: 16px 16px 0 0;

@@ -10,8 +10,6 @@ import GoalDialog from './GoalDialog.vue';
 import MessageListItem from './MessageListItem.vue';
 import ConversationTimelineRail from './ConversationTimelineRail.vue';
 import ConversationHistoryPopover from './ConversationHistoryPopover.vue';
-import SubagentTabBar from './SubagentTabBar.vue';
-import SubagentResultView from './SubagentResultView.vue';
 import { useCompactBanner } from '../composables/useCompactBanner';
 import { goalRemainingOf, goalRequestOf, replyGoalUi } from '../composables/useGoalState';import { useShellHealth } from '../composables/useShellHealth';
 import { usePreferences } from '../composables/usePreferences';
@@ -111,15 +109,9 @@ const {
   send: sendTurn,
   sendQueuedNow,
   cancel: cancelTurn,
-  subagents,
-  activeAgentId,
-  activeSubagent,
-  showResultView,
   pendingStopAgentId,
   loadSubagents,
-  onSelectTab,
-  onCloseTab,
-  onClearFinished,
+  toggleAgentRow,
   onSubagentStopRequest,
   confirmSubagentStop,
   cancelSubagentStop,
@@ -517,7 +509,6 @@ function clearLocateHighlight(): void {
  * 所以序由 useSessionConversation 按窗口内实际挂载项给出（userOrdinalInWindow）。
  */
 async function locateMessage(index: number): Promise<void> {
-  if (showResultView.value) return; // 结果视图激活期间不定位/回看（防御；Rail 本就隐藏）
   const container = scrollRef.value;
   if (!container) return;
   // 先关掉两条会把视口拽回底部的路径，再动窗口：
@@ -821,7 +812,6 @@ watch(
     // 经 restoreStreaming 一并接管读秒启停（同 tick false→true 的 watch 会去致盲）
     restoreStreaming(props.session?.status === 'streaming');
     void loadHistory();
-    activeAgentId.value = null; // 切换会话回主会话 Tab
     void loadSubagents();
   },
 );
@@ -959,22 +949,19 @@ onMounted(() => {
 
 <template>
   <div ref="viewRef" class="conv-view" :class="{ 'col-standard': contentWidth === 'standard' }">
-    <!-- 左缘时间线 + 消息区：横向并排（CV-S06）。整行与结果视图 v-show 互斥
-         （结果视图激活时隐藏整行，切回即恢复），无 user 消息时整体不渲染（AC-CV-017） -->
-    <div class="conv-main-row" :class="{ 'has-rail': hasTimeline }" v-show="!showResultView">
+    <!-- 左缘时间线 + 消息区：横向并排（CV-S06）；无 user 消息时整体不渲染（AC-CV-017）。
+         v6.37 起不再有「结果视图」互斥态：子 agent 是消息流里的行，消息区始终在场 -->
+    <div class="conv-main-row" :class="{ 'has-rail': hasTimeline }">
       <ConversationTimelineRail
         v-if="hasTimeline"
-        v-show="!showResultView"
         :messages="messages"
         :active-index="reviewTargetIndex"
         @select="onTimelineSelect"
         @hover="onTimelineHover"
         @hover-end="onTimelineHoverEnd"
       />
-      <!-- 消息区 vs 结果视图：v-show 互斥，不销毁消息流 DOM；结果视图原地占据消息区位置 -->
       <div
         ref="scrollRef"
-        v-show="!showResultView"
         class="conv-messages"
         :class="{ 'fade-b': convFadeBottom }"
       >
@@ -998,6 +985,8 @@ onMounted(() => {
               :project-path="props.session?.projectPath ?? ''"
               :show-diff="showDiff"
               @toggle-group="toggleGroup"
+              @toggle-agent="toggleAgentRow"
+              @stop-agent="onSubagentStopRequest"
             />
             <!-- 流式思考指示器（流式期间始终显示）带 Codex 银色流光。
                  收尾帧随 v-if 卸载会连同所在 flex gap 一帧消失 ~55px（实测主要跳动来源），
@@ -1139,23 +1128,6 @@ onMounted(() => {
       </Transition>
     </div>
 
-    <!-- 结果视图：占据消息区位置（与消息区 v-show 互斥） -->
-    <SubagentResultView
-      v-if="showResultView && activeSubagent"
-      :subagent="activeSubagent"
-      :session-id="props.sessionId ?? createdSessionId ?? ''"
-      @stop="onSubagentStopRequest"
-    />
-
-    <!-- 子 Agent Tab 栏：固定在输入框上方，有子 agent 才渲染 -->
-    <SubagentTabBar
-      :subagents="subagents"
-      :active-agent-id="activeAgentId"
-      @select="onSelectTab"
-      @close="onCloseTab"
-      @clear-finished="onClearFinished"
-    />
-
     <div
       ref="inputWrapRef"
       class="conv-input-wrap"
@@ -1171,9 +1143,8 @@ onMounted(() => {
       <!-- Path 2 ask_user_question 面板：同样放在 wrap 内、输入框正上方（与 TodoPanel
            同款「从输入框延伸出去」的浮窗）。挂在会话作用域（每个 ConversationView
            实例一份）而非 App 级 —— 契约 §4.4 硬约束 2，多窗格并排时各自只渲染自己
-           会话的问卷。子 agent 结果视图不渲染（与 TodoPanel 一致）。 -->
+           会话的问卷。 -->
       <AskUserQuestionPanel
-        v-if="!showResultView"
         :session-id="props.sessionId ?? createdSessionId"
         :request="askRequest"
         :deadline="askDeadline"
@@ -1184,10 +1155,8 @@ onMounted(() => {
 
       <!-- goal 接入：pi-goal 的宿主交互弹窗（confirm / input / editor / select）。
            与 AskUserQuestionPanel 同位置同形态（输入框正上方的浮窗），因为二者是
-           同一类东西——都在等用户裁决，且都必须在会话作用域内渲染（多窗格各认领自己的）。
-           挂这里的理由和 AskUserQuestionPanel 一样：子 agent 结果视图不渲染。 -->
+           同一类东西——都在等用户裁决，且都必须在会话作用域内渲染（多窗格各认领自己的）。 -->
       <GoalDialog
-        v-if="!showResultView"
         :request="goalRequest"
         :remaining-sec="goalRemaining"
         @reply="replyGoalDialog"
@@ -1565,12 +1534,6 @@ onMounted(() => {
   --conv-box-w: min(640px, 100cqw);
 }
 
-/* 子 agent Tab 栏直接挂在 .conv-view 下、读不到 --conv-box-w，hero 态需显式同宽，
-   否则标准宽度下 Tab 栏 920px、输入框 640px，两者左缘错开。数值同上面 hero-mode。 */
-.conv-view:has(.conv-input-wrap.hero-mode) :deep(.subagent-tabbar) {
-  max-width: min(640px, 100%);
-}
-
 .conv-input-wrap :deep(.compose-status) {
   max-width: var(--conv-box-w);
   margin-inline: auto;
@@ -1824,14 +1787,6 @@ onMounted(() => {
   .ce-spinner {
     animation: none;
   }
-}
-
-/* 结果视图：与消息流 v-show 互斥，独立占据消息区位置 */
-.subagent-result-view {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 
 /* 单个终止二次确认弹窗 */

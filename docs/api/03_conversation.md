@@ -398,7 +398,7 @@ type TodoSnapshot = {
 ```
 
 - 面板渲染前过滤 `status === 'deleted'` 墓碑（与 rpiv-todo TUI 端同款）；剩余按 (completed → in_progress → pending)、组内按 `id` 升序渲染。
-- 面板仅承载主会话，子 agent 结果视图与画布小窗不渲染。
+- 面板仅承载主会话，画布小窗不渲染。
 - 面板只读，不向 pi 发送任何写请求；不消费 `tool.started`（仅消费 completed 终态，避免流式状态噪声）。
 - 折叠状态按 `sessionId` 内存维护（不写 localStorage、不跨会话同步、不发 IPC）。
 
@@ -565,7 +565,7 @@ window.forge.askUserQuestion = {
 ```
 
 - 问卷态按 `sessionId` 内存维护（不持久化、APP 退出随进程消失）。
-- 子 agent 结果视图激活时不渲染面板。
+- v6.37 起子 agent 改为消息流行内展开，不再是独立视图，无需再按结果视图排除面板。
 - `settled` 门保证「提交」与「归零」竞态只上报一次。
 
 > 验收 AC-CV-043\~049 详见 `docs/test/03_conversation/coverage-matrix.md`。

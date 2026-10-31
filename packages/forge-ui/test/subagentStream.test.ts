@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseSubagentStream, stripDanglingFence } from '../src/utils/subagentStream.ts';
+import { formatToolArg, parseSubagentStream, stripDanglingFence } from '../src/utils/subagentStream.ts';
 
 const UID = 'a1';
 const wrap = (entry: object): string => JSON.stringify({ isSidechain: true, agentId: UID, ...entry });
@@ -149,3 +149,32 @@ test('groupStreamNodes：连续 ≥2 工具聚组（默认收起语义，单工�
   assert.deepEqual(nodes[2], { kind: 'text', text: '说明' });
   assert.equal(nodes[3]!.kind, 'tool');
 });
+
+// ===== v6.37：过程工具行参数的人类可读格式化（渲染层口径，解析层保持原始序列化）=====
+
+test('formatToolArg：文件类取 basename（与主会话 ToolCallCard 同口径）', () => {
+  assert.equal(formatToolArg('{"path":"packages\\\\forge-ui\\\\src\\\\App.vue"}'), 'App.vue');
+  assert.equal(formatToolArg('{"file_path":"/a/b/c.ts"}'), 'c.ts');
+  assert.equal(formatToolArg('{"filePath":"x/y/z.json"}'), 'z.json');
+});
+
+test('formatToolArg：命令/搜索/网页类取原文', () => {
+  assert.equal(formatToolArg('{"command":"pnpm test"}'), 'pnpm test');
+  assert.equal(formatToolArg('{"pattern":"subagent"}'), 'subagent');
+  assert.equal(formatToolArg('{"query":"国产 LLM 定价"}'), '国产 LLM 定价');
+  assert.equal(formatToolArg('{"url":"https://example.com/a"}'), 'https://example.com/a');
+});
+
+test('formatToolArg：空白折叠、文件类优先于命令类', () => {
+  assert.equal(formatToolArg('{"command":"pnpm   test \\n --watch"}'), 'pnpm test --watch');
+  assert.equal(formatToolArg('{"path":"a/b.ts","command":"ls"}'), 'b.ts');
+});
+
+test('formatToolArg：退化路径（空 / 非 JSON / 数组 / 无匹配键）', () => {
+  assert.equal(formatToolArg(''), '');
+  assert.equal(formatToolArg('not json at all'), 'not json at all');
+  assert.equal(formatToolArg('[1,2]'), '[1,2]');
+  assert.equal(formatToolArg('{"unknown":"keep"}'), '{"unknown":"keep"}');
+  assert.equal(formatToolArg('{"path":"   "}'), '{"path":"   "}');
+});
+

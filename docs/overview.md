@@ -22,7 +22,8 @@
 
 ## 三、技术栈与运行环境
 
-- **引擎**：Node.js ≥22 + TypeScript；pi（`@earendil-works/pi-coding-agent` 等）作 npm 依赖，进程内 SDK（`AgentSession`）
+- **引擎**：Node.js ≥22 + TypeScript；pi（`@earendil-works/pi-coding-agent` 等，当前 **1.4.0**，与 `pi-ai` 同版本锁定）作 npm 依赖，进程内 SDK（`AgentSession`）
+  - 版本约束：第三方扩展（如 `@tintinweb/pi-subagents`）的 `peerDependencies` 会随上游前进（0.20.0 起要求 pi ≥1.1.0），引擎版本过低会让扩展在**子进程启动阶段**直接崩掉。升级引擎用 `node scripts/bump-pi.mjs <x.y.z>`。
 - **桌面壳**：Electron + electron-builder + electron-updater
 - **前端**：Vue 3 + Vite + TS（复用 ai-coding），marked / prismjs / mermaid
 - **通信**：forge-core 传输无关接口（方法+事件）；桌面端 Electron IPC（不走 HTTP，避免本地端口攻击面），headless HTTP/SSE（v2+）；pi 事件映射到 `CanonicalEvent`

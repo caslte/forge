@@ -141,7 +141,7 @@ test('扩展注册形态：name 唯一、只挂 before_agent_start', () => {
 });
 
 test('钩子往返：本轮 systemPrompt 被替换，且不改写下轮基准（返回值不含入参之外的副作用）', async () => {
-  let captured: ((event: { prompt: string; systemPrompt: string }) => Promise<{ systemPrompt: string }>) | null = null;
+  let captured: ((event: { messageType: 'user'; prompt: string; systemPrompt: string }) => Promise<{ systemPrompt: string }>) | null = null;
   const pi = {
     on(_event: string, handler: unknown) {
       captured = handler as never;
@@ -149,9 +149,33 @@ test('钩子往返：本轮 systemPrompt 被替换，且不改写下轮基准（
   };
   registerCanvasHint(pi as never);
   assert.ok(captured);
-  const hook = captured as (e: { prompt: string; systemPrompt: string }) => Promise<{ systemPrompt: string }>;
-  const res = await hook({ prompt: '画个流程图', systemPrompt: BASE });
+  // pi 1.0 起 before_agent_start 是 user/custom 联合类型：messageType 决定有没有 prompt 原文
+  const hook = captured as (e: {
+    messageType: 'user';
+    prompt: string;
+    systemPrompt: string;
+  }) => Promise<{ systemPrompt: string }>;
+  const res = await hook({ messageType: 'user', prompt: '画个流程图', systemPrompt: BASE });
   assert.ok(res.systemPrompt.includes('## Diagram output contract'));
   // 入参字符串不可变：下一轮 pi 仍拿原始基准
   assert.equal(BASE, 'You are a coding agent.');
+});
+
+test('custom 消息触发的运行：无 prompt 原文，仍追加常驻段但不追加出图约束', async () => {
+  let captured: ((event: { messageType: 'custom'; systemPrompt: string }) => Promise<{ systemPrompt: string }>) | null = null;
+  const pi = {
+    on(_event: string, handler: unknown) {
+      captured = handler as never;
+    },
+  };
+  registerCanvasHint(pi as never);
+  assert.ok(captured);
+  const hook = captured as (e: {
+    messageType: 'custom';
+    systemPrompt: string;
+  }) => Promise<{ systemPrompt: string }>;
+  // 缺 prompt 字段不应抛错——这是 1.0 之前 event.prompt 必然存在、现在可能缺席的那一路
+  const res = await hook({ messageType: 'custom', systemPrompt: BASE });
+  assert.ok(res.systemPrompt.includes(CANVAS_STANZA.trim()));
+  assert.ok(!res.systemPrompt.includes('## Diagram output contract'));
 });

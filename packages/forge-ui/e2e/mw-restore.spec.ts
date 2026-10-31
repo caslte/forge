@@ -73,11 +73,16 @@ test('贴边吸附布局在退出/重进多窗口后保留', async ({ page }) =>
   await expect(page.locator('.mw-win')).toHaveCount(1);
 
   const { cw, ch } = await canvasSize(page);
+  // 贴边几何以 forge-core 的 snapRectFor 为准（windowLayout.ts）：
+  //   left = { x: 0, y: 0, w: round((cw - MW_GAP) / 2), h: ch }，MW_GAP = 4。
+  // 旧断言写的是 x/y=4、w=(cw-12)/2、h=ch-8 —— 那是「窗口四周留 4px 内边距」的
+  // 早期方案，现行实现是「窗口贴满边缘，只在**窗口之间**留 MW_GAP」，
+  // 于是左边窗口必然 x=0/y=0、高度=画布高。改公式不改实现（实现有 forge-core 单测锁）。
   const snapped: Rect = {
-    x: 4,
-    y: 4,
-    w: Math.round((cw - 12) / 2),
-    h: ch - 8,
+    x: 0,
+    y: 0,
+    w: Math.round((cw - 4) / 2),
+    h: ch,
   };
   const afterSnap = await winRect(page);
   expect(afterSnap).toEqual(snapped);
@@ -122,7 +127,8 @@ test('画布尺寸变化后恢复贴边布局：等比缩放保持贴边关系',
   await expect(page.locator('.mw-win')).toHaveCount(1);
 
   const before = await canvasSize(page);
-  const snap: Rect = { x: 4, y: 4, w: Math.round((before.cw - 12) / 2), h: before.ch - 8 };
+  // 同上方用例：现行贴边几何是 x/y=0、宽=(cw-MW_GAP)/2、高=ch（MW_GAP=4）
+  const snap: Rect = { x: 0, y: 0, w: Math.round((before.cw - 4) / 2), h: before.ch };
   expect(await winRect(page)).toEqual(snap);
 
   // 退出 → 改变主窗口尺寸（画布随之变大）→ 重进
@@ -136,11 +142,13 @@ test('画布尺寸变化后恢复贴边布局：等比缩放保持贴边关系',
   const after = await canvasSize(page);
   const sx = after.cw / before.cw;
   const sy = after.ch / before.ch;
+  // 等比缩放 + clamp 到画布边界。上限不再减 8：现行贴边窗口是「贴满边缘」，
+  // 高度等于画布高（见上），旧公式的 -8 是早期「四周留 4px」方案留下的。
   const expected: Rect = {
-    x: Math.max(0, Math.min(Math.round(snap.x * sx), after.cw - Math.min(Math.round(snap.w * sx), after.cw - 8))),
-    y: Math.max(0, Math.min(Math.round(snap.y * sy), after.ch - Math.min(Math.round(snap.h * sy), after.ch - 8))),
-    w: Math.min(Math.round(snap.w * sx), after.cw - 8),
-    h: Math.min(Math.round(snap.h * sy), after.ch - 8),
+    x: Math.max(0, Math.min(Math.round(snap.x * sx), after.cw - Math.min(Math.round(snap.w * sx), after.cw))),
+    y: Math.max(0, Math.min(Math.round(snap.y * sy), after.ch - Math.min(Math.round(snap.h * sy), after.ch))),
+    w: Math.min(Math.round(snap.w * sx), after.cw),
+    h: Math.min(Math.round(snap.h * sy), after.ch),
   };
   const restored = await winRect(page);
   console.log('before:', JSON.stringify(snap), `(${before.cw}x${before.ch})`, 'restored:', JSON.stringify(restored), `(${after.cw}x${after.ch})`);

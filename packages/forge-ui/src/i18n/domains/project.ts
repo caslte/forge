@@ -26,6 +26,9 @@ export const zhProject = {
   'project.noOtherBranches': '无其他分支',
   'project.current': '当前',
   'project.confirmSwitchBranch': '确认切换分支',
+  // 忙态徽标的悬浮提示（AC-PM-016）：会话执行中禁止切分支，但仅靠 is-busy 灰态
+  // 用户不知道「为什么点不动」——必须有一句说明（走 data-tooltip 由宿主渲染）。
+  'project.branchBusy': '会话执行中',
   'project.dirtySwitchWarning': '工作区有未提交更改，建议先提交或暂存',
   'project.switchAnyway': '仍要切换',
   'project.timeJustNow': '刚刚',
@@ -87,6 +90,7 @@ export const enProject: Record<string, string> = {
   'project.noOtherBranches': 'No other branches',
   'project.current': 'Current',
   'project.confirmSwitchBranch': 'Confirm branch switch',
+  'project.branchBusy': 'Session is running',
   'project.dirtySwitchWarning': 'The working tree has uncommitted changes. Consider committing or stashing them first.',
   'project.switchAnyway': 'Switch anyway',
   'project.timeJustNow': 'just now',

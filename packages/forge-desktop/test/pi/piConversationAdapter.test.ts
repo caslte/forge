@@ -305,15 +305,18 @@ test('发送异常时映射 error 并保留增量文本', async () => {
     errors.push({ message: error.message, partialText: adapter.getPartialContent('session-error') });
   });
 
+  // CV-ERR-01 起本层**不再做中文改写**：message 恒等于 raw，纯文本透传。
+  // 中文结论句由 UI（forge-ui/src/utils/errorPresentation.ts）按分类统一生成。
   await assert.rejects(
     adapter.sendMessage('session-error', 'hello'),
-    /模型凭据未配置/,
+    /No API key found/,
   );
 
   assert.equal(errors.length, 1);
   assert.equal(
     errors[0]?.message,
-    '模型凭据未配置（No API key found for the selected model）：请在设置中为对应模型填写并保存 API Key 后重试',
+    'No API key found for the selected model',
+    'adapter 层必须原样透传，不得自行改写（改写职责已上移 UI）',
   );
   assert.equal(errors[0]?.partialText, 'partial');
 });

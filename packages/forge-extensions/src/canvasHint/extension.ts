@@ -39,7 +39,13 @@ export function applyCanvasHint(systemPrompt: string, prompt: string): string {
 /** 注册 before_agent_start 钩子。 */
 export function registerCanvasHint(pi: ExtensionAPI): void {
   pi.on('before_agent_start', async (event) => ({
-    systemPrompt: applyCanvasHint(event.systemPrompt, event.prompt),
+    // pi 1.0 起该事件是 user/custom 联合类型：只有用户提交的 prompt 带原文，
+    // 自定义消息触发的那一路（sendMessage triggerTurn）没有 prompt 字段。
+    // 出图意图判断只看用户原文，custom 一路按空串处理（仍追加常驻段）。
+    systemPrompt: applyCanvasHint(
+      event.systemPrompt,
+      event.messageType === 'user' ? event.prompt : '',
+    ),
   }));
 }
 

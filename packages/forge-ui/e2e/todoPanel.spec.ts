@@ -177,15 +177,38 @@ test('TSC-E2E-009b @P0 @mock-backend CV-S11：hero-mode 下 TodoPanel 不被输�
   const heading = page.locator('[data-testid="todo-heading"]');
   await expect(heading).toBeVisible();
 
-  // 断言头部 bounding box 不与 textarea 重叠（hero-mode 下两者应位于不同垂直区域）
+  // 等 hero 位移过渡落定再量几何。
+  // `.conv-input-wrap` 的 transform 带 420ms 过渡（--transition-decelerate）：
+  // TodoPanel 出现会撑高 wrap → ResizeObserver 重测 heroLift → 整块平移。
+  // 动画进行中取 boundingBox 会读到中间帧（实测头部与 textarea 只差 3px，
+  // 恰是动画刚起步的瞬间），据此判「遮挡」是假阳性。
+  await page.waitForTimeout(600);
+
+  // 断言头部**不被输入框盖住**（不是「零像素接触」）。
+  //
+  // 原写法要求 heading 与 textarea 的垂直区间完全不相交，与设计直接冲突：
+  // TodoPanel 用 `margin: 0 0 -10px` 主动塞进输入框背后 10px，由输入框上边框
+  // 充当面板底边，形成「从输入框延伸出去」的一体感（见 009c 与 TodoPanel.vue
+  // 顶部注释）。两者底沿与顶沿必然咬合几个像素——这正是想要的视觉。
+  //
+  // 真正要守的是 AC-CV-039 的原意：**头部可见且可点**。用「头部中心点命中的是
+  // 头部自身（或其子节点）」来判定，被遮挡时 elementFromPoint 会返回别的元素。
   const headingBox = await heading.boundingBox();
   const textareaBox = await page.locator('textarea.compose-input').boundingBox();
   expect(headingBox).not.toBeNull();
   expect(textareaBox).not.toBeNull();
-  const overlapsVertically =
-    headingBox!.y < textareaBox!.y + textareaBox!.height &&
-    textareaBox!.y < headingBox!.y + headingBox!.height;
-  expect(overlapsVertically).toBe(false, 'TodoPanel 头部与输入框 textarea 不应重叠');
+  expect(headingBox!.height, '头部应有可点高度').toBeGreaterThan(8);
+
+  const hit = await page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y);
+    const head = document.querySelector('[data-testid="todo-heading"]');
+    if (!el || !head) return { tag: null, inside: false };
+    return {
+      tag: (el as HTMLElement).className || el.tagName,
+      inside: head === el || head.contains(el),
+    };
+  }, { x: headingBox!.x + headingBox!.width / 2, y: headingBox!.y + headingBox!.height / 2 });
+  expect(hit.inside, `头部中心点应命中头部自身，实际命中 ${String(hit.tag)}`).toBe(true);
 
   // 点击头部折叠（应不被 hero placeholder 拦截）
   await heading.click({ timeout: 5000 });

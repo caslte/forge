@@ -2,8 +2,8 @@
  * 会话作用域的 ask_user_question 状态仓（Path 2，契约 §4.4）。
  *
  * 为什么单独成文件：这组状态里藏着一个**静默失败**的坑 —— 倒计时表若写成普通
- * `Map`，`deadline` computed 会在面板首屏（`v-if="!showResultView"` 常驻挂载、
- * 尚无问卷）就求值并把 `undefined → null` **缓存**下来；此后 `set` 不产生依赖变更，
+ * `Map`，`deadline` computed 会在面板首屏（面板常驻挂载、尚无问卷）就求值并把
+ * `undefined → null` **缓存**下来；此后 `set` 不产生依赖变更，
  * computed 永不重算，面板拿到的 `deadline` 恒为 `null` → `tick()` 直接 return →
  * **右上角读秒一直是 0**（真机曾如此）。
  *

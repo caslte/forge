@@ -18,7 +18,7 @@
  * 自动化等级：mock-backend（mock-bridge.emit 注入 goal.statusChanged / goal.uiRequested）。
  */
 import { test, expect, type Page } from '@playwright/test';
-import { attachHealthGuards, waitForMock, seedSessions } from './helpers/index';
+import { attachHealthGuards, expandAllProjects, waitForMock, seedSessions } from './helpers/index';
 
 const SESSION_ID = 'e2e-goal-session';
 /** 非本会话 id：用于「只认领自己会话的状态与弹窗」的负向断言 */
@@ -50,7 +50,12 @@ async function openSession(page: Page): Promise<void> {
   ]);
   await page.reload();
   await expect(page.locator('.tree-panel')).toBeVisible();
-  await page.getByText('goal 会话', { exact: true }).click();
+  // v6.26 起项目文件夹默认收起：不展开则会话行虽在 DOM 里却被折叠容器遮挡，
+  // 点击会被 .project-tree 拦截（pointer-events）。与 subagent.spec 同一处置。
+  await expandAllProjects(page);
+  // 用 .tree-session 定位（与 subagent / conversationHistoryTimeline 同口径）：
+  // 全页 getByText 在树展开后会命中多个同名文本节点，点击落点不确定。
+  await page.locator('.tree-session', { hasText: 'goal 会话' }).click();
   await waitForMock(page);
 }
 
@@ -58,7 +63,9 @@ async function openSession(page: Page): Promise<void> {
 async function emitStatus(page: Page, text: string | null, sessionId = SESSION_ID): Promise<void> {
   await page.evaluate(
     ({ sessionId: sid, text: t }) => {
-      window.__forgeMock!.emit('goal.statusChanged', { sessionId: sid, text: t });
+      // emit 是三参数 (sessionId, event, payload)：漏掉 sessionId 位会把事件名
+      // 当成会话 id 发出去，通道名错位 ⇒ 订阅端永不触发（且不报错，静默失效）。
+      window.__forgeMock!.emit(sid, 'goal.statusChanged', { sessionId: sid, text: t });
     },
     { sessionId, text },
   );
@@ -73,7 +80,8 @@ async function emitRequest(
 ): Promise<void> {
   await page.evaluate(
     ({ sessionId: sid, kind: k, message, options, timeoutMs }) => {
-      window.__forgeMock!.emit('goal.uiRequested', {
+      // 同 emitStatus：三参数签名，sessionId 位不可省
+      window.__forgeMock!.emit(sid, 'goal.uiRequested', {
         sessionId: sid,
         requestId: `req-${k}-${Date.now()}`,
         kind: k,
@@ -226,7 +234,9 @@ test('E-GOAL-004 运行期健康：goal 接入后首屏对话区必须渲染', a
   // 参照 askUserQuestion.spec.ts 的 E-CV-028：组件层没有单测设施，
   // 声明顺序 / 模板引用类错误只能靠浏览器级用例兜住 ——
   // 它们的表现是「左右分栏正常、右侧对话区整块空白」。
-  await expect(page.locator('.conversation-view, [class*="conversation"]').first()).toBeVisible();
+  // 选择器用 .conv-view（ConversationView.vue 实际根类名）；旧的 .conversation-view
+  // 早已不存在，靠 [class*="conversation"] 模糊匹配也匹配不到 conv-* 前缀。
+  await expect(page.locator('.conv-view')).toBeVisible();
   // 输入框必须可用（goal 接入动了 InstructionInput 的徽标区）
   await expect(page.locator('textarea, input').first()).toBeVisible();
 });

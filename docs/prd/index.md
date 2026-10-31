@@ -11,7 +11,7 @@
 | 03 | 对话与消息 | prd/03_conversation.md | PRD 已确认 | 流式响应、Markdown/Mermaid、取消、历史；扩展：会话历史导航 CV-S06（主会话时间线+浮窗预览+点击定位）、斜杠命令 CV-S08（输入 / 浮窗选择 pi 生态命令，codex 风格美化）、消息队列 CV-S09（忙时入队+徽标）、输入历史翻阅 CV-S10（空输入 ↑/↓）、Todo 面板 CV-S11（输入框上方只读+折叠面板，复用 pi todo 工具 details 快照，依赖模块 04 TE-S05 IPC 透传） |
 | 04 | 工具执行展示 | prd/04_tool_execution.md | PRD 已确认 | tool 卡片、并排 Diff、状态流转；扩展 TE-S05 tool.completed.result 增加可选 details 透传（为模块 03 CV-S11 等结构化消费场景提供 IPC 支撑） |
 | 05 | 模型与 Provider 配置 | prd/05_model_provider.md | PRD 已确认 | models.json 可视化编辑、密钥安全、全局+会话模型；扩展：思考级别选择（输入框）、上下文 1M 配置 |
-| 06 | 子 Agent 管理 | prd/06_subagent_management.md | PRD 已确认 | 主会话状态联动、Tab 栏+结果视图监控、停止级联/单个终止 |
+| 06 | 子 Agent 管理 | prd/06_subagent_management.md | PRD 已确认 | 主会话状态联动、消息流内 Agent 行监控（行内展开过程）、停止级联/单个终止 |
 | 07 | 版本更新与安装包（pi 运行时） | prd/07_installer_update.md | PRD 已确认 | 同一套完整更新体系：设置页「版本更新」分区（forge 版本 + 组件清单 + 手动更新，**已实现**）；Windows 安装包、首启静默预装推荐组件、应用自更新（GitHub Releases 提示+手动）、引擎-插件联动更新（**待开发**） |
 | 08 | UI 国际化（中/英） | prd/08_ui_i18n.md | 已完成 | 自研轻量 composable，仅 UI 静态文案；zh-CN/en/跟随系统，localStorage 持久化，主进程零改动；2026-09-22 交付（typecheck/单测/浏览器三态验收通过） |
 | 09 | Skill 管理 | prd/09_skill_management.md | 开发中 | 设置页 Skills 分区：列表（全局+项目级）、导入本地文件夹、模板新建、删除（回收站优先）；四方法 skill/* RPC；代码与单测/mock 链路已完成，真机（Electron 实应用 + Windows 回收站 AC-09-10）待验收 |

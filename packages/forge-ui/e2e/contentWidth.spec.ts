@@ -74,7 +74,20 @@ test('内容宽度：默认标准 = 收拢居中；切宽 = 铺满且仍与输�
   await setContentWidth(page, '宽');
   expect(await page.evaluate(() => localStorage.getItem('forge:content-width'))).toBe('wide');
   const wide = await widths(page);
-  expect(wide.inner, '宽模式正文列应铺满').toBeGreaterThan(wide.vw - 400);
+  // 「铺满」的判据必须相对**会话视口**（.conv-view 宽度 = 窗口 − 侧边栏），
+  // 不能拿窗口宽度 vw 硬减一个估算值：会话视口比 vw 窄一个侧边栏（约 292px），
+  // 再减去左缘时间线 rail（46px）——旧写法 vw-400 恰好卡在误差里，
+  // 实测 1168 ~ 1170 与阈值 1200 差 30px，纯属估算失误而非布局回归。
+  // 改为「占会话视口 ≥ 92%」，语义就是铺满，且不随侧栏/rail 宽度变化而假红。
+  const viewW = wide.viewRight - wide.viewLeft;
+  // 实测几何（vw=1600 / 侧栏 292 / 会话视口 1290 / 正文列 1168）：
+  //   会话视口 = 侧栏之外的全部；正文列再让出左缘时间线 rail（46px）与两侧内边距，
+  //   占会话视口 ≈ 90.5%。这是「铺满」的真实上限——再高就得压掉 rail 或内边距。
+  // 判据取 ≥90% 并显式校验「不比标准模式的 920 宽」这层语义，
+  // 双条件才能既拦住「宽模式没生效」又不受 rail/内边距微调影响。
+  expect(wide.inner / viewW, `宽模式正文列 ${wide.inner}px / 会话视口 ${viewW}px 应 ≥90%`)
+    .toBeGreaterThanOrEqual(0.9);
+  expect(wide.inner, '宽模式必须明显宽于标准模式的 920px').toBeGreaterThan(1100);
 
   // 切回标准：立即恢复收拢
   await setContentWidth(page, '标准');
@@ -116,7 +129,7 @@ test('内容宽度：新会话首屏（hero）输入框恒为 640px，标准模�
   health.assertHealthy();
 });
 
-test('内容宽度：子 Agent Tab 栏跟随列宽（标准模式不铺满） @regression', async ({ page }) => {
+test('内容宽度：Agent 行跟随正文列宽（标准模式收拢在列内） @regression', async ({ page }) => {
   const health = attachHealthGuards(page);
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto('/');
@@ -135,99 +148,22 @@ test('内容宽度：子 Agent Tab 栏跟随列宽（标准模式不铺满） @r
   await expandAllProjects(page);
   await page.locator('.tree-session', { hasText: '会话CW' }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
-  // 先发一条消息离开首屏 hero（空会话输入框恒 640px，与列宽无关，见下方 hero 用例），
-  // 否则本例量到的是 hero 宽度而非内容列宽
+  // 先发一条消息离开首屏 hero（空会话输入框恒 640px，与列宽无关）
   await page.locator('.compose-input').fill('检查列宽对齐');
   await page.locator('.compose-input').press('Enter');
   await expect(page.locator('.conv-messages-inner .msg').first()).toBeVisible();
 
-  // mock：派发一个子 agent，使 Tab 栏渲染出来
-  await page.evaluate((sid) => {
-    window.__forgeMock!.setSubagents(sid, []);
-    window.__forgeMock!.emit(sid, 'subagent.updated', {
-      sessionId: sid,
-      subagent: {
-        agentId: 'a1',
-        agentType: 'general-purpose',
-        description: '检查列宽对齐',
-        status: 'running',
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        result: null,
-        error: null,
-        usage: { inputTokens: 0, outputTokens: 0 },
-      },
-    });
-  }, 'sess-cw-agent');
-  await expect(page.locator('.subagent-tabbar')).toBeVisible({ timeout: 5_000 });
-
-  const bar = async () =>
-    page.evaluate(() => {
-      const el = document.querySelector('.subagent-tabbar') as HTMLElement;
-      const r = el.getBoundingClientRect();
-      const view = (document.querySelector('.conv-view') as HTMLElement).getBoundingClientRect();
-      return {
-        width: Math.round(r.width),
-        left: Math.round(r.left),
-        leftGap: Math.round(r.left - view.left),
-        rightGap: Math.round(view.right - (r.left + r.width)),
-      };
-    });
-
-  // 切「宽」前先确认默认（未写偏好）就是标准
-  const stdBar = await bar();
-  expect(stdBar.width, '默认标准模式下 Tab 栏 = 内容列宽').toBe(920);
-
-  await setContentWidth(page, '宽');
-  expect((await bar()).width, '宽模式 Tab 栏铺满').toBeGreaterThan(1000);
-
-  await setContentWidth(page, '标准');
-  const backBar = await bar();
-  const std = await widths(page);
-  expect(backBar.width, '标准模式 Tab 栏 = 内容列宽').toBe(920);
-  expect(backBar.width, 'Tab 栏与输入框同宽').toBe(std.box);
-  expect(Math.abs(backBar.left - std.boxLeft), 'Tab 栏左缘与输入框对齐').toBeLessThanOrEqual(1);
-  expect(
-    Math.abs(backBar.leftGap - backBar.rightGap),
-    `Tab 栏居中：左留白 ${backBar.leftGap} / 右留白 ${backBar.rightGap}`,
-  ).toBeLessThanOrEqual(2);
-
-  health.assertHealthy();
-});
-
-test('内容宽度：子 Agent 结果视图跟随列宽（标准模式不铺满） @regression', async ({ page }) => {
-  const health = attachHealthGuards(page);
-  await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto('/');
-  await seedSessions(page, [
-    {
-      sessionId: 'sess-cw-srv',
-      projectPath: 'D:/work/aiwork/forge',
-      alias: '会话CWS',
-      status: 'idle',
-      lastActiveAt: new Date().toISOString(),
-    },
-  ]);
-  await page.reload();
-  await expect(page.locator('.tree-panel')).toBeVisible();
-  // v6.26 默认折叠：展开项目组
-  await expandAllProjects(page);
-  await page.locator('.tree-session', { hasText: '会话CWS' }).click();
-  await expect(page.locator('.compose-box')).toBeVisible();
-  await page.locator('.compose-input').fill('让子代理出一份架构报告');
-  await page.locator('.compose-input').press('Enter');
-  await expect(page.locator('.conv-messages-inner .msg').first()).toBeVisible();
-
-  // mock：派发一个子 agent 并点开其 Tab → 结果视图激活
-  const spawnAndOpen = async () => {
+  // v6.37：Agent 行在消息流内，宽度由 .conv-messages-inner 列宽决定 ——
+  // 标准模式下必须收拢在 920px 列内，宽模式下跟随铺满。
+  const spawnAgentRow = async (): Promise<void> => {
     await page.evaluate((sid) => {
       window.__forgeMock!.setSubagents(sid, []);
       window.__forgeMock!.emit(sid, 'subagent.updated', {
         sessionId: sid,
         subagent: {
           agentId: 'a1',
-          agentType: 'Explore',
-          description: '梳理架构',
+          agentType: 'general-purpose',
+          description: '检查列宽对齐',
           status: 'running',
           startedAt: new Date().toISOString(),
           finishedAt: null,
@@ -236,46 +172,42 @@ test('内容宽度：子 Agent 结果视图跟随列宽（标准模式不铺满�
           usage: { inputTokens: 0, outputTokens: 0 },
         },
       });
-    }, 'sess-cw-srv');
-    await expect(page.locator('.subagent-tab', { hasText: '梳理架构' })).toBeVisible({ timeout: 5_000 });
-    await page.locator('.subagent-tab', { hasText: '梳理架构' }).click();
-    await expect(page.locator('.subagent-result-view')).toBeVisible();
-    await page.waitForTimeout(700); // 等宽度过渡结束再量
+    }, 'sess-cw-agent');
+    await expect(page.locator('.agent-row')).toHaveCount(1, { timeout: 5_000 });
+    await page.waitForTimeout(700); // 等列宽过渡结束再量
   };
-  await spawnAndOpen();
+  await spawnAgentRow();
 
-  const srv = await page.evaluate(() => {
-    const el = document.querySelector('.subagent-result-view') as HTMLElement;
-    const box = document.querySelector('.compose-box') as HTMLElement;
-    const r = el.getBoundingClientRect();
-    const view = (document.querySelector('.conv-view') as HTMLElement).getBoundingClientRect();
-    return {
-      width: Math.round(r.width),
-      left: Math.round(r.left),
-      boxLeft: Math.round(box.getBoundingClientRect().left),
-      leftGap: Math.round(r.left - view.left),
-      rightGap: Math.round(view.right - (r.left + r.width)),
-    };
-  });
-  expect(srv.width, '标准模式结果视图 = 内容列宽').toBe(920);
-  expect(Math.abs(srv.left - srv.boxLeft), '结果视图左缘与输入框对齐').toBeLessThanOrEqual(1);
-  expect(
-    Math.abs(srv.leftGap - srv.rightGap),
-    `结果视图居中：左留白 ${srv.leftGap} / 右留白 ${srv.rightGap}`,
-  ).toBeLessThanOrEqual(2);
+  const rowMetrics = async () =>
+    page.evaluate(() => {
+      const inner = (document.querySelector('.conv-messages-inner') as HTMLElement).getBoundingClientRect();
+      const row = (document.querySelector('.agent-row') as HTMLElement).getBoundingClientRect();
+      const head = (document.querySelector('.agent-row .agent-head') as HTMLElement).getBoundingClientRect();
+      return {
+        inner: Math.round(inner.width),
+        innerLeft: Math.round(inner.left),
+        headLeft: Math.round(head.left),
+        headRight: Math.round(head.right),
+        rowWidth: Math.round(row.width),
+      };
+    });
+
+  const std = await rowMetrics();
+  expect(std.inner, '默认标准模式正文列 = 920').toBe(920);
+  expect(std.headRight, 'Agent 行不溢出正文列').toBeLessThanOrEqual(std.innerLeft + std.inner + 1);
+  expect(std.rowWidth, 'Agent 行宽度不超出正文列').toBeLessThanOrEqual(std.inner + 1);
 
   await setContentWidth(page, '宽');
-  // 设置页会卸载 ConversationView（subagents 为组件级状态），点回会话重新派发再量
-  await page.locator('.tree-session', { hasText: '会话CWS' }).click();
+  await page.locator('.tree-session', { hasText: '会话CW' }).click();
   await expect(page.locator('.compose-box')).toBeVisible();
-  await spawnAndOpen();
-  const wideW = await page.evaluate(
-    () => Math.round((document.querySelector('.subagent-result-view') as HTMLElement).getBoundingClientRect().width)
-  );
-  expect(wideW, '宽模式结果视图铺满').toBeGreaterThan(1000);
+  await spawnAgentRow();
+  const wide = await rowMetrics();
+  expect(wide.inner, '宽模式正文列铺满').toBeGreaterThan(1000);
+  expect(wide.rowWidth, 'Agent 行随正文列变宽').toBeGreaterThan(std.rowWidth);
 
   health.assertHealthy();
 });
+
 
 test('内容宽度：标准模式在窄窗格退化为满宽 @regression', async ({ page }) => {
   const health = attachHealthGuards(page);

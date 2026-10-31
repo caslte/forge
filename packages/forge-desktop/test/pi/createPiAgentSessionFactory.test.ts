@@ -113,10 +113,12 @@ test('工厂可注入 PiConversationAdapter 并完成一次文本流映射', asy
     try {
       await adapter.sendMessage('session-id-2', '只回复 OK', { cwd: projectDir });
     } catch (error) {
+      // CV-ERR-01 起 adapter 原样透传 pi 的报错文本（中文结论句由 UI 按分类生成），
+      // 这里只断言「确实因为缺凭据而失败」，不再断言被改写过的中文文案。
       assert.match(
         String(error),
-        /模型凭据未配置/,
-        '无模型凭据时应抛出用户可读错误',
+        /No API key found/i,
+        '无模型凭据时应抛出 pi 的原始凭据缺失错误',
       );
       return;
     }

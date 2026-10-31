@@ -11,7 +11,7 @@
 | 03 | 对话与消息 | test/03_conversation/coverage-matrix.md | 已确认 | e2e.md（流式/XSS/会话历史导航/斜杠命令/Todo 面板/ask_user_question 问卷）| 03 |
 | 04 | 工具执行展示 | test/04_tool/coverage-matrix.md | 已确认 | e2e.md（Diff）| 04 |
 | 05 | 模型与 Provider | test/05_model/coverage-matrix.md | 已确认 | api.md（keychain）+ 扩展 MP-S05/MP-S06（思考级别/上下文 1M）| 05 |
-| 06 | 子 Agent 管理 | test/06_subagent/coverage-matrix.md | 已确认 | unit.md（状态机/门控/兜底）+ e2e.md（Tab 栏/结果视图/停止级联）| 06 |
+| 06 | 子 Agent 管理 | test/06_subagent/coverage-matrix.md | 已确认 | unit.md（状态机/门控/兜底）+ e2e.md（Agent 行/行内展开/停止级联）| 06 |
 | 07 | 版本更新与安装包（pi 运行时） | test/07_pi/coverage-matrix.md | 已确认 | 内嵌矩阵（unit + e2e）| 07 |
 | 12 | 内置代码浏览器 | test/12_code_explorer/coverage-matrix.md | 已确认（含扩展 CE-S11）| unit.md（diff 解析/树聚合/布局降级/取数编排/头像派生）+ api.md（CE-S11 三 RPC，**真 git 仓库 fixture**）+ e2e.md（三视图/提交详情/两级取数时序/空态）| 12 |
 | 14 | 首次使用指引蒙层 | test/14_onboarding/coverage-matrix.md | 已确认（2026-10-09 随代码交付）| e2e.md（逐步骤量洞/卡片 rect、锚点可见性探针、红探针记录、实拍脚本）；unit 内嵌矩阵（`resolveStartupFlags` 5 例）| 14 |

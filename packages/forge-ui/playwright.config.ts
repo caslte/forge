@@ -19,6 +19,15 @@ const DEV_URL = `http://localhost:${DEV_PORT}`;
 export default defineConfig({
   testDir: './e2e',
   testMatch: ['**/*.spec.ts'],
+  /**
+   * 一次性排查/截图脚本不参与正式跑。
+   *
+   * 这些文件是历次问题的临时取证工具（文件头自己写着「一次性」「跑完即删」），
+   * 保留在仓库里当参考，但它们依赖当次环境的几何/截图产物，全量跑时必然红
+   * （`__tmp-r` 甚至只是把一张 png 当页面打开量像素）。放进 testIgnore 后
+   * 「全量绿」才有意义——否则每个维护者都得记住哪几个红是"正常的"。
+   */
+  testIgnore: ['**/__repro-*.spec.ts', '**/__tmp-*.spec.ts', '**/tmp-filmstrip.spec.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 60_000,

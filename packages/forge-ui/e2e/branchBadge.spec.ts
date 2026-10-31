@@ -101,13 +101,23 @@ test('PM-E2E-006 @P0 @mock-backend E-PM-006：点徽标弹浮窗，过滤生效�
   await boot(page, [mkSession({ alias: '会话A' })]);
   await seedCleanGit(page);
   await page.locator('.tree-session', { hasText: '会话A' }).click();
+  // seed 只能覆盖**之后**的调用：点会话时 BranchBadge 已 onMounted 拉过一次默认
+  // mock（dirty:true / 3 分支），此后只在 projectPath 变化或 git.branchChanged
+  // 时才重拉。这里用后者驱动一次，否则组件手里一直是默认值——表现成
+  // 「确认弹窗莫名出现」「分支数对不上」。
+  await page.evaluate(() => {
+    window.__forgeMock!.emit('', 'git.branchChanged', { path: 'D:/work/aiwork/forge' });
+  });
+  await expect(page.locator('.git-pill-name')).toHaveText('dev-v0.1.0');
 
   // 点击徽标 → 浮窗出现：过滤输入框 + 分支列表 + 当前分支高亮
   await page.locator('.git-pill').click();
   const panel = page.locator('.git-panel');
   await expect(panel).toBeVisible();
   await expect(panel.locator('.git-filter')).toBeVisible();
-  await expect(panel.locator('.git-item')).toHaveCount(4);
+  // 只数分支行：`.git-item` 还包含底部「提交或推送…」入口（.git-commit-entry，GC-S11）
+  const branchItems = panel.locator('.git-item:not(.git-commit-entry)');
+  await expect(branchItems).toHaveCount(4);
   await expect(panel.locator('.git-item.active')).toHaveText(/dev-v0.1.0/);
   await expect(panel.locator('.git-item.active .git-current')).toHaveText('当前');
 
@@ -117,11 +127,13 @@ test('PM-E2E-006 @P0 @mock-backend E-PM-006：点徽标弹浮窗，过滤生效�
   await expect(panel.locator('.git-filter')).toBeFocused();
   await page.keyboard.type('feat');
   await expect(panel.locator('.git-filter')).toHaveValue('feat');
-  await expect(panel.locator('.git-item')).toHaveCount(1);
-  await expect(panel.locator('.git-item')).toHaveText(/feat\/login/);
+  // 复用上方 branchItems（已排除底部「提交或推送…」入口）
+  await expect(branchItems).toHaveCount(1);
+  await expect(branchItems).toHaveText(/feat\/login/);
 
   // 点选目标分支 → 浮窗关闭，徽标更新为新分支（mock switchBranch 成功 + git.branchChanged）
-  await panel.locator('.git-item', { hasText: 'feat/login' }).click();
+  // 用 branchItems（排除底部入口）定位，避免 hasText 同时命中「提交或推送…」
+  await branchItems.filter({ hasText: 'feat/login' }).click();
   await expect(page.locator('.git-panel')).toHaveCount(0);
   await expect(page.locator('.git-pill-name')).toHaveText('feat/login');
 
@@ -219,6 +231,12 @@ test('PM-E2E-008b @P0 @mock-backend E-PM-008：切换冲突 6001，浮窗展示 
     detached: false,
   });
   await page.locator('.tree-session', { hasText: '会话A' }).click();
+  // 同 PM-E2E-006：seed 只影响之后的调用，点会话时组件已用默认 mock 拉过一次，
+  // 需驱动 git.branchChanged 让它重拉，否则种子里的 __conflict__ 分支不出现。
+  await page.evaluate(() => {
+    window.__forgeMock!.emit('', 'git.branchChanged', { path: 'D:/work/aiwork/forge' });
+  });
+  await expect(page.locator('.git-pill-name')).toHaveText('dev-v0.1.0');
 
   await page.locator('.git-pill').click();
   await page.locator('.git-panel .git-item', { hasText: '__conflict__' }).click();

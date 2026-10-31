@@ -202,6 +202,43 @@ function summarizeArgs(args: unknown): string {
   }
 }
 
+/**
+ * 过程工具行的参数展示（v6.37）：把 JSON 入参提炼成人类可读的一小段，
+ * 与主会话 ToolCallCard 的口径一致（文件类取 basename、命令/搜索/网页类取原文）。
+ *
+ * 为什么不在 parseSubagentStream 里做：那里是纯解析层，保留原始序列化便于排查；
+ * 展示口径属于渲染层，改展示不该动解析结果与它的单测。
+ */
+export function formatToolArg(args: string): string {
+  if (args === '') return '';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args);
+  } catch {
+    // 解析不出 JSON（尾部截断/纯文本参数）：原样用，已由解析层截断过
+    return args;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return args;
+  const rec = parsed as Record<string, unknown>;
+  const pick = (keys: string[], basename: boolean): string | null => {
+    for (const key of keys) {
+      const value = rec[key];
+      if (typeof value !== 'string' || value.trim() === '') continue;
+      const v = value.replace(/\s+/g, ' ').trim();
+      if (!basename) return v;
+      const base = v.replace(/\\/g, '/').split('/').pop() ?? v;
+      return base || v;
+    }
+    return null;
+  };
+  // 顺序：先文件类（最常用的 read/write/edit），再命令/搜索/网页类
+  return (
+    pick(['file_path', 'path', 'filePath', 'notebook_path'], true) ??
+    pick(['command', 'query', 'pattern', 'url', 'prompt', 'description'], false) ??
+    args
+  );
+}
+
 function truncate(s: string, max = 80): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }

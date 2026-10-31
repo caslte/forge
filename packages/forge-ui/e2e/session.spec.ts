@@ -55,7 +55,9 @@ test('SESSION-E2E-001 @P0 @mock-backend E-SM-001：草稿态不建标签，首�
   await page.locator('.compose-input').press('Enter');
 
   await expect(page.locator('.tree-session')).toHaveCount(2);
-  await expect(page.locator('.tree-session').last()).toContainText('修复登录鉴权');
+  // 排序口径（v6.26 起）：按**激活序**——新建会话立刻进入激活序并置顶，
+  // 而不是追加到末位。旧断言 `.last()` 基于「按创建时间追加」，与现行契约不符。
+  await expect(page.locator('.tree-session').first()).toContainText('修复登录鉴权');
 
   // 从 mock 侧确认新增会话别名 = 首条消息截取；注入脚本让流式完整结束
   const sessions = await listMockSessions(page);

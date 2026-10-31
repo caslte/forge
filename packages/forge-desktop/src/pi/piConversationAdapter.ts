@@ -65,9 +65,14 @@ export type MinimalPiSession = {
    * steer/followUp 直入队（CV-S09 队列编辑用）：真实 AgentSession 支持——内部为同步
    * push + queue_update，入队动作在首个 await 前完成；fake 可选，缺失时经
    * prompt + streamingBehavior 降级（仅 streaming 中可用）。
+   *
+   * 返回类型刻意放宽为 `Promise<unknown>`：pi 1.0 起返回 `QueuedInputDisposition`
+   * （"handled" | "queued"，0.84 时代是 void），而 forge 从不读这个返回值——
+   * 钉死 `Promise<void>` 会让真实 AgentSession 不再满足本端口，钉死新联合类型
+   * 又逼测试 fake 去模拟一无用处的枚举。unknown 两头都容得下。
    */
-  steer?(text: string): Promise<void>;
-  followUp?(text: string): Promise<void>;
+  steer?(text: string): Promise<unknown>;
+  followUp?(text: string): Promise<unknown>;
   /** 运行中热切换模型（真实 AgentSession 支持；fake 可选实现） */
   setModel?(model: unknown): Promise<void>;
   /** 上下文用量查询（P3-A）；真实 AgentSession 支持，fake 可选；结构兼容 ContextUsage */

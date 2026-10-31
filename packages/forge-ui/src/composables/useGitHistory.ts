@@ -126,13 +126,20 @@ export function createGitHistoryLoader(bridge: GitHistoryBridge = defaultBridge)
     if (skip === 0) {
       commits = res.commits;
     } else {
+      // 追加必须**换一个新数组**，不能就地 push。
+      // 消费方（CodeTreePanel）把 `commits()` 包在 computed 里、靠 histTick 手动 bump
+      // 驱动重算——而 computed 的返回值若仍是同一个数组引用，Vue 在 diff 时
+      // 会因为「新旧值相同」而跳过更新，push 进去的条目永远渲染不出来（实测症状：
+      // 点「加载更多」后计数不变，但 IPC 确实发出了 skip=3 的请求、也返回了数据）。
       const seen = new Set(commits.map((c) => c.sha));
+      const merged = [...commits];
       for (const c of res.commits) {
         if (!seen.has(c.sha)) {
           seen.add(c.sha);
-          commits.push(c);
+          merged.push(c);
         }
       }
+      commits = merged;
     }
     hasMore = res.hasMore;
   }

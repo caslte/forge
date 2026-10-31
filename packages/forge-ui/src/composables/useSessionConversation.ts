@@ -21,8 +21,9 @@ import {
 } from '../utils/todoPanel.ts';
 import { createAskQuestionStore, clearAskQuestionSession } from './askQuestionStore.ts';
 import { clearTodoPanelSessionState } from './todoPanelUiState.ts';
+import { agentCallDescription, reconcileAgentBindings, unboundSubagents } from '../utils/subagentRow.ts';
 import { i18n } from '../i18n/index.ts';
-import { SUGGEST_NEXT_STEPS_TOOL_NAME } from '../constants.ts';
+import { SUGGEST_NEXT_STEPS_TOOL_NAME, AGENT_TOOL_NAME } from '../constants.ts';
 
 /** 各会话当前轮次起点（模块级，跨视图实例共享）：切走会话不丢，轮次终态才删 */
 const turnStartAt = new Map<string, number>();
@@ -229,9 +230,14 @@ export function useSessionConversation(options: {
 
   // ===== 子 Agent 内存态（按 sessionId 隔离） =====
   const subagents = ref<Subagent[]>([]);
-  /** 当前激活的 Tab；null = 主会话 */
-  const activeAgentId = ref<string | null>(null);
-  /** 待二次确认的停止请求（结果视图头部"终止"） */
+  /**
+   * Agent 行展开态（agentId 集合）。
+   *
+   * 取代旧实现里的 activeAgentId（Tab 单选 + 整页结果视图）：现在每个 agent 行都能
+   * 独立展开，并发几个就几行各自展开，互不影响。
+   */
+  const expandedAgentIds = reactive(new Set<string>());
+  /** 待二次确认的停止请求（Agent 行头部"终止"） */
   const pendingStopAgentId = ref<string | null>(null);
 
   // ===== Todo 面板快照（CV-S11）=====
@@ -285,14 +291,7 @@ function dismissAskAnswered(): void {
     isStreaming.value ? 'streaming' : (options.getStatusHint?.() ?? 'idle'),
   );
 
-  const activeSubagent = computed<Subagent | null>(() => {
-    if (activeAgentId.value === null) return null;
-    return subagents.value.find((s) => s.agentId === activeAgentId.value) ?? null;
-  });
-
-  const showResultView = computed(() => activeSubagent.value !== null);
-
-  // ===== 展示项组装（消息 / 连续 ≥2 工具聚组） =====
+  // ===== 展示项组装（消息 / 连续 ≥2 工具聚组 / Agent 行） =====
 
   /**
    * 稳定唯一 key：
@@ -301,6 +300,46 @@ function dismissAskAnswered(): void {
    */
   function itemKey(m: ConversationMessage): string {
     return m.id ?? m.toolEventId ?? `${m.ts}-${m.role}`;
+  }
+
+  /**
+   * `agent` 工具调用 ↔ 子 agent 记录绑定（v6.37）。
+   *
+   * 纯函数配对（utils/subagentRow.ts）：描述精确匹配优先，余下按派发顺序兜底。
+   * 每次 displayItems 重算都重新配对，不做可变缓存 —— 事件到达顺序不定
+   * （created 可能早于也可能晚于 tool.started），重算即可收敛到正确配对。
+   */
+  const agentBindings = computed<Map<string, string>>(() => {
+    if (subagents.value.length === 0) return new Map();
+    const calls: Array<{ toolEventId: string; description: string | null }> = [];
+    for (const m of messages.value) {
+      if (m.role !== 'tool' || !m.toolEventId) continue;
+      if ((m.toolName ?? '').toLowerCase() !== AGENT_TOOL_NAME) continue;
+      calls.push({ toolEventId: m.toolEventId, description: agentCallDescription(m.input) || null });
+    }
+    if (calls.length === 0) return new Map();
+    return reconcileAgentBindings(calls, subagents.value);
+  });
+
+  /** toolEventId → 子 agent（displayItems 与渲染层共用，避免两处口径漂移） */
+  const subagentByToolEvent = computed<Map<string, Subagent>>(() => {
+    const out = new Map<string, Subagent>();
+    const byId = new Map(subagents.value.map((s) => [s.agentId, s]));
+    for (const [toolEventId, agentId] of agentBindings.value) {
+      const sa = byId.get(agentId);
+      if (sa) out.set(toolEventId, sa);
+    }
+    return out;
+  });
+
+  function agentRowItem(sa: Subagent, turnBrand: boolean): DisplayItem {
+    return {
+      key: `agent-${sa.agentId}`,
+      kind: 'agent-row',
+      subagent: sa,
+      expanded: expandedAgentIds.has(sa.agentId),
+      ...(turnBrand ? { turnBrand: true } : {}),
+    };
   }
 
   const displayItems = computed(() => {
@@ -322,6 +361,13 @@ function dismissAskAnswered(): void {
       brandPending = false;
       return true;
     };
+    // v6.37：`agent` 工具调用改渲染成 Agent 行 —— 从工具序列里剔除，
+    // 既不进工具组（组会被折叠收拾掉），也不单独占一行工具卡
+    const agentCalls = subagentByToolEvent.value;
+    const isAgentCall = (m: ConversationMessage): boolean => {
+      const id = m.toolEventId;
+      return id !== undefined && agentCalls.has(id);
+    };
     let i = 0;
     while (i < msgs.length) {
       const cur = msgs[i]!;
@@ -333,6 +379,13 @@ function dismissAskAnswered(): void {
           kind: 'compaction-divider',
           ts: cur.ts,
         });
+        i += 1;
+        continue;
+      }
+      // Agent 行：永远单独可见，不参与下方的工具聚组
+      if (cur.role === 'tool' && isAgentCall(cur)) {
+        const sa = agentCalls.get(cur.toolEventId!)!;
+        out.push(agentRowItem(sa, takeBrand()));
         i += 1;
         continue;
       }
@@ -357,12 +410,13 @@ function dismissAskAnswered(): void {
         // 契约 I1（v2）：建议工具消息不进消息流，由 turnSuggestion 提升到底部渲染
         i += 1;
       } else {
-        const start = i;
+        // 连续工具聚组：遇到 Agent 行/suggest 消息即断开（Agent 行必须单独成项）
         const tools: ConversationMessage[] = [];
         while (
           i < msgs.length &&
           msgs[i]!.role === 'tool' &&
-          msgs[i]!.toolName !== SUGGEST_NEXT_STEPS_TOOL_NAME
+          msgs[i]!.toolName !== SUGGEST_NEXT_STEPS_TOOL_NAME &&
+          !isAgentCall(msgs[i]!)
         ) {
           tools.push(msgs[i]!);
           i += 1;
@@ -386,10 +440,17 @@ function dismissAskAnswered(): void {
           for (let j = 0; j < tools.length; j += 1) {
             const tm = tools[j]!;
             const turnBrand = takeBrand();
-            out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: start + j, ...(turnBrand ? { turnBrand: true } : {}) });
+            out.push({ key: itemKey(tm), kind: 'message', msg: tm, idx: i - tools.length + j, ...(turnBrand ? { turnBrand: true } : {}) });
           }
         }
       }
+    }
+    // 孤儿子 agent（消息流里没配上 agent 工具调用，如历史缺工具记录/扩展先派发）：
+    // 追加在末尾，绝不让「有一个 agent 在跑」这件事看不见。按 startedAt asc。
+    const orphans = unboundSubagents(subagents.value, agentBindings.value);
+    for (const sa of orphans) {
+      const full = subagents.value.find((s) => s.agentId === sa.agentId);
+      if (full) out.push(agentRowItem(full, takeBrand()));
     }
     // 轮末插入点（末轮）：流式中轮未结束时汇总卡片始终位于消息流末尾
     pushFilesSummary(msgs.length);
@@ -582,6 +643,9 @@ function dismissAskAnswered(): void {
     for (const t of toolDwellTimers.values()) clearTimeout(t);
     toolDwellTimers.clear();
     toolGroupCollapsed.clear();
+    // Agent 行展开态随会话走：切走再切回统一收起，不做跨会话记忆（避免表无限增长，
+    // 且「重新进来先看一行摘要是默认形态」符合本改造的初衷）
+    expandedAgentIds.clear();
     historyWindow.value = HISTORY_INITIAL_ITEMS;
     isStreaming.value = false;
     loadingHistory.value = false;
@@ -1112,34 +1176,13 @@ function dismissAskAnswered(): void {
     if (p.sessionId !== options.getSessionId()) return;
     const removed = new Set(p.agentIds);
     subagents.value = subagents.value.filter((s) => !removed.has(s.agentId));
-    // 若被移除者正在激活，切回主会话
-    if (activeAgentId.value !== null && removed.has(activeAgentId.value)) {
-      activeAgentId.value = null;
-    }
+    for (const id of removed) expandedAgentIds.delete(id);
   }
 
-  function onSelectTab(agentId: string | null): void {
-    activeAgentId.value = agentId;
-  }
-
-  /** 单个终态 Tab 关闭：本地移除（mock 不区分单删与批量清除，二者语义一致） */
-  function onCloseTab(agentId: string): void {
-    subagents.value = subagents.value.filter((s) => s.agentId !== agentId);
-    if (activeAgentId.value === agentId) activeAgentId.value = null;
-  }
-
-  /** 清除已完成：批量移除终态 → 调 subagent/clearFinished（mock 也会 emit subagent.removed） */
-  async function onClearFinished(): Promise<void> {
-    const sid = options.getSessionId();
-    if (sid === null) return;
-    try {
-      await call('subagent/clearFinished', { sessionId: sid });
-      // mock 已 emit subagent.removed 同步了本地状态；防御性主动清一次
-      subagents.value = subagents.value.filter((s) => s.status === 'queued' || s.status === 'running');
-    } catch {
-      // 静默失败：本地乐观更新已落
-      subagents.value = subagents.value.filter((s) => s.status === 'queued' || s.status === 'running');
-    }
+  /** Agent 行头部点击：展开/收起该子 agent 的执行过程（每个 agent 各自独立） */
+  function toggleAgentRow(agentId: string): void {
+    if (expandedAgentIds.has(agentId)) expandedAgentIds.delete(agentId);
+    else expandedAgentIds.add(agentId);
   }
 
   /** 结果视图头部"终止"按钮点击：进入二次确认（不可逆） */
@@ -1254,14 +1297,11 @@ function dismissAskAnswered(): void {
     cancel,
     // 子 Agent
     subagents,
-    activeAgentId,
-    activeSubagent,
-    showResultView,
+    expandedAgentIds,
+    subagentByToolEvent,
     pendingStopAgentId,
     loadSubagents,
-    onSelectTab,
-    onCloseTab,
-    onClearFinished,
+    toggleAgentRow,
     onSubagentStopRequest,
     confirmSubagentStop,
     cancelSubagentStop,

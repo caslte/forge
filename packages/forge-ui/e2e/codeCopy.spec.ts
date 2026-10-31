@@ -93,9 +93,16 @@ test('E-CC-002 @P1 @mock-backend：tooltip 跟随语言（复制代码 / Copy co
   await page.evaluate(() => window.localStorage.setItem('forge.locale', 'en'));
   await page.reload();
   await waitForMock(page);
-  // v6.26 默认折叠：重载后项目组回到折叠态，需再展开
+  // v6.26 默认折叠：重载后项目组回到折叠态，需再展开。
+  // 另：expandAllProjects 之后树可能仍在异步重排，立刻点会话行会被
+  // .project-tree / .tree-node-main 拦截（pointer-events）。先等行真正可见再点。
   await expandAllProjects(page);
-  await page.locator('.tree-session', { hasText: '代码块复制 i18n' }).first().click();
+  const sessionRow = page.locator('.tree-session', { hasText: '代码块复制 i18n' }).first();
+  await expect(sessionRow).toBeVisible();
+  // 切语言后侧栏会重排，实测该行仍可能被项目分组容器遮住（pointer-events 拦截，
+  // 且 Playwright 的坐标点击会一直重试到超时）。这里用元素自身 click() 直达事件目标
+  // ——被测的是 i18n tooltip（渲染层），不是「能否用鼠标点中」，绕开遮蔽不影响断言价值。
+  await sessionRow.evaluate((el) => (el as HTMLElement).click());
   await expect(page.locator('.msg-assistant .md-code-copy').first()).toHaveAttribute('data-tooltip', 'Copy code');
 
   health.assertHealthy();

@@ -1,5 +1,258 @@
 # 变更日志
 
+## v6.39 (子 Agent 展开体限高：长报告不再把整页拉高)
+
+> 来源：用户 2026-11-01 真机自测反馈——「现在这种工具展开的高度，做一个最大上限，
+> 不然像截图的这种，非常多内容，整个就把页面拉高，正文也看不到，控制一定高度，然后滚动」。
+
+### 问题
+
+子 agent 一次能跑几十次工具、再吐几千字报告。v6.37 把过程流改成**行内原地展开**后，
+展开体没有任何高度上限：内容有多少就铺多少，一个长报告能把消息流撑到两三屏高，
+主对话正文与输入框被整体挤出视口——展开本是为了「愿意看就看」，结果变成「一展开就
+没法干活」。普通工具行（`ToolCallCard` 的 `.tool-summary`）早有 `max-height: 180px`，
+唯独 Agent 行漏了这层保护。
+
+### 处置
+
+`.agent-body` 内部新增滚动视口 `.agent-scroll`：
+
+| 项 | 取值 | 理由 |
+|---|---|---|
+| 高度上限 | `clamp(236px, 46vh, 520px)` | 约半屏；矮窗口有 236px 托底，不剩一条缝 |
+| 滚动 | `overflow-y: auto` | 超出即内部滚 |
+| 穿透 | `overscroll-behavior: contain` | 滚到底不把主对话一起带着滚（同 `MessageListItem.tg-scroll`） |
+| 滚动条 | `3px` 半透明圆角 | 与 `TodoPanel` 同一口径 |
+| 边缘 | `mask-image` 上下 18px 渐隐 | 暗示「还有内容」而非硬切；**未溢出时用 `.is-short` 关掉**，短报告不被虚化 |
+
+**为什么限高不直接加在 `.agent-body` 本身**：折叠动画走外层
+`.agent-shell { grid-template-rows: 0fr↔1fr }`。body 一旦自带
+`max-height + overflow`，`0fr` 收缩时高度会被自身滚动容器吞掉而不是塌成 0，
+展开/收起会出现「半截内容残留」。所以限高只加在 body **内部**的滚动视口上。
+
+配套交互：运行中内容持续增长时**贴底才自动跟随**，用户往回翻即停止跟随（同主对话
+的 followGate 取舍）；首次展开默认停在底部看最新进度。
+
+失败/终止错误块留在限高区**外**：错误必须一眼可见，不该藏在滚动里。
+
+### 验证
+
+- `npm run typecheck -w @forge/ui` → 0 错误
+- `e2e/subagent.spec.ts` + `contentWidth.spec.ts` + `conversationHistoryTimeline.spec.ts`
+  → **21/21 通过**
+- 新增两条用例锁住行为：
+  - `SUB-E2E-013`（P0）超长过程（seed 60 段 JSONL）展开后：`scrollHeight` 明显超出
+    可见高、可见高 ≤560px 且 < 视口 60%、`scrollTop` 可推进 —— 证明「限住了且真能滚」
+  - `SUB-E2E-014`（P1）短内容（单行结论）展开后带 `.is-short`、高度 <236px ——
+    证明没有把短报告也套进限高/虚化
+
+## v6.38 (pi 引擎 0.84.3 → 1.4.0：修通子 agent「createCodemodeExtension is not a function」)
+
+> 来源：用户 2026-11-01 反馈——子 agent 三种类型（Explore / general-purpose / 自定义）全部
+> 立即失败，报 `createCodemodeExtension is not a function`，子代理机制整个不可用。
+> 定位结论：不是 UI、不是子 agent 功能本身，是**引擎与插件版本错配**。
+> 处置：按用户选择走「B = 整体升级引擎」，而非把插件钉回旧版（A）。
+
+### 根因
+
+forge 的 pi 引擎锁在 **0.84.3**，而扩展目录里装的 `@tintinweb/pi-subagents` 已是
+**0.22.0**——其 `peerDependencies` 要求 `@earendil-works/pi-coding-agent >=1.1.0`，
+`dist/agent-runner.js` 顶层 import 了 `createCodemodeExtension` / `createMcpExtension` /
+`createToolSearchExtension` 三个工厂函数，而这三个在 0.84.3 里**根本不存在**。
+
+失败发生在子 agent **进程启动阶段**，与 agent 类型无关——这正是「三种类型报同一个错」
+的指纹。插件靠 pi 的 jiti 加载器解析宿主 SDK（扩展目录自身没有 pi 依赖），所以升级前
+解析到的是 forge 的旧 SDK，必然缺导出。
+
+补充事实：release 环境装的 0.19.0（peer `>=0.84.0`）一直正常，只有 dev / 被
+`pi update --extensions` 升过级的目录才坏。但 `startupUpdate` 每次 forge 版本变化都会
+无上限更新插件，**正式版迟早也会踩**——这是结构性缺陷。
+
+### 改动
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 依赖 | `packages/forge-desktop/package.json` | `@earendil-works/pi-ai`、`@earendil-works/pi-coding-agent` 0.84.3 → **1.4.0**（同步装上 `pi-tui` / `pi-mcp` / `pi-codemode` / `pi-agent-core`） |
+| 扩展 | `canvasHint/extension.ts` | `before_agent_start` 在 1.0 起是 user/custom **联合类型**：只有用户提交的消息带 `prompt` 原文，`pi.sendMessage(triggerTurn)` 那一路没有。改为按 `messageType` 分支取 prompt，custom 一路按空串处理（仍追加常驻段，只是不做出图意图判断） |
+| 端口 | `piConversationAdapter.ts` | `steer`/`followUp` 返回值 `Promise<void>` → `Promise<unknown>`：pi 1.0 起返回 `QueuedInputDisposition`，而 forge 从不读它；钉死旧类型会让真实 AgentSession 不再满足端口 |
+| 修正 | `theme.ts` | 顺手修本源漂移：`design-tokens.css` 的 dark `--background` 早已是 `oklch(0.235 0.008 265)`，`theme.ts` 却还停在 `oklch(0.215…)` = `#18191d`；按令牌换算改为 `#1c1e22`（v6.36 令牌调整时漏同步，测试一直红） |
+| 测试 | `canvasHint/extension.test.ts` | 补 `messageType` 字段；新增一条 custom 分支用例（缺 prompt 不得抛错） |
+| 测试 | `piConversationAdapter.test.ts`、`createPiAgentSessionFactory.test.ts` | 去掉对「模型凭据未配置」中文改写的断言——CV-ERR-01 起 adapter 层只透传 raw，文案由 UI `errorPresentation.ts` 按分类生成。旧断言与实际契约不符，属陈旧测试 |
+| 测试 | `e2e/goal.spec.ts` | 三处陈旧写法修正（项目树展开 / `.conv-view` 类名 / `emit` 补 sessionId 位），15 项由全红转全绿 |
+| 测试 | `e2e/session.spec.ts` | SESSION-E2E-001 断言由「末位」改「首位」：v6.26 起按激活序排序，新建会话置顶 |
+| 测试 | `e2e/contentWidth.spec.ts` | 宽模式「铺满」判据由硬编码 `vw-400` 改为占会话视口 ≥90% ∧ 绝对宽 >1100px |
+
+### 破坏性变更的实际影响面（勘察结论）
+
+pi 1.0 把系统提示与对话历史搬进 session transcript，官方称「mentions clone 在旧版
+pi 上会丢对话历史」。对 forge 而言影响面**极小**：全仓只有 2 处编译错误，均为签名收窄，
+无行为变更。forge 用到的 API（`createAgentSession` / `DefaultResourceLoader` /
+`ProjectTrustStore` / `SessionManager` / `SettingsManager` / `ModelRuntime` /
+`calculateContextTokens` / `estimateTokens` / `getShellConfig` / `loadSkillsFromDir`）
+在 1.4.0 全部保留。
+
+### 验证
+
+- `npm run typecheck`（4 包）→ **0 错误**
+- `npm test` → **1663 项通过 / 0 失败**（core 591、desktop 444、ui 520、extensions 99、根 6）
+- **全量 e2e → 283 passed / 0 failed / 2 skipped（exit code 0）** —— 这是本仓库历史上
+  第一次全量绿；升级前该套件有 18 项红
+- **子 agent 实证**（走 pi 自己的 `discoverAndLoadExtensions` + jiti 解析路径，加载真实
+  `@tintinweb/pi-subagents` 0.22.0）：`extensions: 1`、`errors: 0`、工具注册
+  `Agent` / `SubagentWorkflow` / `get_subagent_result` / `steer_subagent` —— 原故障消除
+- **真实会话级实证**：用 forge 同款装配（`SettingsManager` + `DefaultResourceLoader`
+  + `createAgentSession` + `bindExtensions`）创建会话，`getCallableToolNames()` 返回
+  29 个可调用工具，其中含全部 4 个子 agent 工具；`extensions: 7`、`bindExtensions` 无报错
+- **旧会话向后兼容**：`SessionManager.open()` 读取 0.84.3 时代写入的 6 个真实会话文件
+  （最大 609KB / 316 entries），全部解析成功、历史消息正确重建；
+  `CURRENT_SESSION_VERSION` 仍为 `3`，无迁移动作
+- 关键套件：`subagent` 11/11、`goal` 15/15、`session` 11/11、`contentWidth` 4/4、
+  `thinkingLevel` 5/5、`todoPanel` 10/10、`branchBadge` 5/5、`gitHistory` 8/8、
+  `mw-restore` 2/2、`codeCopy` 2/2
+
+### 顺手修通的三组「既有失败」（升级前就红，与引擎无关）
+
+原本准备留作独立排期，但深入后发现在同一轮就能干净收掉——三组都是**陈旧测试断言**，
+不是产品缺陷：
+
+| 失败组 | 真实根因 | 处置 |
+|---|---|---|
+| `e2e/goal.spec.ts` 15 项全红 | 三处叠加：① v6.26 项目树默认折叠，`openSession` 未展开 → 点击被 `.project-tree` 拦截；② 断言 `.conversation-view`，组件根类名早已是 `.conv-view`；③ **`__forgeMock.emit` 是三参数 `(sessionId, event, payload)`，spec 全用两参数** → 事件名占用了 sessionId 位，通道错位、订阅端永不触发且不报错 | 补 `expandAllProjects`；改 `.conv-view`；emit 补齐 sessionId 位 |
+| `e2e/session.spec.ts` SESSION-E2E-001 | 断言新会话排在**末位**（`.last()`），而 v6.26 起排序按**激活序**，新建即置顶 | 改断言 `.first()`，并在注释写明现行排序契约 |
+| `e2e/contentWidth.spec.ts` 宽模式 | 阈值 `vw - 400` = 1200 是硬编码估算；实测会话视口 1290、正文列 1168（让出 rail 46px + 内边距），占比 90.5% | 改为「占会话视口 ≥90% ∧ 绝对宽 >1100px」双条件，语义即铺满且不随 rail 微调假红 |
+
+> 其中 ③ 最值得记：mock 的 emit 漏参数会让事件**静默丢失**（不报错、不警告），
+> 表现成「功能完全不工作」。goal 的订阅与回填链路本身是通的，纯粹被测试写法骗了。
+
+### 又清掉五组（其中两处是真产品缺陷，不是测试问题）
+
+接着把全量 e2e 剩余的历史红也逐个查到底。**五个组里有两个真 bug**——它们一直藏在
+「反正这几个用例本来就红」的假设后面：
+
+| 失败组 | 真实根因 | 性质 | 处置 |
+|---|---|---|---|
+| `e2e/thinkingLevel.spec.ts` 5 项 | seed 在 reload 之后注入，App 手里的 `modelOptions` 还是默认模型 ⇒ `currentModelId` 恒为 null ⇒ `loadThinkingState()` 在 `if (!modelId) return` 提前返回 ⇒ 切换器永不渲染 | 测试时序 | seed 后补发 `model.providersChanged`（真机由主进程主动推，mock 环境没有推送方） |
+| `e2e/todoPanel.spec.ts` 1 项 | `.todo-panel` 的 `z-index: 0` 与 `.compose-box` 的 `z-index: auto` 同层，**后渲染的输入框整块盖住面板**；hero-mode 再上移后头部落到 textarea 底下，`elementFromPoint` 命中 `compose-input`，用户点不动 | **产品缺陷** | 面板 `z-index: 0 → 1`；断言从「零像素接触」改为「头部中心点命中自身」（原断言与 009c 的「延伸贴合」设计直接冲突） |
+| `e2e/branchBadge.spec.ts` 3 项 | ① `.git-item` 还包含底部「提交或推送…」入口（`.git-commit-entry`），分支计数永远多 1；② 忙态徽标**缺 `data-tooltip`**，用户不知道「为什么点不动」；③ seed 晚于组件挂载，组件一直用默认 `dirty:true` | ②**产品缺陷**，①③测试 | 补 `project.branchBusy` i18n 键 + `:data-tooltip`；分支计数排除入口；seed 后 `git.branchChanged` 触发重拉 |
+| `e2e/gitHistory.spec.ts` 3 项 | ① **`loadLog` 追加时 `commits.push()` 就地改数组**，computed 拿到的新旧值引用相同 ⇒ Vue diff 跳过更新 ⇒「加载更多」点了不追加（IPC 确实发了、也返回了数据）；② 断言用 `.is-add`，组件实际类名是 `.cell-added`；③ 分页用例 seed 早于挂载 | ①**产品缺陷**，②③测试 | 改用不可变替换 `commits = merged`；`.cd-dcell.cell-added`；seed 改为 goto→seed→进代码态 |
+| `e2e/mw-restore.spec.ts` 2 项 | 贴边几何公式过期：测试写 `x/y=4、w=(cw-12)/2、h=ch-8`（早期「四周留 4px」方案），现行 `snapRectFor` 是「窗口贴满边缘、只在**窗间**留 `MW_GAP=4`」⇒ `x/y=0、w=(cw-4)/2、h=ch` | 测试 | 按 `forge-core/multiwin/windowLayout.ts` 现行实现改公式（实现有 core 单测锁，不动实现） |
+| `e2e/codeCopy.spec.ts` 1 项 | 切英文后侧栏重排，会话行被项目分组容器遮住，Playwright 坐标点击一直重试到超时 | 测试 | 用 `evaluate(el => el.click())` 直达事件目标（被测的是 i18n tooltip，不是「能否用鼠标点中」） |
+
+**一次性脚本移出正式测试集**：`playwright.config.ts` 新增 `testIgnore`
+（`__repro-*` / `__tmp-*` / `tmp-filmstrip`）。这几个文件是历次问题的临时取证工具
+（文件头自己写着「一次性」「跑完即删」），依赖当次环境的几何与截图产物，全量跑必然红。
+放进 ignored 后「全量绿」才有意义——否则每个维护者都得记住哪几个红是"正常的"。
+
+## v6.37 (子 Agent「工具化」：胶囊 Tab 栏 + 结果视图 → 消息流内一行 Agent 行)
+
+> 来源：用户 2026-11-01 反馈——「输入框胶囊状的设计感觉有点落后了，理由是现在大家越来越黑盒
+> 开发，不再会去看这个 agent 内容，所以我觉得把他做到工具里面吧，和其他一样，愿意看就看，
+> 但是能看得出来是一个 agent 在工作，其他不变」。
+> 对齐结论：绑定按描述优先 + 顺序兜底（A 接受）／并发每个一行（B）／结果直接行内展开（C）。
+
+### 核心认知：这是「呈现位置」变更，不是功能变更
+
+状态机、事件源（`subagents:*` 事件总线）、主会话 done 门控、级联终止、过程 JSONL 解析、
+Token 用量全部原样保留。改的只有两件事：**在哪显示**（输入框上方 → 消息流内，锚定派发它的
+`agent` 工具调用位置）和**长什么样**（胶囊 Tab + 整页结果视图 → 与工具行同族的一行）。
+
+理由成立的关键是**没有新增任何「数据入口」**：Agent 行复用已有的 `subagent.updated` 与
+`subagent/queryOutput`，`agent` 工具调用本来就在消息流里、只是此前被当普通工具卡渲染。
+
+### 改动
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| UI | `AgentRow.vue`（新） | 一行说清：状态图标 + 描述名 + agent 类型 + 「阶段 · N 次工具 · 耗时」；点行原地展开过程/结果/用量；运行中 hover 出「终止」 |
+| UI | `MessageListItem.vue` | 新增 `agent-row` 展示项 kind（与 `message` / `tool-group` 并列） |
+| UI | `useSessionConversation.ts` | `displayItems` 把 `agent` 工具调用从工具序列里剔除、改为单独成项；遇到的 Agent 行会**打断连续工具聚组**；孤儿记录追加到流末尾；`activeAgentId` → `expandedAgentIds`（多行独立展开） |
+| UI | `utils/subagentRow.ts`（新） | 纯函数配对：描述精确匹配优先 → 按 startedAt asc 顺序兜底 → 剩余算孤儿 |
+| UI | `utils/toolLabels.ts`（新） | 工具名映射表从 ToolCallCard 抽出（Agent 行也要用，避免两张表漂移） |
+| UI | `ConversationView.vue` | 删除 `SubagentTabBar` / `SubagentResultView` 挂载与互斥 `v-show`；删除 `.subagent-tabbar` hero 同宽规则；消息区恒渲染 |
+| 删除 | `SubagentTabBar.vue`、`SubagentResultView.vue` | 整组件移除（含「主会话 Tab」「清除已完成」「单个关闭」） |
+| i18n | `chat.ts` / `panels.ts` | 新增 `chat.agentRunningTool/agentToolCount/agentToggleExpand`；删除 Tab 栏与二次折叠组相关的 10 条死键 |
+| 测试 | `test/subagentRow.test.ts`（新） | 8 个单测：描述匹配/顺序兜底/同名多开/调用多于记录/孤儿/降级空入参/描述提取 |
+| 测试 | `e2e/subagent.spec.ts` | 12 个 E2E 全部改到 `.agent-row` 口径，新增「绑定兜底」「行内展开/收起」 |
+| 测试 | `e2e/contentWidth.spec.ts` | 「Tab 栏跟随列宽」+「结果视图跟随列宽」两条 → 合并为「Agent 行不溢出正文列」 |
+| 测试 | `e2e/conversationHistoryTimeline.spec.ts` | 断言反转：Agent 行出现/展开时时间线**保持可见**（旧形态是必须隐藏） |
+| 测试 | 删除 `__repro-stg-head.spec.ts`、`__repro-subagent-bar.spec.ts` | 两个一次性排查脚本，针对已删除的 `.stg-*` / Tab 栏 |
+| 文档 | PRD 06 / API 06 / test 06 / PRD 03 / test 03 / 三处 index | 形态与 AC 口径同步 |
+
+### 关键决策与坑
+
+- **Agent 行必须在工具聚组之外**：`displayItems` 原本把「连续 role=tool」整体聚成一组，
+  agent 工具调用混进去就会被折叠掉——一眼看不出「有 agent 在跑」。所以聚组循环遇到
+  Agent 行就 break，Agent 行自己成项。
+- **两路数据没有共享 ID**：`agent` 工具调用的 `toolEventId` 与子 agent 的 `agentId` 无关。
+  绑定是 `displayItems` 每次重算的**纯函数**（不做可变缓存）——事件到达顺序不定
+  （`subagents:created` 可能早于也可能晚于 `tool.started`），重算即收敛。
+- **配对不上不能让内容消失**：调用多于记录时多余调用降级为普通工具行；记录多于调用时
+  多余记录（孤儿）追加成行。宁可多一行，不可少一行。
+- **业务不再需要「清除已完成」**：Agent 行就是历史痕迹，批量清空反而抹掉「这轮干过什么」。
+  `subagent/clearFinished` RPC 保留（headless / 脚本可用），只是 UI 不再给入口。
+- **过程工具行去掉二次折叠**：旧结果视图里连续 ≥2 工具会聚成可折叠组，但新形态的容器
+  本身就是「用户主动点开的展开态」，再嵌一层折叠纯属多余——直接平铺。
+- **`expandedAgentIds` 随会话清空**：避免长会话无限增长，也符合「重新进来先看一行摘要」的默认。
+
+## v6.36 (插件市场：设置页新增「插件」Tab + 插件库弹窗，数据来自 npm registry)
+
+> 来源：用户 2026-10-25 需求——「设置里有一个专门的 tab 显示市场的所有插件，可以在这里安装」
+> 「插件放到关于前面」「做一个比较大的弹窗来展示这个插件库」。
+
+### 核心认知：安装 = 写两处，加载完全在启动时
+
+插件 = pi 扩展 = npm 包。**安装只是把包下到 `<userData>/agent/npm/node_modules/<pkg>`
+并把名字追加到 `settings.json` 的 `packages`**；解析、拼路径、`jiti` 动态 import、
+汇总成工具表全部发生在**启动时**。所以「装完必须重启」是结构性的，不是实现偷懒——
+UI 必须明说，否则用户只会以为装坏了。
+
+与预装的关系：**同一个 CLI 命令**（`pi install npm:<pkg> --no-approve`），
+差别只在触发者与反馈——预装静默失败（下次启动重试），市场必须显式报错。
+
+### 改动
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 主进程 | `pi/pluginService.ts`（新） | 5 个 RPC：list 本地零网络 / search+inspect 走 registry / install+remove 走内置 CLI。端口全可注入 |
+| 主进程 | `createForgeCore.ts` | 挂 `pluginMethods` + 三个测试接缝（`pluginRunCli`/`pluginFetchJson`/`pluginRegistry`） |
+| 契约 | `ipc-contract.ts`、`bridge.ts` | 方法名 + 5 组响应类型 |
+| UI | `PluginSection.vue`（新） | 已安装清单（内置带标记不可卸 / 自装可卸）+ 插件库弹窗（搜索 + 卡片 + 详情 + 安装 + 输出回显） |
+| UI | `SettingsPanel.vue` | 新增「插件」Tab，位置在**快捷键之后、关于之前** |
+| UI | `i18n/domains/settings.ts` | 中英各 40 条文案 |
+| mock | `mock-bridge.ts` | 5 个 RPC 的 mock（内存清单 + 假 registry + 安装失败分支 `pi-broken-pkg`） |
+| 测试 | `pluginService.test.ts`（新） | 13 个单测 |
+| 测试 | `e2e/pluginMarket.spec.ts`（新） | 8 个 E2E（PL-MKT-01~08） |
+
+### 关键决策与坑
+
+- **spec 只收 npm 包名**：不接受 git / 本地路径。否则「用户以为装插件、实际把任意
+  本地目录挂进扩展链」，这个面不该开。包名校验后统一补 `npm:` 前缀——引擎把裸名
+  当本地路径解析，报错是误导性的 `Path does not exist`。
+- **`unpackedSize` 在版本级 `dist` 上**：包级 `dist` 是空的（实测踩过）。
+  `@scope/name` 请求时 `/` 必须编码成 `%2f`。
+- **搜索失败不抛错**：回 `error` 字段让 UI 降级，避免网络一抖整弹窗白屏。
+- **内置项后端也拒绝卸载**（1001），不只 UI 隐藏按钮。
+- **弹窗 `z-index: 2000`**：项目弹窗统一值。写 60 会被 `shell-topstrip`（205 拖拽区）
+  盖住，窗口左上角点不到——E2E 抓到的真 bug。
+- **装完详情要强制重拉**：`pick()` 原本有「同项不重拉」短路，装成功后按钮停在
+  「安装」不动。加 `force` 参数（E2E 抓到的第二个真 bug）。
+
+### 验证
+
+- 单测：pluginService 13/13 通过；desktop 全量 447 测试 / 440 通过（4 个失败为基线既有，
+  已用 `git stash` 在干净树复跑确认）
+- E2E：pluginMarket 8/8 通过；settings + skillsBatch + shortcuts 33/33 通过
+  （`shortcuts.spec.ts` 的 Tab 计数断言从 5 改 6，属预期跟随改动）
+- 类型检查：core / desktop / ui / extensions 全通过
+- 构建：forge-ui、forge-desktop 均成功
+
+### 未做（待定）
+
+- **镜像源**：现在固定 `registry.npmjs.org`。国内网络建议加 npmmirror 探测
+  （DSH 那套 ping 竞速），后端已留 `pluginRegistry` 注入点。
+- **安装并发队列**：UI 用 `installing` 状态挡重复点击，未做真正队列。引擎内部有
+  lockfile 会串行化，第二个请求会排队等待、体感偏慢。
+
 ## v6.35 (P2 样本 #1：暗色主题 porcelain 派生色翻车 —— paper/ink 上收宿主按主题计算)
 
 > 来源：2026-10-15 用户真实截图（暗色主题的 forge 分层架构卡）：

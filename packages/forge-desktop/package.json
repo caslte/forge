@@ -21,8 +21,8 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.84.3",
-    "@earendil-works/pi-coding-agent": "0.84.3",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@forge/core": "*",
     "@forge/extensions": "*",
     "@lydell/node-pty": "^1.2.0-beta.15",

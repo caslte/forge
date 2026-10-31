@@ -683,6 +683,73 @@ function basenameOf(dir: string): string {
   return segs[segs.length - 1] ?? '';
 }
 
+// ===== 插件市场（07 扩展）mock：内存清单 + 假 registry =====
+/** 已安装插件（内置 2 条 + 用户自装 1 条，覆盖两种行形态） */
+const mockPlugins: Array<{ name: string; version: string | null; builtin: boolean }> = [
+  { name: 'pi-web-access', version: '0.42.0', builtin: true },
+  { name: '@tintinum/pi-subagents', version: '0.79.0', builtin: true },
+  { name: 'pi-tool-display', version: '0.3.1', builtin: false },
+];
+
+/** 假 registry 搜索库：命中关键字 pi-package 的若干包 */
+const MOCK_REGISTRY: Array<{
+  name: string;
+  version: string;
+  description: string;
+  keywords: string[];
+  updatedAt: string;
+  license: string;
+  unpackedSize: number;
+}> = [
+  {
+    name: '@narumitw/pi-goal',
+    version: '0.54.12',
+    description: 'Pi extension for autonomous single-objective /goal completion.',
+    keywords: ['pi-package', 'pi-extension', 'goal', 'automation'],
+    updatedAt: '2026-10-17T10:47:19.000Z',
+    license: 'MIT',
+    unpackedSize: 836087,
+  },
+  {
+    name: '@narumitw/pi-usage',
+    version: '0.67.0',
+    description: 'Pi extension for provider usage, limits, reset times, API balances.',
+    keywords: ['pi-package', 'pi-extension', 'usage', 'quota', 'balance'],
+    updatedAt: '2026-10-21T03:12:00.000Z',
+    license: 'MIT',
+    unpackedSize: 642000,
+  },
+  {
+    name: 'pi-powerline-footer',
+    version: '0.20.2',
+    description: 'Powerline-style status bar extension for pi coding agent',
+    keywords: ['pi-package', 'powerline', 'footer', 'status', 'ui'],
+    updatedAt: '2026-10-12T08:00:00.000Z',
+    license: 'MIT',
+    unpackedSize: 812000,
+  },
+  {
+    name: '@ff-labs/pi-fff',
+    version: '0.11.0',
+    description: 'pi extension: FFF-powered fuzzy file and content search',
+    keywords: ['pi-package', 'pi-extension', 'search', 'fuzzy', 'grep'],
+    updatedAt: '2026-10-02T06:30:00.000Z',
+    license: 'MIT',
+    unpackedSize: 2310000,
+  },
+];
+
+/** 模拟安装失败的包名（E2E 走失败分支用） */
+const MOCK_INSTALL_FAIL = 'pi-broken-pkg';
+
+function findMockPlugin(name: string): { name: string; version: string | null; builtin: boolean } | undefined {
+  return mockPlugins.find((p) => p.name === name);
+}
+
+function findMockRegistry(name: string): (typeof MOCK_REGISTRY)[number] | undefined {
+  return MOCK_REGISTRY.find((p) => p.name === name);
+}
+
 // ===== term（10：内嵌终端）假 pty：行缓冲 mini-shell，浏览器全流程演示（不 spawn 真进程）=====
 interface MockPty {
   cwd: string;
@@ -1507,6 +1574,92 @@ const bridge: ForgeBridge = {
       case 'skill/listSkills': {
         // 枚举口径与真实端一致：projectPath 缺省时项目组自然为空（按路径归组在 UI 侧）
         return { code: 0, message: 'ok', data: { cwd: (params as { projectPath?: string }).projectPath ?? '', skills: [...mockSkills], issues: [] } };
+      }
+      // ===== 插件市场（07 扩展）：内存清单 + 假 registry，覆盖安装/卸载/搜索/失败四类路径 =====
+      case 'plugin/list': {
+        return { code: 0, message: 'ok', data: { plugins: mockPlugins.map((p) => ({ ...p })) } };
+      }
+      case 'plugin/search': {
+        const q = String((params as { query?: string }).query ?? '').trim().toLowerCase();
+        // 关键词命中 name/description/keywords 任一即可（与真实端 registry 语义近似）
+        const items = MOCK_REGISTRY.filter((p) => {
+          if (q === '') return true;
+          return (
+            p.name.toLowerCase().includes(q) ||
+            p.description.toLowerCase().includes(q) ||
+            p.keywords.some((k) => k.includes(q))
+          );
+        }).map((p) => ({
+          name: p.name,
+          version: p.version,
+          description: p.description,
+          keywords: p.keywords,
+          homepage: null,
+          repository: null,
+          updatedAt: p.updatedAt,
+        }));
+        return {
+          code: 0,
+          message: 'ok',
+          data: { items, total: items.length, registry: 'https://registry.npmjs.org', error: null },
+        };
+      }
+      case 'plugin/inspect': {
+        const name = String((params as { name?: string }).name ?? '');
+        const meta = findMockRegistry(name);
+        if (meta === undefined) {
+          return { code: 6002, message: `无法获取 ${name} 的信息：registry 返回 404`, data: null };
+        }
+        const installed = findMockPlugin(name);
+        return {
+          code: 0,
+          message: 'ok',
+          data: {
+            name: meta.name,
+            version: meta.version,
+            description: meta.description,
+            license: meta.license,
+            homepage: null,
+            repository: null,
+            keywords: meta.keywords,
+            unpackedSize: meta.unpackedSize,
+            updatedAt: meta.updatedAt,
+            installed: installed !== undefined && installed.version !== null,
+            builtin: installed?.builtin ?? false,
+          },
+        };
+      }
+      case 'plugin/install': {
+        const name = String((params as { name?: string }).name ?? '');
+        if (name === MOCK_INSTALL_FAIL) {
+          // 失败分支：验证 UI 回显错误与输出尾部（引擎原生的误导性报错也要被翻成人话）
+          return {
+            code: 6002,
+            message: '安装失败：包名格式不对（引擎把裸名当本地路径解析了）。请确认包名',
+            data: { output: `Error: Path does not exist: D:\\tmp\\${name}` },
+          };
+        }
+        const existing = findMockPlugin(name);
+        if (existing !== undefined && existing.version !== null) {
+          return { code: 4090, message: `${name} 已安装，无需重复安装`, data: null };
+        }
+        const meta = findMockRegistry(name);
+        const version = meta?.version ?? '0.0.1';
+        if (existing !== undefined) existing.version = version;
+        else mockPlugins.push({ name, version, builtin: false });
+        return { code: 0, message: '已安装，重启后生效', data: { output: `added 1 package in 6s\n+ ${name}@${version}` } };
+      }
+      case 'plugin/remove': {
+        const name = String((params as { name?: string }).name ?? '');
+        const target = findMockPlugin(name);
+        if (target === undefined || target.version === null) {
+          return { code: 1002, message: `${name} 未安装`, data: null };
+        }
+        if (target.builtin) {
+          return { code: 1001, message: `${name} 是内置插件，随 forge 发版，不能卸载`, data: null };
+        }
+        mockPlugins.splice(mockPlugins.indexOf(target), 1);
+        return { code: 0, message: '已卸载，重启后生效', data: { output: `removed 1 package in 3s\n- ${name}` } };
       }
       case 'skill/checkImport': {
         // 导入预览（只查不拷）：校验口径与 importSkill 同源（invalid- 前缀 = 无 SKILL.md）
