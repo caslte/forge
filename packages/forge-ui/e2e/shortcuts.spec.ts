@@ -165,9 +165,10 @@ test('SC-E2E-007 @P0 @mock-backend 快捷键 Tab：3 组 12 行、滑动块落�
   await page.keyboard.press('Control+,');
   await expect(page.locator('.settings-stage')).toBeVisible();
 
-  // Tab 顺序：通用 / 个性化 / Skills / 快捷键 / 插件 / 关于（插件在关于之前）
+  // Tab 顺序：通用 / 个性化 / Skills / 快捷键 / 关于
+  // （v6.40 插件市场暂不开放，设置页已摘除「插件」Tab，故由 6 个变 5 个）
   const tabs = page.locator('.settings-tab');
-  await expect(tabs).toHaveCount(6);
+  await expect(tabs).toHaveCount(5);
   await expect(tabs.nth(3)).toHaveText('快捷键');
 
   await tabs.nth(3).click();

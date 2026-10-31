@@ -18,7 +18,6 @@ import { useOnboarding } from '../composables/useOnboarding';
 import { useI18n, type LocalePreference, type MessageKey } from '../i18n/index.ts';
 import { capLabels, capsSeparator } from '../utils/platformKey';
 import SkillsSection from './SkillsSection.vue';
-import PluginSection from './PluginSection.vue';
 import type { ThemeMode, ProviderItem, ThinkingLevel, ModelOption } from '../types';
 
 /**
@@ -403,12 +402,12 @@ function selectTheme(mode: ThemeMode): void {
 
 // ===== 版本更新（07，「关于」Tab）：明面为 forge 产品更新；内部为内置引擎的共享扩展更新 =====
 // 组件明细不回传 UI（原型确认 2026-09-08）：变更走结构化日志 + updater-state components 快照
-const activeTab = ref<'general' | 'personal' | 'skills' | 'shortcuts' | 'plugins' | 'about'>('general');
+const activeTab = ref<'general' | 'personal' | 'skills' | 'shortcuts' | 'about'>('general');
 const tabsEl = ref<HTMLElement | null>(null);
 const thumbEl = ref<HTMLElement | null>(null);
-const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, skills: null as HTMLElement | null, shortcuts: null as HTMLElement | null, plugins: null as HTMLElement | null, about: null as HTMLElement | null };
+const tabBtns = { general: null as HTMLElement | null, personal: null as HTMLElement | null, skills: null as HTMLElement | null, shortcuts: null as HTMLElement | null, about: null as HTMLElement | null };
 
-function setTabRef(name: 'general' | 'personal' | 'skills' | 'shortcuts' | 'plugins' | 'about', el: unknown): void {
+function setTabRef(name: 'general' | 'personal' | 'skills' | 'shortcuts' | 'about', el: unknown): void {
   tabBtns[name] = (el as HTMLElement) ?? null;
 }
 
@@ -738,12 +737,6 @@ onUnmounted(() => {
         :ref="(el) => setTabRef('shortcuts', el)"
         @click="activeTab = 'shortcuts'"
       >{{ t('settings.tab.shortcuts') }}</button>
-      <button
-        class="settings-tab"
-        :class="{ active: activeTab === 'plugins' }"
-        :ref="(el) => setTabRef('plugins', el)"
-        @click="activeTab = 'plugins'"
-      >{{ t('settings.tab.plugins') }}</button>
       <button
         class="settings-tab"
         :class="{ active: activeTab === 'about' }"
@@ -1201,11 +1194,6 @@ onUnmounted(() => {
     <!-- Skills Tab（模块 09）：独立 Tab 页，进入即挂载刷新 -->
     <div class="settings-body" v-if="activeTab === 'skills'">
       <SkillsSection />
-    </div>
-
-    <!-- 插件 Tab（07 插件市场扩展）：已安装管理 + 插件库弹窗 -->
-    <div class="settings-body" v-if="activeTab === 'plugins'">
-      <PluginSection />
     </div>
 
     <!-- 快捷键（模块 13）：只读清单，布局 B（分组单卡 + 行间分割线） -->

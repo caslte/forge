@@ -20,14 +20,23 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: ['**/*.spec.ts'],
   /**
-   * 一次性排查/截图脚本不参与正式跑。
+   * 不参与正式跑的用例。
    *
-   * 这些文件是历次问题的临时取证工具（文件头自己写着「一次性」「跑完即删」），
-   * 保留在仓库里当参考，但它们依赖当次环境的几何/截图产物，全量跑时必然红
-   * （`__tmp-r` 甚至只是把一张 png 当页面打开量像素）。放进 testIgnore 后
-   * 「全量绿」才有意义——否则每个维护者都得记住哪几个红是"正常的"。
+   * 1) 一次性排查/截图脚本：历次问题的临时取证工具（文件头自己写着「一次性」
+   *    「跑完即删」），依赖当次环境的几何与截图产物，全量跑时必然红
+   *    （`__tmp-r` 甚至只是把一张 png 当页面打开量像素）。
+   * 2) `pluginMarket.spec.ts`：插件市场功能**暂不开放**（v6.40 已从设置页摘除
+   *    入口），断言「设置页有插件 Tab」的用例必然失败。功能代码与这份用例都留着，
+   *    重新开放时把它从这里移回即可。
+   *
+   * 放进 ignored 后「全量绿」才有意义——否则每个维护者都得记住哪几个红是"正常的"。
    */
-  testIgnore: ['**/__repro-*.spec.ts', '**/__tmp-*.spec.ts', '**/tmp-filmstrip.spec.ts'],
+  testIgnore: [
+    '**/__repro-*.spec.ts',
+    '**/__tmp-*.spec.ts',
+    '**/tmp-filmstrip.spec.ts',
+    '**/pluginMarket.spec.ts',
+  ],
   fullyParallel: false,
   workers: 1,
   timeout: 60_000,
