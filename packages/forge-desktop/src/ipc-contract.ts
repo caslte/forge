@@ -114,6 +114,12 @@ export type ForgeMethod =
   // pi（07）
   | 'pi/getInfo'
   | 'pi/updatePlugins'
+  // 插件市场（07 扩展）：list 本地零网络 / search+inspect 走 npm registry / install+remove 走内置 CLI
+  | 'plugin/list'
+  | 'plugin/search'
+  | 'plugin/inspect'
+  | 'plugin/install'
+  | 'plugin/remove'
   | 'app/getUpdateDebug'
   // updater（07 IN-S03 应用自更新）
   | 'updater/getState'
@@ -543,6 +549,19 @@ export interface PiGetInfoResult {
 export interface PiUpdatePluginsResult {
   output: string;
 }
+
+/**
+ * 插件市场（07 扩展）契约类型。事实来源在 ./pi/pluginService.ts；
+ * type-only 再导出，不会把 node 侧实现拉进 preload 运行时 bundle。
+ */
+export type {
+  PluginEntry,
+  PluginListResult,
+  PluginSearchItem,
+  PluginSearchResult,
+  PluginInspectResult,
+  PluginMutateResult,
+} from './pi/pluginService.ts';
 
 /** 自更新状态机（07 IN-S03）：idle → checking → found → downloading → downloaded → installing；失败回 idle */
 export type UpdaterStatus = AppUpdaterSnapshot['status'];

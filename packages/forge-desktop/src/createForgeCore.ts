@@ -72,6 +72,7 @@ import {
 } from './pi/appUpdater.ts';
 import { createReleaseNotesMethods } from './pi/releaseNotes.ts';
 import { createSkillMethods, type SkillLoaderLike } from './pi/skillService.ts';
+import { createPluginMethods } from './pi/pluginService.ts';
 import { createCommitMessageMethods } from './git/commitMessageService.ts';
 import { createModelTestMethods } from './model/modelTestService.ts';
 import { createTermService } from './term/ptyService.ts';
@@ -141,6 +142,12 @@ export interface ForgeCoreDeps {
   trashItem?: (targetPath: string) => Promise<void>;
   /** 模块 09：测试接缝——替换 skill 枚举用的 pi DefaultResourceLoader 装配 */
   skillLoaderFactory?: (cwd: string, agentDir: string) => SkillLoaderLike;
+  /** 插件市场：测试接缝——替换内置 CLI 执行（真实实现见 pluginService.makeDefaultRunCli） */
+  pluginRunCli?: (args: string[]) => Promise<{ ok: boolean; output: string }>;
+  /** 插件市场：测试接缝——替换 registry GET（真实实现用全局 fetch） */
+  pluginFetchJson?: (url: string) => Promise<unknown>;
+  /** 插件市场：registry 地址（缺省 npm 官方源；国内镜像可注入 npmmirror） */
+  pluginRegistry?: string;
 }
 
 /**
@@ -898,6 +905,16 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     loaderFactory: deps.skillLoaderFactory,
   });
 
+  // plugin（07 插件市场扩展）：list/search/inspect/install/remove。
+  // 安装复用内置 CLI（与预装同一命令），卸载真删 node_modules + 摘 packages 清单；
+  // 装完需重启才加载（解析与 import 只在启动时发生，见 pluginService 头注释）。
+  const pluginMethods: MethodTable = createPluginMethods({
+    agentDir,
+    runCli: deps.pluginRunCli,
+    fetchJson: deps.pluginFetchJson,
+    registry: deps.pluginRegistry,
+  });
+
   // term（10：内嵌终端）：pty 注册表在主进程闭包；cwd containment 与 git 方法同口径
   // （归一后比对已注册项目列表，AC-10-06）；下行事件走共享 eventBus（term:data/term:exit
   // 已登记 FORGE_EVENTS）。node-pty 由 ptyService 首次 spawn 时动态加载，组装零成本。
@@ -939,6 +956,7 @@ export function createForgeCore(storePath: string, deps: ForgeCoreDeps = {}): Fo
     ...commitMessageMethods,
     ...subagentMethods,
     ...skillMethods,
+    ...pluginMethods,
     ...termService.methods,
     ...fileApi.methods,
     ...piMethods,

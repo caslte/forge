@@ -196,6 +196,60 @@ async function ensureDevPortFree() {
   process.exit(1);
 }
 
+/**
+ * Electron 主进程启动失败时的中文诊断。
+ *
+ * 为什么需要：Electron 的报错是英文堆栈（如 `The requested module 'electron' does not
+ * provide an export named 'BrowserWindow'`），对中文用户毫无指向性——它看起来像代码 bug，
+ * 实际常见成因只有两三个环境问题。这里按症状给出「人话原因 + 具体怎么修」。
+ *
+ * 只诊断已知形态；未命中时不多嘴（原始 stderr 已经实时转出过）。
+ */
+function printElectronStartupDiagnosis(stderr) {
+  const text = String(stderr || '');
+  const lines = [];
+  const push = (s) => lines.push(s);
+
+  // ① 环境变量污染：最常见，且 forge 自己会产出这个变量
+  if (text.includes("does not provide an export named") || text.includes('ELECTRON_RUN_AS_NODE')) {
+    push('原因：环境变量 ELECTRON_RUN_AS_NODE 残留，Electron 被当成纯 Node 启动了。');
+    push('      该变量存在时，Electron 不注册内置模块（BrowserWindow / app / ipcMain 等），');
+    push('      主进程里 `import { BrowserWindow } from \'electron\'` 必然失败。');
+    push('      它通常来自：在同一个终端里跑过 forge 的组件/插件命令（内部 CLI 会设置该变量）。');
+    push('处理：');
+    push('  PowerShell : $env:ELECTRON_RUN_AS_NODE=$null');
+    push('  cmd        : set ELECTRON_RUN_AS_NODE=');
+    push('  bash/zsh   : unset ELECTRON_RUN_AS_NODE');
+    push('  然后重新 npm run dev（dev.js 已自动清理，重开终端也可）。');
+  }
+
+  // ② 主进程构建产物缺失/过期
+  else if (text.includes('ERR_MODULE_NOT_FOUND') || text.includes('Cannot find module')) {
+    push('原因：主进程构建产物缺失或路径不对（dist/ 里找不到被 import 的模块）。');
+    push('处理：先跑一次 npm run build -w @forge/desktop 再启动。');
+  }
+
+  // ③ Electron 二进制缺失（依赖没装全 / 下载被跳过）
+  else if (text.includes('Electron failed to install correctly')) {
+    push('原因：Electron 二进制没装上（常见于 ELECTRON_SKIP_BINARY_DOWNLOAD 或网络中断）。');
+    push('处理：删掉 node_modules/electron 后重跑 npm install。');
+  }
+
+  // ④ 端口/服务问题（vite 没起来导致主进程加载失败）
+  else if (text.includes('ERR_CONNECTION_REFUSED') || text.includes('net::ERR_')) {
+    push('原因：主进程连不上前端 dev server（vite 未就绪或已退出）。');
+    push(`处理：确认 ${DEV_URL} 可访问；端口被旧进程占用时用 npm run dev -- --free-port。`);
+  }
+
+  if (lines.length === 0) return;
+
+  console.error('');
+  console.error('┌─ Electron 启动失败 ─────────────────────────────────────');
+  for (const line of lines) console.error(`│ ${line}`);
+  console.error('└────────────────────────────────────────────────────────');
+  console.error('');
+}
+
 async function main() {
   // 端口预检放在构建之前：占用了就没必要让用户等 90 秒构建再失败
   await ensureDevPortFree();
@@ -244,16 +298,30 @@ async function main() {
   }
 
   console.log(`[dev] ${DEV_BUILD_WORKSPACES.length + 2}/${DEV_BUILD_WORKSPACES.length + 2} 启动 electron（加载`, DEV_URL, '）');
+  // 清掉 ELECTRON_RUN_AS_NODE：该变量一旦出现在 shell 里（forge 自己的内置 CLI 子进程
+  // 就会设它，见 piRuntime.buildPiCliEnv；在同一个终端里跑过组件命令就会残留），
+  // electron 会以「纯 Node 模式」启动 —— 内置模块不注册，主进程 `import { BrowserWindow }
+  // from 'electron'` 直接 SyntaxError 退出。表现是「dev 一切正常、electron 启动失败」，
+  // 且报错看起来像代码问题，实际只是环境变量污染。
+  const electronEnv = { ...process.env, FORGE_DEV_SERVER_URL: DEV_URL, FORGE_DEV_SERVER_ORIGIN: DEV_URL };
+  delete electronEnv.ELECTRON_RUN_AS_NODE;
+  // 主进程 stderr 收集：启动失败时用中文说清原因，不把英文堆栈甩给用户
+  let electronStderr = '';
   const electron = spawn('node', [electronCli, mainPath], {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      FORGE_DEV_SERVER_URL: DEV_URL,
-      FORGE_DEV_SERVER_ORIGIN: DEV_URL,
-    },
+    stdio: ['inherit', 'inherit', 'pipe'],
+    env: electronEnv,
+  });
+  electron.stderr?.on('data', (chunk) => {
+    const text = chunk.toString();
+    // 边收边转出，保持实时可见（不吞掉原始输出，排查仍需要）
+    process.stderr.write(text);
+    if (electronStderr.length < 64 * 1024) electronStderr += text;
   });
   electron.on('close', (code) => {
     vite.kill();
+    if (code !== 0) {
+      printElectronStartupDiagnosis(electronStderr);
+    }
     process.exit(code ?? 0);
   });
   electron.on('error', (err) => {

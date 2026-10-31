@@ -85,6 +85,12 @@ export type ForgeMethod =
   | 'git/generateCommitMessage'
   | 'pi/getInfo'
   | 'pi/updatePlugins'
+  // 插件市场（07 扩展）：list 本地 / search+inspect 联网 / install+remove 走内置 CLI
+  | 'plugin/list'
+  | 'plugin/search'
+  | 'plugin/inspect'
+  | 'plugin/install'
+  | 'plugin/remove'
   | 'app/getUpdateDebug'
   | 'updater/getState'
   | 'updater/checkForUpdates'
@@ -406,6 +412,61 @@ export interface ForgeGoal {
 
 /** pi/updatePlugins 响应 data（更新器输出尾部；失败时 UI 展示排查信息） */
 export interface PiUpdatePluginsResult {
+  output: string;
+}
+
+// ===== 插件市场（07 扩展）契约类型：与 @forge/desktop ipc-contract 同步 =====
+
+/** 单条已安装插件 */
+export interface PluginEntry {
+  name: string;
+  /** 实体版本；null = 清单已列但实体未安装 */
+  version: string | null;
+  /** 内置（预装清单内）不可卸载 */
+  builtin: boolean;
+}
+
+/** plugin/list 响应 data */
+export interface PluginListResult {
+  plugins: PluginEntry[];
+}
+
+/** 搜索结果项（npm registry search 接口字段子集） */
+export interface PluginSearchItem {
+  name: string;
+  version: string;
+  description: string;
+  keywords: string[];
+  homepage: string | null;
+  repository: string | null;
+  updatedAt: string | null;
+}
+
+/** plugin/search 响应 data；error 非 null 时 items 为空，UI 降级为本地推荐清单 */
+export interface PluginSearchResult {
+  items: PluginSearchItem[];
+  total: number;
+  registry: string;
+  error: string | null;
+}
+
+/** plugin/inspect 响应 data（装前预览） */
+export interface PluginInspectResult {
+  name: string;
+  version: string;
+  description: string;
+  license: string | null;
+  homepage: string | null;
+  repository: string | null;
+  keywords: string[];
+  unpackedSize: number | null;
+  updatedAt: string | null;
+  installed: boolean;
+  builtin: boolean;
+}
+
+/** plugin/install | plugin/remove 响应 data */
+export interface PluginMutateResult {
   output: string;
 }
 
